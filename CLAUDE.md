@@ -19,8 +19,14 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 - Commit messages: Conventional Commits subject, blank line, body with the why, then exactly one
   trailer `Agent: claude/<model>` (for example `Agent: claude/opus-5.5`). Remove any
   `Co-Authored-By` or `Generated with` line a tool inserts; the commit-msg hook rejects them.
-- Do not push. Hand the branch to the maintainer, who pushes it, opens the pull request and merges
-  after CI is green. You have read-only GitHub access to read CI results.
+- Push and open pull requests as `kordon-sec-bot` (ADR 0002). Git in this clone already uses the
+  bot as credential helper; for the API use `GH_TOKEN=$(python3 ~/.config/kordon/bot-token.py) gh ...`.
+  If the helper or the key is missing, stop and tell the maintainer; never use their credentials.
+- Merge with `gh api -X PUT repos/Kordon-Sec/kordon/pulls/<n>/merge -F merge_method=rebase` only
+  after all six checks are green. A pull request that touches owned paths (`.github/CODEOWNERS`)
+  waits for the maintainer's approval; tell them what to review and why, in two sentences.
+- For review by Codex, queue a request as described in the maintainer's global instructions;
+  never call Codex directly from the sandbox.
 - Never bypass hooks (`--no-verify`) or CI. If a gate is wrong, fix the gate in its own pull request
   with a test, and say so.
 

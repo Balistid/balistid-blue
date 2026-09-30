@@ -14,6 +14,8 @@ Floor 0 (recorder) not started. Repository skeleton, CI gates and the `main` rul
 - Workflow: the kordon-sec-bot GitHub App pushes and opens pull requests; changes to gates and rules
   need the maintainer's approval (CODEOWNERS), everything else merges when CI is green.
 
+- ADR 0002: the bot pushes and merges; the maintainer approves only changes to gates and rules.
+
 ## Next step
 
 1. Process the five Deep Research reports (sensors and language, event store, agent isolation,
