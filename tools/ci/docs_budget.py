@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Fail when the repo carries documentation outside the allowlist or over its line cap.
+"""Fail on any tracked path outside the repository layout allowlist, and on prose over its caps.
 
-Rule R12 (ENGINEERING.md): running code first, documents about it second. Every
-prose file must match an allowlisted path and stay under that path's line cap.
-Changing the allowlist requires an ADR (adr/0001-repo-governance.md).
+Rule R12 (ENGINEERING.md): running code first, documents about it second. The allowlist is closed:
+a path that matches no entry fails, whatever its suffix. Prose files also have line and byte caps.
+Symlinks are rejected. Changing either list requires an ADR (adr/0001-repo-governance.md);
+code directories are added by the ADR that picks the implementation language.
 """
 
 from __future__ import annotations
@@ -14,10 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROSE_SUFFIXES = (".md", ".markdown", ".rst", ".adoc", ".txt")
-
-# (glob relative to repo root, max lines). First match wins.
-ALLOWLIST: tuple[tuple[str, int], ...] = (
+# Prose: (pattern, max lines). Byte cap is lines * BYTES_PER_LINE.
+DOCS: tuple[tuple[str, int], ...] = (
     ("README.md", 120),
     ("SECURITY.md", 60),
     ("THREAT_MODEL.md", 80),
@@ -28,37 +27,72 @@ ALLOWLIST: tuple[tuple[str, int], ...] = (
     ("adr/[0-9][0-9][0-9][0-9]-*.md", 60),
     (".github/pull_request_template.md", 40),
 )
+BYTES_PER_LINE = 120
+
+# Everything else that may be tracked.
+LAYOUT: tuple[str, ...] = (
+    "LICENSE",
+    ".gitignore",
+    ".editorconfig",
+    ".gitattributes",
+    ".gitleaks.toml",
+    ".github/CODEOWNERS",
+    ".github/dependabot.yml",
+    ".github/workflows/*.yml",
+    "githooks/pre-commit",
+    "githooks/commit-msg",
+    "tools/ci/*.py",
+    "tools/ci/tests/*.py",
+    "acceptance/[0-9].toml",
+)
+
+SYMLINK_MODE = "120000"
 
 
-def tracked_files(repo: Path) -> list[str]:
+def matches(path: str, pattern: str) -> bool:
+    """Match segment by segment so that '*' never crosses a '/'."""
+    parts, pats = path.split("/"), pattern.split("/")
+    return len(parts) == len(pats) and all(fnmatch.fnmatchcase(p, q) for p, q in zip(parts, pats))
+
+
+def tracked_entries(repo: Path) -> list[tuple[str, str]]:
     out = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "-z", "--cached"],
+        ["git", "-C", str(repo), "ls-files", "-z", "--stage"],
         check=True,
         capture_output=True,
     ).stdout
-    return [p for p in out.decode().split("\0") if p]
+    entries = []
+    for record in out.decode().split("\0"):
+        if record:
+            meta, path = record.split("\t", 1)
+            entries.append((meta.split()[0], path))
+    return entries
 
 
-def cap_for(path: str) -> int | None:
-    for pattern, cap in ALLOWLIST:
-        if fnmatch.fnmatchcase(path, pattern):
+def doc_cap(path: str) -> int | None:
+    for pattern, cap in DOCS:
+        if matches(path, pattern):
             return cap
     return None
 
 
 def check(repo: Path) -> list[str]:
     violations = []
-    for path in tracked_files(repo):
-        if not path.lower().endswith(PROSE_SUFFIXES):
+    for mode, path in tracked_entries(repo):
+        if mode == SYMLINK_MODE:
+            violations.append(f"{path}: symlinks are not allowed")
             continue
-        cap = cap_for(path)
+        cap = doc_cap(path)
         if cap is None:
-            violations.append(f"{path}: not in docs allowlist")
+            if not any(matches(path, pattern) for pattern in LAYOUT):
+                violations.append(f"{path}: not in repository layout allowlist")
             continue
-        with open(repo / path, encoding="utf-8") as fh:
-            lines = sum(1 for _ in fh)
+        data = (repo / path).read_bytes()
+        lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
         if lines > cap:
             violations.append(f"{path}: {lines} lines > cap {cap}")
+        if len(data) > cap * BYTES_PER_LINE:
+            violations.append(f"{path}: {len(data)} bytes > cap {cap * BYTES_PER_LINE}")
     return violations
 
 

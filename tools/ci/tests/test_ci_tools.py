@@ -91,6 +91,13 @@ class CommitLintMessageTest(unittest.TestCase):
     def test_empty_fails(self):
         self.assertTrue(commit_lint.lint(""))
 
+    def test_agent_outside_trailer_block_fails(self):
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n\nTrailing paragraph."))
+
+    def test_scissors_block_is_ignored(self):
+        msg = GOOD_MSG + "\n" + commit_lint.SCISSORS + "\n+Co-Authored-By: someone\n"
+        self.assertEqual(commit_lint.lint(commit_lint.strip_comments(msg)), [])
+
     def test_hook_mode_strips_comments(self):
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as fh:
             fh.write(GOOD_MSG + "\n# Please enter the commit message\n")
@@ -136,9 +143,23 @@ class CommitLintRangeTest(unittest.TestCase):
             base = git(repo, "rev-parse", "HEAD").strip()
             bot = {**GIT_ENV, "GIT_AUTHOR_EMAIL": commit_lint.DEPENDABOT_EMAIL}
             commit(repo, "ci: bump actions/checkout from 1 to 2", env=bot)
-            self.assertEqual(commit_lint.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 0)
+            rng = ["--repo", tmp, "--range", f"{base}..HEAD"]
+            self.assertEqual(commit_lint.main(rng + ["--dependabot-pr"]), 0)
+            # A spoofed author email without GitHub's PR-author signal is not exempt.
+            self.assertEqual(commit_lint.main(rng), 1)
             commit(repo, "Bump something", env=bot)
-            self.assertEqual(commit_lint.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
+            self.assertEqual(commit_lint.main(rng + ["--dependabot-pr"]), 1)
+
+    def test_record_separator_in_message_cannot_split_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            commit(repo, "chore: base\n\nAgent: alex")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            evil = ("feat: x\n\nAgent: alex\x1e\x1f" + commit_lint.DEPENDABOT_EMAIL
+                    + "\x1fchore: y\n\nAgent: claude/opus-5.5")
+            commit(repo, evil)
+            rng = ["--repo", tmp, "--range", f"{base}..HEAD", "--dependabot-pr"]
+            self.assertEqual(commit_lint.main(rng), 1)
 
 
 class DocsBudgetTest(unittest.TestCase):
@@ -152,9 +173,30 @@ class DocsBudgetTest(unittest.TestCase):
             git(repo, "add", name)
         return tmp
 
-    def test_allowlisted_docs_pass(self):
-        with self._repo_with({"README.md": "a\n", "adr/0001-x.md": "b\n", "src/x.py": "c\n"}) as tmp:
+    def test_allowlisted_paths_pass(self):
+        files = {"README.md": "a\n", "adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "LICENSE": "d\n"}
+        with self._repo_with(files) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
+
+    def test_unknown_paths_fail_whatever_suffix(self):
+        for name in ("NOTES", "docs/PLAN.org", "docs/plan.mdx", "docs/plan.html", "src/x.py"):
+            with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
+                self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_star_does_not_cross_directories(self):
+        with self._repo_with({"tools/ci/deep/x.py": "c\n"}) as tmp:
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_byte_cap_fails_single_long_line(self):
+        with self._repo_with({"STATUS.md": "x" * 200_000 + "\n"}) as tmp:
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_symlink_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            os.symlink("LICENSE", repo / "README.md")
+            git(repo, "add", "README.md")
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
     def test_unlisted_doc_fails(self):
         with self._repo_with({"README.md": "a\n", "docs/PLAN.md": "b\n"}) as tmp:
@@ -198,6 +240,23 @@ class PinCheckTest(unittest.TestCase):
 
     def test_docker_tag_fails(self):
         self.assertEqual(self._check("docker://alpine:3"), 1)
+
+    def test_yaml_spelling_variants_fail(self):
+        for line in ("- {uses: actions/checkout@v4}", "- uses : actions/checkout@v4",
+                     "- 'uses': actions/checkout@v4", '- "uses": actions/checkout@main',
+                     "- uses: 'actions/checkout@" + "a" * 40 + "'"):
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as tmp:
+                wf = Path(tmp, ".github/workflows")
+                wf.mkdir(parents=True)
+                (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      {line}\n")
+                self.assertEqual(pin_check.main(["--repo", tmp]), 1)
+
+    def test_flow_style_reusable_workflow_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wf = Path(tmp, ".github/workflows")
+            wf.mkdir(parents=True)
+            (wf / "ci.yml").write_text("jobs: {a: {uses: org/repo/.github/workflows/x.yml@main}}\n")
+            self.assertEqual(pin_check.main(["--repo", tmp]), 1)
 
     def test_no_workflows_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

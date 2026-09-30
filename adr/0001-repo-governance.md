@@ -20,8 +20,11 @@ them; a server-side gate binds every contributor.
 2. Enforcement lives in CI on a private GitHub repository under the `Kordon-Sec` organisation on the
    GitHub Team plan, so that a ruleset on `main` is enforced server-side: pull request required,
    required status checks, no force-push, no deletion, linear history, no bypass.
-3. Agents push branches with a fine-grained token scoped to this repository without the
-   Administration permission, so they cannot change the ruleset. The maintainer merges.
+3. Agents never push. A token with Contents: write can merge a pull request through the API, and
+   every gate runs from the pull request's own checkout, so an agent could weaken a gate and merge
+   itself. Agents get a read-only token (contents, pull requests, actions) to read CI results; the
+   maintainer pushes, opens pull requests and merges. Merge method: rebase only, so every commit on
+   `main` is a commit that CI linted.
 4. Local hooks (`githooks/`, `core.hooksPath`) give early feedback and fail closed when a required
    tool is missing. CI remains the authority.
 5. Docs allowlist (R12) is extended from the post-mortem's list by `ENGINEERING.md`, `CLAUDE.md`,
@@ -40,5 +43,8 @@ them; a server-side gate binds every contributor.
 
 - Gates are testable code (`tools/ci/tests`), so a broken gate shows up as a failing test.
 - A gate that is wrong blocks work until fixed in its own pull request.
-- The token is readable by agents by design; leaking it allows pushing branches, not changing `main`.
+- The read-only token is readable by agents by design; leaking it exposes the private code, not `main`.
+- Changes to `tools/ci/`, `.github/`, `githooks/` and `.gitleaks.toml` weaken or strengthen the
+  gates themselves; the maintainer reviews them line by line before merging. The gitleaks default
+  allowlist exempts files named like `gitleaks.toml`, so that file is reviewed by hand.
 - Costs the GitHub Team subscription while the repository stays private.

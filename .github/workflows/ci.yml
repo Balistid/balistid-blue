@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GITLEAKS_VERSION: "8.30.1"
@@ -62,6 +62,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then
             range="$PR_BASE..$PR_HEAD"
@@ -70,7 +71,11 @@ jobs:
           else
             range="$PUSH_BEFORE..$PUSH_AFTER"
           fi
-          python3 tools/ci/commit_lint.py --range "$range"
+          set -- --range "$range"
+          if [ "$EVENT" = "pull_request" ] && [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            set -- "$@" --dependabot-pr
+          fi
+          python3 tools/ci/commit_lint.py "$@"
 
   secrets:
     runs-on: ubuntu-24.04
@@ -88,7 +93,13 @@ jobs:
           echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
       - name: Scan full history
-        run: '"$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner .'
+        # Force text diffs so .gitattributes cannot hide files, ignore inline allow comments and
+        # any committed .gitleaksignore: exceptions must be made in .gitleaks.toml, under review.
+        run: |
+          printf '* diff\n' > .git/info/attributes
+          mkdir -p "$RUNNER_TEMP/no-ignore"
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" .
 
   workflow-lint:
     runs-on: ubuntu-24.04

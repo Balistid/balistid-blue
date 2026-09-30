@@ -53,7 +53,8 @@ A change is done when all of these hold, verified now and not from memory:
 - Conventional Commits subject (`feat|fix|docs|refactor|test|ci|build|chore|perf|revert|security`),
   at most 72 characters, blank second line, `Agent:` trailer. Enforced by `tools/ci/commit_lint.py`
   locally (commit-msg hook) and in CI over the whole pull request range.
-- History is linear. No merge commits, no force-push to `main`, no deleting `main`.
+- History is linear. Rebase merges only; no merge commits, no force-push to `main`, no deleting `main`.
+- Agents never push or merge. The maintainer pushes branches, opens pull requests and merges.
 - One logical change per pull request. The pull request template checklist is filled in honestly;
   an unchecked box needs a reason.
 
@@ -75,6 +76,6 @@ hypotheses until reproduced by a test.
 
 - Allowed prose: `README.md`, `SECURITY.md`, `THREAT_MODEL.md` (one page), `ENGINEERING.md`,
   `CLAUDE.md`, `AGENTS.md`, `STATUS.md`, `adr/NNNN-*.md` (one page each), the pull request template.
-  Caps live in `tools/ci/docs_budget.py`; changing them needs an ADR.
+  Caps and the closed layout allowlist live in `tools/ci/docs_budget.py`; changing them needs an ADR.
 - Decisions go to an ADR, state goes to `STATUS.md`, history goes to git. Nothing else.
 - `STATUS.md` is overwritten at the end of each working session. It never grows into a log.

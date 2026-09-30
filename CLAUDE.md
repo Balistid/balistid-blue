@@ -19,7 +19,8 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 - Commit messages: Conventional Commits subject, blank line, body with the why, then exactly one
   trailer `Agent: claude/<model>` (for example `Agent: claude/opus-5.5`). Remove any
   `Co-Authored-By` or `Generated with` line a tool inserts; the commit-msg hook rejects them.
-- Push the branch and open a pull request. CI is the gate; the maintainer merges.
+- Do not push. Hand the branch to the maintainer, who pushes it, opens the pull request and merges
+  after CI is green. You have read-only GitHub access to read CI results.
 - Never bypass hooks (`--no-verify`) or CI. If a gate is wrong, fix the gate in its own pull request
   with a test, and say so.
 

@@ -7,5 +7,8 @@ for tool in gitleaks python3; do
         exit 1
     fi
 done
-gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --no-banner .
+no_ignore=$(mktemp -d)
+trap 'rmdir "$no_ignore"' EXIT
+gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --no-banner \
+    --ignore-gitleaks-allow --gitleaks-ignore-path "$no_ignore" .
 python3 tools/ci/docs_budget.py
