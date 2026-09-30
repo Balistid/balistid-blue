@@ -9,7 +9,10 @@
 - No advertising trailers (Co-Authored-By, "Generated with", robot emoji).
 - In range mode: no merge commits (linear history).
 
-Modes: --message-file (commit-msg hook) or --range REV-RANGE (CI).
+Modes: --message-file (commit-msg hook) or --range REV-RANGE (CI). With --strip-attribution the hook
+first deletes the attribution lines that AI tools insert by themselves (Co-Authored-By, "Generated
+with Claude Code", robot emoji lines) from the message file, then lints what is left. CI never
+rewrites; it rejects.
 --dependabot-pr exempts commits authored by Dependabot from the Agent trailer only. On pull requests
 CI sets it only when GitHub reports the author as dependabot[bot]; the author email alone is not
 trusted. On pushes to main it is always set, because those commits already passed the PR gate.
@@ -33,6 +36,14 @@ SCISSORS = "# ------------------------ >8 ------------------------"
 # Characters that Python or git may treat as line breaks or hide from a reviewer.
 CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]")
 DEPENDABOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"
+STRIP_RE = re.compile(
+    r"^\s*(?:co-authored-by:.*|.*\U0001F916.*|.*generated with \[?claude code.*)$", re.IGNORECASE
+)
+
+
+def strip_attribution(message: str) -> str:
+    kept = [ln for ln in message.split("\n") if not STRIP_RE.match(ln)]
+    return "\n".join(kept).rstrip("\n") + "\n"
 
 
 def strip_comments(message: str) -> str:
@@ -121,9 +132,16 @@ def main(argv: list[str] | None = None) -> int:
     group.add_argument("--range", dest="rev_range")
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--dependabot-pr", action="store_true")
+    parser.add_argument("--strip-attribution", action="store_true")
     args = parser.parse_args(argv)
 
     if args.message_file:
+        if args.strip_attribution:
+            original = args.message_file.read_text(encoding="utf-8")
+            cleaned = strip_attribution(original)
+            if cleaned != original:
+                args.message_file.write_text(cleaned, encoding="utf-8")
+                print("commit-lint: removed tool-inserted attribution lines", file=sys.stderr)
         errors = lint(strip_comments(args.message_file.read_text(encoding="utf-8")))
         for e in errors:
             print(f"commit-lint: {e}", file=sys.stderr)

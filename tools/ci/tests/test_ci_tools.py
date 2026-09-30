@@ -109,6 +109,28 @@ class CommitLintMessageTest(unittest.TestCase):
         msg = GOOD_MSG + "\n" + commit_lint.SCISSORS + "\n+Co-Authored-By: someone\n"
         self.assertEqual(commit_lint.lint(commit_lint.strip_comments(msg)), [])
 
+    def test_hook_strips_tool_attribution_and_passes(self):
+        msg = ("feat(core): add event store\n\nBody text.\n\nAgent: claude/opus-5.5\n"
+               "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+               "\U0001F916 Generated with [Claude Code](https://claude.com/claude-code)\n")
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as fh:
+            fh.write(msg)
+        try:
+            self.assertEqual(commit_lint.main(["--strip-attribution", "--message-file", fh.name]), 0)
+            cleaned = Path(fh.name).read_text()
+            self.assertNotIn("Co-Authored-By", cleaned)
+            self.assertTrue(cleaned.rstrip("\n").endswith("Agent: claude/opus-5.5"))
+        finally:
+            os.unlink(fh.name)
+
+    def test_without_strip_flag_attribution_still_fails(self):
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as fh:
+            fh.write(GOOD_MSG + "\nCo-Authored-By: x <x@y>\n")
+        try:
+            self.assertEqual(commit_lint.main(["--message-file", fh.name]), 1)
+        finally:
+            os.unlink(fh.name)
+
     def test_hook_mode_strips_comments(self):
         with tempfile.NamedTemporaryFile("w", delete=False, suffix=".txt") as fh:
             fh.write(GOOD_MSG + "\n# Please enter the commit message\n")
