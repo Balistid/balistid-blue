@@ -54,7 +54,8 @@ A change is done when all of these hold, verified now and not from memory:
   at most 72 characters, blank second line, `Agent:` trailer. Enforced by `tools/ci/commit_lint.py`
   locally (commit-msg hook) and in CI over the whole pull request range.
 - History is linear. Rebase merges only; no merge commits, no force-push to `main`, no deleting `main`.
-- Agents never push or merge. The maintainer pushes branches, opens pull requests and merges.
+- Agents push and merge only as `kordon-sec-bot` (ADR 0002). Changes to paths in
+  `.github/CODEOWNERS` (gates, rules, ADRs, acceptance numbers) need the maintainer's approval.
 - One logical change per pull request. The pull request template checklist is filled in honestly;
   an unchecked box needs a reason.
 

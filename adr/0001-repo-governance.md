@@ -20,7 +20,7 @@ them; a server-side gate binds every contributor.
 2. Enforcement lives in CI on a private GitHub repository under the `Kordon-Sec` organisation on the
    GitHub Team plan, so that a ruleset on `main` is enforced server-side: pull request required,
    required status checks, no force-push, no deletion, linear history, no bypass.
-3. Agents never push. A token with Contents: write can merge a pull request through the API, and
+3. (Superseded by ADR 0002: a GitHub App pushes; code owners guard the gates.) Agents never push. A token with Contents: write can merge a pull request through the API, and
    every gate runs from the pull request's own checkout, so an agent could weaken a gate and merge
    itself. Agents get a read-only token (contents, pull requests, actions) to read CI results; the
    maintainer pushes, opens pull requests and merges. Merge method: rebase only, so every commit on
