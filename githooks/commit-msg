@@ -1,0 +1,8 @@
+#!/bin/sh
+# Early feedback only; CI lints the whole pull request range again.
+set -eu
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "commit-msg: python3 is not installed" >&2
+    exit 1
+fi
+exec python3 tools/ci/commit_lint.py --message-file "$1"
