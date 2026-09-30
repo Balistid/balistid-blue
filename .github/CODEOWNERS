@@ -1,2 +1,12 @@
-# Every change needs the maintainer's approval; the bot's own approval never counts.
-* @Jvc0n
+# Changes to the gates and the rules need the maintainer's approval (ADR 0001).
+# Everything else merges when CI is green.
+/tools/ci/ @Jvc0n
+/.github/ @Jvc0n
+/githooks/ @Jvc0n
+/.gitleaks.toml @Jvc0n
+/.gitattributes @Jvc0n
+/ENGINEERING.md @Jvc0n
+/CLAUDE.md @Jvc0n
+/AGENTS.md @Jvc0n
+/adr/ @Jvc0n
+/acceptance/ @Jvc0n
