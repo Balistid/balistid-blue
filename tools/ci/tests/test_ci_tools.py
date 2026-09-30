@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import commit_lint  # noqa: E402
 import docs_budget  # noqa: E402
-import pin_check  # noqa: E402
 
 GOOD_MSG = "feat(core): add event store\n\nBody text.\n\nAgent: claude/opus-5.5"
 GIT_ENV = {
@@ -234,9 +233,10 @@ class DocsBudgetTest(unittest.TestCase):
             self.assertLess((repo / "STATUS.md").stat().st_size, 4800)
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
-    def test_code_names_that_gitleaks_would_skip_fail(self):
+    def test_names_that_gitleaks_would_skip_fail(self):
         for name in ("tools/ci/gitleaks.toml.py", "tools/ci/tests/test_verification-metadata.xml.py",
-                     "tools/ci/Upper.py"):
+                     "tools/ci/Upper.py", "adr/0003-gitleaks.toml.md", "adr/0003-Database-refactorlog.md",
+                     "adr/0003-verification-metadata.xml.md", ".github/workflows/gitleaks.toml.yml"):
             with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
                 self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
@@ -269,69 +269,6 @@ class DocsBudgetTest(unittest.TestCase):
     def test_over_cap_fails(self):
         with self._repo_with({"STATUS.md": "x\n" * 41}) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
-
-
-class PinCheckTest(unittest.TestCase):
-    def _check(self, uses: str) -> int:
-        with tempfile.TemporaryDirectory() as tmp:
-            wf = Path(tmp, ".github/workflows")
-            wf.mkdir(parents=True)
-            (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      - uses: {uses}\n")
-            return pin_check.main(["--repo", tmp])
-
-    def test_sha_pinned_passes(self):
-        self.assertEqual(self._check("actions/checkout@" + "a" * 40), 0)
-
-    def test_local_action_passes(self):
-        self.assertEqual(self._check("./.github/actions/x"), 0)
-
-    def test_tag_fails(self):
-        self.assertEqual(self._check("actions/checkout@v5"), 1)
-
-    def test_branch_fails(self):
-        self.assertEqual(self._check("actions/checkout@main"), 1)
-
-    def test_short_sha_fails(self):
-        self.assertEqual(self._check("actions/checkout@abc1234"), 1)
-
-    def test_docker_tag_fails(self):
-        self.assertEqual(self._check("docker://alpine:3"), 1)
-
-    def test_yaml_spelling_variants_fail(self):
-        for line in ("- {uses: actions/checkout@v4}", "- uses : actions/checkout@v4",
-                     "- 'uses': actions/checkout@v4", '- "uses": actions/checkout@main',
-                     "- uses: 'actions/checkout@" + "a" * 40 + "'"):
-            with self.subTest(line=line), tempfile.TemporaryDirectory() as tmp:
-                wf = Path(tmp, ".github/workflows")
-                wf.mkdir(parents=True)
-                (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      {line}\n")
-                self.assertEqual(pin_check.main(["--repo", tmp]), 1)
-
-    def test_escaped_or_quoted_keys_fail(self):
-        for line in ('- "\\x75ses": actions/checkout@main', "- 'name': x", "- {name: x}"):
-            with self.subTest(line=line), tempfile.TemporaryDirectory() as tmp:
-                wf = Path(tmp, ".github/workflows")
-                wf.mkdir(parents=True)
-                (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      {line}\n")
-                self.assertEqual(pin_check.main(["--repo", tmp]), 1)
-
-    def test_expressions_are_not_flow_mappings(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            wf = Path(tmp, ".github/workflows")
-            wf.mkdir(parents=True)
-            (wf / "ci.yml").write_text("concurrency:\n  cancel-in-progress: ${{ github.event_name == 'x' }}\n")
-            self.assertEqual(pin_check.main(["--repo", tmp]), 0)
-
-    def test_flow_style_reusable_workflow_fails(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            wf = Path(tmp, ".github/workflows")
-            wf.mkdir(parents=True)
-            (wf / "ci.yml").write_text("jobs: {a: {uses: org/repo/.github/workflows/x.yml@main}}\n")
-            self.assertEqual(pin_check.main(["--repo", tmp]), 1)
-
-    def test_no_workflows_fails(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(pin_check.main(["--repo", tmp]), 1)
 
 
 if __name__ == "__main__":

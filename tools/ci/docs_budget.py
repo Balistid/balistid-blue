@@ -3,9 +3,11 @@
 
 Rule R12 (ENGINEERING.md): running code first, documents about it second. The allowlist is closed:
 a path that matches no entry fails, whatever its suffix. Prose files also have line and byte caps.
-Only regular files are allowed (no symlinks, no submodules), code file names are restricted to
-lowercase snake case, and sizes are measured on the committed blob, not the checked-out file
-(which .gitattributes filters could change). Changing either list requires an ADR (adr/0001-repo-governance.md);
+Only regular files are allowed (no symlinks, no submodules). Every path segment follows a strict
+grammar (lowercase, at most one extension from a short list) unless it is one of a few exact names;
+the gitleaks default path allowlist matches only names outside that grammar, so no tracked file can
+hide from the secret scan by its name. Sizes are measured on the committed blob, not the
+checked-out file (which .gitattributes filters could change). Changing either list requires an ADR (adr/0001-repo-governance.md);
 code directories are added by the ADR that picks the implementation language.
 """
 
@@ -39,6 +41,7 @@ LAYOUT: tuple[str, ...] = (
     ".editorconfig",
     ".gitattributes",
     ".gitleaks.toml",
+    "zizmor.yml",
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
     ".github/workflows/*.yml",
@@ -51,9 +54,24 @@ LAYOUT: tuple[str, ...] = (
 )
 
 REGULAR_MODES = {"100644", "100755"}
-# The gitleaks default allowlist skips paths containing names such as "gitleaks.toml"; a strict
-# name pattern keeps secrets from hiding behind such names inside code directories.
-CODE_NAME_RE = re.compile(r"^[a-z0-9_]+\.py$")
+# Exact names allowed outside the grammar (uppercase or a leading dot or two dots).
+EXACT_SEGMENTS = {
+    "LICENSE", "README.md", "SECURITY.md", "THREAT_MODEL.md", "ENGINEERING.md", "CLAUDE.md",
+    "AGENTS.md", "STATUS.md", ".gitignore", ".editorconfig", ".gitattributes", ".gitleaks.toml",
+    ".github", "CODEOWNERS", "ISSUE_TEMPLATE",
+}
+DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+FILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*(?:\.(?:md|py|yml|toml))?$")
+
+
+def grammar_violation(path: str) -> str | None:
+    *dirs, name = path.split("/")
+    for seg in dirs:
+        if seg not in EXACT_SEGMENTS and not DIR_RE.match(seg):
+            return f"directory name {seg!r} breaks the name grammar"
+    if name not in EXACT_SEGMENTS and not FILE_RE.match(name):
+        return f"file name {name!r} breaks the name grammar"
+    return None
 
 
 def matches(path: str, pattern: str) -> bool:
@@ -99,12 +117,14 @@ def check(repo: Path) -> list[str]:
         if mode not in REGULAR_MODES:
             violations.append(f"{path}: mode {mode} is not a regular file")
             continue
+        problem = grammar_violation(path)
+        if problem:
+            violations.append(f"{path}: {problem}")
+            continue
         cap = doc_cap(path)
         if cap is None:
             if not any(matches(path, pattern) for pattern in LAYOUT):
                 violations.append(f"{path}: not in repository layout allowlist")
-            elif path.endswith(".py") and not CODE_NAME_RE.match(path.rsplit("/", 1)[-1]):
-                violations.append(f"{path}: code file names must match {CODE_NAME_RE.pattern}")
             continue
         data = blob(repo, sha)
         lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)

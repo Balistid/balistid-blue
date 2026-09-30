@@ -47,9 +47,9 @@ them; a server-side gate binds every contributor.
 - Changes to `tools/ci/`, `.github/`, `githooks/`, `.gitleaks.toml` and `.gitattributes` weaken or
   strengthen the gates themselves; the maintainer reviews them line by line before merging. The
   gates stop drift and careless agents; a determined author of gate code is stopped by that review.
-- Known residuals: the gitleaks default allowlist skips some file names (mitigated by strict code
-  file names), and YAML has more spellings than `pin_check` models (mitigated by rejecting quoted
-  keys and flow mappings).
+- Action pinning is audited by zizmor, which reads the parsed YAML; our own regex checker was
+  bypassed twice by YAML spellings and was removed (R7, R9). File names follow a strict grammar so
+  that the gitleaks default path allowlist cannot exempt a tracked file.
 - The `main` ruleset requires branches to be up to date before merging, so file-level gates ran on
   exactly the tree that lands.
 - Costs the GitHub Team subscription while the repository stays private.
