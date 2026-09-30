@@ -4,7 +4,10 @@
 Deliberately strict and line-based: every line that mentions `uses` must be exactly
 `[- ]uses: <ref>[  # comment]`, where <ref> is a local action (`./path`),
 `owner/repo[/path]@<40 hex>`, or `docker://image@sha256:<64 hex>`. Flow style, quoted keys and any
-other spelling fail, so YAML syntax variants cannot smuggle in a mutable tag or branch.
+other spelling fails. Quoted mapping keys and flow mappings are rejected anywhere in a workflow,
+because YAML escapes (for example a quoted key spelled with \\x75) can hide a `uses` key.
+Workflow changes are also reviewed by hand (ADR 0001); this gate catches drift, not a determined
+author.
 """
 
 from __future__ import annotations
@@ -19,11 +22,16 @@ LINE_RE = re.compile(r"^\s*(?:-\s+)?uses: (\S+)(?:\s+#.*)?\s*$")
 PINNED_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}$")
 LOCAL_RE = re.compile(r"^\./[A-Za-z0-9_./-]+$")
 DOCKER_RE = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-f]{64}$")
+QUOTED_KEY_RE = re.compile(r"""^\s*(?:-\s+)?["'][^"']*["']\s*:""")
+FLOW_MAP_RE = re.compile(r"(?:^|[:\-\[,])\s*\{")
 
 
 def check_file(path: Path) -> list[str]:
     violations = []
     for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if QUOTED_KEY_RE.match(line) or FLOW_MAP_RE.search(line.replace("${{", "")):
+            violations.append(f"{path}:{lineno}: quoted keys and flow mappings are not allowed: {line.strip()!r}")
+            continue
         if not MENTION_RE.search(line):
             continue
         match = LINE_RE.match(line)

@@ -94,6 +94,17 @@ class CommitLintMessageTest(unittest.TestCase):
     def test_agent_outside_trailer_block_fails(self):
         self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n\nTrailing paragraph."))
 
+    def test_agent_value_is_checked_as_git_parses_it(self):
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n really claude/opus wrote it"))
+
+    def test_line_separator_characters_fail(self):
+        self.assertTrue(commit_lint.lint("feat: x\x0b\x0bfree text\n\nAgent: alex"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\u2028claude/opus-5.5 actually"))
+
+    def test_agent_must_be_last_line(self):
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n# trailing comment line"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\nConflicts:\n\tfile"))
+
     def test_scissors_block_is_ignored(self):
         msg = GOOD_MSG + "\n" + commit_lint.SCISSORS + "\n+Co-Authored-By: someone\n"
         self.assertEqual(commit_lint.lint(commit_lint.strip_comments(msg)), [])
@@ -191,6 +202,29 @@ class DocsBudgetTest(unittest.TestCase):
         with self._repo_with({"STATUS.md": "x" * 200_000 + "\n"}) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
+    def test_blob_size_is_measured_not_checkout(self):
+        # UTF-16 in the working tree is smaller than the UTF-8 blob for this character.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            (repo / ".gitattributes").write_text("STATUS.md working-tree-encoding=UTF-16LE\n")
+            (repo / "STATUS.md").write_bytes(("\u20ac" * 1700).encode("utf-16-le"))
+            git(repo, "add", ".gitattributes", "STATUS.md")
+            self.assertLess((repo / "STATUS.md").stat().st_size, 4800)
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_code_names_that_gitleaks_would_skip_fail(self):
+        for name in ("tools/ci/gitleaks.toml.py", "tools/ci/tests/test_verification-metadata.xml.py",
+                     "tools/ci/Upper.py"):
+            with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
+                self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_submodule_entry_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            git(repo, "update-index", "--add", "--cacheinfo",
+                "160000," + "a" * 40 + ",tools/ci/tests/test_sub.py")
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
     def test_symlink_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
@@ -250,6 +284,21 @@ class PinCheckTest(unittest.TestCase):
                 wf.mkdir(parents=True)
                 (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      {line}\n")
                 self.assertEqual(pin_check.main(["--repo", tmp]), 1)
+
+    def test_escaped_or_quoted_keys_fail(self):
+        for line in ('- "\\x75ses": actions/checkout@main', "- 'name': x", "- {name: x}"):
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as tmp:
+                wf = Path(tmp, ".github/workflows")
+                wf.mkdir(parents=True)
+                (wf / "ci.yml").write_text(f"jobs:\n  a:\n    steps:\n      {line}\n")
+                self.assertEqual(pin_check.main(["--repo", tmp]), 1)
+
+    def test_expressions_are_not_flow_mappings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wf = Path(tmp, ".github/workflows")
+            wf.mkdir(parents=True)
+            (wf / "ci.yml").write_text("concurrency:\n  cancel-in-progress: ${{ github.event_name == 'x' }}\n")
+            self.assertEqual(pin_check.main(["--repo", tmp]), 0)
 
     def test_flow_style_reusable_workflow_fails(self):
         with tempfile.TemporaryDirectory() as tmp:

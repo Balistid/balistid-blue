@@ -3,14 +3,16 @@
 
 - Subject follows Conventional Commits and fits in 72 characters.
 - Body, if any, is separated from the subject by a blank line.
-- Exactly one `Agent:` line in the whole message, and it sits in the final trailer block as parsed
-  by `git interpret-trailers` (R11): `Agent: alex` or `Agent: <claude|codex>/<model>`.
+- Exactly one `Agent:` line in the whole message; it is the last line, and git parses it as the
+  same single-line trailer (R11): `Agent: alex` or `Agent: <claude|codex>/<model>`.
+- No control characters or Unicode line separators (git and Python split lines differently).
 - No advertising trailers (Co-Authored-By, "Generated with", robot emoji).
 - In range mode: no merge commits (linear history).
 
 Modes: --message-file (commit-msg hook) or --range REV-RANGE (CI).
---dependabot-pr exempts commits authored by Dependabot from the Agent trailer only. CI sets it only
-when GitHub reports the pull request author as dependabot[bot]; the author email alone is not trusted.
+--dependabot-pr exempts commits authored by Dependabot from the Agent trailer only. On pull requests
+CI sets it only when GitHub reports the author as dependabot[bot]; the author email alone is not
+trusted. On pushes to main it is always set, because those commits already passed the PR gate.
 """
 
 from __future__ import annotations
@@ -28,12 +30,14 @@ AGENT_RE = re.compile(r"^Agent: (alex|(claude|codex)/[a-z0-9][a-z0-9.-]*)$")
 AGENT_LINE_RE = re.compile(r"^\s*agent\s*:", re.IGNORECASE)
 FORBIDDEN_RE = re.compile(r"co-authored-by|generated with|\U0001F916", re.IGNORECASE)
 SCISSORS = "# ------------------------ >8 ------------------------"
+# Characters that Python or git may treat as line breaks or hide from a reviewer.
+CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]")
 DEPENDABOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"
 
 
 def strip_comments(message: str) -> str:
     kept = []
-    for line in message.splitlines():
+    for line in message.split("\n"):
         if line == SCISSORS:
             break
         if not line.startswith("#"):
@@ -54,7 +58,9 @@ def parsed_trailers(message: str) -> list[str]:
 
 def lint(message: str, *, require_agent: bool = True) -> list[str]:
     errors = []
-    lines = message.splitlines()
+    if CONTROL_RE.search(message):
+        return ["control or line-separator characters are not allowed"]
+    lines = message.split("\n")
     if not lines or not lines[0].strip():
         return ["empty commit message"]
     subject = lines[0]
@@ -73,8 +79,10 @@ def lint(message: str, *, require_agent: bool = True) -> list[str]:
             errors.append(f"expected exactly one 'Agent:' line, found {len(agent_lines)}")
         elif not AGENT_RE.match(agent_lines[0]):
             errors.append(f"malformed trailer {agent_lines[0]!r}; use 'Agent: alex' or 'Agent: claude/<model>'")
-        elif len(trailer_agents) != 1:
-            errors.append("'Agent:' must be in the final trailer block (last paragraph)")
+        elif len(trailer_agents) != 1 or trailer_agents[0] != agent_lines[0]:
+            errors.append("'Agent:' must be a single-line trailer in the final trailer block")
+        elif [ln for ln in lines if ln.strip()][-1] != agent_lines[0]:
+            errors.append("'Agent:' must be the last line of the message")
     return errors
 
 

@@ -3,7 +3,9 @@
 
 Rule R12 (ENGINEERING.md): running code first, documents about it second. The allowlist is closed:
 a path that matches no entry fails, whatever its suffix. Prose files also have line and byte caps.
-Symlinks are rejected. Changing either list requires an ADR (adr/0001-repo-governance.md);
+Only regular files are allowed (no symlinks, no submodules), code file names are restricted to
+lowercase snake case, and sizes are measured on the committed blob, not the checked-out file
+(which .gitattributes filters could change). Changing either list requires an ADR (adr/0001-repo-governance.md);
 code directories are added by the ADR that picks the implementation language.
 """
 
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -46,7 +49,10 @@ LAYOUT: tuple[str, ...] = (
     "acceptance/[0-9].toml",
 )
 
-SYMLINK_MODE = "120000"
+REGULAR_MODES = {"100644", "100755"}
+# The gitleaks default allowlist skips paths containing names such as "gitleaks.toml"; a strict
+# name pattern keeps secrets from hiding behind such names inside code directories.
+CODE_NAME_RE = re.compile(r"^[a-z0-9_]+\.py$")
 
 
 def matches(path: str, pattern: str) -> bool:
@@ -55,7 +61,8 @@ def matches(path: str, pattern: str) -> bool:
     return len(parts) == len(pats) and all(fnmatch.fnmatchcase(p, q) for p, q in zip(parts, pats))
 
 
-def tracked_entries(repo: Path) -> list[tuple[str, str]]:
+def tracked_entries(repo: Path) -> list[tuple[str, str, str]]:
+    """Return (mode, blob sha, path) for every index entry."""
     out = subprocess.run(
         ["git", "-C", str(repo), "ls-files", "-z", "--stage"],
         check=True,
@@ -65,8 +72,17 @@ def tracked_entries(repo: Path) -> list[tuple[str, str]]:
     for record in out.decode().split("\0"):
         if record:
             meta, path = record.split("\t", 1)
-            entries.append((meta.split()[0], path))
+            mode, sha, _stage = meta.split()
+            entries.append((mode, sha, path))
     return entries
+
+
+def blob(repo: Path, sha: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "blob", sha],
+        check=True,
+        capture_output=True,
+    ).stdout
 
 
 def doc_cap(path: str) -> int | None:
@@ -78,16 +94,18 @@ def doc_cap(path: str) -> int | None:
 
 def check(repo: Path) -> list[str]:
     violations = []
-    for mode, path in tracked_entries(repo):
-        if mode == SYMLINK_MODE:
-            violations.append(f"{path}: symlinks are not allowed")
+    for mode, sha, path in tracked_entries(repo):
+        if mode not in REGULAR_MODES:
+            violations.append(f"{path}: mode {mode} is not a regular file")
             continue
         cap = doc_cap(path)
         if cap is None:
             if not any(matches(path, pattern) for pattern in LAYOUT):
                 violations.append(f"{path}: not in repository layout allowlist")
+            elif path.endswith(".py") and not CODE_NAME_RE.match(path.rsplit("/", 1)[-1]):
+                violations.append(f"{path}: code file names must match {CODE_NAME_RE.pattern}")
             continue
-        data = (repo / path).read_bytes()
+        data = blob(repo, sha)
         lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
         if lines > cap:
             violations.append(f"{path}: {lines} lines > cap {cap}")
