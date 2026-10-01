@@ -26,7 +26,8 @@ answers checkpoint submissions and keeps the latest checkpoint per log. The C2SP
 3. The Pi fetches tiles over HTTP from the relay (tiles are static files designed for that) and
    runs a small watchdog of ours: if no new cosigned checkpoint arrives, or the log stops growing,
    within the limit, or any health entry since its last check reports loss or UNKNOWN, it alerts the maintainer by
-   push to the phone. litewitness has no alarm of its own.
+   push to the phone. A clean shutdown or suspend appends a cosigned announcement first, and the Pi
+   stays quiet until the host returns. litewitness has no alarm of its own.
 4. Verification of the log runs on the Pi on a schedule, against the witness's latest checkpoint.
    Host-side output is advisory only.
 5. Tessera, torchwood and the spec versions are pinned; CI runs an end-to-end test host → witness.
