@@ -1,0 +1,25 @@
+name: Bug
+description: Something does not behave as ENGINEERING.md or an ADR says it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Observed behaviour, with the exact command and output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened
+      description: Name the rule, ADR or acceptance number it breaks.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: Minimal steps. No host-specific data (usernames, home paths, tokens).
+    validations:
+      required: true

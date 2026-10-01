@@ -45,6 +45,7 @@ LAYOUT: tuple[str, ...] = (
     ".github/CODEOWNERS",
     ".github/dependabot.yml",
     ".github/workflows/*.yml",
+    ".github/ISSUE_TEMPLATE/*.yml",
     "githooks/pre-commit",
     "githooks/commit-msg",
     "tools/ci/*.py",
