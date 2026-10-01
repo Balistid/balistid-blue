@@ -42,7 +42,9 @@ answers checkpoint submissions and keeps the latest checkpoint per log. The C2SP
 ## Consequences
 
 - Claim for floor 0: the witness refuses a log that rewrites or rolls back what it has cosigned, and
-  the Pi alarms when checkpoints stop. A suffix not yet cosigned can still be replaced. We do not claim completeness, or that root cannot delete, expire or alter
+  the Pi alarms when checkpoints stop, after an announced shutdown only once its time limit passes.
+  A suffix not yet cosigned can still be replaced. We do not claim completeness, or that root
+  cannot delete, expire or alter
   evidence before it is anchored; the Pi holds hashes only and cannot recover deleted content.
   A dead Pi raises no alarm, and root can forge health entries. `THREAT_MODEL.md` lists these as
   floor-0 gaps, with the assumption that the maintainer does not read alerts on the host.
