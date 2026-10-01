@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import change_range  # noqa: E402
 import commit_lint  # noqa: E402
 import docs_budget  # noqa: E402
+import go_commits  # noqa: E402
 import go_gate  # noqa: E402
 import rescan_skipped  # noqa: E402
 
@@ -275,6 +276,7 @@ class DocsBudgetTest(unittest.TestCase):
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
 GO_MOD = "module github.com/example/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 GO_SUM_LINE = "golang.org/x/sys v0.20.0/go.mod h1:" + "A" * 43 + "="
 
@@ -419,12 +421,6 @@ class RescanTest(unittest.TestCase):
         self.assertTrue(rescan_skipped.skipped(".gitleaks.toml"))
         self.assertTrue(rescan_skipped.skipped("go.sum"))
 
-    def test_non_empty_output_directory_fails(self):
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
-            repo, base = history_with_secret_in_go_mod(tmp)
-            (Path(out) / "x").write_text("x")
-            self.assertEqual(rescan_skipped.main(["--repo", str(repo), "--range", f"{base}..HEAD",
-                                                  "--out", out]), 1)
 
 
 class GoGateTest(unittest.TestCase):
@@ -471,7 +467,8 @@ class ChangeRangeTest(unittest.TestCase):
         for args in (("workflow_dispatch", A_SHA, B_SHA, A_SHA, B_SHA),
                      ("pull_request", "", B_SHA, "", ""), ("pull_request", A_SHA, "main", "", ""),
                      ("pull_request", ZERO_SHA, B_SHA, "", ""), ("push", "", "", A_SHA, ""),
-                     ("push", "", "", A_SHA[:7], B_SHA), ("push", "", "", A_SHA, B_SHA + "\n")):
+                     ("push", "", "", A_SHA[:7], B_SHA), ("push", "", "", A_SHA, B_SHA + "\n"),
+                     ("push", "", "", A_SHA, ZERO_SHA), ("pull_request", A_SHA, ZERO_SHA, "", "")):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 change_range.change_range(*args)
 
@@ -491,22 +488,74 @@ class RescanDetectionTest(unittest.TestCase):
         return path
 
     def scan(self, go_mod_line: str) -> int:
-        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+        """Build the history, then run the rescan exactly as the secrets job does."""
+        with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
             (repo / "go.mod").write_text(GO_MOD)
             git(repo, "add", "go.mod")
             git(repo, "commit", "-q", "--no-verify", "-m", "base")
-            base = git(repo, "rev-parse", "HEAD").strip()
             (repo / "go.mod").write_text(GO_MOD + go_mod_line + "\n")
             git(repo, "commit", "-q", "--no-verify", "-am", "a")
             (repo / "go.mod").write_text(GO_MOD)
             git(repo, "commit", "-q", "--no-verify", "-am", "b")
-            rescan_skipped.extract(repo, f"{base}..HEAD", Path(out) / "rescan")
-            return subprocess.run([self.gitleaks(), "dir", "--no-banner", "--redact", "rescan"],
-                                  cwd=out, capture_output=True, timeout=60).returncode
+            return rescan_skipped.main(["--repo", str(repo), "--range", "HEAD",
+                                        "--gitleaks", self.gitleaks(),
+                                        "--config", str(REPO_ROOT / ".gitleaks.toml")])
 
     def test_token_in_an_intermediate_go_mod_is_found(self):
         self.assertNotEqual(self.scan("// " + random_github_token()), 0)
 
     def test_clean_history_passes(self):
         self.assertEqual(self.scan(""), 0)
+
+
+class GoCommitsTest(unittest.TestCase):
+    def history(self, tmp: str, steps: list[dict[str, str | None]]) -> tuple[Path, list[str]]:
+        repo = new_repo(tmp)
+        (repo / "README.md").write_text("x\n")
+        git(repo, "add", "README.md")
+        git(repo, "commit", "-q", "--no-verify", "-m", "base")
+        shas = [git(repo, "rev-parse", "HEAD").strip()]
+        for files in steps:
+            for name, content in files.items():
+                if content is None:
+                    git(repo, "rm", "-q", name)
+                else:
+                    (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                    (repo / name).write_text(content)
+                    git(repo, "add", name)
+            git(repo, "commit", "-q", "--no-verify", "--allow-empty", "-m", "step")
+            shas.append(git(repo, "rev-parse", "HEAD").strip())
+        return repo, shas
+
+    def test_commits_from_go_mod_on_are_listed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = self.history(tmp, [{"NOTES.md": "x"}, {"go.mod": GO_MOD}, {"cmd/k/main.go": "x"}])
+            self.assertEqual(go_commits.go_commits(repo, f"{shas[0]}..HEAD"), shas[2:])
+
+    def test_removing_go_mod_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = self.history(tmp, [{"go.mod": GO_MOD}, {"go.mod": None}, {"go.mod": GO_MOD}])
+            with self.assertRaises(ValueError):
+                go_commits.go_commits(repo, f"{shas[0]}..HEAD")
+            with self.assertRaises(ValueError):
+                go_commits.go_commits(repo, f"{shas[1]}..HEAD")
+
+    def test_go_files_without_go_mod_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = self.history(tmp, [{"cmd/k/main.go": "x"}])
+            with self.assertRaises(ValueError):
+                go_commits.go_commits(repo, f"{shas[0]}..HEAD")
+
+    def test_empty_or_bad_range_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _shas = self.history(tmp, [{"go.mod": GO_MOD}])
+            for bad in ("HEAD..HEAD", "nosuchref..HEAD"):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    go_commits.go_commits(repo, bad)
+
+    def test_no_go_yet_lists_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, shas = self.history(tmp, [{"NOTES.md": "x"}])
+            self.assertEqual(go_commits.main(["--repo", str(repo), "--range", f"{shas[0]}..HEAD"]), 0)
+            self.assertEqual(go_commits.go_commits(repo, f"{shas[0]}..HEAD"), [])

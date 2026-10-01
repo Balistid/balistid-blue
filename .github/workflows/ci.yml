@@ -71,9 +71,40 @@ jobs:
           python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/vuln.json" --expect "$GOVULNCHECK_SUM"
           go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
 
-  go-test:
+  go-plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      commits: ${{ steps.plan.outputs.commits }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: List the commits that must build and test
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          range="$(python3 tools/ci/change_range.py)"
+          commits="$(python3 tools/ci/go_commits.py --range "$range")"
+          echo "$commits"
+          echo "commits=$commits" >> "$GITHUB_OUTPUT"
+
+  go-commit:
+    # One fresh runner per commit: code run by one commit's tests cannot touch another's check.
+    needs: go-plan
+    if: needs.go-plan.outputs.commits != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        commit: ${{ fromJSON(needs.go-plan.outputs.commits) }}
     env:
       GOFLAGS: -mod=readonly
       GOWORK: "off"
@@ -82,7 +113,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          ref: ${{ matrix.commit }}
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
@@ -93,22 +124,26 @@ jobs:
           "$RUNNER_TEMP/go/bin/go" version
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
-      - name: Build and test every commit in the change, as released (no cgo)
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.sha }}
+      - name: Build and test this commit, as released (no cgo)
         run: |
-          range="$(python3 tools/ci/change_range.py)"
-          for c in $(git rev-list --reverse "$range"); do
-            git checkout -q --detach "$c"
-            if [ ! -f go.mod ]; then echo "$c: no go.mod yet"; continue; fi
-            echo "== $c"
-            go build ./...
-            go test ./...
-          done
+          go build ./...
+          go test ./...
+
+  go-test:
+    # The required check: passes only if the plan ran and every listed commit passed.
+    needs: [go-plan, go-commit]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every commit built and tested
+        env:
+          PLAN: ${{ needs.go-plan.result }}
+          COMMITS: ${{ needs.go-plan.outputs.commits }}
+          RESULT: ${{ needs.go-commit.result }}
+        run: |
+          test "$PLAN" = success
+          if [ "$COMMITS" = "[]" ]; then test "$RESULT" = skipped; else test "$RESULT" = success; fi
 
   go-race:
     runs-on: ubuntu-24.04
@@ -280,10 +315,8 @@ jobs:
             --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" .
       - name: Rescan files gitleaks skips, from every commit in history, with the repository rules
         run: |
-          python3 tools/ci/rescan_skipped.py --range HEAD --out "$RUNNER_TEMP/rescan"
-          cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/gitleaks" dir --config "$GITHUB_WORKSPACE/.gitleaks.toml" --redact --no-banner \
-            --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" rescan
+          python3 tools/ci/rescan_skipped.py --range HEAD --gitleaks "$RUNNER_TEMP/gitleaks" \
+            --config .gitleaks.toml
 
   workflow-lint:
     runs-on: ubuntu-24.04
