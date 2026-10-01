@@ -1,0 +1,202 @@
+# Acceptance numbers for floor 0 (recorder). Written before code (R3); only the maintainer changes a
+# number, through an ADR. A missed metric blocks deployment. Each metric names its threat rows
+# (THREAT_MODEL.md), its ADR and how it is measured; a measurement that cannot run is a miss, not a pass.
+
+[meta]
+floor = 0
+status = "proposed"          # becomes "approved" when the maintainer approves this file's pull request
+reference_host = "32 cores, 31 GiB RAM, NVMe SSD, kernel 7.2.x"
+
+# --- Sensor and health (ADR 0004, 0007) ---
+
+[[metric]]
+id = "sensor_down_s"
+max = 10
+unit = "s"
+rows = ["T5", "T18"]
+adr = "0004"
+method = "Range VM, 20 trials each: kill Laurel, stop auditd, unload rules. Every trial reports SENSOR_DOWN or UNKNOWN within the limit."
+
+[[metric]]
+id = "canary_interval_s"
+max = 30
+unit = "s"
+rows = ["T17", "T18"]
+adr = "0004"
+method = "Collector emits a canary at this interval; a canary missing for twice the interval sets health UNKNOWN. Test drops canaries."
+
+[[metric]]
+id = "loss_baseline_per_day"
+max = 0
+unit = "records"
+rows = ["T4", "T17"]
+adr = "0004"
+method = "Seven days of normal desktop use on the reference host: sum of kernel lost, dispatcher overflow and reconnect gaps."
+
+# --- Throughput and durability (ADR 0005) ---
+
+[[metric]]
+id = "sustained_rate"
+min = 2000
+unit = "records/s for 600 s, zero loss"
+rows = ["T4"]
+adr = "0005"
+method = "Range VM load generator through auditd and Laurel; compare generated and stored counts."
+
+[[metric]]
+id = "burst_rate"
+min = 10000
+unit = "records/s for 10 s, zero loss"
+rows = ["T4"]
+adr = "0005"
+method = "As sustained_rate, burst on top of an idle baseline."
+
+[[metric]]
+id = "crash_loss_ms"
+max = 1000
+unit = "ms of records before the kill"
+rows = ["T16"]
+adr = "0005"
+method = "kill -9 the collector at sustained_rate and restart at once, 20 trials; records handed over earlier than the limit before the kill must all be stored."
+
+[[metric]]
+id = "rss_mib"
+max = 512
+unit = "MiB, all Kordon processes together at 1000 records/s"
+rows = ["T13"]
+adr = "0007"
+method = "Sum of RSS from /proc over a 10 min run, maximum sample."
+
+[[metric]]
+id = "cpu_cores"
+max = 0.5
+unit = "cores, all Kordon processes together at 1000 records/s"
+rows = ["T13"]
+adr = "0007"
+method = "CPU time over a 10 min run divided by wall time."
+
+# --- Store lifecycle (ADR 0005, R5) ---
+
+[[metric]]
+id = "raw_retention_days"
+value = 30
+unit = "days"
+rows = ["T13"]
+adr = "0005"
+method = "Lifecycle test with a fake clock: eligible shards deleted after this age, never before."
+
+[[metric]]
+id = "raw_cap_gib"
+max = 40
+unit = "GiB of sealed and open shards"
+rows = ["T4", "T13"]
+adr = "0005"
+method = "Fill test: at the cap new records are dropped with a loss event; stored shards are never evicted."
+
+[[metric]]
+id = "raw_headroom_gib"
+value = 2
+unit = "GiB reserved for loss and health records when the cap is reached"
+rows = ["T4"]
+adr = "0005"
+method = "Fill test: the loss event is stored after the cap is hit."
+
+[[metric]]
+id = "shard_max_gib"
+max = 2
+unit = "GiB per shard before an early seal"
+rows = ["T13"]
+adr = "0005"
+method = "Fill test seals at the limit."
+
+[[metric]]
+id = "derived_retention_days"
+value = 30
+unit = "days"
+rows = ["T6"]
+adr = "0005"
+method = "Lifecycle test on the derived database."
+
+[[metric]]
+id = "derived_cap_gib"
+max = 10
+unit = "GiB"
+rows = ["T13"]
+adr = "0005"
+method = "Fill test on the derived database."
+
+# --- Anchoring and the Pi (ADR 0006) ---
+
+[[metric]]
+id = "anchor_interval_s"
+max = 1
+unit = "s between batch entries"
+rows = ["T9"]
+adr = "0006"
+method = "Log entry timestamps over a 10 min run."
+
+[[metric]]
+id = "cosign_interval_s"
+max = 30
+unit = "s between cosigned checkpoints (the unverified window)"
+rows = ["T9"]
+adr = "0006"
+method = "Witness-side timestamps over a 1 h run, p99."
+
+[[metric]]
+id = "pi_alarm_s"
+max = 300
+unit = "s from the last cosigned checkpoint to a phone alert"
+rows = ["T4", "T19", "T20"]
+adr = "0006"
+method = "Cut the WireGuard link, stop the ledger, flood to the cap: each alerts within the limit, 10 trials."
+
+[[metric]]
+id = "verify_s"
+max = 5
+unit = "s for the Pi to verify a day of log growth"
+rows = ["T8"]
+adr = "0006"
+method = "Pi verification run on a log grown by one day at sustained_rate."
+
+[[metric]]
+id = "log_retention_days"
+value = 400
+unit = "days of tiles and checkpoints kept, on host and Pi"
+rows = ["T8"]
+adr = "0006"
+method = "Lifecycle test with yearly rollover and a fake clock."
+
+[[metric]]
+id = "pi_store_cap_gib"
+max = 8
+unit = "GiB for mirror and witness state on the Pi"
+rows = ["T19"]
+adr = "0006"
+method = "Fill test on the Pi image."
+
+# --- Process isolation (ADR 0007) ---
+
+[[metric]]
+id = "systemd_exposure"
+max = 2.5
+unit = "systemd-analyze security score, every unit except kordon-auditstat"
+rows = ["T12"]
+adr = "0007"
+method = "systemd-analyze security on the installed units in the range VM."
+
+[[metric]]
+id = "systemd_exposure_auditstat"
+max = 4.0
+unit = "systemd-analyze security score for kordon-auditstat"
+rows = ["T12"]
+adr = "0007"
+method = "As above."
+
+[[metric]]
+id = "ready_s"
+max = 30
+unit = "s from boot until health is reported OK or UNKNOWN"
+rows = ["T18"]
+adr = "0007"
+method = "Range VM boot, 10 trials."
