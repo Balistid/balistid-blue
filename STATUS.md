@@ -13,7 +13,7 @@ smoke test. Gates and rulesets are live; the pin gate is tested (PR #8).
 - PR #9: ADR 0003–0007 after three review rounds; R7 reshaped them to components and properties,
   with protocols designed in code and floor-0 gaps against root stated openly.
 - `THREAT_MODEL.md` (28 rows, gaps marked with the floor that closes them) and `acceptance/0.toml`
-  (32 metrics, each with rows, ADR and method) proposed in this pull request.
+  (33 metrics, each with rows, ADR and method) proposed in this pull request.
 - The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step
