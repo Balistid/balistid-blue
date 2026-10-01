@@ -78,11 +78,11 @@ method = "20 trials each of kill -9 of the collector and a hard VM reset (cache=
 
 [[metric]]
 id = "record_max_kib"
-max = 64
-unit = "KiB per stored record; larger records are stored truncated (head, tail, original length, SHA-256) with a truncation entry"
+max = 2048
+unit = "KiB per stored record (ARG_MAX); larger records are stored truncated (head, tail, original length, SHA-256), counted in health, not alarmed"
 rows = ["T20"]
 adr = "0007"
-method = "Test runs an exec with a 70 KB argv and feeds malformed records: the exec is stored truncated and alarms like loss; malformed records become loss entries."
+method = "Test runs execs with 131 KB (xargs) and 2 MB argv: stored whole, no alarm; feeds a larger synthetic record and malformed records: truncated or loss entries, health counters rise."
 
 [[metric]]
 id = "fuzz_hours"
@@ -169,7 +169,7 @@ method = "Fill test; reaching the cap sets UNKNOWN and alarms."
 [[metric]]
 id = "refusal_summary_s"
 max = 60
-unit = "s per refusal summary record (count per socket and one sample) in the raw store"
+unit = "s per refusal summary record (count per socket and reason, rule version, one sample) in the raw store"
 rows = ["T20"]
 adr = "0007"
 method = "Test floods every socket with invalid requests: every minute with refusals has one summary record; nothing else grows."
@@ -214,7 +214,7 @@ max = 24
 unit = "hours the Pi stays quiet after a shutdown or suspend announcement"
 rows = ["T14", "T28"]
 adr = "0006"
-method = "Announce, then stay off; and announce, reboot with the ledger down: both alert at the limit."
+method = "Announce, then stay off; announce, reboot with the ledger down; return briefly and announce again within 1 h (the cap does not restart): each alerts at the limit."
 
 [[metric]]
 id = "verify_freshness_s"
