@@ -26,6 +26,8 @@ def change_range(event: str, pr_base: str, pr_head: str, push_before: str, push_
     for sha in shas:
         if not SHA.fullmatch(sha):
             raise ValueError(f"not a full commit sha: {sha!r}")
+    if shas[1] == ZERO:
+        raise ValueError("head or after is all zeros")
     if event == "push" and push_before == ZERO:
         return push_after
     if shas[0] == ZERO:
