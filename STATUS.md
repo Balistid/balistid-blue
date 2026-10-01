@@ -1,30 +1,28 @@
 # Status
 
-Updated: 2026-09-30 by claude/opus-5.5
+Updated: 2026-10-01 by claude/opus-5.5
 
 ## Where we are
 
-Floor 0 (recorder) not started. Repository skeleton, CI gates and the `main` ruleset are live.
+Floor 0 (recorder) designed, not coded. Gates and rulesets are live; the pin gate is tested (PR #8).
 
 ## Done in the last session
 
-- Name chosen and reserved: Kordon (domain `kordon.cz`, GitHub organisation `Kordon-Sec`).
-- Skeleton: `ENGINEERING.md`, agent instructions, CI gates (docs budget, commit lint, action pinning,
-  secret scan, workflow lint) with tests.
-- Workflow: the kordon-sec-bot GitHub App pushes and opens pull requests; changes to gates and rules
-  need the maintainer's approval (CODEOWNERS), everything else merges when CI is green.
-
-- ADR 0002: the bot pushes and merges; the maintainer approves only changes to gates and rules.
+- PR #8 merged: zizmor replaces the regex pin check, with executable tests against the pinned binary.
+- ADR 0003–0007 drafted: Go without cgo, auditd + Laurel sensor (proposed until the smoke test),
+  raw SQLite day shards with derived OCSF, Tessera log cosigned by a witness on the Pi,
+  privilege split (collector / ledger / unprivileged readers). Facts checked on 2026-10-01.
+- The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step
 
-1. Process the five Deep Research reports (sensors and language, event store, agent isolation,
-   attack range, orchestration layer) and verify their key claims.
-2. ADRs for language, sensor stack and event schema; one-page `THREAT_MODEL.md`;
-   `acceptance/0.toml` with numbers approved by the maintainer. Then floor 0 code.
+1. `THREAT_MODEL.md` (one page) and `acceptance/0.toml`; the maintainer sets the numbers (R3).
+2. Go toolchain pull request: `go.mod`, layout gate extension with negative tests, CI jobs
+   (the maintainer pushes workflow changes).
+3. Smoke test auditd + Laurel in the range VM (needs `/dev/kvm`), then floor 0 code.
 
 ## Open decisions (maintainer)
 
-- Implementation language (waits for Deep Research 1).
-- Acceptance numbers for floor 0.
+- Project name.
+- Acceptance numbers for floor 0 (loss, crash window, cosign interval, caps, health timeouts).
 - Hardware signing keys for R2 (budget approved in principle).
