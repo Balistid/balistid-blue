@@ -1,6 +1,6 @@
 # 0005 — Store raw records in sealed SQLite day shards; derive OCSF views
 
-- Status: accepted
+- Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01
 - Decided-by: alex
 - Agent: claude/opus-5.5
@@ -24,9 +24,10 @@ records still in its WAL file (SQLite probe during review).
    sealed (WAL checkpointed, journal mode switched, file and directory fsynced, file hashed) before
    anyone else may open it, and is never written again. A failed seal leaves it unpublished and the
    store UNKNOWN.
-4. When the cap is reached, new records are dropped with a loss event and an alarm; stored evidence
-   is never evicted to make room, so a flood cannot push it out. Retention deletes only sealed shards
-   whose seal is anchored and cosigned and that are older than the minimum age.
+4. When the cap is reached, new records are dropped and a loss event is stored in reserved headroom;
+   stored evidence is never evicted to make room, so a flood cannot push it out. The collector deletes
+   a shard only when the ledger reports its seal anchored and cosigned and it is older than the
+   minimum age.
 5. Normalized events (OCSF 1.9.0) are a derived view rebuilt from raw shards. Every row carries
    `schema_version` and `normalizer_version`; readers reject an unknown major version. The class
    mapping is decided in the normalizer ADR.
@@ -44,8 +45,8 @@ records still in its WAL file (SQLite probe during review).
 ## Consequences
 
 - Laurel's output is evidence: if Laurel alters a record, we anchor the altered bytes.
-- Known gap stated in `THREAT_MODEL.md`: root on the host can delete or expire evidence; floor 0
-  aims to make that visible off the host (ADR 0006), not to prevent it.
+- Known gap stated in `THREAT_MODEL.md`: root on the host can delete evidence, and on floor 0 that
+  is not reliably distinguishable from retention off the host.
 - Tests: leaf test vectors; unknown major version refused; failed seal stays unpublished; retention
   never deletes an ineligible shard; a full store drops new records with a loss event; every store
   the floor creates (shards, ledger state, tiles, mirror) has a cap and retention test (R5).

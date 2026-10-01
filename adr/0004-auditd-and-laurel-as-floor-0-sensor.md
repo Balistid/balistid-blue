@@ -43,9 +43,9 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
 - Smoke test before `accepted`, in the range VM on kernel 7.2.x: Laurel's peer uid on the socket and
   its remaining capabilities, how dispatcher overflow is reported, io_uring coverage, and `-e 2`.
   Results are bound to kernel and package versions; an untested combination is UNKNOWN.
-- Tests (R4, R10): killing Laurel, stopping auditd, a missing canary, a counter reset and a foreign
-  socket peer each produce an event or UNKNOWN; disabling audit under `-e 2` fails and is recorded.
+- Tests (R4, R10): killing Laurel, stopping auditd, a missing canary, a counter reset, a foreign
+  socket peer and loaded rules that differ from the repository each produce an event or UNKNOWN; disabling audit under `-e 2` fails and is recorded.
 - Known gap stated in `THREAT_MODEL.md`: loss between Laurel and the collector is not fully
-  measurable, and root on the host can blind the sensor; floor 0 makes that visible, not impossible.
+  measurable, and root on the host can blind the sensor undetected; floor 0 does not prevent that.
 - Thresholds and allowed loss are numbers in `acceptance/0.toml`.
 - Trigger to revisit: no Laurel release for 12 months, or a kernel it cannot follow.

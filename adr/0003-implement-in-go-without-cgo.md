@@ -1,6 +1,6 @@
 # 0003 — Implement Kordon in Go, without cgo
 
-- Status: accepted
+- Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01
 - Decided-by: alex
 - Agent: claude/opus-5.5
