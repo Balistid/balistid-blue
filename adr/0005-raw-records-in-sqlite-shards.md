@@ -30,7 +30,8 @@ records still in its WAL file (SQLite probe during review).
    minimum age.
 5. Normalized events (OCSF 1.9.0) are a derived view rebuilt from raw shards. Every row carries
    `schema_version` and `normalizer_version`; readers reject an unknown major version. The class
-   mapping is decided in the normalizer ADR.
+   mapping is decided in the normalizer ADR and proven by raw fixtures with expected OCSF classes
+   and fields, including records it must refuse.
 6. The recovery protocol between the store and the log (batches, restart, at-least-once with
    de-duplication, no `seq` gaps between anchored ranges) is designed in code with crash tests in the
    range before floor 0 is called done; this ADR fixes its requirements, not its mechanism.
