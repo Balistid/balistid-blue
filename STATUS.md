@@ -9,9 +9,10 @@ Floor 0 (recorder) designed, not coded. Gates and rulesets are live; the pin gat
 ## Done in the last session
 
 - PR #8 merged: zizmor replaces the regex pin check, with executable tests against the pinned binary.
-- ADR 0003–0007 drafted: Go without cgo, auditd + Laurel sensor (proposed until the smoke test),
-  raw SQLite day shards with derived OCSF, Tessera log cosigned by a witness on the Pi,
-  privilege split (collector / ledger / unprivileged readers). Facts checked on 2026-10-01.
+- ADR 0003–0007 proposed in PR #9, accepted when the maintainer approves (0004 only after its smoke
+  test): Go without cgo, auditd + Laurel sensor, raw SQLite day shards sealed and anchored in a
+  Tessera log cosigned and watched from the Pi, five processes with separate identities.
+  Facts checked on 2026-10-01; Claude critic and Codex round 1 folded in.
 - The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step
