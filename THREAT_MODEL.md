@@ -49,6 +49,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004) | reconnects_per_day | gap: not fully measurable |
 | T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test | designed |
 | T27 | A6 | Pi dies, or push delivery fails | — | — | gap: dead-man switch, floor 3 |
+| T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, GoGateTest | designed |
 | T28 | A6 | Host offline: outage looks like attack | Announced shutdown and suspend; silence alarm | silence_alarm_s | partial: outages alarm too |
 
 ## Assumptions

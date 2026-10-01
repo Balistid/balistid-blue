@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import commit_lint  # noqa: E402
 import docs_budget  # noqa: E402
+import go_gate  # noqa: E402
+import rescan_skipped  # noqa: E402
 
 GOOD_MSG = "feat(core): add event store\n\nBody text.\n\nAgent: claude/opus-5.5"
 GIT_ENV = {
@@ -339,3 +341,115 @@ class GoLayoutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoLayoutMoreTest(unittest.TestCase):
+    _repo_with = DocsBudgetTest._repo_with
+    assert_budget = GoLayoutTest.assert_budget
+
+    def test_every_testdata_pattern_admits_its_files(self):
+        for name in ("cmd/kordon/testdata/a.jsonl", "internal/store/testdata/a.jsonl",
+                     "internal/store/seal/testdata/a.json", "internal/store/seal/testdata/b.jsonl"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "{}\n"}, 0)
+
+    def test_go_under_testdata_fails(self):
+        for name in ("internal/buildinfo/testdata/bad.go", "cmd/kordon/testdata/x.go"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "package x\n"}, 1)
+
+    def test_go_paths_gitleaks_skips_fail(self):
+        for name in ("internal/vendor/ruby/x.go", "internal/node_modules/x.go", "internal/env/lib/x.go"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "package x\n"}, 1)
+
+    def test_empty_go_sum_passes(self):
+        self.assert_budget({"go.mod": GO_MOD, "go.sum": ""}, 0)
+
+
+def history_with_secret_in_go_mod(tmp: str) -> tuple[Path, str]:
+    """main: a clean go.mod; then commit A adds a token line, commit B removes it again."""
+    repo = new_repo(tmp)
+    (repo / "go.mod").write_text(GO_MOD)
+    git(repo, "add", "go.mod")
+    git(repo, "commit", "-q", "--no-verify", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD").strip()
+    (repo / "go.mod").write_text(GO_MOD + "// ghp_" + "a" * 36 + "\n")
+    git(repo, "commit", "-q", "--no-verify", "-am", "a")
+    (repo / "go.mod").write_text(GO_MOD)
+    git(repo, "commit", "-q", "--no-verify", "-am", "b")
+    return repo, base
+
+
+class RangeTest(unittest.TestCase):
+    def test_secret_in_an_intermediate_commit_fails_the_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = history_with_secret_in_go_mod(tmp)
+            self.assertEqual(docs_budget.main(["--repo", str(repo)]), 0)
+            self.assertEqual(docs_budget.main(["--repo", str(repo), "--range", f"{base}..HEAD"]), 1)
+
+    def test_clean_range_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, base = history_with_secret_in_go_mod(tmp)
+            self.assertEqual(docs_budget.main(["--repo", str(repo), "--range", "HEAD~1..HEAD"]), 0)
+
+    def test_empty_range_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _base = history_with_secret_in_go_mod(tmp)
+            with self.assertRaises(SystemExit):
+                docs_budget.main(["--repo", str(repo), "--range", "HEAD..HEAD"])
+
+
+class RescanTest(unittest.TestCase):
+    def test_every_commit_of_a_skipped_file_is_copied_under_a_neutral_name(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            repo, base = history_with_secret_in_go_mod(tmp)
+            written = rescan_skipped.extract(repo, f"{base}..HEAD", Path(out) / "r")
+            self.assertEqual([p for _c, p, _t in written], ["go.mod", "go.mod"])
+            self.assertTrue(any(b"ghp_" in t.read_bytes() for _c, _p, t in written))
+            for _c, _p, target in written:
+                self.assertRegex(target.name, r"^\d+\.txt$")
+                self.assertFalse(rescan_skipped.skipped(target.name))
+
+    def test_files_gitleaks_scans_are_not_copied(self):
+        self.assertFalse(rescan_skipped.skipped("cmd/kordon/main.go"))
+        self.assertTrue(rescan_skipped.skipped(".gitleaks.toml"))
+        self.assertTrue(rescan_skipped.skipped("go.sum"))
+
+    def test_non_empty_output_directory_fails(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            repo, base = history_with_secret_in_go_mod(tmp)
+            (Path(out) / "x").write_text("x")
+            self.assertEqual(rescan_skipped.main(["--repo", str(repo), "--range", f"{base}..HEAD",
+                                                  "--out", out]), 1)
+
+
+class GoGateTest(unittest.TestCase):
+    MOD = "module m\n\ngo 1.27\n\ntoolchain go1.27.1\n"
+
+    def test_pinned_toolchain_passes(self):
+        self.assertEqual(go_gate.toolchain_problems(self.MOD, "go1.27.1", "1.27.1"), [])
+
+    def test_toolchain_mismatches_fail(self):
+        cases = [(self.MOD.replace("go1.27.1", "go1.27.9"), "go1.27.1"),
+                 (self.MOD + "toolchain go1.27.1\n", "go1.27.1"),
+                 (self.MOD + "toolchain go1.27.9\n", "go1.27.1"),
+                 (self.MOD, "go1.27.1 X:nodwarf5"),
+                 (self.MOD, "go1.27.2"),
+                 (self.MOD.replace("go 1.27\n", ""), "go1.27.1"),
+                 (self.MOD.replace("toolchain go1.27.1\n", ""), "go1.27.1")]
+        for mod, version in cases:
+            with self.subTest(mod=mod, version=version):
+                self.assertTrue(go_gate.toolchain_problems(mod, version, "1.27.1"))
+
+    def test_module_sum(self):
+        good = '{"Path": "golang.org/x/vuln", "Version": "v1.8.0", "Sum": "h1:abc="}'
+        self.assertEqual(go_gate.modsum_problems(good, "h1:abc="), [])
+        for bad in (good.replace("abc", "abd"), '{"Error": "not found"}', "not json", "{}",
+                    '{"Sum": "h1:abc=", "Error": "checksum mismatch"}'):
+            with self.subTest(bad=bad):
+                self.assertTrue(go_gate.modsum_problems(bad, "h1:abc="))
+
+    def test_builds_must_match(self):
+        self.assertEqual(go_gate.same_problems(b"x", b"x"), [])
+        self.assertTrue(go_gate.same_problems(b"x", b"y"))
