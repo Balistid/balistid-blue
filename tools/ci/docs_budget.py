@@ -130,6 +130,8 @@ def content_violation(path: str, data: bytes) -> str | None:
         text = data.decode("ascii")
     except UnicodeDecodeError:
         return "content is not ASCII"
+    if path == "go.sum" and text == "":
+        return None
     if text.endswith("\n"):
         text = text[:-1]
     for number, line in enumerate(text.split("\n"), 1):
@@ -154,20 +156,29 @@ def matches(path: str, pattern: str) -> bool:
     return len(parts) == len(pats) and all(fnmatch.fnmatchcase(p, q) for p, q in zip(parts, pats))
 
 
-def tracked_entries(repo: Path) -> list[tuple[str, str, str]]:
-    """Return (mode, blob sha, path) for every index entry."""
-    out = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "-z", "--stage"],
-        check=True,
-        capture_output=True,
-    ).stdout
+def tracked_entries(repo: Path, rev: str | None = None) -> list[tuple[str, str, str]]:
+    """Return (mode, object sha, path) for every index entry, or every entry of a commit's tree."""
+    cmd = ["ls-files", "-z", "--stage"] if rev is None else ["ls-tree", "-r", "-z", "--full-tree", rev]
+    out = subprocess.run(["git", "-C", str(repo), *cmd], check=True, capture_output=True).stdout
     entries = []
     for record in out.decode().split("\0"):
         if record:
             meta, path = record.split("\t", 1)
-            mode, sha, _stage = meta.split()
+            fields = meta.split()
+            # ls-files prints mode, sha, stage; ls-tree prints mode, type, sha.
+            mode, sha = (fields[0], fields[1]) if rev is None else (fields[0], fields[2])
             entries.append((mode, sha, path))
     return entries
+
+
+def commits_in(repo: Path, rev_range: str) -> list[str]:
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-list", "--reverse", rev_range],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()
+    if not out:
+        raise SystemExit(f"docs-budget: range {rev_range!r} has no commits")
+    return out
 
 
 def blob(repo: Path, sha: str) -> bytes:
@@ -185,15 +196,18 @@ def doc_cap(path: str) -> int | None:
     return None
 
 
-def check(repo: Path) -> list[str]:
+def check(repo: Path, rev: str | None = None) -> list[str]:
     violations = []
-    for mode, sha, path in tracked_entries(repo):
+    for mode, sha, path in tracked_entries(repo, rev):
         if mode not in REGULAR_MODES:
             violations.append(f"{path}: mode {mode} is not a regular file")
             continue
         problem = grammar_violation(path)
         if problem:
             violations.append(f"{path}: {problem}")
+            continue
+        if path.endswith(".go") and "testdata" in path.split("/"):
+            violations.append(f"{path}: Go code under testdata is never built, vetted or linted")
             continue
         # .gitleaks.toml is skipped by gitleaks itself; that risk is accepted in ADR 0001 (code-owned).
         if path != ".gitleaks.toml" and any(p.search(path) for p in GITLEAKS_SKIPPED):
@@ -221,8 +235,14 @@ def check(repo: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path("."))
+    parser.add_argument("--range", dest="rev_range",
+                        help="check the tree of every commit in this range, not the index")
     args = parser.parse_args(argv)
-    violations = check(args.repo)
+    if args.rev_range:
+        violations = [f"{c[:12]}: {v}" for c in commits_in(args.repo, args.rev_range)
+                      for v in check(args.repo, c)]
+    else:
+        violations = check(args.repo)
     for v in violations:
         print(f"docs-budget: {v}", file=sys.stderr)
     return 1 if violations else 0

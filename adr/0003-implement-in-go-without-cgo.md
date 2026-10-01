@@ -17,13 +17,14 @@ reports `go1.27.1-X:nodwarf5`, a different build from upstream's. The maintainer
 
 1. Runtime code (daemons, CLI, Pi helpers) is Go only; Python stays for CI tooling and never runs on
    the host or the Pi.
-2. Dependency selection is `go.mod` plus `go.sum`, both committed. Builds run with
-   `GOFLAGS=-mod=readonly`, `GOWORK=off`, `GOTOOLCHAIN=go1.27.1` (the upstream toolchain, not the
-   distribution's) and `CGO_ENABLED=0 -trimpath -buildvcs=false`. A `replace` directive to a local
-   path fails CI. A toolchain or dependency bump is its own commit (R14).
+2. Dependency selection is `go.mod` plus `go.sum` (once there are dependencies), both committed.
+   Builds run with `GOFLAGS=-mod=readonly`, `GOWORK=off`, `GOTOOLCHAIN=local` on the upstream
+   go1.27.1 tarball (checked against `toolchain go1.27.1` in go.mod), and `CGO_ENABLED=0
+   -trimpath -buildvcs=false`. Tests run without cgo, as released, and again with `-race`.
+   go.mod admits no `replace` directive. A toolchain or dependency bump is its own commit (R14).
 3. Release binaries are built only in CI. CI runs `gofmt -l` (empty), `go vet`, golangci-lint
-   v2.14.0, govulncheck v1.8.0 and `go test -race ./...`; the race detector needs cgo, so only the
-   test job enables it. Tool binaries are installed pinned by sha256.
+   v2.14.0, govulncheck v1.8.0 (module hash pinned) and both test runs; the race run alone enables
+   cgo. Tool binaries are installed pinned by sha256.
 4. A follow-up pull request extends the layout gate (`tools/ci/docs_budget.py`) to admit exactly:
    `go.mod`, `go.sum`, `.golangci.yml`; `cmd/<name>/*.go`; `internal/<pkg>/*.go` and one level of
    `internal/<pkg>/<sub>/*.go`; `testdata/*.json` and `*.jsonl` under those directories;

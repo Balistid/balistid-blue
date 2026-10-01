@@ -25,6 +25,7 @@ env:
   GOLANGCI_VERSION: "2.14.0"
   GOLANGCI_SHA256: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
   GOVULNCHECK_VERSION: "v1.8.0"
+  GOVULNCHECK_SUM: "h1:clG4qBU6zH5VKjti8n5j8BBuYzoSha392xXMkXS351U="
 
 jobs:
   go:
@@ -51,8 +52,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/$gl" >> "$GITHUB_PATH"
-      - name: Toolchain is exactly the pinned upstream release
-        run: test "$(go env GOVERSION)" = "go${GO_VERSION}"
+      - name: Toolchain is exactly the pinned upstream release, as go.mod pins it
+        run: python3 tools/ci/go_gate.py toolchain --go-mod go.mod --goversion "$(go env GOVERSION)" --expect "$GO_VERSION"
       - name: Format, modules, vet, lint
         run: |
           unformatted="$(gofmt -l .)"
@@ -61,20 +62,28 @@ jobs:
           go mod verify
           go vet ./...
           golangci-lint run ./...
-      - name: Known vulnerabilities (module verified by the checksum database)
-        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
-      - name: Tests with the race detector
-        run: CGO_ENABLED=1 go test -race ./...
+      - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)
+        run: |
+          (cd "$RUNNER_TEMP" && go mod download -json "golang.org/x/vuln@${GOVULNCHECK_VERSION}") > "$RUNNER_TEMP/vuln.json"
+          python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/vuln.json" --expect "$GOVULNCHECK_SUM"
+          go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+      - name: Tests as released (no cgo) and with the race detector (cgo)
+        run: |
+          go test ./...
+          CGO_ENABLED=1 go test -race ./...
       - name: Reproducible release build
         run: |
-          a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/build-b"
-          mkdir -p "$a" "$b"
+          flags="-X github.com/Kordon-Sec/kordon/internal/buildinfo.Version=${GITHUB_SHA}"
+          a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/other/build-b"
+          mkdir -p "$a" "$b" "$RUNNER_TEMP/home-b" "$RUNNER_TEMP/tmp-b"
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
-          (cd "$a" && go build -trimpath -buildvcs=false -o kordon ./cmd/kordon)
-          (cd "$b" && GOCACHE="$RUNNER_TEMP/cache-b" go build -trimpath -buildvcs=false -o kordon ./cmd/kordon)
+          (cd "$a" && go build -trimpath -buildvcs=false -ldflags "$flags" -o kordon ./cmd/kordon)
+          (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \
+            GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \
+            go build -trimpath -buildvcs=false -ldflags "$flags" -o kordon ./cmd/kordon)
           sha256sum "$a/kordon" "$b/kordon"
-          test "$(sha256sum < "$a/kordon")" = "$(sha256sum < "$b/kordon")"
+          python3 tools/ci/go_gate.py same "$a/kordon" "$b/kordon"
 
   selftest:
     runs-on: ubuntu-24.04
@@ -98,8 +107,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-      - run: python3 tools/ci/docs_budget.py
+      - name: Layout and budget of the tree that lands and of every commit in the change
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            range="$PUSH_AFTER"
+          else
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+          python3 tools/ci/docs_budget.py
+          python3 tools/ci/docs_budget.py --range "$range"
 
   pin-check:
     runs-on: ubuntu-24.04
@@ -171,6 +197,25 @@ jobs:
           mkdir -p "$RUNNER_TEMP/no-ignore"
           "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
             --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" .
+      - name: Rescan files gitleaks skips, in every commit of the change, with the default config
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            range="$PR_BASE..$PR_HEAD"
+          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            range="$PUSH_AFTER"
+          else
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          fi
+          python3 tools/ci/rescan_skipped.py --range "$range" --out "$RUNNER_TEMP/rescan"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --ignore-gitleaks-allow \
+            --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" rescan
 
   workflow-lint:
     runs-on: ubuntu-24.04
