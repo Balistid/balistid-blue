@@ -13,14 +13,15 @@ until its smoke test.
 - PR #8: zizmor replaces the regex pin check, with executable tests against the pinned binary.
 - PR #9: ADR 0003–0007; R7 reshaped them to components and properties.
 - PR #10: `THREAT_MODEL.md` (28 rows) and `acceptance/0.toml` (33 metrics), approved.
-- This pull request: Go 1.27.1 toolchain, a `go` CI job (format, modules, vet, golangci-lint,
+- This pull request: Go 1.27.1 toolchain, four isolated Go CI jobs (format, modules, vet, lint,
   govulncheck, race tests, reproducible build), and the layout gate for Go and deploy paths, which
   refuses every path gitleaks would skip and holds `go.mod`/`go.sum` to a line grammar.
 - The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step
 
-1. Maintainer pushes this branch (workflow change) and adds `go` to the required checks.
+1. Maintainer pushes this branch (workflow change) and adds `go-static`, `go-test`, `go-race`
+   and `go-release` to the required checks.
 2. Smoke test auditd + Laurel in the range VM (needs `/dev/kvm`).
 3. Floor 0 code, package by package, each with its acceptance tests.
 

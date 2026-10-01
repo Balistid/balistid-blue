@@ -50,6 +50,6 @@ them; a server-side gate binds every contributor.
 - Action pinning is audited by zizmor, which reads the parsed YAML; our own regex checker was
   bypassed twice by YAML spellings and was removed (R7, R9). File names follow a strict grammar so
   that the gitleaks default path allowlist cannot exempt a tracked file.
-- The `main` ruleset requires branches to be up to date before merging, so file-level gates ran on
-  exactly the tree that lands.
+- The `main` ruleset requires branches to be up to date before merging. Layout and secret gates run
+  on every commit that lands; Go gates run on the tree at the head of the change.
 - Costs the GitHub Team subscription while the repository stays private.
