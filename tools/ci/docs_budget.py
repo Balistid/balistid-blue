@@ -161,7 +161,7 @@ def tracked_entries(repo: Path, rev: str | None = None) -> list[tuple[str, str, 
     cmd = ["ls-files", "-z", "--stage"] if rev is None else ["ls-tree", "-r", "-z", "--full-tree", rev]
     out = subprocess.run(["git", "-C", str(repo), *cmd], check=True, capture_output=True).stdout
     entries = []
-    for record in out.decode().split("\0"):
+    for record in out.decode("utf-8", "surrogateescape").split("\0"):
         if record:
             meta, path = record.split("\t", 1)
             fields = meta.split()

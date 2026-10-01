@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import change_range  # noqa: E402
 import commit_lint  # noqa: E402
 import docs_budget  # noqa: E402
 import go_gate  # noqa: E402
@@ -359,7 +361,8 @@ class GoLayoutMoreTest(unittest.TestCase):
                 self.assert_budget({name: "package x\n"}, 1)
 
     def test_go_paths_gitleaks_skips_fail(self):
-        for name in ("internal/vendor/ruby/x.go", "internal/node_modules/x.go", "internal/env/lib/x.go"):
+        for name in ("internal/vendor/ruby/x.go", "internal/node_modules/x.go", "internal/env/lib/x.go",
+                     "internal/bower_components/x.go"):
             with self.subTest(name=name):
                 self.assert_budget({name: "package x\n"}, 1)
 
@@ -453,3 +456,57 @@ class GoGateTest(unittest.TestCase):
     def test_builds_must_match(self):
         self.assertEqual(go_gate.same_problems(b"x", b"x"), [])
         self.assertTrue(go_gate.same_problems(b"x", b"y"))
+
+
+A_SHA, B_SHA, ZERO_SHA = "a" * 40, "b" * 40, "0" * 40
+
+
+class ChangeRangeTest(unittest.TestCase):
+    def test_pull_request_and_push_ranges(self):
+        self.assertEqual(change_range.change_range("pull_request", A_SHA, B_SHA, "", ""), f"{A_SHA}..{B_SHA}")
+        self.assertEqual(change_range.change_range("push", "", "", A_SHA, B_SHA), f"{A_SHA}..{B_SHA}")
+        self.assertEqual(change_range.change_range("push", "", "", ZERO_SHA, B_SHA), B_SHA)
+
+    def test_unknown_or_missing_values_fail(self):
+        for args in (("workflow_dispatch", A_SHA, B_SHA, A_SHA, B_SHA),
+                     ("pull_request", "", B_SHA, "", ""), ("pull_request", A_SHA, "main", "", ""),
+                     ("pull_request", ZERO_SHA, B_SHA, "", ""), ("push", "", "", A_SHA, ""),
+                     ("push", "", "", A_SHA[:7], B_SHA), ("push", "", "", A_SHA, B_SHA + "\n")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                change_range.change_range(*args)
+
+
+def random_github_token() -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+    return "ghp_" + "".join(secrets.choice(alphabet) for _ in range(36))
+
+
+class RescanDetectionTest(unittest.TestCase):
+    """The pinned gitleaks must find a token that only ever lived in an intermediate go.mod."""
+
+    def gitleaks(self) -> str:
+        path = os.environ.get("GITLEAKS", "")
+        if not path or not os.access(path, os.X_OK):
+            raise AssertionError("set GITLEAKS to the pinned gitleaks binary; this test does not skip")
+        return path
+
+    def scan(self, go_mod_line: str) -> int:
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            repo = new_repo(tmp)
+            (repo / "go.mod").write_text(GO_MOD)
+            git(repo, "add", "go.mod")
+            git(repo, "commit", "-q", "--no-verify", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            (repo / "go.mod").write_text(GO_MOD + go_mod_line + "\n")
+            git(repo, "commit", "-q", "--no-verify", "-am", "a")
+            (repo / "go.mod").write_text(GO_MOD)
+            git(repo, "commit", "-q", "--no-verify", "-am", "b")
+            rescan_skipped.extract(repo, f"{base}..HEAD", Path(out) / "rescan")
+            return subprocess.run([self.gitleaks(), "dir", "--no-banner", "--redact", "rescan"],
+                                  cwd=out, capture_output=True, timeout=60).returncode
+
+    def test_token_in_an_intermediate_go_mod_is_found(self):
+        self.assertNotEqual(self.scan("// " + random_github_token()), 0)
+
+    def test_clean_history_passes(self):
+        self.assertEqual(self.scan(""), 0)

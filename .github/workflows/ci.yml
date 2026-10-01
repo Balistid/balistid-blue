@@ -28,7 +28,7 @@ env:
   GOVULNCHECK_SUM: "h1:clG4qBU6zH5VKjti8n5j8BBuYzoSha392xXMkXS351U="
 
 jobs:
-  go:
+  go-static:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -40,21 +40,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Go and golangci-lint (pinned by sha256)
+      - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
           curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Install golangci-lint (pinned by sha256)
+        run: |
           gl="golangci-lint-${GOLANGCI_VERSION}-linux-amd64"
           curl -fsSLo "$RUNNER_TEMP/gl.tgz" \
             "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/$gl.tar.gz"
           echo "$GOLANGCI_SHA256  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP/$gl" >> "$GITHUB_PATH"
-      - name: Toolchain is exactly the pinned upstream release, as go.mod pins it
-        run: python3 tools/ci/go_gate.py toolchain --go-mod go.mod --goversion "$(go env GOVERSION)" --expect "$GO_VERSION"
-      - name: Format, modules, vet, lint
+      - name: Format, modules, vet, lint (no project code runs in this job)
         run: |
           unformatted="$(gofmt -l .)"
           test -z "$unformatted" || { echo "$unformatted"; exit 1; }
@@ -67,11 +70,92 @@ jobs:
           (cd "$RUNNER_TEMP" && go mod download -json "golang.org/x/vuln@${GOVULNCHECK_VERSION}") > "$RUNNER_TEMP/vuln.json"
           python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/vuln.json" --expect "$GOVULNCHECK_SUM"
           go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
-      - name: Tests as released (no cgo) and with the race detector (cgo)
+
+  go-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          go test ./...
-          CGO_ENABLED=1 go test -race ./...
-      - name: Reproducible release build
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Build and test every commit in the change, as released (no cgo)
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          range="$(python3 tools/ci/change_range.py)"
+          for c in $(git rev-list --reverse "$range"); do
+            git checkout -q --detach "$c"
+            if [ ! -f go.mod ]; then echo "$c: no go.mod yet"; continue; fi
+            echo "== $c"
+            go build ./...
+            go test ./...
+          done
+
+  go-race:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Tests with the race detector (needs cgo)
+        run: CGO_ENABLED=1 go test -race ./...
+
+  go-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Reproducible release build (no project code runs before it)
         run: |
           flags="-X github.com/Kordon-Sec/kordon/internal/buildinfo.Version=${GITHUB_SHA}"
           a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/other/build-b"
@@ -99,7 +183,16 @@ jobs:
             "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/$tarball"
           echo "$ZIZMOR_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" zizmor
-      - run: ZIZMOR="$RUNNER_TEMP/zizmor" python3 -m unittest discover -s tools/ci/tests -v
+      - name: Install gitleaks (pinned by sha256) for the rescan detection test
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+      - run: >-
+          ZIZMOR="$RUNNER_TEMP/zizmor" GITLEAKS="$RUNNER_TEMP/gitleaks"
+          python3 -m unittest discover -s tools/ci/tests -v
 
   docs-budget:
     runs-on: ubuntu-24.04
@@ -117,13 +210,7 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
         run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            range="$PR_BASE..$PR_HEAD"
-          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            range="$PUSH_AFTER"
-          else
-            range="$PUSH_BEFORE..$PUSH_AFTER"
-          fi
+          range="$(python3 tools/ci/change_range.py)"
           python3 tools/ci/docs_budget.py
           python3 tools/ci/docs_budget.py --range "$range"
 
@@ -161,13 +248,7 @@ jobs:
           PUSH_AFTER: ${{ github.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            range="$PR_BASE..$PR_HEAD"
-          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            range="$PUSH_AFTER"
-          else
-            range="$PUSH_BEFORE..$PUSH_AFTER"
-          fi
+          range="$(python3 tools/ci/change_range.py)"
           set -- --range "$range"
           if [ "$EVENT" = "push" ] || [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
             set -- "$@" --dependabot-pr
@@ -197,25 +278,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/no-ignore"
           "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
             --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" .
-      - name: Rescan files gitleaks skips, in every commit of the change, with the default config
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.sha }}
+      - name: Rescan files gitleaks skips, from every commit in history, with the repository rules
         run: |
-          if [ "$EVENT" = "pull_request" ]; then
-            range="$PR_BASE..$PR_HEAD"
-          elif [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            range="$PUSH_AFTER"
-          else
-            range="$PUSH_BEFORE..$PUSH_AFTER"
-          fi
-          python3 tools/ci/rescan_skipped.py --range "$range" --out "$RUNNER_TEMP/rescan"
+          python3 tools/ci/rescan_skipped.py --range HEAD --out "$RUNNER_TEMP/rescan"
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/gitleaks" dir --redact --no-banner --ignore-gitleaks-allow \
-            --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" rescan
+          "$RUNNER_TEMP/gitleaks" dir --config "$GITHUB_WORKSPACE/.gitleaks.toml" --redact --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" rescan
 
   workflow-lint:
     runs-on: ubuntu-24.04
