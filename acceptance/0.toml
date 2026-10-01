@@ -79,10 +79,10 @@ method = "20 trials each of kill -9 of the collector and a hard VM reset (cache=
 [[metric]]
 id = "record_max_kib"
 max = 64
-unit = "KiB per record; larger records are refused with an event"
+unit = "KiB per stored record; larger records are stored truncated (head, tail, original length, SHA-256) with a truncation entry"
 rows = ["T20"]
 adr = "0007"
-method = "Test feeds oversized and malformed records."
+method = "Test runs an exec with a 70 KB argv and feeds malformed records: the exec is stored truncated and alarms like loss; malformed records become loss entries."
 
 [[metric]]
 id = "fuzz_hours"
@@ -116,7 +116,7 @@ value = 30
 unit = "days before a sealed, cosigned shard is deleted"
 rows = ["T22"]
 adr = "0005"
-method = "Lifecycle test with a fake clock; age comes from the cosignature time, never the host clock alone."
+method = "Lifecycle test with a fake clock: age is the latest witness cosignature time minus the shard seal's cosignature time; the host clock is never used."
 
 [[metric]]
 id = "raw_cap_gib"
@@ -140,7 +140,7 @@ min = 2
 unit = "GiB physically reserved outside raw_cap_gib for loss and health records"
 rows = ["T4", "T10"]
 adr = "0005"
-method = "Fill the filesystem and the raw cap; loss and health entries are still written; exhausting the reserve sets UNKNOWN."
+method = "Reserve file allocated at the size (stat st_blocks). Fill the filesystem and the raw cap: at least 10000 loss and health entries are still written; exhausting the reserve sets UNKNOWN and alarms."
 
 [[metric]]
 id = "shard_max_gib"
@@ -167,12 +167,12 @@ adr = "0006"
 method = "Fill test; reaching the cap sets UNKNOWN and alarms."
 
 [[metric]]
-id = "refused_log_cap_mib"
-max = 64
-unit = "MiB of refused-request records; beyond it refusals are counted, not logged"
+id = "refusal_summary_s"
+max = 60
+unit = "s per refusal summary record (count per socket and one sample) in the raw store"
 rows = ["T20"]
 adr = "0007"
-method = "Test floods every socket with invalid requests."
+method = "Test floods every socket with invalid requests: every minute with refusals has one summary record; nothing else grows."
 
 # --- Anchoring and the Pi (ADR 0006) ---
 
@@ -190,15 +190,15 @@ max = 60
 unit = "s, maximum gap between cosigned checkpoints while host and Pi are connected"
 rows = ["T13"]
 adr = "0006"
-method = "Maximum (not a percentile) over a 24 h run; a longer gap must already have raised silence_alarm_s."
+method = "Maximum (not a percentile) over a 24 h run with host and Pi connected."
 
 [[metric]]
 id = "loss_alarm_s"
 max = 120
-unit = "s from a loss or UNKNOWN entry being appended to a phone alert"
+unit = "s from injected kernel or dispatcher loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
-method = "Inject transient loss followed by OK, and sustained loss; each alerts within the limit, 10 trials."
+method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials. kordon-auditstat polls at most every 5 s."
 
 [[metric]]
 id = "silence_alarm_s"
@@ -206,7 +206,15 @@ max = 900
 unit = "s of unannounced silence (no cosigned checkpoint) before a phone alert"
 rows = ["T13", "T28"]
 adr = "0006"
-method = "Cut WireGuard, kill the ledger, power off the VM without announcement: each alerts within the limit. Announced shutdown and suspend raise none."
+method = "Cut WireGuard, kill the ledger, power off the VM without announcement: each alerts within the limit. Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
+
+[[metric]]
+id = "announced_quiet_max_h"
+max = 24
+unit = "hours the Pi stays quiet after a shutdown or suspend announcement"
+rows = ["T14", "T28"]
+adr = "0006"
+method = "Announce, then stay off; and announce, reboot with the ledger down: both alert at the limit."
 
 [[metric]]
 id = "verify_freshness_s"
@@ -234,8 +242,8 @@ method = "Lifecycle test with yearly rollover and a fake clock."
 
 [[metric]]
 id = "pi_store_cap_gib"
-max = 8
-unit = "GiB for mirror and witness state on the Pi"
+max = 24
+unit = "GiB for checkpoints, mirrored tiles and witness state on the Pi (two yearly logs at host_log_cap_gib plus margin)"
 rows = ["T16"]
 adr = "0006"
 method = "Fill test on the Pi image; reaching the cap alerts."
