@@ -27,7 +27,8 @@ records still in its WAL file (SQLite probe during review).
 4. When the cap is reached, new records are dropped and a loss event is stored in reserved headroom;
    stored evidence is never evicted to make room, so a flood cannot push it out. The collector deletes
    a shard only when the ledger reports its seal anchored and cosigned and it is older than the
-   minimum age.
+   minimum age, measured from the witness's cosignature time. Beyond that only the maintainer can
+   expire shards, through `kordon-install`. The headroom for loss records is reserved on disk.
 5. Normalized events (OCSF 1.9.0) are a derived view rebuilt from raw shards. Every row carries
    `schema_version` and `normalizer_version`; readers reject an unknown major version. The class
    mapping is decided in the normalizer ADR and proven by raw fixtures with expected OCSF classes

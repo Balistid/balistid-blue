@@ -20,7 +20,9 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
 1. Floor 0 records through auditd and Laurel. Laurel is built from our PKGBUILD pinned to a tag and
    sha256 (`cargo build --locked`) and runs as a separate process, not linked into Kordon.
 2. Audit rules (including `-b`, `-f`, `-r`), `auditd.conf` and the Laurel config live in the
-   repository and are installed only by `kordon-install` (R1, R8). The rules end with `-e 2`.
+   repository and are installed only by `kordon-install` (R1, R8). The rules end with `-e 2`; `-f 1`
+   and `disk_full_action` keep a flood from halting the host. Rules cover ptrace, `process_vm_writev`,
+   `execveat` and `memfd_create`, the usual ways around exec records.
    io_uring is either disabled (`kernel.io_uring_disabled=2`) or covered by io_uring rules; the smoke
    test decides which, and the other state is UNKNOWN.
 3. Laurel hands records to the collector over a Unix socket that admits only Laurel's uid.
