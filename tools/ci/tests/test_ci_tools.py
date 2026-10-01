@@ -271,5 +271,71 @@ class DocsBudgetTest(unittest.TestCase):
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
 
+GO_MOD = "module github.com/example/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
+GO_SUM_LINE = "golang.org/x/sys v0.20.0/go.mod h1:" + "A" * 43 + "="
+
+
+class GoLayoutTest(unittest.TestCase):
+    """ADR 0003: the Go and deployment layout, and the files gitleaks would skip."""
+
+    _repo_with = DocsBudgetTest._repo_with
+
+    def assert_budget(self, files: dict[str, str], expected: int) -> None:
+        with self._repo_with(files) as tmp:
+            self.assertEqual(docs_budget.main(["--repo", tmp]), expected, files)
+
+    def test_go_and_deploy_paths_pass(self):
+        self.assert_budget({
+            "go.mod": GO_MOD + "\nrequire (\n\tgolang.org/x/sys v0.20.0 // indirect\n)\n",
+            "go.sum": GO_SUM_LINE + "\n",
+            ".golangci.yml": "version: \"2\"\n",
+            "cmd/kordon/main.go": "package main\n",
+            "internal/store/shard.go": "package store\n",
+            "internal/store/seal/seal_test.go": "package seal\n",
+            "internal/store/testdata/leaf.json": "{}\n",
+            "internal/store/seal/testdata/vectors.jsonl": "{}\n",
+            "cmd/kordon/testdata/args.json": "{}\n",
+            "packaging/laurel/PKGBUILD": "pkgname=laurel\n",
+            "deploy/audit/kordon.rules": "-e 2\n",
+            "deploy/auditd/auditd.conf": "q_depth = 2000\n",
+            "deploy/laurel/config.toml": "[auditlog]\n",
+            "deploy/systemd/kordon-collector.service": "[Service]\n",
+            "deploy/systemd/kordon-verify.timer": "[Timer]\n",
+        }, 0)
+
+    def test_paths_outside_the_go_layout_fail(self):
+        for name in ("cmd/kordon/deep/x.go", "internal/a/b/c/x.go", "cmd/x.go", "internal/x.go",
+                     "internal/a/go.mod", "go.work", "testdata/x.json", "internal/a/x.json",
+                     "internal/a/testdata/deep/x.json", "packaging/PKGBUILD",
+                     "packaging/laurel/build.sh", "deploy/audit/kordon.conf",
+                     "deploy/systemd/kordon.socket", "deploy/systemd/sub/x.service",
+                     "deploy/auditd/other.conf", "src/main.go"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "x\n"}, 1)
+
+    def test_testdata_names_gitleaks_skips_fail(self):
+        for name in ("internal/a/testdata/package-lock.json", "internal/a/testdata/javascript.json",
+                     "cmd/x/testdata/npm-shrinkwrap.json"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "{}\n"}, 1)
+
+    def test_go_mod_outside_its_grammar_fails(self):
+        for extra in ("replace golang.org/x/sys => ../sys", "// ghp_" + "a" * 36,
+                      "exclude golang.org/x/sys v0.1.0", "godebug default=go1.21",
+                      "tool golang.org/x/tools/cmd/stringer", "require x v1 // note",
+                      "module github.com/example/kordon // c"):
+            with self.subTest(extra=extra):
+                self.assert_budget({"go.mod": GO_MOD + extra + "\n"}, 1)
+
+    def test_go_sum_outside_its_grammar_fails(self):
+        for line in ("token=" + "a" * 40, GO_SUM_LINE + " extra", GO_SUM_LINE.replace("h1:", "h2:"),
+                     GO_SUM_LINE[:-2] + "=", "# comment"):
+            with self.subTest(line=line):
+                self.assert_budget({"go.sum": GO_SUM_LINE + "\n" + line + "\n"}, 1)
+
+    def test_non_ascii_go_mod_fails(self):
+        self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

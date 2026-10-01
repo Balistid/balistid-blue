@@ -28,8 +28,9 @@ reports `go1.27.1-X:nodwarf5`, a different build from upstream's. The maintainer
    `go.mod`, `go.sum`, `.golangci.yml`; `cmd/<name>/*.go`; `internal/<pkg>/*.go` and one level of
    `internal/<pkg>/<sub>/*.go`; `testdata/*.json` and `*.jsonl` under those directories;
    `packaging/<name>/PKGBUILD`; `deploy/audit/*.rules`; `deploy/auditd/auditd.conf`;
-   `deploy/laurel/config.toml`; `deploy/systemd/*.service`, `*.socket`, `*.timer`. Each pattern ships
-   with a positive and a negative test. Nothing else is admitted by this ADR.
+   `deploy/laurel/config.toml`; `deploy/systemd/*.service`, `*.timer`. Each pattern ships with a
+   positive and a negative test. Nothing else is admitted by this ADR. `*.socket` was dropped because
+   gitleaks skips that suffix; `go.mod` and `go.sum`, which it also skips, must match a line grammar.
 
 ## Alternatives considered
 

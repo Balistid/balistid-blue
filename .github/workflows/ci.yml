@@ -20,8 +20,62 @@ env:
   ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
   ZIZMOR_VERSION: "1.30.1"
   ZIZMOR_SHA256: "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+  GO_VERSION: "1.27.1"
+  GO_SHA256: "63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445"
+  GOLANGCI_VERSION: "2.14.0"
+  GOLANGCI_SHA256: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
+  GOVULNCHECK_VERSION: "v1.8.0"
 
 jobs:
+  go:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go and golangci-lint (pinned by sha256)
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          gl="golangci-lint-${GOLANGCI_VERSION}-linux-amd64"
+          curl -fsSLo "$RUNNER_TEMP/gl.tgz" \
+            "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/$gl.tar.gz"
+          echo "$GOLANGCI_SHA256  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/$gl" >> "$GITHUB_PATH"
+      - name: Toolchain is exactly the pinned upstream release
+        run: test "$(go env GOVERSION)" = "go${GO_VERSION}"
+      - name: Format, modules, vet, lint
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+          go mod tidy -diff
+          go mod verify
+          go vet ./...
+          golangci-lint run ./...
+      - name: Known vulnerabilities (module verified by the checksum database)
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+      - name: Tests with the race detector
+        run: CGO_ENABLED=1 go test -race ./...
+      - name: Reproducible release build
+        run: |
+          a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/build-b"
+          mkdir -p "$a" "$b"
+          git archive HEAD | tar -x -C "$a"
+          git archive HEAD | tar -x -C "$b"
+          (cd "$a" && go build -trimpath -buildvcs=false -o kordon ./cmd/kordon)
+          (cd "$b" && GOCACHE="$RUNNER_TEMP/cache-b" go build -trimpath -buildvcs=false -o kordon ./cmd/kordon)
+          sha256sum "$a/kordon" "$b/kordon"
+          test "$(sha256sum < "$a/kordon")" = "$(sha256sum < "$b/kordon")"
+
   selftest:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
