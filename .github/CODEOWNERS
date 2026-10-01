@@ -12,3 +12,8 @@
 /adr/ @Jvc0n
 /acceptance/ @Jvc0n
 /THREAT_MODEL.md @Jvc0n
+/go.mod @Jvc0n
+/go.sum @Jvc0n
+/.golangci.yml @Jvc0n
+/packaging/ @Jvc0n
+/deploy/ @Jvc0n

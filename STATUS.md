@@ -19,9 +19,8 @@ smoke test. Gates and rulesets are live; the pin gate is tested (PR #8).
 ## Next step
 
 1. Maintainer approves or changes the acceptance numbers (R3).
-2. Go toolchain pull request: `go.mod`, layout gate extension with negative tests, CI jobs
-   (the maintainer pushes workflow changes).
-3. Smoke test auditd + Laurel in the range VM (needs `/dev/kvm`), then floor 0 code.
+2. Smoke test auditd + Laurel in the range VM (needs `/dev/kvm`), then floor 0 code.
+3. Floor 0 code, package by package, each with its acceptance tests.
 
 ## Open decisions (maintainer)
 
