@@ -79,10 +79,18 @@ method = "20 trials each of kill -9 of the collector and a hard VM reset (cache=
 [[metric]]
 id = "record_max_kib"
 max = 2048
-unit = "KiB per stored record (ARG_MAX); larger records are stored truncated (head, tail, original length, SHA-256), counted in health, not alarmed"
+unit = "KiB per stored record (ARG_MAX at the default 8 MiB stack); larger records are stored truncated (head, tail, original length, SHA-256) and counted in health"
 rows = ["T20"]
 adr = "0007"
-method = "Test runs execs with 131 KB (xargs) and 2 MB argv: stored whole, no alarm; feeds a larger synthetic record and malformed records: truncated or loss entries, health counters rise."
+method = "Test runs execs with 131 KB (xargs) and 2 MB argv: stored whole, no alarm; raises the stack limit and runs a 6 MB argv: truncated, counted; feeds malformed records: loss entries."
+
+[[metric]]
+id = "truncation_alarm_per_hour"
+max = 10
+unit = "truncated records per hour above which the Pi alerts"
+rows = ["T8", "T20"]
+adr = "0004"
+method = "Run 11 oversized execs within an hour: one alert; run 10: none."
 
 [[metric]]
 id = "fuzz_hours"
@@ -95,7 +103,7 @@ method = "go test -fuzz in CI or the range; corpus committed under testdata."
 [[metric]]
 id = "rss_mib"
 max = 512
-unit = "MiB, all Kordon processes at 1000 records/s and at burst with 64 KiB records"
+unit = "MiB, all Kordon processes at 1000 records/s, at burst_rate with 64 KiB records, and at 50 execs/s with 2048 KiB records"
 rows = ["T20"]
 adr = "0007"
 method = "Maximum summed RSS from /proc over each run."
