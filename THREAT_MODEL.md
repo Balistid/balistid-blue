@@ -29,19 +29,19 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | test rules_locked | designed |
 | T6 | A1 | Read secrets in recorded command lines | Raw stream closed to A1; derived DB readable | — | gap: redaction, floor 3 |
 | T7 | A1 | Read or delete alerts | Push to phone; no alert client on the host | — | assumption |
-| T8 | A1 | Evade recording: ptrace or `process_vm_writev` into own processes, memfd/execveat, interpreters | Rules for ptrace, execveat, memfd_create | drill | partial: interpreters, floor 1 |
-| T9 | A1 | Tamper with the Laurel or Kordon build before install | Builds in CI or range; installer checks sha256 as root | test install_hash | partial: no R2 hardware key yet |
+| T8 | A1 | Evade recording: ptrace or `process_vm_writev` into own processes, memfd/execveat, interpreters | Rules for ptrace, execveat, memfd_create | drill | partial: interpreters, mmap exec, floor 1 |
+| T9 | A1 | Tamper with the Laurel or Kordon build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet |
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom; auditd `disk_full_action` set, `-f 1` | test reserve | designed |
-| T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial |
+| T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie |
 | T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006) | test fork_refused | designed |
-| T13 | A2 | Alter or replace records not yet cosigned | Pi alarms on silence | silence_alarm_s | gap: detected late, not bounded |
-| T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | — | — | gap: open |
+| T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
+| T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped | announced_quiet_max_h | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
-| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated | — | partial |
+| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated | — | partial: Pi parsers are exposed to root |
 | T17 | A2 | Start a new log origin to reset history | Pi accepts a new origin only after the old log's final checkpoint | test rollover | designed |
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours | designed |
-| T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints | fuzz_hours | partial |
-| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Record size cap, store caps, rate-limited refusals | record_max_kib, rss_mib | designed |
+| T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints | fuzz_hours | partial: a compromised ledger can sign |
+| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries | record_max_kib, rss_mib | designed |
 | T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006) | test pi_reach | designed |
 | T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
@@ -49,7 +49,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004) | reconnects_per_day | gap: not fully measurable |
 | T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test | designed |
 | T27 | A6 | Pi dies, or push delivery fails | — | — | gap: dead-man switch, floor 3 |
-| T28 | A6 | Host offline: outage looks like attack | Announced shutdown and suspend; silence alarm | silence_alarm_s | partial |
+| T28 | A6 | Host offline: outage looks like attack | Announced shutdown and suspend; silence alarm | silence_alarm_s | partial: outages alarm too |
 
 ## Assumptions
 
