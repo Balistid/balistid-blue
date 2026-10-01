@@ -1,6 +1,6 @@
 # 0007 — Split Kordon into small processes with separate identities
 
-- Status: accepted
+- Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01
 - Decided-by: alex
 - Agent: claude/opus-5.5
@@ -18,13 +18,13 @@ are inside the threat model.
 | Process | Identity | Privilege | Reads | Writes / network |
 |---|---|---|---|---|
 | `kordon-auditstat` | own uid | `CAP_AUDIT_CONTROL` | audit status, loaded rules | fixed-size reports |
-| `kordon-collector` | own uid | none | Laurel socket, reports | shards; "stream from `seq`" |
+| `kordon-collector` | own uid | none | Laurel socket, reports, ledger status | shards, canary; stream |
 | `kordon-ledger` | own uid | none, no network | collector stream | log tiles, signing key |
 | `kordon-relay` | own uid | none | tiles | HTTP and witness, WireGuard only |
 | `kordon-normalize` | own uid | none | sealed shards | derived database |
 | CLI, UI | user | none | derived database, status | requests over sockets |
 
-1. This ADR amends R13: the one privileged Kordon process is `kordon-auditstat`; it parses no
+1. This ADR amends R13: the one long-running privileged Kordon process is `kordon-auditstat`; it parses no
    sensor data and only reports fixed structures. The collector needs no privilege.
 2. Every socket checks its peer with `SO_PEERCRED` against a per-socket uid allowlist and accepts
    only typed, size-capped requests; anything else is refused and logged.
