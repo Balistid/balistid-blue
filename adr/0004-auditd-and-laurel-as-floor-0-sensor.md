@@ -11,28 +11,25 @@ R9: do not write a sensor someone maintains. Linux audit is a stable kernel ABI;
 `core/audit` 4.2.1. Laurel v0.8.2 (threathunters-io/laurel, GPL-3.0, 2026-07-17) is an auditd plugin
 that merges multi-record events into JSON lines and drops root to `_laurel`; one person wrote nearly
 all of it, and it is only in the AUR. eBPF sensors break on rolling kernels: Falco 0.45.0 fails on
-7.2.7 (falcosecurity/falco#4017, open on 2026-10-01). Loss can happen at four places: the kernel
-queue (`lost`), the auditd dispatcher queue (`q_depth`, `overflow_action` in `auditd.conf(5)`),
-Laurel, and the hand-over to our collector. `auditctl --reset-lost` zeroes the kernel counter.
+7.2.7 (falcosecurity/falco#4017, open on 2026-10-01). Records can be lost in the kernel queue
+(`lost`), the auditd dispatcher (`q_depth`, `overflow_action`), Laurel, or the hand-over to us.
+Audit exit rules do not see io_uring operations unless io_uring rules are loaded (`auditctl(8)`).
 
 ## Decision
 
-1. Floor 0 records through auditd and Laurel, built from our PKGBUILD pinned to a tag and sha256 with
-   `cargo build --locked`. Laurel is a separate process, not linked into Kordon.
-2. Audit rules (including `-b`, `-f`, `-r`), `auditd.conf` and the Laurel config live in the repository
-   and are installed only by `kordon-install` (R1, R8). The rule file ends with `-e 2`, so rules
-   cannot change until reboot.
-3. Laurel writes to a Unix socket the collector listens on. The collector accepts only a peer whose
-   `SO_PEERCRED` uid is `_laurel`, caps each record at a fixed size and refuses anything else.
-4. Loss is tracked per layer, each as an event: a rise in kernel `lost`, and any decrease of it, which
-   means a reset; dispatcher overflow, reported through syslog; Laurel and collector reconnects. Audit
-   serial gaps above a threshold set the sensor state to UNKNOWN. Laurel→collector loss is not fully
-   measurable on floor 0; `THREAT_MODEL.md` states this gap.
-5. Health is fresh or UNKNOWN (R6): a canary record must arrive within N seconds on a schedule, and
-   the loaded rule list must hash to the repository's rule hash. A failed or stale reading of any
-   of these is UNKNOWN, never healthy. Counters come from `kordon-auditstat` (ADR 0007).
-6. R13 covers Kordon's processes. auditd, and Laurel until it drops privileges, are OS components
-   that run as root; this ADR records that exception.
+1. Floor 0 records through auditd and Laurel. Laurel is built from our PKGBUILD pinned to a tag and
+   sha256 (`cargo build --locked`) and runs as a separate process, not linked into Kordon.
+2. Audit rules (including `-b`, `-f`, `-r`), `auditd.conf` and the Laurel config live in the
+   repository and are installed only by `kordon-install` (R1, R8). The rules end with `-e 2`.
+   io_uring is either disabled (`kernel.io_uring_disabled=2`) or covered by io_uring rules; the smoke
+   test decides which, and the other state is UNKNOWN.
+3. Laurel hands records to the collector over a Unix socket that admits only Laurel's uid.
+4. Required properties, implemented in code with tests: every loss signal we can read (kernel `lost`
+   including resets, dispatcher overflow, Laurel and collector reconnects) becomes an event; sensor
+   health is fresh or UNKNOWN (R6), with a canary that must arrive on a schedule. How the loaded rules
+   are checked against the repository is designed with `kordon-auditstat` (ADR 0007).
+5. R13 covers Kordon's processes; auditd, and Laurel until it drops privileges, are OS components that
+   run as root. This ADR records that exception.
 
 ## Alternatives considered
 
@@ -43,12 +40,12 @@ Laurel, and the hand-over to our collector. `auditctl --reset-lost` zeroes the k
 
 ## Consequences
 
-- Smoke test before `accepted`: auditd 4.2.1 and Laurel on kernel 7.2.x in the range VM; it also fixes
-  how dispatcher overflow is reported. Results are bound to the running kernel and the installed
-  auditd, Laurel and rule versions; an untested combination after reboot is UNKNOWN.
-- Tests (R4, R10): killing Laurel, stopping auditd, a missing canary, `--reset-lost`, a socket peer
-  other than `_laurel` and a rule-hash mismatch each produce an event or UNKNOWN within N seconds;
-  `auditctl -e 0` fails under `-e 2` and the attempt is recorded.
-- N, the serial-gap threshold and the allowed loss per day are numbers in `acceptance/0.toml`.
-- Laurel's output is part of the trusted base (ADR 0005).
+- Smoke test before `accepted`, in the range VM on kernel 7.2.x: Laurel's peer uid on the socket and
+  its remaining capabilities, how dispatcher overflow is reported, io_uring coverage, and `-e 2`.
+  Results are bound to kernel and package versions; an untested combination is UNKNOWN.
+- Tests (R4, R10): killing Laurel, stopping auditd, a missing canary, a counter reset and a foreign
+  socket peer each produce an event or UNKNOWN; disabling audit under `-e 2` fails and is recorded.
+- Known gap stated in `THREAT_MODEL.md`: loss between Laurel and the collector is not fully
+  measurable, and root on the host can blind the sensor; floor 0 makes that visible, not impossible.
+- Thresholds and allowed loss are numbers in `acceptance/0.toml`.
 - Trigger to revisit: no Laurel release for 12 months, or a kernel it cannot follow.

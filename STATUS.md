@@ -11,8 +11,10 @@ Floor 0 (recorder) designed, not coded. Gates and rulesets are live; the pin gat
 - PR #8 merged: zizmor replaces the regex pin check, with executable tests against the pinned binary.
 - ADR 0003–0007 proposed in PR #9, accepted when the maintainer approves (0004 only after its smoke
   test): Go without cgo, auditd + Laurel sensor, raw SQLite day shards sealed and anchored in a
-  Tessera log cosigned and watched from the Pi, five processes with separate identities.
-  Facts checked on 2026-10-01; Claude critic and Codex round 1 folded in.
+  Tessera log cosigned and watched from the Pi, separate process identities.
+  Two review rounds (Claude critic, Codex) found fixes introducing new defects, so R7 applied:
+  the ADRs now fix components and required properties; protocols are designed in code with tests,
+  and the floor-0 gaps against root go to `THREAT_MODEL.md`.
 - The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step
