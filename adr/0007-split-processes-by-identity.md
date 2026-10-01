@@ -26,7 +26,7 @@ are inside the threat model.
 
 1. This ADR amends R13: the one long-running privileged Kordon process is `kordon-auditstat`; it parses no
    sensor data and only reports fixed structures. The collector needs no privilege.
-2. Every socket checks its peer with `SO_PEERCRED` against a per-socket uid allowlist and accepts
+2. Every local Unix socket checks its peer with `SO_PEERCRED` against a per-socket uid allowlist and accepts
    only typed, size-capped requests; anything else is refused and logged.
 3. Binaries, units, configuration and keys belong to root or their service user and are installed by
    `kordon-install`; the maintainer's user, and so the agents, can read the derived database but
