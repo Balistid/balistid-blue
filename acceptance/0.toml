@@ -89,7 +89,7 @@ id = "truncation_alarm_per_hour"
 max = 10
 unit = "truncated records per hour above which the Pi alerts"
 rows = ["T8", "T20"]
-adr = "0004"
+adr = "0006"
 method = "Run 11 oversized execs within an hour: one alert; run 10: none."
 
 [[metric]]

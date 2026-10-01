@@ -26,7 +26,7 @@ answers checkpoint submissions and keeps the latest checkpoint per log. The C2SP
    Submission is outside the append path; recording never waits for the Pi.
 3. The Pi fetches tiles over HTTP from the relay (tiles are static files designed for that) and
    runs a small watchdog of ours: if no new cosigned checkpoint arrives, or the log stops growing,
-   within the limit, or any health entry since its last check reports loss or UNKNOWN, it alerts the maintainer by
+   within the limit, or any health entry since its last check reports loss or UNKNOWN, or the truncation counter rises above `truncation_alarm_per_hour`, it alerts the maintainer by
    push to the phone. A clean shutdown or suspend appends a cosigned announcement first, and the Pi
    stays quiet until the host returns or a time limit passes. litewitness has no alarm of its own.
 4. Verification of the log runs on the Pi on a schedule, against the witness's latest checkpoint.
