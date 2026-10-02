@@ -21,19 +21,24 @@ linters:
           deny:
             - pkg: unsafe
               desc: "ENGINEERING.md 7: unsafe is forbidden"
-            - pkg: math/rand
+            - pkg: math/rand$
               desc: "ENGINEERING.md 7: use crypto/rand"
             - pkg: math/rand/v2
               desc: "ENGINEERING.md 7: use crypto/rand"
-            - pkg: log
+            - pkg: log$
               desc: "ENGINEERING.md 7: use log/slog"
     forbidigo:
+      analyze-types: true
       forbid:
         - pattern: ^panic$
           msg: "ENGINEERING.md 7: return an error; panic only in main or tests"
         - pattern: ^print(ln)?$
           msg: "ENGINEERING.md 7: use log/slog"
+        - pattern: ^fmt\.Print(f|ln)?$
+          pkg: ^fmt$
+          msg: "ENGINEERING.md 7: use log/slog in internal/"
         - pattern: ^context\.(Background|TODO)$
+          pkg: ^context$
           msg: "ENGINEERING.md 7: take ctx from the caller; Background only in main and tests"
     nolintlint:
       require-explanation: true
