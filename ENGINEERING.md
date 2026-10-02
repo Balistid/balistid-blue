@@ -104,7 +104,7 @@ Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; t
   comes from a 0750 directory owned by the service, umask 0027 and the seal of ADR 0005.
 - **SQLite.** Pragmas (`journal_mode`, `synchronous=FULL`, `busy_timeout`) go in the DSN so every
   pooled connection gets them; the writer uses `SetMaxOpenConns(1)`; queries are parameterized
-  (lint: gosec G201/G202).
+  (lint: gosec G701, known taint sources only; parameterization is review).
 - **Crypto.** Randomness from `crypto/rand` (lint: depguard); secrets and MACs compared with
   `crypto/subtle.ConstantTimeCompare`; hashes and signatures only through the standard library or a
   reviewed module.
@@ -114,11 +114,11 @@ Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; t
   decide a security question alone (T22); the monotonic clock stops during suspend, so timers that
   span a suspend are re-checked on resume.
 - **Logging.** `log/slog` with structured fields (lint: depguard on `log`, forbidigo on `print` and
-  `fmt.Print*` in `internal/`); no record bodies, argv or secrets at any level.
+  `fmt.Print*`, not `Fprint*`, in `internal/`); no record bodies, argv or secrets at any level.
 - **Packages.** `cmd/<name>` is a thin `main`; logic lives in `internal/`. No package-level mutable
   state except build info; no `init` with side effects; exported identifiers are documented.
 - **Forbidden.** `unsafe` and `math/rand` (lint: depguard); cgo (CI: go-static fails on any cgo
-  file); `reflect` on untrusted data.
+  file in the default build); `reflect` on untrusted data.
 - **Dependencies.** Standard library first. A new module needs its own commit, a reason in the pull
   request and a licence in Apache-2.0, MIT, BSD or ISC; no GPL, AGPL or BSL code is linked (R14).
 - **Tests.** Table-driven where cases repeat; failure paths tested as well as success; `t.Parallel()`
