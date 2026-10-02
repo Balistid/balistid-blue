@@ -80,3 +80,34 @@ hypotheses until reproduced by a test.
   Caps and the closed layout allowlist live in `tools/ci/docs_budget.py`; changing them needs an ADR.
 - Decisions go to an ADR, state goes to `STATUS.md`, history goes to git. Nothing else.
 - `STATUS.md` is overwritten at the end of each working session. It never grows into a log.
+
+## 7. Go
+
+Decided in ADR 0008. Rules marked (lint) fail CI through `.golangci.yml`; the rest is checked in review.
+
+- **Errors.** Every error is handled or returned, wrapped with context (`fmt.Errorf("open shard %s: %w",
+  name, err)`) (lint: errcheck, errorlint, wrapcheck at package boundaries). An error in a security
+  decision yields deny or UNKNOWN (R6). No `panic` in `internal/` (lint: forbidigo); `main` turns
+  errors into a non-zero exit.
+- **Context.** Anything that does I/O, blocks or waits takes `ctx context.Context` first and honours
+  cancellation. `context.Background()` only in `main` and tests (lint: forbidigo, contextcheck, noctx).
+- **Goroutines.** Each one has an owner that stops it through `ctx` and waits for it. Channels and
+  queues are bounded; no goroutine per untrusted input without a limit (T20).
+- **Untrusted input.** Readers are size-capped (`io.LimitReader`); protocol messages are decoded
+  strictly (`DisallowUnknownFields`, explicit version check). Every parser has a fuzz target (R10).
+- **Files.** Created with an explicit mode (0600 or 0640); evidence is written to a temp file, fsynced
+  and renamed, then the directory is fsynced. Paths under directories another uid can write are
+  opened without following symlinks.
+- **Processes.** `os/exec` only with a fixed binary path and argv; never a shell, never user input in
+  the command name (lint: gosec).
+- **Time.** Durations and timeouts use the monotonic clock; the wall clock never decides a security
+  question on its own (T22).
+- **Logging.** `log/slog` with structured fields; no record bodies, argv or secrets at info level.
+- **Packages.** `cmd/<name>` is a thin `main`; logic lives in `internal/`. No package-level mutable
+  state except build info; no `init` with side effects. Exported identifiers are documented.
+- **Forbidden.** `unsafe`, cgo, `reflect` on untrusted data, `math/rand` for anything security
+  related (lint: depguard, gosec).
+- **Dependencies.** Standard library first. A new module needs its own commit, a reason in the pull
+  request and a licence in Apache-2.0, MIT, BSD or ISC; no GPL, AGPL or BSL code is linked (R14).
+- **Tests.** Table-driven where cases repeat; failure paths tested as well as success; `t.Parallel()`
+  only where tests share no state. A behaviour change still needs a test that fails on the parent (R4).
