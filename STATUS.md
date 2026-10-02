@@ -13,9 +13,9 @@ until its smoke test.
 - PR #8: zizmor replaces the regex pin check, with executable tests against the pinned binary.
 - PR #9: ADR 0003–0007; R7 reshaped them to components and properties.
 - PR #10: `THREAT_MODEL.md` (28 rows) and `acceptance/0.toml` (33 metrics), approved.
-- This pull request: Go 1.27.1 toolchain, four isolated Go CI jobs (format, modules, vet, lint,
-  govulncheck, race tests, reproducible build), and the layout gate for Go and deploy paths, which
-  refuses every path gitleaks would skip and holds `go.mod`/`go.sum` to a line grammar.
+- This pull request: Go 1.27.1 toolchain, four isolated Go CI jobs on the head tree (static checks,
+  tests, race tests, reproducible build); the layout gate checks every commit, refuses paths gitleaks
+  would skip, and a rescan finds secrets in skipped files across history.
 - The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
 
 ## Next step

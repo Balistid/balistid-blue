@@ -51,6 +51,6 @@ them; a server-side gate binds every contributor.
   bypassed twice by YAML spellings and was removed (R7, R9). File names follow a strict grammar so
   that the gitleaks default path allowlist cannot exempt a tracked file.
 - The `main` ruleset requires branches to be up to date before merging. Layout and secret gates run
-  on every commit that lands. Static, race and release Go gates run on the head tree; the no-cgo
-  build and test gate runs on every commit in the change, each on its own runner.
+  on every commit that lands. Go gates run on the head tree, each job on a fresh runner;
+  intermediate commits are not built (THREAT_MODEL T29).
 - Costs the GitHub Team subscription while the repository stays private.
