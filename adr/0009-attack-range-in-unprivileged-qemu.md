@@ -12,17 +12,18 @@ auditd and Laurel on the target kernel. Attacks must not run on the host, and co
 kernel. From documentation read on 2026-10-02, not yet from runs: mkosi 27.1 builds Arch images
 through user namespaces; Arch's udev rule gives `/dev/kvm` mode 0666; QEMU runs without libvirt; a
 guest-written disk opened with format autodetection can make QEMU tools read host files. Atomic Red
-Team (commit 388942ad) has 423 Linux tests, about 97 % `sh`/`bash`, all benign test scripts.
+Team (commit 388942ad) has 423 Linux tests, about 97 % `sh`/`bash`, non-malicious test scripts.
 
 ## Decision
 
 1. The VM is the isolation boundary. The range runs as the maintainer's user; no dedicated uid,
    no libvirt, no root at run time.
-2. QEMU runs with `-nodefaults -nic none`, `-enable-kvm`, a fresh qcow2 overlay per run
-   (`qemu-img create -f qcow2 -b base -F qcow2`) and `format=` set on every `-drive`.
-3. QEMU runs inside bwrap with `--unshare-all --die-with-parent --new-session --cap-drop ALL`,
+2. QEMU runs with `-nodefaults -nic none -display none -no-reboot`, `-enable-kvm`, a fresh qcow2 overlay per run
+   (`qemu-img create -f qcow2 -b base -F raw`) and `format=` set on every `-drive`.
+3. QEMU runs inside bwrap with `--unshare-all --die-with-parent --new-session --cap-drop ALL
+   --clearenv --setenv PATH /usr/bin`,
    read-only `/usr`, the base image read-only, the run directory writable and `--dev-bind /dev/kvm`
-   only. It has no network namespace route out, not even to loopback, and no view of `$HOME`.
+   only. It cannot reach a listener on the host's 127.0.0.1 and has no view of `$HOME`.
 4. The launcher reads the serial console through a pipe with a byte budget and a wall-clock limit;
    hitting either kills QEMU and makes the run INVALID.
 5. Results: the guest writes one length-prefixed record stream to a raw results disk; the host
@@ -32,22 +33,25 @@ Team (commit 388942ad) has 423 Linux tests, about 97 % `sh`/`bash`, all benign t
    Tests and the runner are baked in as well, so the base sha256 identifies everything the guest ran.
 7. The host computes each verdict from the extracted records against the test's expected record
    pattern: CAUGHT, MISSED, QUIET (legitimate scenario, no match), NOISY (legitimate scenario
-   matched), INVALID (setup failed, timeout, budget, crash). INVALID never counts as a pass (R6).
+   matched), INVALID (setup failed, timeout, budget, crash, or a results stream without a final end record
+   with the record count, over N bytes, or unparsable). INVALID never counts as a pass (R6).
 8. Each result records the range commit, base sha256, guest `uname -r` and package versions; a kernel
    other than the target kernel makes the result UNKNOWN. Run directories are deleted after
-   extraction (R5). Installing mkosi on the development host is a dev-host exception to R8.
+   extraction (R5); overlay virtual size and run directory are capped, and base images and
+   results get retention. Installing mkosi on the development host is a dev-host exception to R8.
 
 ## Alternatives considered
 
 - A dedicated range uid and root-owned launcher: guards range results against the agents, but they
-  are benign tests whose results only inform us; revisit with real malware samples (floor 2).
+  are non-malicious tests whose results only inform us; revisit with real malware samples (floor 2).
 - libvirt: root-owned networks and pools the range does not need. guestfish: a large parser of
   guest-written data where a byte stream suffices. PowerShell runners: a large runtime for shell.
 
 ## Consequences
 
-- Tests: a results disk carrying a qcow2 header is read as raw bytes; serial output past the budget
-  ends INVALID; QEMU cannot connect to 127.0.0.1 or read `$HOME`; the guest lists no network
+- Tests: a planted qcow2 header with a backing file to a host file is never opened by QEMU, and every
+  `-drive` in the argv has `format=`; serial output past the budget
+  ends INVALID; QEMU cannot reach a listener the test starts on the host's 127.0.0.1, or read `$HOME`; the guest lists no network
   interface besides loopback; the smoke test shows Laurel output, not only a running service.
 - `THREAT_MODEL.md` gains rows for hostile guest output, Atomic Red Team as supply chain, and range
   results trusted only as far as the maintainer's uid (agents could forge them).
