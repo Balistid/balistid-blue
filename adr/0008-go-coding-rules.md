@@ -21,7 +21,7 @@ wrong mode, the wall clock deciding retention (T22), and dependencies that chang
 2. `.golangci.yml` enforces what a linter can check: errcheck, errorlint, wrapcheck (errors);
    forbidigo with type analysis (`panic`, `print`, `fmt.Print*`, `context.Background`/`TODO` outside
    `main` and tests); contextcheck and noctx (contexts); depguard (`unsafe`, `math/rand`, `log`,
-   matched exactly so `log/slog` stays allowed); gosec (exec argv, file modes, SQL building).
+   matched exactly so `log/slog` stays allowed); gosec (exec argv, file modes, SQL taint from known sources).
    go-static fails on any cgo file, which the release build would silently drop.
    A `//nolint` needs a named linter and a reason (nolintlint).
 3. The rest (goroutine ownership, atomic writes, symlink-safe opens, monotonic time, licences) is a
