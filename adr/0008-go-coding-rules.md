@@ -16,11 +16,13 @@ wrong mode, the wall clock deciding retention (T22), and dependencies that chang
 ## Decision
 
 1. ENGINEERING.md gains §7 Go: errors, context, goroutines, untrusted input, files, processes, time,
-   logging, packages, forbidden packages, dependencies and tests. Each rule says whether lint or
-   review enforces it.
+   SQLite, crypto, logging, packages, forbidden packages, dependencies and tests. A lint marker
+   covers only the clause it follows; everything else is a review item.
 2. `.golangci.yml` enforces what a linter can check: errcheck, errorlint, wrapcheck (errors);
-   forbidigo (`panic`, `print`, `context.Background`/`TODO` outside `main` and tests); contextcheck
-   and noctx (contexts); depguard (`unsafe`, `math/rand`, `log`); gosec (exec, files, crypto).
+   forbidigo with type analysis (`panic`, `print`, `fmt.Print*`, `context.Background`/`TODO` outside
+   `main` and tests); contextcheck and noctx (contexts); depguard (`unsafe`, `math/rand`, `log`,
+   matched exactly so `log/slog` stays allowed); gosec (exec argv, file modes, SQL building).
+   go-static fails on any cgo file, which the release build would silently drop.
    A `//nolint` needs a named linter and a reason (nolintlint).
 3. The rest (goroutine ownership, atomic writes, symlink-safe opens, monotonic time, licences) is a
    review item for every pull request that touches `internal/`.
@@ -33,7 +35,7 @@ wrong mode, the wall clock deciding retention (T22), and dependencies that chang
 
 ## Consequences
 
-- Current code passes the stricter lint with 0 issues; a probe file in a scratch copy triggered
-  every new linter before this was merged.
+- Current code passes the stricter lint with 0 issues. Probe files in a scratch copy triggered every
+  new linter, and an allowed `log/slog` import passed.
 - Code that needs an exception carries a `//nolint:<linter> // reason` that the reviewer sees.
 - Changing a rule needs an ADR, as for any rule in ENGINEERING.md.

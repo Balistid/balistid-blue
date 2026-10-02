@@ -63,6 +63,8 @@ jobs:
           test -z "$unformatted" || { echo "$unformatted"; exit 1; }
           go mod tidy -diff
           go mod verify
+          cgo_files="$(CGO_ENABLED=1 go list -buildvcs=false -f '{{join .CgoFiles " "}}' ./...)"
+          test -z "${cgo_files//[[:space:]]/}" || { echo "cgo is forbidden (ADR 0003): $cgo_files"; exit 1; }
           go vet ./...
           golangci-lint run ./...
       - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)

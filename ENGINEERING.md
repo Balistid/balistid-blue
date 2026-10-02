@@ -83,30 +83,42 @@ hypotheses until reproduced by a test.
 
 ## 7. Go
 
-Decided in ADR 0008. Rules marked (lint) fail CI through `.golangci.yml`; the rest is checked in review.
+Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; the rest is review.
 
-- **Errors.** Every error is handled or returned, wrapped with context (`fmt.Errorf("open shard %s: %w",
-  name, err)`) (lint: errcheck, errorlint, wrapcheck at package boundaries). An error in a security
-  decision yields deny or UNKNOWN (R6). No `panic` in `internal/` (lint: forbidigo); `main` turns
-  errors into a non-zero exit.
+- **Errors.** Every error is handled or returned (lint: errcheck), wrapped with context where it
+  crosses a package (lint: wrapcheck, errorlint). An error in a security decision yields deny or
+  UNKNOWN (R6); `main` turns errors into a non-zero exit. No `panic` in `internal/` (lint: forbidigo).
 - **Context.** Anything that does I/O, blocks or waits takes `ctx context.Context` first and honours
-  cancellation. `context.Background()` only in `main` and tests (lint: forbidigo, contextcheck, noctx).
-- **Goroutines.** Each one has an owner that stops it through `ctx` and waits for it. Channels and
-  queues are bounded; no goroutine per untrusted input without a limit (T20).
+  cancellation. `context.Background()` and `TODO()` only in `main` and tests (lint: forbidigo,
+  contextcheck, noctx).
+- **Goroutines and resources.** Each goroutine has an owner that stops it through `ctx` and waits for
+  it. Channels and queues are bounded; no goroutine per untrusted input without a limit (T20). Every
+  service sets `GOMEMLIMIT` below its share of `rss_mib`; network servers set read, write and idle
+  timeouts.
 - **Untrusted input.** Readers are size-capped (`io.LimitReader`); protocol messages are decoded
   strictly (`DisallowUnknownFields`, explicit version check). Every parser has a fuzz target (R10).
-- **Files.** Created with an explicit mode (0600 or 0640); evidence is written to a temp file, fsynced
-  and renamed, then the directory is fsynced. Paths under directories another uid can write are
-  opened without following symlinks.
-- **Processes.** `os/exec` only with a fixed binary path and argv; never a shell, never user input in
-  the command name (lint: gosec).
-- **Time.** Durations and timeouts use the monotonic clock; the wall clock never decides a security
-  question on its own (T22).
-- **Logging.** `log/slog` with structured fields; no record bodies, argv or secrets at info level.
+- **Files Kordon writes whole** (configs, keys, manifests, exports): mode 0600, or 0640 with
+  `//nolint:gosec // group-readable for <uid>` (lint: gosec G306); written to a temp file, fsynced,
+  renamed, then the directory fsynced. Paths under directories another uid can write are opened
+  without following symlinks. SQLite shards and Tessera tiles manage their own files: their safety
+  comes from a 0750 directory owned by the service, umask 0027 and the seal of ADR 0005.
+- **SQLite.** Pragmas (`journal_mode`, `synchronous=FULL`, `busy_timeout`) go in the DSN so every
+  pooled connection gets them; the writer uses `SetMaxOpenConns(1)`; queries are parameterized
+  (lint: gosec G201/G202).
+- **Crypto.** Randomness from `crypto/rand` (lint: depguard); secrets and MACs compared with
+  `crypto/subtle.ConstantTimeCompare`; hashes and signatures only through the standard library or a
+  reviewed module.
+- **Processes.** `os/exec` only with an absolute binary path and a fixed argv; never a shell, never
+  input in the command name (lint: gosec G204, variable argv only).
+- **Time.** Durations and timeouts use the monotonic clock. Stored times are wall-clock UTC and never
+  decide a security question alone (T22); the monotonic clock stops during suspend, so timers that
+  span a suspend are re-checked on resume.
+- **Logging.** `log/slog` with structured fields (lint: depguard on `log`, forbidigo on `print` and
+  `fmt.Print*` in `internal/`); no record bodies, argv or secrets at any level.
 - **Packages.** `cmd/<name>` is a thin `main`; logic lives in `internal/`. No package-level mutable
-  state except build info; no `init` with side effects. Exported identifiers are documented.
-- **Forbidden.** `unsafe`, cgo, `reflect` on untrusted data, `math/rand` for anything security
-  related (lint: depguard, gosec).
+  state except build info; no `init` with side effects; exported identifiers are documented.
+- **Forbidden.** `unsafe` and `math/rand` (lint: depguard); cgo (CI: go-static fails on any cgo
+  file); `reflect` on untrusted data.
 - **Dependencies.** Standard library first. A new module needs its own commit, a reason in the pull
   request and a licence in Apache-2.0, MIT, BSD or ISC; no GPL, AGPL or BSL code is linked (R14).
 - **Tests.** Table-driven where cases repeat; failure paths tested as well as success; `t.Parallel()`
