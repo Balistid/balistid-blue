@@ -25,9 +25,9 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 |---|---|---|---|---|---|
 | T1 | A1 | Alter or delete shards, keys, units, config | Service uids own them (0007) | test perm_matrix | designed |
 | T2 | A1 | Impersonate Laurel, squat its socket, read the raw stream | Socket in collector-owned dir, `SO_PEERCRED` | test peer_refused | designed |
-| T3 | A1 | Act through io_uring, unseen by exit rules | io_uring disabled or audited (0004) | smoke test | designed |
+| T3 | A1 | Act through io_uring, unseen by exit rules | io_uring disabled, `kernel.io_uring_disabled=2` (0004) | range smoke test | partial: root can re-enable it at runtime |
 | T4 | A1 | Flood audit to cause loss or fill the store | Loss entries alarm; cap drops new; maintainer expiry | loss_alarm_s, raw_cap_gib | partial: blind until handled |
-| T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | test rules_locked | designed |
+| T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | range smoke test, test rules_locked | designed |
 | T6 | A1 | Read secrets in recorded command lines | Raw stream closed to A1; derived DB readable | — | gap: redaction, floor 3 |
 | T7 | A1 | Read or delete alerts | Push to phone; no alert client on the host | — | assumption |
 | T8 | A1 | Evade recording: ptrace or `process_vm_writev` into own processes, memfd/execveat, interpreters | Rules for ptrace, execveat, memfd_create | drill | partial: interpreters, mmap exec, envp and the middle of truncated argv, floor 1 |
