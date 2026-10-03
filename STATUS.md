@@ -1,26 +1,28 @@
 # Status
 
-Updated: 2026-10-02 by claude/opus-5.5
+Updated: 2026-10-03 by claude/opus-5.5
 
 ## Where we are
 
-Floor 0 (recorder) designed, acceptance numbers approved, Go toolchain and gates live (PR #11).
-No floor-0 code yet beyond `kordon version`. ADR 0004 stays proposed
-until its smoke test.
+Floor 0 (recorder) designed, acceptance numbers approved, Go toolchain and gates live. The attack
+range of ADR 0009 is being built: `kordon-range build` makes an Arch image with mkosi, `kordon-range
+run` boots it once in QEMU inside bwrap and judges what the guest reports. No sensor in the image yet.
+ADR 0004 and 0009 stay proposed until their first runs pass.
 
 ## Done in the last session
 
-- PR #8–#10: pin gate tests, ADR 0003–0007, THREAT_MODEL.md and acceptance/0.toml.
-- PR #11: Go 1.27.1 toolchain, four isolated Go CI jobs, layout gate on every commit, rescan of files
-  gitleaks skips across history; the ruleset requires all ten checks.
-- This pull request: ADR 0008 and ENGINEERING.md section 7 (Go rules) with the matching lint config.
-- The project name is still open; "Kordon" is a working name (kordon.app is an existing product).
+- PR #13: ADR 0009 (attack range as throwaway QEMU VMs, no root). PR #14: AGENTS.md simplicity rule.
+- This pull request: `internal/rangevm`, `cmd/kordon-range`, `cmd/kordon-range-guest`,
+  `range/mkosi.conf` (Arch snapshot 2026/10/02, kernel 7.2.8-arch1-2), layout gate and CODEOWNERS
+  for `range/`, THREAT_MODEL rows T30–T33.
 
 ## Next step
 
-1. Smoke test auditd + Laurel in the range VM (needs `/dev/kvm` and the VM image), then ADR 0004
-   becomes accepted.
-2. Floor 0 code, package by package, each with its acceptance tests.
+1. On the range host: `go test -tags rangehost ./internal/rangevm/`, then `kordon-range build` and
+   `kordon-range run <image>`; a PASS accepts ADR 0009.
+2. Sensor in the image: Laurel PKGBUILD, audit rules, auditd and Laurel config, and the ADR 0004
+   smoke checks; a passing smoke test accepts ADR 0004.
+3. Floor 0 code, package by package, each with its acceptance tests.
 
 ## Open decisions (maintainer)
 
