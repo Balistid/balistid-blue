@@ -54,7 +54,8 @@ type Result struct {
 // Build builds the guest program and range/ from the repository at root and stores the image
 // with its commit under cache/images. It refuses a tree whose build inputs differ from HEAD,
 // including untracked and ignored files (mkosi reads an untracked range/mkosi.local.conf), so the
-// recorded commit is what the image holds. Tool output goes to log.
+// recorded commit is what the image holds (index flags such as skip-worktree can still hide a
+// change; T33). The launcher must be a clean build of that commit too. Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
 	held, err := lock(cache)
 	if err != nil {
@@ -66,9 +67,6 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 		cmd.Dir = dir
 		cmd.Env = withoutGit(os.Environ())
 		cmd.Stdout, cmd.Stderr = log, log
-		// The lock stays held while any tool runs, even if this process is killed, so the next
-		// invocation never sweeps a directory a surviving tool still writes.
-		cmd.ExtraFiles = []*os.File{held}
 		return cmd
 	}
 
@@ -81,8 +79,15 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	}
 	status := tool(root, "/usr/bin/git", append([]string{"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--"}, buildInputs...)...)
 	status.Stdout = nil
-	if out, err := status.Output(); err != nil || len(out) > 0 {
-		return "", fmt.Errorf("build inputs differ from %s; commit or remove first:\n%s%w", commit, out, err)
+	out, err = status.Output()
+	if err != nil {
+		return "", fmt.Errorf("git status: %w", err)
+	}
+	if len(out) > 0 {
+		return "", fmt.Errorf("build inputs differ from %s; commit or remove first:\n%s", commit, out)
+	}
+	if lc := launcherCommit(); lc != commit {
+		return "", fmt.Errorf("launcher %q is not a clean build of HEAD %s", lc, commit)
 	}
 
 	stage, err := os.MkdirTemp(cache, "stage-")
@@ -91,7 +96,7 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
 	goBuild := tool(root, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(stage, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
-	goBuild.Env = append(goBuild.Env, "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+	goBuild.Env = append(goBuild.Env, "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GOWORK=off")
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
@@ -117,6 +122,9 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 		}
 	}()
 	mkosi := tool(root, "/usr/bin/mkosi", "--directory="+filepath.Join(root, "range"), "--extra-tree="+stage, "--output-directory="+built, "build")
+	// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
+	// and the next invocation never sweeps a build directory mkosi still writes.
+	mkosi.ExtraFiles = []*os.File{held}
 	if err := mkosi.Run(); err != nil {
 		return "", fmt.Errorf("mkosi: %w", err)
 	}
