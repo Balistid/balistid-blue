@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,12 +13,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/debug"
+	"regexp"
 	"slices"
+	"strings"
+	"syscall"
 	"time"
 )
 
-// Retention (R5): base images are a few hundred MiB each; results are small.
+// Retention (R5): base images are about a GiB each; results are small.
 const (
 	keepImages   = 3
 	keepResults  = 100
@@ -26,6 +29,8 @@ const (
 	stampLayout  = "20060102T150405Z"
 	resultSchema = 1
 )
+
+var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
 type Result struct {
@@ -41,36 +46,49 @@ type Result struct {
 	Manifest      json.RawMessage `json:"manifest"`
 }
 
-// Build stages the guest program and its unit from the repository at root, lets mkosi build
-// root/range, and stores the image under cache/images in a directory named by its sha256.
+// Build exports the commit at HEAD of the repository at root, so neither uncommitted nor untracked
+// files (mkosi also reads untracked range/mkosi.local.conf) reach the image, builds the guest
+// program and range/ from that export, and stores the image with its commit under cache/images.
 // Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
-	if err := os.MkdirAll(cache, 0o700); err != nil {
-		return "", fmt.Errorf("cache directory: %w", err)
+	unlock, err := lock(cache)
+	if err != nil {
+		return "", err
 	}
+	defer func() { err = errors.Join(err, unlock()) }()
 	stage, err := os.MkdirTemp(cache, "stage-")
 	if err != nil {
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
-	defer func() {
-		if rmErr := os.RemoveAll(stage); rmErr != nil {
-			err = errors.Join(err, fmt.Errorf("remove staging directory: %w", rmErr))
-		}
-	}()
+	defer func() { err = errors.Join(err, removeDir(stage)) }()
 
-	goBuild := exec.CommandContext(ctx, "/usr/bin/go", "build", "-trimpath", //nolint:gosec // absolute binary, fixed argv, our own directories
-		"-o", filepath.Join(stage, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
-	goBuild.Dir = root
-	goBuild.Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
-	goBuild.Stdout, goBuild.Stderr = log, log
-	if err := goBuild.Run(); err != nil {
-		return "", fmt.Errorf("build guest program: %w", err)
+	head, err := exec.CommandContext(ctx, "/usr/bin/git", "-C", root, "rev-parse", "--verify", "HEAD^{commit}").Output() //nolint:gosec // absolute binary, fixed argv
+	commit := strings.TrimSpace(string(head))
+	if err != nil || !commitRE.MatchString(commit) {
+		return "", fmt.Errorf("resolve HEAD: %q: %w", commit, err)
 	}
-	unit, err := os.ReadFile(filepath.Join(root, "range", guestUnit)) //nolint:gosec // fixed path in the repository
+	src, tree := filepath.Join(stage, "src"), filepath.Join(stage, "tree")
+	if err := os.Mkdir(src, 0o700); err != nil {
+		return "", fmt.Errorf("export directory: %w", err)
+	}
+	steps := []*exec.Cmd{
+		exec.CommandContext(ctx, "/usr/bin/git", "-C", root, "archive", "--format=tar", "-o", filepath.Join(stage, "src.tar"), commit),                     //nolint:gosec // absolute binary, fixed argv
+		exec.CommandContext(ctx, "/usr/bin/tar", "-xf", filepath.Join(stage, "src.tar"), "-C", src),                                                        //nolint:gosec // absolute binary, fixed argv
+		exec.CommandContext(ctx, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest"), //nolint:gosec // absolute binary, fixed argv
+	}
+	steps[2].Dir = src
+	steps[2].Env = append(os.Environ(), "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local")
+	for _, cmd := range steps {
+		cmd.Stdout, cmd.Stderr = log, log
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("%s: %w", filepath.Base(cmd.Path), err)
+		}
+	}
+	unit, err := os.ReadFile(filepath.Join(src, "range", guestUnit)) //nolint:gosec // our own export
 	if err != nil {
 		return "", fmt.Errorf("guest unit: %w", err)
 	}
-	unitDir := filepath.Join(stage, "usr/lib/systemd/system")
+	unitDir := filepath.Join(tree, "usr/lib/systemd/system")
 	if err := os.MkdirAll(unitDir, 0o755); err != nil { //nolint:gosec // becomes a system directory in the image
 		return "", fmt.Errorf("guest unit: %w", err)
 	}
@@ -82,15 +100,23 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	if err != nil {
 		return "", fmt.Errorf("build directory: %w", err)
 	}
-	mkosi := exec.CommandContext(ctx, "/usr/bin/mkosi", "--directory="+filepath.Join(root, "range"), //nolint:gosec // absolute binary, fixed argv, our own directories
-		"--extra-tree="+stage, "--output-directory="+out, "build")
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, removeDir(out))
+		}
+	}()
+	mkosi := exec.CommandContext(ctx, "/usr/bin/mkosi", "--directory="+filepath.Join(src, "range"), //nolint:gosec // absolute binary, fixed argv
+		"--extra-tree="+tree, "--output-directory="+out, "build")
 	mkosi.Stdout, mkosi.Stderr = log, log
 	if err := mkosi.Run(); err != nil {
-		return "", errors.Join(fmt.Errorf("mkosi: %w", err), os.RemoveAll(out))
+		return "", fmt.Errorf("mkosi: %w", err)
 	}
-	sum, err := fileSHA256(filepath.Join(out, "image.raw"))
+	if err := writeFileAtomic(filepath.Join(out, "commit"), []byte(commit+"\n")); err != nil {
+		return "", err
+	}
+	sum, err := fileSHA256(ctx, filepath.Join(out, "image.raw"))
 	if err != nil {
-		return "", errors.Join(err, os.RemoveAll(out))
+		return "", err
 	}
 	images := filepath.Join(cache, "images")
 	if err := os.MkdirAll(images, 0o700); err != nil {
@@ -104,14 +130,32 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 }
 
 // Check runs the self-test of image once and stores its Result and serial log under
-// state/results/<id>. Run directories live under cache/runs.
+// state/results/<id>; a run that ends in an error leaves no result directory behind.
 func Check(ctx context.Context, image, cache, state string) (res Result, err error) {
-	sum, err := fileSHA256(image)
+	unlock, err := lock(cache)
 	if err != nil {
 		return Result{}, err
 	}
-	manifest, err := readManifest(filepath.Join(filepath.Dir(image), "image.manifest"))
+	defer func() { err = errors.Join(err, unlock()) }()
+	sum, err := fileSHA256(ctx, image)
 	if err != nil {
+		return Result{}, err
+	}
+	dir := filepath.Dir(image)
+	manifest, err := readManifest(filepath.Join(dir, "image.manifest"))
+	if err != nil {
+		return Result{}, err
+	}
+	commit, err := readCommit(filepath.Join(dir, "commit"))
+	if err != nil {
+		return Result{}, err
+	}
+
+	resultsDir := filepath.Join(state, "results")
+	if err := os.MkdirAll(resultsDir, 0o700); err != nil {
+		return Result{}, fmt.Errorf("results directory: %w", err)
+	}
+	if err := prune(resultsDir, keepResults-1); err != nil {
 		return Result{}, err
 	}
 	var token [4]byte
@@ -119,25 +163,26 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 		return Result{}, fmt.Errorf("run id: %w", err)
 	}
 	id := time.Now().UTC().Format(stampLayout) + "-" + hex.EncodeToString(token[:])
-	runs := filepath.Join(cache, "runs")
-	resultsDir := filepath.Join(state, "results")
 	out := filepath.Join(resultsDir, id)
-	for _, d := range []string{runs, out} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
-			return Result{}, fmt.Errorf("directory: %w", err)
-		}
+	if err := os.Mkdir(out, 0o700); err != nil {
+		return Result{}, fmt.Errorf("result directory: %w", err)
 	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, removeDir(out))
+		}
+	}()
 	serial, err := os.OpenFile(filepath.Join(out, "serial.log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // our own results directory
 	if err != nil {
 		return Result{}, fmt.Errorf("serial log: %w", err)
 	}
-	outcome, runErr := Run(ctx, image, runs, serial)
+	outcome, runErr := Run(ctx, image, filepath.Join(cache, "runs"), serial)
 	if err := errors.Join(runErr, serial.Close()); err != nil {
 		return Result{}, err
 	}
 
 	res = Result{
-		SchemaVersion: resultSchema, ID: id, RangeCommit: rangeCommit(), Image: image,
+		SchemaVersion: resultSchema, ID: id, RangeCommit: commit, Image: image,
 		ImageSHA256: sum, TargetKernel: TargetKernel, Manifest: manifest,
 	}
 	if outcome.Invalid != "" {
@@ -157,57 +202,144 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	if err := writeFileAtomic(filepath.Join(out, "result.json"), data); err != nil {
 		return Result{}, err
 	}
-	return res, prune(resultsDir, keepResults)
+	return res, nil
 }
 
-// rangeCommit is the commit this binary was built from, marked dirty when the tree had changes.
-func rangeCommit() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
+// lock lets one kordon-range at a time own the cache, then removes the staging, build and run
+// directories a killed or crashed earlier invocation left behind (R5). The lock ends with the
+// process, so a crash never leaves it held.
+func lock(cache string) (unlock func() error, err error) {
+	if err := os.MkdirAll(filepath.Join(cache, "runs"), 0o700); err != nil {
+		return nil, fmt.Errorf("cache directory: %w", err)
 	}
-	rev, dirty := "unknown", false
-	for _, s := range info.Settings {
-		switch s.Key {
-		case "vcs.revision":
-			rev = s.Value
-		case "vcs.modified":
-			dirty = s.Value == "true"
+	f, err := os.OpenFile(filepath.Join(cache, "lock"), os.O_CREATE|os.O_RDWR, 0o600) //nolint:gosec // our own cache directory
+	if err != nil {
+		return nil, fmt.Errorf("cache lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return nil, errors.Join(fmt.Errorf("another kordon-range is running (%s): %w", f.Name(), err), f.Close())
+	}
+	var errs []error
+	for _, pattern := range []string{"stage-*", "build-*", "runs/run-*"} {
+		stale, err := filepath.Glob(filepath.Join(cache, pattern))
+		errs = append(errs, err)
+		for _, d := range stale {
+			errs = append(errs, removeDir(d))
 		}
 	}
-	if dirty {
-		return rev + "-dirty"
+	if err := errors.Join(errs...); err != nil {
+		return nil, errors.Join(fmt.Errorf("remove stale directories: %w", err), f.Close())
 	}
-	return rev
+	return func() error {
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("release cache lock: %w", err)
+		}
+		return nil
+	}, nil
 }
 
-func readManifest(path string) (json.RawMessage, error) {
-	f, err := os.Open(path) //nolint:gosec // the maintainer names the image; its manifest sits next to it
+// openRegular opens path for reading without blocking on a FIFO or device and refuses anything
+// that is not a regular file.
+func openRegular(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the maintainer names the image; its files sit next to it
 	if err != nil {
-		return nil, fmt.Errorf("image manifest: %w", err)
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	st, err := f.Stat()
+	if err == nil && !st.Mode().IsRegular() {
+		err = errors.New("not a regular file")
+	}
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("open %s: %w", path, err), f.Close())
+	}
+	return f, nil
+}
+
+func readSmall(path string, limit int64) ([]byte, error) {
+	f, err := openRegular(path)
+	if err != nil {
+		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only file
-	data, err := io.ReadAll(io.LimitReader(f, maxManifest+1))
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
-		return nil, fmt.Errorf("image manifest: %w", err)
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	if len(data) > maxManifest || !json.Valid(data) {
-		return nil, fmt.Errorf("image manifest %s is not JSON of at most %d bytes", path, maxManifest)
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s is over %d bytes", path, limit)
 	}
 	return data, nil
 }
 
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path) //nolint:gosec // the maintainer names the image
+// readManifest returns mkosi's package manifest if it is the version we read and pins the
+// target kernel package, so a stored PASS always names what the image contained (ADR 0009, point 8).
+func readManifest(path string) (json.RawMessage, error) {
+	data, err := readSmall(path, maxManifest)
 	if err != nil {
-		return "", fmt.Errorf("hash %s: %w", path, err)
+		return nil, fmt.Errorf("image manifest: %w", err)
+	}
+	var m struct {
+		ManifestVersion int          `json:"manifest_version"`
+		Packages        []pkgVersion `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("image manifest: %w", err)
+	}
+	if m.ManifestVersion != 1 {
+		return nil, fmt.Errorf("image manifest version %d, want 1", m.ManifestVersion)
+	}
+	kernelPkg := strings.Replace(TargetKernel, "-", ".", 1) // uname 7.2.8-arch1-2 is package 7.2.8.arch1-2
+	if !slices.Contains(m.Packages, pkgVersion{Name: "linux", Version: kernelPkg}) {
+		return nil, fmt.Errorf("image manifest has no linux %s", kernelPkg)
+	}
+	return data, nil
+}
+
+type pkgVersion struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func readCommit(path string) (string, error) {
+	data, err := readSmall(path, 64)
+	if err != nil {
+		return "", fmt.Errorf("image commit: %w", err)
+	}
+	commit := string(bytes.TrimSpace(data))
+	if !commitRE.MatchString(commit) {
+		return "", fmt.Errorf("image commit %q is not a full commit id", commit)
+	}
+	return commit, nil
+}
+
+func fileSHA256(ctx context.Context, path string) (string, error) {
+	f, err := openRegular(path)
+	if err != nil {
+		return "", err
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, ctxReader{ctx, f}); err != nil {
 		return "", fmt.Errorf("hash %s: %w", path, err)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// ctxReader stops a long read when ctx ends.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, fmt.Errorf("read: %w", err)
+	}
+	n, err := c.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, fmt.Errorf("read: %w", err)
+	}
+	return n, err //nolint:wrapcheck // io.EOF must stay unwrapped for io.Copy
 }
 
 // writeFileAtomic follows ENGINEERING.md 7 for whole files: temp file, fsync, rename, fsync dir.
@@ -224,12 +356,19 @@ func writeFileAtomic(path string, data []byte) error {
 	if err := os.Rename(tmp.Name(), path); err != nil {
 		return errors.Join(fmt.Errorf("write %s: %w", path, err), os.Remove(tmp.Name()))
 	}
-	d, err := os.Open(dir) //nolint:gosec // our own results directory
+	d, err := os.Open(dir) //nolint:gosec // our own directory
 	if err != nil {
 		return fmt.Errorf("sync %s: %w", dir, err)
 	}
 	if err := errors.Join(d.Sync(), d.Close()); err != nil {
 		return fmt.Errorf("sync %s: %w", dir, err)
+	}
+	return nil
+}
+
+func removeDir(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove %s: %w", path, err)
 	}
 	return nil
 }
@@ -247,11 +386,8 @@ func prune(dir string, keep int) error {
 	slices.Sort(names)
 	var errs []error
 	for len(names) > keep {
-		errs = append(errs, os.RemoveAll(filepath.Join(dir, names[0])))
+		errs = append(errs, removeDir(filepath.Join(dir, names[0])))
 		names = names[1:]
 	}
-	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("retention %s: %w", dir, err)
-	}
-	return nil
+	return errors.Join(errs...)
 }

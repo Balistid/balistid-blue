@@ -48,8 +48,9 @@ func Append(buf *bytes.Buffer, rec Record) error {
 }
 
 // Parse reads at most limit bytes and returns the facts before the end record. Anything else
-// than well-formed facts closed by an end record with the right count is an error, so a crashed,
-// truncated, oversized or forged stream can never read as a complete one (R6).
+// than well-formed facts closed by an end record with the right count and followed only by the
+// disk's zero padding is an error, so a crashed, truncated, oversized or garbled stream can never
+// read as a complete one (R6).
 func Parse(r io.Reader, limit int64) ([]Record, error) {
 	lr := io.LimitReader(r, limit)
 	var facts []Record
@@ -74,9 +75,28 @@ func Parse(r io.Reader, limit int64) ([]Record, error) {
 			if rec.Count != len(facts) {
 				return nil, fmt.Errorf("end record counts %d facts, stream has %d", rec.Count, len(facts))
 			}
+			if err := zeroTail(lr); err != nil {
+				return nil, err
+			}
 			return facts, nil
 		}
 		facts = append(facts, rec)
+	}
+}
+
+func zeroTail(r io.Reader) error {
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := r.Read(buf)
+		if bytes.ContainsFunc(buf[:n], func(c rune) bool { return c != 0 }) {
+			return errors.New("data after the end record")
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read after the end record: %w", err)
+		}
 	}
 }
 

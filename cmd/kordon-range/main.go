@@ -58,7 +58,7 @@ func dirs() (cache, state string, err error) {
 		return "", "", fmt.Errorf("cache directory: %w", err)
 	}
 	state = os.Getenv("XDG_STATE_HOME")
-	if state == "" {
+	if state == "" || !filepath.IsAbs(state) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", "", fmt.Errorf("state directory: %w", err)
