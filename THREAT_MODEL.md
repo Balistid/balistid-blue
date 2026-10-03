@@ -55,7 +55,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T30 | A3 | Hostile guest output (results disk, serial) attacks the host reader or QEMU tools | Results read as raw bytes: length-prefixed, capped, JSON with unknown fields rejected, zero padding after the end; `format=` on every drive; serial budget; no guest filesystem opened (0009) | tests TestParseRejects, FuzzParse, TestQemuArgv, TestRunCommand, TestPlantedQcow2HeaderIsData | designed |
 | T31 | A3 | Guest escapes QEMU or KVM | QEMU in bwrap: no network, no `$HOME`, read-only root, `/dev` and run directory, three size-limited writable files; `-sandbox` (0009) | test TestSandboxIsolatesHost (range host only) | partial: an escape runs as the maintainer's uid |
 | T32 | A5 | Malicious or changed Atomic Red Team test or runner | — | — | gap: pinned commit and review, floor 1 |
-| T33 | A1 | Forge or edit range results, stored at the maintainer's uid | — | — | gap: results are trusted only as far as that uid (0009) |
+| T33 | A1 | Forge or edit range results, or the local git state an image is built from, at the maintainer's uid | Result names image and launcher commit; a launcher that is not a clean build of the image commit gives UNKNOWN | test TestJudge | gap: results are trusted only as far as that uid (0009) |
 
 ## Assumptions
 
