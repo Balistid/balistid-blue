@@ -1,7 +1,8 @@
 # Threat model — floor 0 (recorder)
 
 Scope: one Arch Linux host recording through auditd and Laurel (ADR 0004), raw SQLite shards (0005),
-a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007). Detection and
+a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007), and the attack
+range VM that tests them (0009). Detection and
 response start on floor 1. Each row names its control and its proof in `acceptance/0.toml` or a test.
 Status: **designed** (control decided, test not yet passing), **partial** (control leaves a stated
 hole), **gap** (no control; the floor meant to close it, or "open"), **assumption**. No row is
@@ -51,6 +52,10 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T27 | A6 | Pi dies, or push delivery fails | — | — | gap: dead-man switch, floor 3 |
 | T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |
 | T28 | A6 | Host offline: outage looks like attack | Announced shutdown and suspend; silence alarm | silence_alarm_s | partial: outages alarm too |
+| T30 | A3 | Hostile guest output (results disk, serial) attacks the host reader or QEMU tools | Results read as raw bytes: length-prefixed, capped, strict JSON; `format=` on every drive; serial budget; no guest filesystem opened (0009) | tests TestParseRejects, FuzzParse, TestQemuArgv, TestRunCommand | designed |
+| T31 | A3 | Guest escapes QEMU or KVM | QEMU in bwrap: no network, no `$HOME`, read-only `/usr`, one run directory; `-sandbox`; file-size limit (0009) | test TestSandboxIsolatesHost (range host only) | partial: an escape runs as the maintainer's uid |
+| T32 | A5 | Malicious or changed Atomic Red Team test or runner | — | — | gap: pinned commit and review, floor 1 |
+| T33 | A1 | Forge or edit range results, stored at the maintainer's uid | — | — | gap: results are trusted only as far as that uid (0009) |
 
 ## Assumptions
 
