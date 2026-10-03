@@ -69,6 +69,9 @@ func run() error {
 	add("laurel_cap_eff", eff)
 	add("laurel_cap_amb", amb)
 	add("canary", canary(ctx))
+	records := "missing"
+	inLaurelLog(func(r io.Reader) bool { records = rangeguest.RecordsBeforeAuditd(r); return true })
+	add("records_before_auditd", records)
 
 	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
