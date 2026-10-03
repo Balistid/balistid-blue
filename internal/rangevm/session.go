@@ -32,6 +32,10 @@ const (
 
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
+// sourceDateEpoch is the SourceDateEpoch of range/mkosi.conf, so the Laurel package, like the rest
+// of the image, does not change with the build time.
+const sourceDateEpoch = "1790899200"
+
 // buildInputs are the paths Build reads; they must match the commit it records.
 var buildInputs = []string{"range", "cmd", "internal", "go.mod", "packaging", "deploy"}
 
@@ -126,7 +130,7 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	// makepkg gets a clean environment and writes only into the stage, so no user makepkg.conf,
 	// RUSTFLAGS or leftover in packaging/ changes the package, and the tree stays clean.
 	makepkg := tool(filepath.Join(root, "packaging", "laurel"), "/usr/bin/makepkg", "--noconfirm", "--nodeps")
-	makepkg.Env = []string{"PATH=/usr/bin", "HOME=" + filepath.Join(stage, "home"), "PKGDEST=" + pkgs,
+	makepkg.Env = []string{"PATH=/usr/bin", "HOME=" + filepath.Join(stage, "home"), "PKGDEST=" + pkgs, "SOURCE_DATE_EPOCH=" + sourceDateEpoch,
 		"SRCDEST=" + filepath.Join(stage, "src"), "BUILDDIR=" + filepath.Join(stage, "build"), "LOGDEST=" + filepath.Join(stage, "log")}
 	for _, k := range proxyEnv {
 		if v, ok := os.LookupEnv(k); ok {

@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// maxLine caps one Laurel line; longer lines are skipped, not trusted.
+// maxLine caps one Laurel line; a longer line ends the scan, so a check that needs a later line fails.
 const maxLine = 4 << 20
 
 // AuditStatus returns the fields of `auditctl -s` as name → value ("enabled" → "2").

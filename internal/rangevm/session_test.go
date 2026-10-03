@@ -286,3 +286,13 @@ func TestCopyIntoIgnoresTheUmask(t *testing.T) {
 		t.Fatalf("mode %v, %v; want 0644 under umask 077", st.Mode().Perm(), err)
 	}
 }
+
+func TestSourceDateEpochMatchesTheImageConfig(t *testing.T) {
+	conf, err := os.ReadFile("../../range/mkosi.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(conf), "\nSourceDateEpoch="+sourceDateEpoch+"\n") {
+		t.Fatalf("range/mkosi.conf does not set SourceDateEpoch=%s", sourceDateEpoch)
+	}
+}
