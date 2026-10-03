@@ -68,6 +68,8 @@ LAYOUT: tuple[str, ...] = (
     "deploy/audit/*.rules",
     "deploy/auditd/auditd.conf",
     "deploy/laurel/config.toml",
+    "deploy/auditd/laurel-plugin.conf",
+    "deploy/sysctl/kordon.conf",
     "deploy/systemd/*.service",
     "deploy/systemd/*.timer",
     # Attack range (ADR 0009).
