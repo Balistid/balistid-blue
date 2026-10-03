@@ -25,9 +25,9 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
    and `disk_full_action` keep a flood from halting the host. Rules cover ptrace, `process_vm_writev`,
    `execveat` and `memfd_create`, the usual ways around exec records.
    io_uring is disabled (`kernel.io_uring_disabled=2`); io_uring audit rules stay UNKNOWN. Whether the
-   host can run without io_uring is decided before floor 0 is installed there. The repository also holds
-   the plugin entry and the sysctl. gawk is required (augenrules silently loads no rules without it), and
-   the kernel command line needs `audit=1` and an `audit_backlog_limit=` large enough to lose nothing before auditd.
+   host can run without io_uring is decided before floor 0 is installed there. The repository also holds the
+   plugin entry and the sysctl. gawk is required (augenrules silently loads no rules without it); the kernel
+   needs `audit=1` and an `audit_backlog_limit=` that loses nothing before auditd (audit=1 is not provable at runtime).
 3. Laurel hands records to the collector over a Unix socket that admits only Laurel's uid.
 4. Required properties, implemented in code with tests: every loss signal we can read (kernel `lost`
    including resets, dispatcher overflow, Laurel and collector reconnects) becomes an event; sensor

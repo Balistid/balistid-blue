@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"io"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -92,42 +91,6 @@ func HasRefusedDisable(log io.Reader) bool {
 			return scalar(c["audit_enabled"]) == "0" && scalar(c["res"]) == "0"
 		})
 	})
-}
-
-// RecordsBeforeAuditd reports "yes" when a Laurel log holds an event older (lower serial) than auditd's
-// own registration (CONFIG_CHANGE setting audit_pid), "no" when it holds none, and "missing" without a
-// registration. With audit disabled at boot the kernel records nothing before auditd enables it, so
-// an older event proves audit=1 took effect.
-func RecordsBeforeAuditd(log io.Reader) string {
-	first, registered := int64(-1), int64(-1)
-	eachEvent(log, func(ev map[string]json.RawMessage) bool {
-		var id string
-		if json.Unmarshal(ev["ID"], &id) != nil {
-			return false
-		}
-		_, num, ok := strings.Cut(id, ":")
-		serial, err := strconv.ParseInt(num, 10, 64)
-		if !ok || err != nil {
-			return false
-		}
-		if first < 0 || serial < first {
-			first = serial
-		}
-		var changes []map[string]json.RawMessage
-		if json.Unmarshal(ev["CONFIG_CHANGE"], &changes) == nil && registered < 0 &&
-			slices.ContainsFunc(changes, func(c map[string]json.RawMessage) bool { return c["audit_pid"] != nil }) {
-			registered = serial
-		}
-		return false
-	})
-	switch {
-	case registered < 0:
-		return "missing"
-	case first < registered:
-		return "yes"
-	default:
-		return "no"
-	}
 }
 
 // eachEvent calls match on every JSON object line of log until it returns true.
