@@ -269,3 +269,20 @@ func TestBuildRefusesInputsThatDifferFromHead(t *testing.T) {
 		t.Fatalf("Build = %v, want a refusal for the untracked file", err)
 	}
 }
+
+func TestCopyIntoIgnoresTheUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "tree/etc/x.conf")
+	if err := copyInto(src, dst, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(dst); err != nil || st.Mode().Perm() != 0o644 {
+		t.Fatalf("mode %v, %v; want 0644 under umask 077", st.Mode().Perm(), err)
+	}
+}

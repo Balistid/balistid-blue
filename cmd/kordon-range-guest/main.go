@@ -49,6 +49,7 @@ func main() {
 
 func run() error {
 	ctx := context.Background()
+	diagnose(ctx)
 	var facts []fact
 	add := func(name, value string) { facts = append(facts, fact{name, value}) }
 
@@ -340,4 +341,19 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 	lost = valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
 	journal = yesNo(strings.Contains(output(ctx, "/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "cat"), "queue to plugins is full"))
 	return before, after, lost, journal
+}
+
+// diagnose prints how the sensor came up to the console, which the host keeps as serial.log, so a
+// failed check can be explained without the guest's journal, which is gone after the run.
+func diagnose(ctx context.Context) {
+	for _, argv := range [][]string{
+		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-u", "auditd", "-u", "audit-rules", "-u", "systemd-sysctl"},
+		{"/usr/bin/auditctl", "-s"},
+		{"/usr/bin/auditctl", "-l"},
+		{"/usr/bin/findmnt", "-n", "/"},
+		{"/usr/bin/ls", "-l", "/etc/audit", "/var/log/laurel"},
+	} {
+		out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput() //nolint:gosec // absolute binaries, fixed argv
+		fmt.Printf("kordon-range-guest: $ %s (err %v)\n%s\n", strings.Join(argv, " "), err, out)
+	}
 }
