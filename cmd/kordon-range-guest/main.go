@@ -73,7 +73,7 @@ func run() error {
 	add("e0_result", disableAudit(ctx))
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	add("e0_recorded", yesNo(waitFor(func() bool { return inLaurelLog(rangeguest.HasRefusedDisable) })))
-	printLines(laurelLog, "CONFIG_CHANGE")
+	printLines(laurelLog, "audit_enabled")
 
 	add("io_uring_sysctl", readTrim(ioUringSysctl))
 	add("io_uring_off", ioUringSetup())

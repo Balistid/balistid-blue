@@ -59,13 +59,16 @@ not json
 	}
 }
 
+// Shapes as Laurel 0.8.2 wrote them in the range on 2026-10-03: CONFIG_CHANGE is a list.
 func TestHasRefusedDisable(t *testing.T) {
 	cases := map[string]bool{
-		`{"CONFIG_CHANGE":{"op":"set","audit_enabled":0,"old":2,"res":0}}`:       true,
-		`{"CONFIG_CHANGE":{"op":"set","audit_enabled":"0","old":"2","res":"0"}}`: true,
-		`{"CONFIG_CHANGE":{"op":"set","audit_enabled":0,"old":2,"res":1}}`:       false,
-		`{"CONFIG_CHANGE":{"op":"set","audit_enabled":2,"old":1,"res":0}}`:       false,
-		`{"SYSCALL":{"audit_enabled":0,"res":0}}`:                                false,
+		`{"ID":"1:130","CONFIG_CHANGE":[{"op":"set","audit_enabled":0,"old":"2","auid":4294967295,"ses":4294967295,"res":0,"AUID":"unset"}]}`: true,
+		`{"ID":"1:130","CONFIG_CHANGE":[{"op":"set","audit_enabled":"0","old":"2","res":"0"}]}`:                                               true,
+		`{"ID":"1:130","CONFIG_CHANGE":[{"op":"set","audit_backlog_limit":65536,"old":"d","res":1},{"op":"set","audit_enabled":0,"res":0}]}`:  true,
+		`{"ID":"1:130","CONFIG_CHANGE":[{"op":"set","audit_enabled":0,"old":"2","res":1}]}`:                                                   false,
+		`{"ID":"1:130","CONFIG_CHANGE":[{"op":"set","audit_enabled":2,"old":"1","res":0}]}`:                                                   false,
+		`{"ID":"1:130","CONFIG_CHANGE":{"op":"set","audit_enabled":0,"res":0}}`:                                                               false,
+		`{"ID":"1:130","SYSCALL":{"audit_enabled":0,"res":0}}`:                                                                                false,
 	}
 	for line, want := range cases {
 		if got := HasRefusedDisable(strings.NewReader(line + "\n")); got != want {
