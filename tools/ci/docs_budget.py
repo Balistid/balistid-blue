@@ -72,7 +72,7 @@ LAYOUT: tuple[str, ...] = (
     "deploy/systemd/*.timer",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
-    "range/*.service",
+    "range/kordon-range-guest.service",
 )
 
 REGULAR_MODES = {"100644", "100755"}
