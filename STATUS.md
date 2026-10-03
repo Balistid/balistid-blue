@@ -7,7 +7,8 @@ Updated: 2026-10-03 by claude/opus-5.5
 Floor 0 (recorder) designed, acceptance numbers approved, Go toolchain and gates live. The attack
 range of ADR 0009 is being built: `kordon-range build` makes an Arch image with mkosi, `kordon-range
 run` boots it once in QEMU inside bwrap and judges what the guest reports. No sensor in the image yet.
-ADR 0004 and 0009 stay proposed until their first runs pass.
+The self-test checks only the bare range; ADR 0004 and 0009 stay proposed until all their
+Consequences pass, including Laurel output in the smoke test.
 
 ## Done in the last session
 
@@ -19,9 +20,9 @@ ADR 0004 and 0009 stay proposed until their first runs pass.
 ## Next step
 
 1. On the range host: `go test -tags rangehost ./internal/rangevm/`, then `kordon-range build` and
-   `kordon-range run <image>`; a PASS accepts ADR 0009.
+   `kordon-range run <image>` must PASS.
 2. Sensor in the image: Laurel PKGBUILD, audit rules, auditd and Laurel config, and the ADR 0004
-   smoke checks; a passing smoke test accepts ADR 0004.
+   smoke checks; when they pass, ADR 0004 and 0009 become accepted.
 3. Floor 0 code, package by package, each with its acceptance tests.
 
 ## Open decisions (maintainer)
