@@ -35,10 +35,15 @@ func run() error {
 		ifaces = append(ifaces, e.Name())
 	}
 	slices.Sort(ifaces)
+	pciNet, err := networkPCIDevices()
+	if err != nil {
+		return err
+	}
 
 	facts := []rangevm.Record{
 		{SchemaVersion: rangevm.SchemaVersion, Kind: rangevm.KindFact, Name: rangevm.FactKernel, Value: strings.TrimSpace(string(kernel))},
 		{SchemaVersion: rangevm.SchemaVersion, Kind: rangevm.KindFact, Name: rangevm.FactNet, Value: strings.Join(ifaces, ",")},
+		{SchemaVersion: rangevm.SchemaVersion, Kind: rangevm.KindFact, Name: rangevm.FactPCINet, Value: strings.Join(pciNet, ",")},
 	}
 	var buf bytes.Buffer
 	for _, f := range facts {
@@ -66,4 +71,25 @@ func run() error {
 		return fmt.Errorf("close results: %w", err)
 	}
 	return nil
+}
+
+// networkPCIDevices lists PCI devices of class 0x02 (network controller). They exist from PCI
+// enumeration on, before a driver binds and an interface appears in /sys/class/net.
+func networkPCIDevices() ([]string, error) {
+	const dir = "/sys/bus/pci/devices"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("pci devices: %w", err)
+	}
+	var found []string
+	for _, e := range entries {
+		class, err := os.ReadFile(dir + "/" + e.Name() + "/class")
+		if err != nil {
+			return nil, fmt.Errorf("pci device class: %w", err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(class)), "0x02") {
+			found = append(found, e.Name())
+		}
+	}
+	return found, nil
 }

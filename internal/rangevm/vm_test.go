@@ -24,9 +24,13 @@ func TestSandboxArgvIsExactlyTheAllowlist(t *testing.T) {
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--dev-bind", "/dev/kvm", "/dev/kvm",
-		"--tmpfs", "/tmp",
 		"--ro-bind", "/img/base.raw", "/range/base.raw",
-		"--bind", "/cache/run-1", "/range/run",
+		"--ro-bind", "/cache/run-1", "/range/run",
+		"--bind", "/cache/run-1/overlay.qcow2", "/range/run/overlay.qcow2",
+		"--bind", "/cache/run-1/results.raw", "/range/run/results.raw",
+		"--bind", "/cache/run-1/vars.fd", "/range/run/vars.fd",
+		"--remount-ro", "/dev",
+		"--remount-ro", "/",
 		"--", "/usr/bin/true",
 	}
 	if !slices.Equal(got, want) {

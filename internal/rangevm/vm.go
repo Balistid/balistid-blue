@@ -40,9 +40,11 @@ const (
 	setupTimeout = time.Minute
 )
 
-// sandboxArgv wraps prog in prlimit and bwrap: no core dump of guest memory when the size limit
-// fires (SIGXFSZ dumps core by default), no network, no host $HOME, read-only /usr and base
-// image, one writable run directory and /dev/kvm (ADR 0009, point 3).
+// sandboxArgv wraps prog in prlimit and bwrap (ADR 0009, point 3): no network, no host $HOME,
+// read-only /usr, base image and run directory, and only the three run files writable, so the
+// per-file size limit bounds all the disk a compromised QEMU can fill; the bwrap root and /dev are
+// remounted read-only so it cannot fill memory through tmpfs either. --core=0 because SIGXFSZ
+// dumps core by default, and a QEMU core holds guest memory.
 func sandboxArgv(base, runDir string, fsize int64, prog ...string) []string {
 	argv := []string{
 		prlimitPath, fmt.Sprintf("--fsize=%d", fsize), "--core=0", "--",
@@ -56,9 +58,13 @@ func sandboxArgv(base, runDir string, fsize int64, prog ...string) []string {
 		"--proc", "/proc",
 		"--dev", "/dev",
 		"--dev-bind", "/dev/kvm", "/dev/kvm",
-		"--tmpfs", "/tmp",
 		"--ro-bind", base, inBase,
-		"--bind", runDir, inRun,
+		"--ro-bind", runDir, inRun,
+		"--bind", filepath.Join(runDir, overlay), inRun + "/" + overlay,
+		"--bind", filepath.Join(runDir, results), inRun + "/" + results,
+		"--bind", filepath.Join(runDir, firmVars), inRun + "/" + firmVars,
+		"--remount-ro", "/dev",
+		"--remount-ro", "/",
 		"--",
 	}
 	return append(argv, prog...)
@@ -133,8 +139,12 @@ func Run(ctx context.Context, base, parent string, serial io.Writer) (out Outcom
 	return Outcome{Facts: facts}, nil
 }
 
-// prepare writes the zeroed results disk and a private copy of the firmware variables.
+// prepare writes the zeroed results disk, a private copy of the firmware variables and the empty
+// overlay file that qemu-img fills; the sandbox can write only these three files.
 func prepare(runDir string) error {
+	if err := os.WriteFile(filepath.Join(runDir, overlay), nil, 0o600); err != nil {
+		return fmt.Errorf("overlay: %w", err)
+	}
 	vars, err := os.ReadFile(ovmfVars)
 	if err != nil {
 		return fmt.Errorf("firmware variables: %w", err)

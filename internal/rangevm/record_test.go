@@ -42,22 +42,24 @@ func TestParseAcceptsCompleteStream(t *testing.T) {
 }
 
 func TestParseRejects(t *testing.T) {
-	qcow2 := append([]byte("QFI\xfb\x00\x00\x00\x03"), make([]byte, 504)...) // backing-file header a guest could plant
+	qcow2 := append([]byte("QFI\xfb\x00\x00\x00\x03"), make([]byte, 504)...) // read as a length, the magic is far over the cap
 	cases := map[string][]byte{
-		"empty disk":           make([]byte, 1024),
-		"qcow2 header":         qcow2,
-		"no end record":        stream(t, fact("kernel", "k")),
-		"wrong end count":      stream(t, fact("kernel", "k"), end(2)),
-		"truncated body":       stream(t, fact("kernel", "k"), end(1))[:10],
-		"oversized record":     append(raw(`{"schema_version":1,"kind":"fact","name":"n","value":"`+strings.Repeat("x", MaxRecordBytes)+`"}`), stream(t, end(1))...),
-		"unknown field":        raw(`{"schema_version":1,"kind":"end","count":0,"x":1}`),
-		"unknown kind":         raw(`{"schema_version":1,"kind":"verdict","name":"a"}`),
-		"future schema":        raw(`{"schema_version":2,"kind":"end"}`),
-		"trailing data":        raw(`{"schema_version":1,"kind":"end"} {}`),
-		"fact without name":    append(raw(`{"schema_version":1,"kind":"fact","value":"v"}`), stream(t, end(1))...),
-		"end with name":        raw(`{"schema_version":1,"kind":"end","name":"x"}`),
-		"not json":             raw(`kernel=7`),
-		"end beyond the limit": stream(t, fact("kernel", strings.Repeat("k", 100)), end(1)),
+		"empty disk":                 make([]byte, 1024),
+		"length prefix out of range": qcow2,
+		"fact after the end":         append(stream(t, end(0)), stream(t, fact("net", "eth0"))...),
+		"second end":                 stream(t, end(0), end(999)),
+		"no end record":              stream(t, fact("kernel", "k")),
+		"wrong end count":            stream(t, fact("kernel", "k"), end(2)),
+		"truncated body":             stream(t, fact("kernel", "k"), end(1))[:10],
+		"oversized record":           append(raw(`{"schema_version":1,"kind":"fact","name":"n","value":"`+strings.Repeat("x", MaxRecordBytes)+`"}`), stream(t, end(1))...),
+		"unknown field":              raw(`{"schema_version":1,"kind":"end","count":0,"x":1}`),
+		"unknown kind":               raw(`{"schema_version":1,"kind":"verdict","name":"a"}`),
+		"future schema":              raw(`{"schema_version":2,"kind":"end"}`),
+		"trailing data":              raw(`{"schema_version":1,"kind":"end"} {}`),
+		"fact without name":          append(raw(`{"schema_version":1,"kind":"fact","value":"v"}`), stream(t, end(1))...),
+		"end with name":              raw(`{"schema_version":1,"kind":"end","name":"x"}`),
+		"not json":                   raw(`kernel=7`),
+		"end beyond the limit":       stream(t, fact("kernel", strings.Repeat("k", 100)), end(1)),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
