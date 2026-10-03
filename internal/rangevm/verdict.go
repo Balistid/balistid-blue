@@ -49,7 +49,7 @@ var expected = map[string]string{
 	"laurel_cap_eff":         capsLaurel,
 	"laurel_cap_amb":         "0000000000000000",
 	"canary":                 "seen",
-	"e0_result":              "EPERM",
+	"e0_result":              "refused",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",
 	"io_uring_sysctl":        "2",
