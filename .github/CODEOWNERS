@@ -18,3 +18,6 @@
 /packaging/ @Jvc0n
 /deploy/ @Jvc0n
 /range/ @Jvc0n
+/internal/rangevm/ @Jvc0n
+/cmd/kordon-range/ @Jvc0n
+/cmd/kordon-range-guest/ @Jvc0n

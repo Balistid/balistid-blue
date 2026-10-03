@@ -318,7 +318,7 @@ class GoLayoutTest(unittest.TestCase):
                      "deploy/systemd/kordon.socket", "deploy/systemd/sub/x.service",
                      "deploy/auditd/other.conf", "src/main.go", "range/mkosi.postinst",
                      "range/mkosi.extra/etc/x.conf", "range/other.conf", "range/sub/x.service",
-                     "range/mkosi.conf.d/x.conf", "range/x.timer"):
+                     "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service"):
             with self.subTest(name=name):
                 self.assert_budget({name: "x\n"}, 1)
 
