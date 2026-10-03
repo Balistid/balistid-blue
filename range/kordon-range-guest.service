@@ -3,7 +3,8 @@
 [Unit]
 Description=Kordon range guest report
 Requires=dev-disk-by\x2did-virtio\x2dkordon\x2dresults.device
-After=dev-disk-by\x2did-virtio\x2dkordon\x2dresults.device
+After=dev-disk-by\x2did-virtio\x2dkordon\x2dresults.device auditd.service audit-rules.service
+After=systemd-sysctl.service
 SuccessAction=poweroff-force
 FailureAction=poweroff-force
 

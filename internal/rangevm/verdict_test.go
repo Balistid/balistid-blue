@@ -1,6 +1,28 @@
 package rangevm
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+// passing returns the facts of a run that passes, with overrides applied; an override "-" drops a fact.
+func passing(overrides map[string]string) []Record {
+	values := map[string]string{FactKernel: TargetKernel}
+	for k, v := range expected {
+		values[k] = v
+	}
+	for k, v := range overrides {
+		values[k] = v
+	}
+	var facts []Record
+	for k, v := range values {
+		if v != "-" {
+			facts = append(facts, fact(k, v))
+		}
+	}
+	return facts
+}
 
 func TestSelftest(t *testing.T) {
 	cases := []struct {
@@ -8,17 +30,28 @@ func TestSelftest(t *testing.T) {
 		facts []Record
 		want  string
 	}{
-		{"isolated guest on the target kernel", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo"), fact(FactPCINet, "")}, Pass},
-		{"guest sees a NIC", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "eth0,lo"), fact(FactPCINet, "0000:00:02.0")}, Fail},
-		{"NIC beats kernel mismatch", []Record{fact(FactKernel, "6.1.0"), fact(FactNet, "lo,wlan0"), fact(FactPCINet, "")}, Fail},
-		{"guest sees nothing at all", []Record{fact(FactKernel, TargetKernel), fact(FactNet, ""), fact(FactPCINet, "")}, Fail},
-		{"other kernel", []Record{fact(FactKernel, "7.2.8-hardened1-2-hardened"), fact(FactNet, "lo"), fact(FactPCINet, "")}, Unknown},
-		{"NIC without a driver yet", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo"), fact(FactPCINet, "0000:00:02.0")}, Fail},
-		{"missing net", []Record{fact(FactKernel, TargetKernel), fact(FactPCINet, "")}, Invalid},
-		{"missing pci_net", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo")}, Invalid},
+		{"everything right", passing(nil), Pass},
+		{"guest sees a NIC", passing(map[string]string{FactNet: "eth0,lo"}), Fail},
+		{"NIC without a driver yet", passing(map[string]string{FactPCINet: "0000:00:02.0"}), Fail},
+		{"NIC beats kernel mismatch", passing(map[string]string{FactKernel: "6.1.0", FactNet: "lo,wlan0"}), Fail},
+		{"guest sees nothing at all", passing(map[string]string{FactNet: ""}), Fail},
+		{"other kernel", passing(map[string]string{FactKernel: "7.2.8-hardened1-2-hardened"}), Unknown},
+		{"sensor wrong on another kernel", passing(map[string]string{FactKernel: "6.1.0", "canary": "missing"}), Fail},
+		{"missing kernel", passing(map[string]string{FactKernel: "-"}), Invalid},
+		{"missing sensor fact", passing(map[string]string{"overflow_after": "-"}), Invalid},
 		{"no facts", nil, Invalid},
-		{"duplicate fact", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo"), fact(FactNet, "lo"), fact(FactPCINet, "")}, Invalid},
-		{"unexpected fact", []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo"), fact("verdict", Pass)}, Invalid},
+		{"duplicate fact", append(passing(nil), fact(FactNet, "lo")), Invalid},
+		{"unexpected fact", append(passing(nil), fact("verdict", Pass)), Invalid},
+	}
+	for name, want := range expected {
+		if name == FactNet || name == FactPCINet {
+			continue
+		}
+		cases = append(cases, struct {
+			name  string
+			facts []Record
+			want  string
+		}{"wrong " + name, passing(map[string]string{name: want + "x"}), Fail})
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -26,5 +59,29 @@ func TestSelftest(t *testing.T) {
 				t.Fatalf("Selftest = %s (%s), want %s", got, reason, c.want)
 			}
 		})
+	}
+}
+
+// The expected audit settings must be the ones deploy/audit/kordon.rules loads.
+func TestExpectedAuditSettingsMatchTheRules(t *testing.T) {
+	rules, err := os.ReadFile("../../deploy/audit/kordon.rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := map[string]string{"-b": "audit_backlog_limit", "-r": "audit_rate_limit", "-f": "audit_failure", "-e": "audit_enabled"}
+	found := map[string]bool{}
+	for _, line := range strings.Split(string(rules), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 {
+			if name, ok := flags[f[0]]; ok {
+				found[name] = true
+				if expected[name] != f[1] {
+					t.Errorf("%s %s in the rules, verdict expects %s=%q", f[0], f[1], name, expected[name])
+				}
+			}
+		}
+	}
+	if len(found) != len(flags) {
+		t.Fatalf("rules set %d of the %d checked settings", len(found), len(flags))
 	}
 }
