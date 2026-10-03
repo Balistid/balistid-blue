@@ -57,6 +57,21 @@ func StatusField(status, field string) string {
 	return ""
 }
 
+// CmdlineValue returns the value of key in a /proc/cmdline, all values comma-joined when the key
+// repeats (which never matches an expected single value), or "missing".
+func CmdlineValue(cmdline, key string) string {
+	var values []string
+	for _, tok := range strings.Fields(cmdline) {
+		if k, v, ok := strings.Cut(tok, "="); ok && k == key {
+			values = append(values, v)
+		}
+	}
+	if len(values) == 0 {
+		return "missing"
+	}
+	return strings.Join(values, ",")
+}
+
 // UserName returns the name of uid in an /etc/passwd file, or "".
 func UserName(passwd, uid string) string {
 	for _, line := range strings.Split(passwd, "\n") {

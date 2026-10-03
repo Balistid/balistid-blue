@@ -32,32 +32,35 @@ const capsLaurel = "0000000000080004"
 // expected is every fact the guest reports besides the kernel, with the one value that passes.
 // Isolation: no interface but loopback and no network-class PCI device (present before any driver
 // binds, so a slow driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
-// Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/kordon.rules, Laurel as
+// Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/kordon.rules, audit=1 and
+// the rules' backlog on the kernel command line the guest actually booted with, Laurel as
 // _laurel with only its two capabilities, a canary through Laurel, -e 2 refusing and recording a
 // disable, io_uring refused with a control that the probe tells both states apart, and a
 // plugin-queue overflow reported while the kernel loses nothing.
 var expected = map[string]string{
-	FactNet:                  "lo",
-	FactPCINet:               "",
-	"audit_enabled":          "2",
-	"audit_failure":          "1",
-	"audit_backlog_limit":    "65536",
-	"audit_rate_limit":       "0",
-	"audit_lost":             "0",
-	"laurel_user":            "_laurel",
-	"laurel_cap_prm":         capsLaurel,
-	"laurel_cap_eff":         capsLaurel,
-	"laurel_cap_amb":         "0000000000000000",
-	"canary":                 "seen",
-	"audit_enabled_after_e0": "2",
-	"e0_recorded":            "yes",
-	"io_uring_sysctl":        "2",
-	"io_uring_off":           "EPERM",
-	"io_uring_on":            "EFAULT",
-	"overflow_before":        "no",
-	"overflow_after":         "yes",
-	"overflow_journal":       "yes",
-	"audit_lost_after":       "0",
+	FactNet:                    "lo",
+	FactPCINet:                 "",
+	"audit_enabled":            "2",
+	"audit_failure":            "1",
+	"audit_backlog_limit":      "65536",
+	"audit_rate_limit":         "0",
+	"audit_lost":               "0",
+	"boot_audit":               "1",
+	"boot_audit_backlog_limit": "65536",
+	"laurel_user":              "_laurel",
+	"laurel_cap_prm":           capsLaurel,
+	"laurel_cap_eff":           capsLaurel,
+	"laurel_cap_amb":           "0000000000000000",
+	"canary":                   "seen",
+	"audit_enabled_after_e0":   "2",
+	"e0_recorded":              "yes",
+	"io_uring_sysctl":          "2",
+	"io_uring_off":             "EPERM",
+	"io_uring_on":              "EFAULT",
+	"overflow_before":          "no",
+	"overflow_after":           "yes",
+	"overflow_journal":         "yes",
+	"audit_lost_after":         "0",
 }
 
 // Selftest judges a run of the range image. Missing, unknown or repeated facts are INVALID; any wrong

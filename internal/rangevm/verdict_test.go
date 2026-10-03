@@ -1,7 +1,6 @@
 package rangevm
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -85,70 +84,8 @@ func TestExpectedAuditSettingsMatchTheRules(t *testing.T) {
 	if len(found) != len(flags) {
 		t.Fatalf("rules set %d of the %d checked settings", len(found), len(flags))
 	}
-	conf, err := os.ReadFile("../../range/mkosi.conf")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if why := bootAuditProblem(string(conf), expected["audit_backlog_limit"]); why != "" {
-		t.Fatal("range/mkosi.conf: " + why)
-	}
-}
-
-// bootAuditProblem checks the effective KernelCommandLine of the [Content] section, comments
-// excluded and continuation lines included: audit=1 and a boot-time backlog equal to the rules' -b
-// (ADR 0004), each exactly once.
-func bootAuditProblem(conf, backlog string) string {
-	var tokens []string
-	section, inCmdline := "", false
-	for _, line := range strings.Split(conf, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(trimmed, "#") || trimmed == "":
-			continue
-		case strings.HasPrefix(trimmed, "["):
-			section, inCmdline = trimmed, false
-		case line != trimmed && strings.HasPrefix(line, " ") && inCmdline:
-			tokens = append(tokens, strings.Fields(trimmed)...)
-		default:
-			key, value, _ := strings.Cut(trimmed, "=")
-			inCmdline = section == "[Content]" && key == "KernelCommandLine"
-			if inCmdline {
-				tokens = append(tokens, strings.Fields(value)...)
-			}
-		}
-	}
-	for _, want := range []string{"audit=1", "audit_backlog_limit=" + backlog} {
-		name, _, _ := strings.Cut(want, "=")
-		var seen []string
-		for _, tok := range tokens {
-			if strings.HasPrefix(tok, name+"=") {
-				seen = append(seen, tok)
-			}
-		}
-		if len(seen) != 1 || seen[0] != want {
-			return fmt.Sprintf("kernel command line has %q, want exactly %s", seen, want)
-		}
-	}
-	return ""
-}
-
-func TestBootAuditProblem(t *testing.T) {
-	ok := "[Content]\nKernelCommandLine=console=ttyS0 audit=1\n                  audit_backlog_limit=65536 x=y\n"
-	cases := map[string]bool{
-		ok: true,
-		"[Content]\n# audit=1 audit_backlog_limit=65536\nKernelCommandLine=console=ttyS0\n": false,
-		"[Content]\nKernelCommandLine=audit=1\n# audit_backlog_limit=65536 \n":              false,
-		"[Content]\nKernelCommandLine=audit=0 audit_backlog_limit=65536\n":                  false,
-		"[Content]\nKernelCommandLine=audit=1 audit_backlog_limit=64\n":                     false,
-		"[Content]\nKernelCommandLine=audit=1 audit_backlog_limit=65536 audit=0\n":          false,
-		"[Output]\nKernelCommandLine=audit=1 audit_backlog_limit=65536\n":                   false,
-		"[Content]\nPackages=audit=1\n         audit_backlog_limit=65536\n":                 false,
-		"[Content]\nKernelCommandLine=audit=1\n    # audit_backlog_limit=65536\n":           false,
-		"[Content]\nKernelCommandLine=audit=1\nPackages=x\n    audit_backlog_limit=65536\n": false,
-	}
-	for conf, valid := range cases {
-		if got := bootAuditProblem(conf, "65536"); (got == "") != valid {
-			t.Errorf("%q: problem %q, want valid=%v", conf, got, valid)
-		}
+	// The boot-time queue the guest reports from /proc/cmdline must be the rules' backlog (ADR 0004).
+	if expected["boot_audit_backlog_limit"] != expected["audit_backlog_limit"] {
+		t.Fatalf("boot backlog %q differs from the rules' %q", expected["boot_audit_backlog_limit"], expected["audit_backlog_limit"])
 	}
 }
