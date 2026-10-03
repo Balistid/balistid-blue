@@ -70,7 +70,7 @@ func run() error {
 	add("laurel_cap_amb", amb)
 	add("canary", canary(ctx))
 
-	add("e0_result", disableAudit(ctx))
+	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	add("e0_recorded", yesNo(waitFor(func() bool { return inLaurelLog(rangeguest.HasRefusedDisable) })))
 	printLines(laurelLog, "audit_enabled")
@@ -78,7 +78,7 @@ func run() error {
 	add("io_uring_sysctl", readTrim(ioUringSysctl))
 	add("io_uring_off", ioUringSetup())
 	add("io_uring_on", withIoUring("0"))
-	add("io_uring_off_again", withIoUring("2"))
+	_ = withIoUring("2")
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)
@@ -269,14 +269,11 @@ func canary(ctx context.Context) string {
 	return "missing"
 }
 
-// disableAudit tries `auditctl -e 0`. auditctl sends the request and only reports a generic error
-// when the kernel refuses (the errno goes to syslog), so the proof that the kernel refused is its
-// own CONFIG_CHANGE record with res=0 and the state staying at 2, not auditctl's text.
-func disableAudit(ctx context.Context) string {
-	if err := exec.CommandContext(ctx, "/usr/bin/auditctl", "-e", "0").Run(); err != nil {
-		return "refused"
-	}
-	return "accepted"
+// disableAudit tries `auditctl -e 0`. Its exit status and text prove nothing (the errno goes to
+// syslog); the proof that the kernel refused is its own CONFIG_CHANGE record with res=0 and the
+// state staying at 2, which the caller checks.
+func disableAudit(ctx context.Context) {
+	_ = exec.CommandContext(ctx, "/usr/bin/auditctl", "-e", "0").Run()
 }
 
 // ioUringSetup calls io_uring_setup(1, NULL): the kernel checks io_uring_disabled before it reads

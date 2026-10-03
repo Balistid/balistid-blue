@@ -1,6 +1,7 @@
 package rangeguest
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -82,4 +83,20 @@ func TestOverflowDetected(t *testing.T) {
 	if OverflowDetected(state) != "yes" || OverflowDetected("audit version = 4.2.1\n") != "missing" {
 		t.Fatal("OverflowDetected")
 	}
+}
+
+// FuzzParsers feeds the same bytes to every parser; none may panic on what a guest could write.
+func FuzzParsers(f *testing.F) {
+	f.Add([]byte(`{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","t"]},"CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}` + "\n"))
+	f.Add([]byte("enabled 2\nCapPrm:\t0000000000080004\nplugin queue overflow detected = yes\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		s := string(data)
+		_ = AuditStatus(s)
+		_, _, _ = Caps(s)
+		_ = StatusField(s, "Uid")
+		_ = UserName(s, "0")
+		_ = OverflowDetected(s)
+		_ = HasExecArg(bytes.NewReader(data), "t")
+		_ = HasRefusedDisable(bytes.NewReader(data))
+	})
 }
