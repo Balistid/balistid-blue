@@ -304,6 +304,8 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/audit/kordon.rules": "-e 2\n",
             "deploy/auditd/auditd.conf": "q_depth = 2000\n",
             "deploy/laurel/config.toml": "[auditlog]\n",
+            "deploy/auditd/laurel-plugin.conf": "active = yes\n",
+            "deploy/sysctl/kordon.conf": "kernel.io_uring_disabled = 2\n",
             "deploy/systemd/kordon-collector.service": "[Service]\n",
             "deploy/systemd/kordon-verify.timer": "[Timer]\n",
             "range/mkosi.conf": "[Distribution]\n",
@@ -318,7 +320,8 @@ class GoLayoutTest(unittest.TestCase):
                      "deploy/systemd/kordon.socket", "deploy/systemd/sub/x.service",
                      "deploy/auditd/other.conf", "src/main.go", "range/mkosi.postinst",
                      "range/mkosi.extra/etc/x.conf", "range/other.conf", "range/sub/x.service",
-                     "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service"):
+                     "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service",
+                     "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf"):
             with self.subTest(name=name):
                 self.assert_budget({name: "x\n"}, 1)
 
