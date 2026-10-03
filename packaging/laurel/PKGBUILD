@@ -1,0 +1,19 @@
+# Laurel from the pinned upstream release binary (ADR 0004): no toolchain or crates download in a build.
+pkgname=laurel
+pkgver=0.8.2
+pkgrel=1
+pkgdesc='Transform Linux audit events into JSON lines (auditd plugin)'
+arch=('x86_64')
+url='https://github.com/threathunters-io/laurel'
+license=('GPL-3.0-or-later')
+depends=('audit' 'acl' 'gcc-libs' 'glibc')
+options=('!debug' '!lto' '!strip')
+source=("https://github.com/threathunters-io/laurel/releases/download/v${pkgver}/laurel-${pkgver}-x86_64-glibc.tar.gz")
+sha256sums=('c9b495acf67e9941760b24308145b513b2ee2a0a5bfe0a5bd70d5133c27c6e6c')
+
+package() {
+  install -Dm0755 "laurel-${pkgver}-x86_64-glibc/bin/laurel" "${pkgdir}/usr/bin/laurel"
+  # Laurel drops root to this user and exits if it is missing; systemd-sysusers creates it.
+  install -dm0755 "${pkgdir}/usr/lib/sysusers.d"
+  printf 'u _laurel - "Laurel audit log transformer" /var/log/laurel\n' > "${pkgdir}/usr/lib/sysusers.d/laurel.conf"
+}
