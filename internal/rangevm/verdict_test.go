@@ -84,4 +84,12 @@ func TestExpectedAuditSettingsMatchTheRules(t *testing.T) {
 	if len(found) != len(flags) {
 		t.Fatalf("rules set %d of the %d checked settings", len(found), len(flags))
 	}
+	// The boot-time queue must be as large as the rules' backlog (ADR 0004).
+	conf, err := os.ReadFile("../../range/mkosi.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(conf), " audit_backlog_limit="+expected["audit_backlog_limit"]+" ") {
+		t.Fatalf("range/mkosi.conf does not boot with audit_backlog_limit=%s", expected["audit_backlog_limit"])
+	}
 }
