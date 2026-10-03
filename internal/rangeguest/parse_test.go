@@ -85,6 +85,26 @@ func TestOverflowDetected(t *testing.T) {
 	}
 }
 
+// Shapes from range runs on 2026-10-03: with audit=1 journald's change (serial 10) precedes auditd's
+// registration; without it the first event is the registration.
+func TestRecordsBeforeAuditd(t *testing.T) {
+	journald := `{"ID":"1791056189.280:10","CONFIG_CHANGE":[{"op":"set","audit_enabled":1,"old":"1","res":1}]}`
+	auditd := `{"ID":"1791056192.875:119","CONFIG_CHANGE":[{"op":"set","audit_pid":"341","old":"0","res":1}]}`
+	later := `{"ID":"1791056193.100:150","EXECVE":{"argc":1,"ARGV":["/usr/bin/true"]}}`
+	cases := map[string]string{
+		journald + "\n" + auditd + "\n" + later: "yes",
+		auditd + "\n" + journald + "\n":         "yes",
+		auditd + "\n" + later:                   "no",
+		journald + "\n" + later:                 "missing",
+		"":                                      "missing",
+	}
+	for log, want := range cases {
+		if got := RecordsBeforeAuditd(strings.NewReader(log)); got != want {
+			t.Errorf("%q: %s, want %s", log, got, want)
+		}
+	}
+}
+
 // FuzzParsers feeds the same bytes to every parser; none may panic on what a guest could write.
 func FuzzParsers(f *testing.F) {
 	f.Add([]byte(`{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","t"]},"CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}` + "\n"))
@@ -98,5 +118,6 @@ func FuzzParsers(f *testing.F) {
 		_ = OverflowDetected(s)
 		_ = HasExecArg(bytes.NewReader(data), "t")
 		_ = HasRefusedDisable(bytes.NewReader(data))
+		_ = RecordsBeforeAuditd(bytes.NewReader(data))
 	})
 }
