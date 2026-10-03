@@ -1,0 +1,40 @@
+# Laurel for Kordon floor 0 (ADR 0004): the v0.8.2 example configuration without its sample process
+# labels. Laurel drops root to _laurel and keeps only CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH.
+# Installed only by kordon-install.
+directory = "/var/log/laurel"
+user = "_laurel"
+statusreport-period = 0
+input = "stdin"
+
+[auditlog]
+file = "audit.log"
+size = 5000000
+generations = 10
+
+[state]
+file = "state"
+generations = 0
+max-age = 60
+
+[transform]
+execve-argv = [ "array" ]
+
+[translate]
+universal = false
+user-db = false
+drop-raw = false
+
+[enrich]
+pid = true
+ppid-verbose = false
+spawned-by = true
+execve-env = [ "LD_PRELOAD", "LD_LIBRARY_PATH" ]
+container = true
+container_info = false
+systemd = true
+script = true
+user-groups = true
+
+[filter]
+filter-null-keys = false
+filter-action = "drop"

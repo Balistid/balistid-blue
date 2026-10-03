@@ -111,8 +111,8 @@ func TestReadResults(t *testing.T) {
 
 func TestJudge(t *testing.T) {
 	commit := strings.Repeat("a", 40)
-	pass := Outcome{Facts: []Record{fact(FactKernel, TargetKernel), fact(FactNet, "lo"), fact(FactPCINet, "")}}
-	nic := Outcome{Facts: []Record{fact(FactKernel, TargetKernel), fact(FactNet, "eth0,lo"), fact(FactPCINet, "")}}
+	pass := Outcome{Facts: passing(nil)}
+	nic := Outcome{Facts: passing(map[string]string{FactNet: "eth0,lo"})}
 	cases := []struct {
 		name     string
 		o        Outcome

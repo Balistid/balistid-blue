@@ -26,7 +26,6 @@ const (
 	keepImages   = 3
 	keepResults  = 100
 	maxManifest  = 8 << 20
-	guestUnit    = "kordon-range-guest.service"
 	stampLayout  = "20060102T150405Z"
 	resultSchema = 1
 )
@@ -34,7 +33,25 @@ const (
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // buildInputs are the paths Build reads; they must match the commit it records.
-var buildInputs = []string{"range", "cmd", "internal", "go.mod"}
+var buildInputs = []string{"range", "cmd", "internal", "go.mod", "packaging", "deploy"}
+
+// imageFiles are copied from the checked tree into the image: the guest unit and the floor-0 sensor
+// configuration exactly as kordon-install will place it on a host (ADR 0004).
+var imageFiles = []struct {
+	src, dst string
+	mode     os.FileMode
+}{
+	{"range/kordon-range-guest.service", "usr/lib/systemd/system/kordon-range-guest.service", 0o644},
+	{"deploy/audit/kordon.rules", "etc/audit/rules.d/kordon.rules", 0o640},
+	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
+	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},
+	{"deploy/laurel/config.toml", "etc/laurel/config.toml", 0o644},
+	{"deploy/sysctl/kordon.conf", "etc/sysctl.d/90-kordon.conf", 0o644},
+}
+
+// proxyEnv are the only variables makepkg inherits besides its own paths: network settings, not
+// build settings.
+var proxyEnv = []string{"http_proxy", "https_proxy", "no_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"}
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
 type Result struct {
@@ -95,21 +112,34 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
-	goBuild := tool(root, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(stage, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
+	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
+	goBuild := tool(root, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
 	goBuild.Env = append(goBuild.Env, "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GOWORK=off")
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
-	unit, err := os.ReadFile(filepath.Join(root, "range", guestUnit)) //nolint:gosec // fixed path in the checked tree
-	if err != nil {
-		return "", fmt.Errorf("guest unit: %w", err)
+	for _, f := range imageFiles {
+		if err := copyInto(filepath.Join(root, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {
+			return "", err
+		}
 	}
-	unitDir := filepath.Join(stage, "usr/lib/systemd/system")
-	if err := os.MkdirAll(unitDir, 0o755); err != nil { //nolint:gosec // becomes a system directory in the image
-		return "", fmt.Errorf("guest unit: %w", err)
+	// makepkg gets a clean environment and writes only into the stage, so no user makepkg.conf,
+	// RUSTFLAGS or leftover in packaging/ changes the package, and the tree stays clean.
+	makepkg := tool(filepath.Join(root, "packaging", "laurel"), "/usr/bin/makepkg", "--noconfirm", "--nodeps")
+	makepkg.Env = []string{"PATH=/usr/bin", "HOME=" + filepath.Join(stage, "home"), "PKGDEST=" + pkgs,
+		"SRCDEST=" + filepath.Join(stage, "src"), "BUILDDIR=" + filepath.Join(stage, "build"), "LOGDEST=" + filepath.Join(stage, "log")}
+	for _, k := range proxyEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			makepkg.Env = append(makepkg.Env, k+"="+v)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(unitDir, guestUnit), unit, 0o644); err != nil { //nolint:gosec // units are world-readable in the image
-		return "", fmt.Errorf("guest unit: %w", err)
+	for _, d := range []string{"home", "src", "build", "log", "pkg"} {
+		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
+			return "", fmt.Errorf("staging directory: %w", err)
+		}
+	}
+	if err := makepkg.Run(); err != nil {
+		return "", fmt.Errorf("makepkg laurel: %w", err)
 	}
 
 	built, err := os.MkdirTemp(cache, "build-")
@@ -121,7 +151,7 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 			err = errors.Join(err, removeDir(built))
 		}
 	}()
-	mkosi := tool(root, "/usr/bin/mkosi", "--directory="+filepath.Join(root, "range"), "--extra-tree="+stage, "--output-directory="+built, "build")
+	mkosi := tool(root, "/usr/bin/mkosi", "--directory="+filepath.Join(root, "range"), "--extra-tree="+tree, "--package-directory="+pkgs, "--output-directory="+built, "build")
 	// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
 	// and the next invocation never sweeps a build directory mkosi still writes.
 	mkosi.ExtraFiles = []*os.File{held}
@@ -298,6 +328,21 @@ func sweep(dir string, prefixes ...string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// copyInto copies one file of the checked tree into the image tree with the mode it has there.
+func copyInto(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src) //nolint:gosec // fixed paths in the checked tree
+	if err != nil {
+		return fmt.Errorf("image file: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // system directories in the image
+		return fmt.Errorf("image file: %w", err)
+	}
+	if err := os.WriteFile(dst, data, mode); err != nil { //nolint:gosec // dst is in our staging tree, from the fixed imageFiles table
+		return fmt.Errorf("image file: %w", err)
+	}
+	return nil
 }
 
 func closeLock(f *os.File) error {
