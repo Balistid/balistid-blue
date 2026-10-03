@@ -23,8 +23,9 @@ const (
 
 // Selftest judges a run of the bare range image: the guest must see no network interface but
 // loopback, no network-class PCI device (present before any driver binds, so a slow driver cannot
-// hide a NIC) and must run the target kernel. A visible NIC is FAIL even on another kernel: it is
-// a broken boundary whatever the kernel, and UNKNOWN would hide it.
+// hide a PCI NIC; TestQemuArgv pins that no other device is added) and must run the target
+// kernel. A visible NIC is FAIL even on another kernel: it is a broken boundary whatever the
+// kernel, and UNKNOWN would hide it.
 func Selftest(facts []Record) (verdict, reason string) {
 	seen := map[string]string{}
 	for _, f := range facts {

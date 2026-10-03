@@ -43,8 +43,8 @@ const (
 // sandboxArgv wraps prog in prlimit and bwrap (ADR 0009, point 3): no network, no host $HOME,
 // read-only /usr, base image and run directory, and only the three run files writable, so the
 // per-file size limit bounds all the disk a compromised QEMU can fill; the bwrap root and /dev are
-// remounted read-only so it cannot fill memory through tmpfs either. --core=0 because SIGXFSZ
-// dumps core by default, and a QEMU core holds guest memory.
+// remounted read-only, so it has no tmpfs to fill (its memory is bounded only by the host).
+// --core=0 because SIGXFSZ dumps core by default, and a QEMU core holds guest memory.
 func sandboxArgv(base, runDir string, fsize int64, prog ...string) []string {
 	argv := []string{
 		prlimitPath, fmt.Sprintf("--fsize=%d", fsize), "--core=0", "--",
@@ -127,16 +127,29 @@ func Run(ctx context.Context, base, parent string, serial io.Writer) (out Outcom
 	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, qemuArgv()...), RunTimeout, SerialBudget, serial); why != "" {
 		return Outcome{Invalid: "vm: " + why}, nil
 	}
-	f, err := os.Open(filepath.Join(runDir, results)) //nolint:gosec // run directory created by this function
+	return readResults(filepath.Join(runDir, results)), nil
+}
+
+// readResults treats every problem with the results disk as INVALID: a compromised QEMU can
+// chmod, grow or garble the one file it may write, and none of that may pass or vanish.
+func readResults(path string) Outcome {
+	f, err := openRegular(path)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("results disk: %w", err)
+		return Outcome{Invalid: "results disk: " + err.Error()}
 	}
 	defer f.Close() //nolint:errcheck // read-only file
+	st, err := f.Stat()
+	if err != nil {
+		return Outcome{Invalid: "results disk: " + err.Error()}
+	}
+	if st.Size() != ResultsBytes {
+		return Outcome{Invalid: fmt.Sprintf("results disk is %d bytes, want %d", st.Size(), ResultsBytes)}
+	}
 	facts, err := Parse(f, ResultsBytes)
 	if err != nil {
-		return Outcome{Invalid: "results: " + err.Error()}, nil
+		return Outcome{Invalid: "results: " + err.Error()}
 	}
-	return Outcome{Facts: facts}, nil
+	return Outcome{Facts: facts}
 }
 
 // prepare writes the zeroed results disk, a private copy of the firmware variables and the empty
