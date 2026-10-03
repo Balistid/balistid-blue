@@ -8,8 +8,3 @@ __pycache__/
 .env.*
 *.pem
 *.key
-
-# Claude Code creates these as empty placeholders when its sandbox runs in the repository; they
-# would mark every build dirty.
-/.claude/
-/.mcp.json

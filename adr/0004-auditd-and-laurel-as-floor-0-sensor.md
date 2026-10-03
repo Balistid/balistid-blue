@@ -26,7 +26,8 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
    `execveat` and `memfd_create`, the usual ways around exec records.
    io_uring is disabled (`kernel.io_uring_disabled=2`); io_uring audit rules stay UNKNOWN. Whether the
    host can run without io_uring is decided before floor 0 is installed there. The repository also holds
-   the plugin entry and the sysctl; gawk is required, as augenrules silently loads no rules without it.
+   the plugin entry and the sysctl. gawk is required (augenrules silently loads no rules without it), and
+   the kernel command line needs `audit=1 audit_backlog_limit=` equal to the rules' `-b`.
 3. Laurel hands records to the collector over a Unix socket that admits only Laurel's uid.
 4. Required properties, implemented in code with tests: every loss signal we can read (kernel `lost`
    including resets, dispatcher overflow, Laurel and collector reconnects) becomes an event; sensor
@@ -53,7 +54,7 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
   untested combination is UNKNOWN.
 - Tests (R4, R10): killing Laurel, stopping auditd, a missing canary, a counter reset, a foreign
   socket peer and loaded rules that differ from the repository each produce an event or UNKNOWN; disabling audit under `-e 2` fails and is recorded.
-- Known gap stated in `THREAT_MODEL.md`: loss between Laurel and the collector is not fully
-  measurable, and root on the host can blind the sensor undetected; floor 0 does not prevent that.
+- Known gaps (`THREAT_MODEL.md`): loss between Laurel and the collector is not fully measurable; root
+  can blind the sensor undetected; x32 ABI syscalls match no syscall rule (T8). Floor 0 prevents none.
 - Thresholds and allowed loss are numbers in `acceptance/0.toml`.
 - Trigger to revisit: no Laurel release for 12 months, or a kernel it cannot follow.
