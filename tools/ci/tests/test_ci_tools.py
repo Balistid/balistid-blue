@@ -306,6 +306,8 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/laurel/config.toml": "[auditlog]\n",
             "deploy/systemd/kordon-collector.service": "[Service]\n",
             "deploy/systemd/kordon-verify.timer": "[Timer]\n",
+            "range/mkosi.conf": "[Distribution]\n",
+            "range/kordon-range-guest.service": "[Unit]\n",
         }, 0)
 
     def test_paths_outside_the_go_layout_fail(self):
@@ -314,7 +316,9 @@ class GoLayoutTest(unittest.TestCase):
                      "internal/a/testdata/deep/x.json", "packaging/PKGBUILD",
                      "packaging/laurel/build.sh", "deploy/audit/kordon.conf",
                      "deploy/systemd/kordon.socket", "deploy/systemd/sub/x.service",
-                     "deploy/auditd/other.conf", "src/main.go"):
+                     "deploy/auditd/other.conf", "src/main.go", "range/mkosi.postinst",
+                     "range/mkosi.extra/etc/x.conf", "range/other.conf", "range/sub/x.service",
+                     "range/mkosi.conf.d/x.conf", "range/x.timer"):
             with self.subTest(name=name):
                 self.assert_budget({name: "x\n"}, 1)
 

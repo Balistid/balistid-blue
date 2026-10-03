@@ -70,6 +70,9 @@ LAYOUT: tuple[str, ...] = (
     "deploy/laurel/config.toml",
     "deploy/systemd/*.service",
     "deploy/systemd/*.timer",
+    # Attack range (ADR 0009).
+    "range/mkosi.conf",
+    "range/*.service",
 )
 
 REGULAR_MODES = {"100644", "100755"}
