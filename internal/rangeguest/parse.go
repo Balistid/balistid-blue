@@ -80,14 +80,16 @@ func HasExecArg(log io.Reader, token string) bool {
 }
 
 // HasRefusedDisable reports whether a Laurel log holds a CONFIG_CHANGE record of an attempt to set
-// audit_enabled to 0 that the kernel refused (res=0).
+// audit_enabled to 0 that the kernel refused (res=0). Laurel writes CONFIG_CHANGE as a list of records.
 func HasRefusedDisable(log io.Reader) bool {
 	return eachEvent(log, func(ev map[string]json.RawMessage) bool {
-		var change map[string]json.RawMessage
-		if json.Unmarshal(ev["CONFIG_CHANGE"], &change) != nil {
+		var changes []map[string]json.RawMessage
+		if json.Unmarshal(ev["CONFIG_CHANGE"], &changes) != nil {
 			return false
 		}
-		return scalar(change["audit_enabled"]) == "0" && scalar(change["res"]) == "0"
+		return slices.ContainsFunc(changes, func(c map[string]json.RawMessage) bool {
+			return scalar(c["audit_enabled"]) == "0" && scalar(c["res"]) == "0"
+		})
 	})
 }
 
