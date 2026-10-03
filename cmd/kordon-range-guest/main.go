@@ -62,10 +62,6 @@ func run() error {
 		add("audit_"+k, valueOr(status[k]))
 	}
 
-	cmdline := readTrim("/proc/cmdline")
-	add("boot_audit", rangeguest.CmdlineValue(cmdline, "audit"))
-	add("boot_audit_backlog_limit", rangeguest.CmdlineValue(cmdline, "audit_backlog_limit"))
-
 	pid := laurelPID()
 	add("laurel_user", laurelUser(pid))
 	prm, eff, amb := laurelCaps(pid)

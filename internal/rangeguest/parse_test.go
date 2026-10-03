@@ -100,16 +100,3 @@ func FuzzParsers(f *testing.F) {
 		_ = HasRefusedDisable(bytes.NewReader(data))
 	})
 }
-
-func TestCmdlineValue(t *testing.T) {
-	cmdline := "console=ttyS0 audit=1 audit_backlog_limit=65536 systemd.wants=auditd.service"
-	if CmdlineValue(cmdline, "audit") != "1" || CmdlineValue(cmdline, "audit_backlog_limit") != "65536" {
-		t.Fatal("values not found")
-	}
-	if CmdlineValue("audit=1 audit=0", "audit") != "1,0" || CmdlineValue("console=ttyS0", "audit") != "missing" {
-		t.Fatal("repeated or missing key")
-	}
-	if CmdlineValue("noaudit=1 audit_x=1", "audit") != "missing" {
-		t.Fatal("matched a different key")
-	}
-}

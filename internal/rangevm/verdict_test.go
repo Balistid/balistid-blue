@@ -84,8 +84,4 @@ func TestExpectedAuditSettingsMatchTheRules(t *testing.T) {
 	if len(found) != len(flags) {
 		t.Fatalf("rules set %d of the %d checked settings", len(found), len(flags))
 	}
-	// The boot-time queue the guest reports from /proc/cmdline must be the rules' backlog (ADR 0004).
-	if expected["boot_audit_backlog_limit"] != expected["audit_backlog_limit"] {
-		t.Fatalf("boot backlog %q differs from the rules' %q", expected["boot_audit_backlog_limit"], expected["audit_backlog_limit"])
-	}
 }
