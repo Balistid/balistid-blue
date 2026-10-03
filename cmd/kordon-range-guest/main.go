@@ -73,6 +73,7 @@ func run() error {
 	add("e0_result", disableAudit(ctx))
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	add("e0_recorded", yesNo(waitFor(func() bool { return inLaurelLog(rangeguest.HasRefusedDisable) })))
+	printLines(laurelLog, "CONFIG_CHANGE")
 
 	add("io_uring_sysctl", readTrim(ioUringSysctl))
 	add("io_uring_off", ioUringSetup())
@@ -268,20 +269,14 @@ func canary(ctx context.Context) string {
 	return "missing"
 }
 
-// disableAudit tries `auditctl -e 0`, which -e 2 must refuse with EPERM.
+// disableAudit tries `auditctl -e 0`. auditctl sends the request and only reports a generic error
+// when the kernel refuses (the errno goes to syslog), so the proof that the kernel refused is its
+// own CONFIG_CHANGE record with res=0 and the state staying at 2, not auditctl's text.
 func disableAudit(ctx context.Context) string {
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "/usr/bin/auditctl", "-e", "0")
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	switch {
-	case err == nil:
-		return "accepted"
-	case strings.Contains(stderr.String(), "Operation not permitted"):
-		return "EPERM"
-	default:
-		return "other: " + strings.TrimSpace(stderr.String())
+	if err := exec.CommandContext(ctx, "/usr/bin/auditctl", "-e", "0").Run(); err != nil {
+		return "refused"
 	}
+	return "accepted"
 }
 
 // ioUringSetup calls io_uring_setup(1, NULL): the kernel checks io_uring_disabled before it reads
@@ -355,5 +350,22 @@ func diagnose(ctx context.Context) {
 	} {
 		out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput() //nolint:gosec // absolute binaries, fixed argv
 		fmt.Printf("kordon-range-guest: $ %s (err %v)\n%s\n", strings.Join(argv, " "), err, out)
+	}
+}
+
+// printLines prints the lines of path that contain substr to the console (serial.log), capped,
+// so a failed check shows what the sensor actually wrote.
+func printLines(path, substr string) {
+	data, err := os.ReadFile(path) //nolint:gosec // fixed log path
+	if err != nil {
+		fmt.Println("kordon-range-guest:", err)
+		return
+	}
+	printed := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, substr) && printed < 8<<10 {
+			fmt.Printf("kordon-range-guest: %s: %.2000s\n", path, line)
+			printed += len(line)
+		}
 	}
 }
