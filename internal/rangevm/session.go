@@ -342,6 +342,10 @@ func copyInto(src, dst string, mode os.FileMode) error {
 	if err := os.WriteFile(dst, data, mode); err != nil { //nolint:gosec // dst is in our staging tree, from the fixed imageFiles table
 		return fmt.Errorf("image file: %w", err)
 	}
+	// WriteFile applies the umask; the image must not depend on the builder's.
+	if err := os.Chmod(dst, mode); err != nil {
+		return fmt.Errorf("image file: %w", err)
+	}
 	return nil
 }
 
