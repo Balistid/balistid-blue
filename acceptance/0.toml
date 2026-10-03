@@ -5,7 +5,7 @@
 
 [meta]
 floor = 0
-status = "proposed"          # "approved" once the maintainer approves the pull request
+status = "approved"          # approved by the maintainer in pull request #10 (2026-10-01)
 reference_host = "32 cores, 31 GiB RAM, NVMe SSD, kernel 7.2.x"
 
 # --- Sensor and health (ADR 0004, 0007) ---
