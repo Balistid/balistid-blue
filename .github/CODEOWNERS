@@ -17,3 +17,4 @@
 /.golangci.yml @Jvc0n
 /packaging/ @Jvc0n
 /deploy/ @Jvc0n
+/range/ @Jvc0n
