@@ -56,6 +56,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T31 | A3 | Guest escapes QEMU or KVM | QEMU in bwrap: no network, no `$HOME`, read-only root, `/dev` and run directory, three size-limited writable files; `-sandbox` (0009) | test TestSandboxIsolatesHost (range host only) | partial: an escape runs as the maintainer's uid |
 | T32 | A5 | Malicious or changed Atomic Red Team test or runner | — | — | gap: pinned commit and review, floor 1 |
 | T33 | A1 | Forge or edit range results, or the local git state an image is built from, at the maintainer's uid | Result names image and launcher commit; a launcher that is not a clean build of the image commit gives UNKNOWN | test TestJudge | gap: results are trusted only as far as that uid (0009) |
+| T34 | A1 | Make the range build read a host file outside the tree (a key the agent may not read) into the image or result, or steer the build through the environment, a go.env or git config, or a shared build cache | Build inputs must be regular files in the commit; image files and the files next to an image are opened without following a symlink; every build tool gets a fixed environment with its caches in the build's private directory | tests TestBuildRefusesSymlinkInput, TestBuildRefusesSubmodule, TestCopyIntoRefusesSymlink, TestToolEnvIsExactlyTheAllowlist | partial: a process at that uid can still change the tree or the private directory during a build (T33) |
 
 ## Assumptions
 

@@ -241,7 +241,14 @@ func TestCleanRevision(t *testing.T) {
 	}
 }
 
-func TestBuildRefusesInputsThatDifferFromHead(t *testing.T) {
+// withoutGit drops GIT_* variables so the environment cannot point git at another repository.
+func withoutGit(env []string) []string {
+	return slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+}
+
+// testRepo creates a repository holding range/mkosi.conf and returns its root and a git runner.
+func testRepo(t *testing.T) (string, func(args ...string)) {
+	t.Helper()
 	root := t.TempDir()
 	git := func(args ...string) {
 		t.Helper()
@@ -260,6 +267,11 @@ func TestBuildRefusesInputsThatDifferFromHead(t *testing.T) {
 	git("init", "-q")
 	git("add", ".")
 	git("commit", "-q", "-m", "x")
+	return root, git
+}
+
+func TestBuildRefusesInputsThatDifferFromHead(t *testing.T) {
+	root, _ := testRepo(t)
 	// mkosi would read this untracked file, so the image would not be what the commit says.
 	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.local.conf"), []byte("[Content]\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -294,5 +306,84 @@ func TestSourceDateEpochMatchesTheImageConfig(t *testing.T) {
 	}
 	if !strings.Contains(string(conf), "\nSourceDateEpoch="+sourceDateEpoch+"\n") {
 		t.Fatalf("range/mkosi.conf does not set SourceDateEpoch=%s", sourceDateEpoch)
+	}
+}
+
+// A committed symlink would make Build copy a host file outside the tree, such as a key the agent
+// may not read, into the image (T34).
+func TestBuildRefusesSymlinkInput(t *testing.T) {
+	root, git := testRepo(t)
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "deploy", "sysctl"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, filepath.Join(root, "deploy", "sysctl", "kordon.conf")); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "link")
+	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `"deploy/sysctl/kordon.conf" is not a regular file`) {
+		t.Fatalf("Build = %v, want a refusal for the symlink", err)
+	}
+}
+
+func TestBuildRefusesSubmodule(t *testing.T) {
+	root, git := testRepo(t)
+	// An uninitialised submodule: a gitlink in the commit and an empty directory, which git status
+	// reports as clean.
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git("update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,cmd/sub")
+	git("commit", "-q", "-m", "submodule")
+	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `"cmd/sub" is not a regular file (mode 160000)`) {
+		t.Fatalf("Build = %v, want a refusal for the submodule", err)
+	}
+}
+
+func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
+	for _, k := range proxyEnv {
+		t.Setenv(k, "") // restored after the test
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for k, v := range map[string]string{"GOFLAGS": "-toolexec=/tmp/x", "GOROOT": "/tmp/goroot", "GOCACHE": "/tmp/cache",
+		"LD_PRELOAD": "/tmp/x.so", "GIT_DIR": "/tmp/repo", "https_proxy": "http://proxy:3128"} {
+		t.Setenv(k, v)
+	}
+	stage := t.TempDir()
+	home := filepath.Join(stage, "home")
+	want := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+		"GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"), "GOMODCACHE=" + filepath.Join(home, "gomod"),
+		"GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=-mod=readonly", "CGO_ENABLED=0",
+		"https_proxy=http://proxy:3128"}
+	cmd := newTool(t.Context(), stage, io.Discard)("/", "/usr/bin/true")
+	if !slices.Equal(cmd.Env, want) {
+		t.Fatalf("tool environment\n got %q\nwant %q", cmd.Env, want)
+	}
+}
+
+func TestCopyIntoRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "kordon.conf")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "tree/etc/x.conf")
+	if err := copyInto(link, dst, 0o644); err == nil {
+		t.Fatal("copied the file a symlink points to")
+	}
+	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
+		t.Fatalf("destination exists after a refused copy: %v", err)
 	}
 }

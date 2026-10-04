@@ -83,13 +83,15 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 		return "", err
 	}
 	defer func() { err = errors.Join(err, closeLock(held)) }()
-	tool := func(dir, path string, args ...string) *exec.Cmd {
-		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // absolute binaries, fixed argv
-		cmd.Dir = dir
-		cmd.Env = withoutGit(os.Environ())
-		cmd.Stdout, cmd.Stderr = log, log
-		return cmd
+	stage, err := os.MkdirTemp(cache, "stage-")
+	if err != nil {
+		return "", fmt.Errorf("staging directory: %w", err)
 	}
+	defer func() { err = errors.Join(err, removeDir(stage)) }()
+	if err := os.Mkdir(filepath.Join(stage, "home"), 0o700); err != nil {
+		return "", fmt.Errorf("staging directory: %w", err)
+	}
+	tool := newTool(ctx, stage, log)
 
 	head := tool(root, "/usr/bin/git", "rev-parse", "--verify", "HEAD^{commit}")
 	head.Stdout = nil
@@ -107,18 +109,15 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	if len(out) > 0 {
 		return "", fmt.Errorf("build inputs differ from %s; commit or remove first:\n%s", commit, out)
 	}
+	if err := regularFilesOnly(tool, root, commit); err != nil {
+		return "", err
+	}
 	if lc := launcherCommit(); lc != commit {
 		return "", fmt.Errorf("launcher %q is not a clean build of HEAD %s", lc, commit)
 	}
 
-	stage, err := os.MkdirTemp(cache, "stage-")
-	if err != nil {
-		return "", fmt.Errorf("staging directory: %w", err)
-	}
-	defer func() { err = errors.Join(err, removeDir(stage)) }()
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
 	goBuild := tool(root, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
-	goBuild.Env = append(goBuild.Env, "CGO_ENABLED=0", "GOFLAGS=-mod=readonly", "GOTOOLCHAIN=local", "GOWORK=off")
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
@@ -137,7 +136,7 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 			makepkg.Env = append(makepkg.Env, k+"="+v)
 		}
 	}
-	for _, d := range []string{"home", "src", "build", "log", "pkg"} {
+	for _, d := range []string{"src", "build", "log", "pkg"} {
 		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
 			return "", fmt.Errorf("staging directory: %w", err)
 		}
@@ -180,9 +179,67 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
-// withoutGit drops GIT_* variables so the environment cannot point git at another repository.
-func withoutGit(env []string) []string {
-	return slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+// newTool returns the constructor for every program Build runs. Each gets toolEnv, never the
+// caller's environment: GOFLAGS=-toolexec, GOROOT, a go.env file, a git config or a build cache that
+// an agent at the same uid can write would otherwise decide what is built (T34).
+func newTool(ctx context.Context, stage string, log io.Writer) func(dir, path string, args ...string) *exec.Cmd {
+	env := toolEnv(stage)
+	return func(dir, path string, args ...string) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // absolute binaries, fixed argv
+		cmd.Dir = dir
+		cmd.Env = slices.Clone(env)
+		cmd.Stdout, cmd.Stderr = log, log
+		return cmd
+	}
+}
+
+// toolEnv is the whole environment of the tools Build runs: fixed values with caches inside stage,
+// plus the proxy settings, which choose the network path and not what is built.
+func toolEnv(stage string) []string {
+	home := filepath.Join(stage, "home")
+	env := []string{
+		"PATH=/usr/bin",
+		"HOME=" + home,
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GOENV=off",
+		"GOCACHE=" + filepath.Join(home, "gocache"),
+		"GOMODCACHE=" + filepath.Join(home, "gomod"),
+		"GOPROXY=off",
+		"GOTOOLCHAIN=local",
+		"GOWORK=off",
+		"GOFLAGS=-mod=readonly",
+		"CGO_ENABLED=0",
+	}
+	for _, k := range proxyEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
+// regularFilesOnly refuses a commit whose build inputs hold anything but regular files. A symlink
+// would make Build read a host file outside the tree (a key the agent may not read) into the image,
+// where guest code from the same commit can print it; a submodule is a tree the commit does not
+// pin byte for byte (T34). Allowlist of modes, so a new kind of entry is refused too.
+func regularFilesOnly(tool func(dir, path string, args ...string) *exec.Cmd, root, commit string) error {
+	ls := tool(root, "/usr/bin/git", append([]string{"ls-tree", "-r", "-z", "--full-tree", "--format=%(objectmode) %(path)", commit, "--"}, buildInputs...)...)
+	ls.Stdout = nil
+	out, err := ls.Output()
+	if err != nil {
+		return fmt.Errorf("git ls-tree: %w", err)
+	}
+	for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
+		mode, path, ok := strings.Cut(entry, " ")
+		if !ok {
+			return fmt.Errorf("git ls-tree: unexpected entry %q", entry)
+		}
+		if mode != "100644" && mode != "100755" {
+			return fmt.Errorf("build input %q is not a regular file (mode %s); commit the file itself", path, mode)
+		}
+	}
+	return nil
 }
 
 // launcherCommit is the clean commit this binary was built from, or "" when the build carries no
@@ -334,9 +391,12 @@ func sweep(dir string, prefixes ...string) error {
 	return errors.Join(errs...)
 }
 
+// maxImageFile caps one configuration file copied into the image (R5).
+const maxImageFile = 1 << 20
+
 // copyInto copies one file of the checked tree into the image tree with the mode it has there.
 func copyInto(src, dst string, mode os.FileMode) error {
-	data, err := os.ReadFile(src) //nolint:gosec // fixed paths in the checked tree
+	data, err := readSmall(src, maxImageFile)
 	if err != nil {
 		return fmt.Errorf("image file: %w", err)
 	}
@@ -361,9 +421,11 @@ func closeLock(f *os.File) error {
 }
 
 // openRegular opens path for reading without blocking on a FIFO or device and refuses anything
-// that is not a regular file.
+// that is not a regular file. It does not follow a symlink in the last component: the tree Build
+// copies from and the cache next to an image are writable by an agent at the same uid, and a link
+// there would read a host file the agent may not read into the image or the result (T34).
 func openRegular(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // the maintainer names the image; its files sit next to it
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0) //nolint:gosec // the maintainer names the image; its files sit next to it
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
