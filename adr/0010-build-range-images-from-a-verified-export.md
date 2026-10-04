@@ -23,10 +23,10 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
 2. git never runs in the source repository and never reads a file there: its configuration,
    attributes, refs, work tree and object store metadata (alternates, commit-graph) are writable by
    an agent. Only object files (loose objects, packs and their indexes) are copied, by name, as
-   regular files that are not links, with caps, into a repository of ours. From there only the
-   commit's objects (`rev-list --objects --no-walk`, `pack-objects`, no history) go through
-   `index-pack --fsck-objects`, which names every object by its recomputed hash and refuses
-   malformed trees, into a fresh repository where all must be present, so a forged object is
+   regular files inside the repository (links only within it), with caps, into a repository of ours.
+   From there only the commit's objects (`rev-list --objects --no-walk`, `pack-objects`, no history)
+   go through `index-pack --fsck-objects`, which names every object by its recomputed hash and
+   refuses malformed trees, into a fresh repository where all must be present, so a forged object is
    refused. These git runs have a data-size limit (object headers can claim any size), their
    messages reach the log only as printable text, and the copy has a time limit.
 3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty
