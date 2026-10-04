@@ -27,7 +27,7 @@ const (
 	keepResults  = 100
 	maxManifest  = 8 << 20
 	stampLayout  = "20060102T150405Z"
-	resultSchema = 1
+	resultSchema = 2
 )
 
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -35,9 +35,6 @@ var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // sourceDateEpoch is the SourceDateEpoch of range/mkosi.conf, so the Laurel package, like the rest
 // of the image, does not change with the build time.
 const sourceDateEpoch = "1790899200"
-
-// buildInputs are the paths Build reads; they must match the commit it records.
-var buildInputs = []string{"range", "cmd", "internal", "go.mod", "packaging", "deploy"}
 
 // imageFiles are copied from the checked tree into the image: the guest unit and the floor-0 sensor
 // configuration exactly as kordon-install will place it on a host (ADR 0004).
@@ -59,25 +56,33 @@ var proxyEnv = []string{"http_proxy", "https_proxy", "no_proxy", "all_proxy", "H
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
 type Result struct {
-	SchemaVersion  int             `json:"schema_version"`
-	ID             string          `json:"id"`
-	RangeCommit    string          `json:"range_commit"`
-	LauncherCommit string          `json:"launcher_commit"`
-	Image          string          `json:"image"`
-	ImageSHA256    string          `json:"image_sha256"`
-	TargetKernel   string          `json:"target_kernel"`
-	GuestKernel    string          `json:"guest_kernel"`
-	Verdict        string          `json:"verdict"`
-	Reason         string          `json:"reason"`
-	Manifest       json.RawMessage `json:"manifest"`
+	SchemaVersion       int             `json:"schema_version"`
+	ID                  string          `json:"id"`
+	Class               string          `json:"class"`
+	RangeCommit         string          `json:"range_commit"`
+	BuildLauncherCommit string          `json:"build_launcher_commit"`
+	LauncherCommit      string          `json:"launcher_commit"`
+	Image               string          `json:"image"`
+	ImageSHA256         string          `json:"image_sha256"`
+	TargetKernel        string          `json:"target_kernel"`
+	GuestKernel         string          `json:"guest_kernel"`
+	Verdict             string          `json:"verdict"`
+	Reason              string          `json:"reason"`
+	Manifest            json.RawMessage `json:"manifest"`
 }
 
-// Build builds the guest program and range/ from the repository at root and stores the image
-// with its commit under cache/images. It refuses a tree whose build inputs differ from HEAD,
-// including untracked and ignored files (mkosi reads an untracked range/mkosi.local.conf), so the
-// recorded commit is what the image holds (index flags such as skip-worktree can still hide a
-// change; T33). The launcher must be a clean build of that commit too. Tool output goes to log.
-func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
+// Build stores an image of commit target (HEAD of the repository at root when target is "") under
+// cache/images. Building a commit runs its range/ and packaging/ on this host, so those, and the
+// other inputs that steer a host tool, must be the launcher's own: target may differ from the
+// launcher's commit only in what goes into the guest (guestOnly). Nothing is read from the work
+// tree or trusted from root's object store: the two commits are copied into a fresh repository
+// that recomputes every object hash, and the tools build from a plain export of target there
+// (T34). Tool output goes to log.
+func Build(ctx context.Context, root, target, cache string, log io.Writer) (image string, err error) {
+	launcher := launcherCommit()
+	if launcher == "" {
+		return "", errors.New("launcher is not a clean VCS build (built with go run, -buildvcs=false or uncommitted changes)")
+	}
 	held, err := lock(cache)
 	if err != nil {
 		return "", err
@@ -88,59 +93,31 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
-	if err := os.Mkdir(filepath.Join(stage, "home"), 0o700); err != nil {
-		return "", fmt.Errorf("staging directory: %w", err)
-	}
-	tool := newTool(ctx, stage, log)
-
-	head := tool(root, "/usr/bin/git", "rev-parse", "--verify", "HEAD^{commit}")
-	head.Stdout = nil
-	out, err := head.Output()
-	commit := strings.TrimSpace(string(out))
-	if err != nil || !commitRE.MatchString(commit) {
-		return "", fmt.Errorf("resolve HEAD: %q: %w", commit, err)
-	}
-	status := tool(root, "/usr/bin/git", append([]string{"status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "--"}, buildInputs...)...)
-	status.Stdout = nil
-	out, err = status.Output()
-	if err != nil {
-		return "", fmt.Errorf("git status: %w", err)
-	}
-	if len(out) > 0 {
-		return "", fmt.Errorf("build inputs differ from %s; commit or remove first:\n%s", commit, out)
-	}
-	if err := regularFilesOnly(tool, root, commit); err != nil {
-		return "", err
-	}
-	if lc := launcherCommit(); lc != commit {
-		return "", fmt.Errorf("launcher %q is not a clean build of HEAD %s", lc, commit)
-	}
-
-	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
-	goBuild := tool(root, "/usr/bin/go", "build", "-trimpath", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
-	if err := goBuild.Run(); err != nil {
-		return "", fmt.Errorf("build guest program: %w", err)
-	}
-	for _, f := range imageFiles {
-		if err := copyInto(filepath.Join(root, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {
-			return "", err
-		}
-	}
-	// makepkg gets a clean environment and writes only into the stage, so no user makepkg.conf,
-	// RUSTFLAGS or leftover in packaging/ changes the package, and the tree stays clean.
-	makepkg := tool(filepath.Join(root, "packaging", "laurel"), "/usr/bin/makepkg", "--noconfirm", "--nodeps")
-	makepkg.Env = []string{"PATH=/usr/bin", "HOME=" + filepath.Join(stage, "home"), "PKGDEST=" + pkgs, "SOURCE_DATE_EPOCH=" + sourceDateEpoch,
-		"SRCDEST=" + filepath.Join(stage, "src"), "BUILDDIR=" + filepath.Join(stage, "build"), "LOGDEST=" + filepath.Join(stage, "log")}
-	for _, k := range proxyEnv {
-		if v, ok := os.LookupEnv(k); ok {
-			makepkg.Env = append(makepkg.Env, k+"="+v)
-		}
-	}
-	for _, d := range []string{"src", "build", "log", "pkg"} {
+	for _, d := range []string{"home", "src", "src-pkg", "build", "log", "pkg"} {
 		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
 			return "", fmt.Errorf("staging directory: %w", err)
 		}
 	}
+	tool := newTool(ctx, stage, log)
+	src := filepath.Join(stage, "src")
+	commit, err := fetchAndExport(tool, root, stage, target, launcher)
+	if err != nil {
+		return "", err
+	}
+
+	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
+	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
+	if err := goBuild.Run(); err != nil {
+		return "", fmt.Errorf("build guest program: %w", err)
+	}
+	for _, f := range imageFiles {
+		if err := copyInto(filepath.Join(src, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {
+			return "", err
+		}
+	}
+	makepkg := tool(filepath.Join(src, "packaging", "laurel"), "/usr/bin/makepkg", "--noconfirm", "--nodeps")
+	makepkg.Env = append(makepkg.Env, "PKGDEST="+pkgs, "SOURCE_DATE_EPOCH="+sourceDateEpoch, "SRCDEST="+filepath.Join(stage, "src-pkg"),
+		"BUILDDIR="+filepath.Join(stage, "build"), "LOGDEST="+filepath.Join(stage, "log"))
 	if err := makepkg.Run(); err != nil {
 		return "", fmt.Errorf("makepkg laurel: %w", err)
 	}
@@ -154,15 +131,17 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 			err = errors.Join(err, removeDir(built))
 		}
 	}()
-	mkosi := tool(root, "/usr/bin/mkosi", "--directory="+filepath.Join(root, "range"), "--extra-tree="+tree, "--package-directory="+pkgs, "--output-directory="+built, "build")
+	mkosi := tool(src, "/usr/bin/mkosi", "--directory="+filepath.Join(src, "range"), "--extra-tree="+tree, "--package-directory="+pkgs, "--output-directory="+built, "build")
 	// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
 	// and the next invocation never sweeps a build directory mkosi still writes.
 	mkosi.ExtraFiles = []*os.File{held}
 	if err := mkosi.Run(); err != nil {
 		return "", fmt.Errorf("mkosi: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(built, "commit"), []byte(commit+"\n")); err != nil {
-		return "", err
+	for name, value := range map[string]string{"commit": commit, "launcher": launcher} {
+		if err := writeFileAtomic(filepath.Join(built, name), []byte(value+"\n")); err != nil {
+			return "", err
+		}
 	}
 	sum, err := fileSHA256(ctx, filepath.Join(built, "image.raw"))
 	if err != nil {
@@ -179,10 +158,261 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
+// Export limits (R5): the repository is a few MiB today.
+const (
+	maxPack      = 256 << 20
+	maxListing   = 8 << 20
+	maxEntries   = 20000
+	maxBlob      = 32 << 20
+	maxExport    = 256 << 20
+	maxPathLen   = 512
+	maxPathDepth = 32
+)
+
+// fetchAndExport resolves target, copies it and the launcher's commit from root into stage/git and
+// exports target to stage/src. root's own objects are never read directly: a loose object there
+// can carry other bytes than its name says, and git serves them unchecked, so the commits travel
+// as a pack that index-pack --strict verifies object by object.
+func fetchAndExport(tool toolFunc, root, stage, target, launcher string) (string, error) {
+	commit := target
+	if commit == "" {
+		head := sourceGit(tool, root, "rev-parse", "--verify", "HEAD^{commit}")
+		head.Stdout = nil
+		out, err := head.Output()
+		if err != nil {
+			return "", fmt.Errorf("resolve HEAD: %w", err)
+		}
+		commit = strings.TrimSpace(string(out))
+	}
+	if !commitRE.MatchString(commit) {
+		return "", fmt.Errorf("commit %q is not a full object name", commit)
+	}
+	gitDir := filepath.Join(stage, "git")
+	if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", gitDir).Run(); err != nil {
+		return "", fmt.Errorf("git init: %w", err)
+	}
+	pack := sourceGit(tool, root, "pack-objects", "--stdout", "--revs")
+	pack.Stdin = strings.NewReader(commit + "\n" + launcher + "\n")
+	pack.Stdout = nil
+	packOut, err := pack.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("git pack-objects: %w", err)
+	}
+	index := stageGit(tool, gitDir, "index-pack", "--stdin", "--strict")
+	capped := &cappedReader{r: packOut, left: maxPack}
+	index.Stdin = capped
+	if err := pack.Start(); err != nil {
+		return "", fmt.Errorf("git pack-objects: %w", err)
+	}
+	indexErr := index.Run()
+	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
+	packErr := errors.Join(packOut.Close(), pack.Wait())
+	if capped.over {
+		return "", fmt.Errorf("commits %s and %s are over %d bytes", commit, launcher, maxPack)
+	}
+	if err := errors.Join(indexErr, packErr); err != nil {
+		return "", fmt.Errorf("copy %s and %s into a verified repository: %w", commit, launcher, err)
+	}
+	built, err := listTree(tool, gitDir, commit)
+	if err != nil {
+		return "", err
+	}
+	if commit != launcher {
+		own, err := listTree(tool, gitDir, launcher)
+		if err != nil {
+			return "", err
+		}
+		if err := hostInputsMatch(built, own); err != nil {
+			return "", fmt.Errorf("commit %s against launcher %s: %w", commit, launcher, err)
+		}
+	}
+	return commit, export(tool, gitDir, built, filepath.Join(stage, "src"))
+}
+
+// entry is one file of a commit: its git mode and object name.
+type entry struct{ mode, oid string }
+
+// listTree returns every file of commit, refusing anything but regular files (a symlink would make
+// a tool read outside the export, a submodule is content the commit does not hold) and paths that
+// are not plain relative paths. Allowlist of modes, so a new kind of entry is refused too.
+func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
+	ls := stageGit(tool, gitDir, "ls-tree", "-r", "-z", "--full-tree", "--format=%(objectmode) %(objectname) %(path)", commit)
+	ls.Stdout = nil
+	out, err := ls.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-tree: %w", err)
+	}
+	if err := ls.Start(); err != nil {
+		return nil, fmt.Errorf("git ls-tree: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(out, maxListing+1))
+	if len(data) > maxListing {
+		return nil, errors.Join(fmt.Errorf("tree of %s lists over %d bytes", commit, maxListing), out.Close(), ls.Wait())
+	}
+	if err := errors.Join(readErr, ls.Wait()); err != nil {
+		return nil, fmt.Errorf("git ls-tree %s: %w", commit, err)
+	}
+	files := map[string]entry{}
+	for rec := range strings.SplitSeq(strings.TrimSuffix(string(data), "\x00"), "\x00") {
+		mode, rest, ok1 := strings.Cut(rec, " ")
+		oid, path, ok2 := strings.Cut(rest, " ")
+		if !ok1 || !ok2 || !commitRE.MatchString(oid) {
+			return nil, fmt.Errorf("git ls-tree %s: unexpected entry %q", commit, rec)
+		}
+		if mode != "100644" && mode != "100755" {
+			return nil, fmt.Errorf("%q in %s is not a regular file (mode %s)", path, commit, mode)
+		}
+		if err := plainPath(path); err != nil {
+			return nil, fmt.Errorf("%q in %s: %w", path, commit, err)
+		}
+		if len(files) == maxEntries {
+			return nil, fmt.Errorf("tree of %s has over %d files", commit, maxEntries)
+		}
+		files[path] = entry{mode, oid}
+	}
+	return files, nil
+}
+
+// plainPath accepts a clean relative path below the export directory that names no .git.
+func plainPath(p string) error {
+	parts := strings.Split(p, "/")
+	if len(p) > maxPathLen || len(parts) > maxPathDepth || p != filepath.Clean(p) || !filepath.IsLocal(p) {
+		return errors.New("not a plain relative path")
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".git") {
+			return errors.New("not a plain relative path")
+		}
+	}
+	return nil
+}
+
+// export writes every file of the commit into dir, which must be empty. Files are created, never
+// opened through a link, and get exactly mode 0644 or 0755.
+func export(tool toolFunc, gitDir string, files map[string]entry, dir string) error {
+	var total int64
+	for path, e := range files {
+		dst := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return fmt.Errorf("export %s: %w", path, err)
+		}
+		perm := os.FileMode(0o644)
+		if e.mode == "100755" {
+			perm = 0o755
+		}
+		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, perm) //nolint:gosec // inside the fresh export directory
+		if err != nil {
+			return fmt.Errorf("export %s: %w", path, err)
+		}
+		cat := stageGit(tool, gitDir, "cat-file", "blob", e.oid)
+		capped := &cappedWriter{w: f, left: maxBlob}
+		cat.Stdout = capped
+		err = errors.Join(cat.Run(), f.Chmod(perm), f.Close())
+		if capped.over {
+			return fmt.Errorf("export %s: over %d bytes", path, maxBlob)
+		}
+		if err != nil {
+			return fmt.Errorf("export %s: %w", path, err)
+		}
+		if total += maxBlob - capped.left; total > maxExport {
+			return fmt.Errorf("export is over %d bytes", maxExport)
+		}
+	}
+	return nil
+}
+
+// hostInputsMatch refuses a commit that differs from the launcher's own commit anywhere but in
+// guestOnly paths: everything else runs on this host or steers a host tool (mkosi configuration and
+// scripts, the PKGBUILD, go.mod), so only reviewed launcher code may supply it.
+func hostInputsMatch(built, own map[string]entry) error {
+	var changed []string
+	for path, e := range built {
+		if own[path] != e && !guestOnly(path, e.mode) {
+			changed = append(changed, path)
+		}
+	}
+	for path := range own {
+		if _, ok := built[path]; !ok && !guestOnly(path, "100644") {
+			changed = append(changed, path)
+		}
+	}
+	if len(changed) > 0 {
+		slices.Sort(changed)
+		return fmt.Errorf("changes host inputs %q; build it with a launcher from that commit", changed)
+	}
+	return nil
+}
+
+// guestOnly says whether a commit may change path against the launcher's commit: Go source that
+// can only end up in the guest program, sensor configuration copied into the image as data, and
+// files no build tool reads. range/ and packaging/ are never guest-only.
+func guestOnly(path, mode string) bool {
+	if strings.HasPrefix(path, "range/") || strings.HasPrefix(path, "packaging/") || !strings.Contains(path, "/") && !strings.HasSuffix(path, ".md") {
+		return false
+	}
+	switch top, _, _ := strings.Cut(path, "/"); top {
+	case "tools", "githooks", ".github":
+		return true
+	case "cmd", "internal":
+		return mode == "100644" && (strings.HasSuffix(path, ".go") || strings.Contains(path, "/testdata/"))
+	default:
+		return mode == "100644" && (top == "deploy" || top == "acceptance" || strings.HasSuffix(path, ".md"))
+	}
+}
+
+// toolFunc builds the command for one program Build runs.
+type toolFunc func(dir, path string, args ...string) *exec.Cmd
+
+// sourceGit runs git on the repository at root. Only rev-parse and pack-objects run there, which
+// read no index, attributes or replace refs; lazy fetch from a promisor remote and fsmonitor are off
+// so its configuration cannot make them reach the network or start a program.
+func sourceGit(tool toolFunc, root string, args ...string) *exec.Cmd {
+	cmd := tool(root, "/usr/bin/git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
+	cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
+	return cmd
+}
+
+// stageGit runs git on the verified repository in the stage.
+func stageGit(tool toolFunc, gitDir string, args ...string) *exec.Cmd {
+	return tool(gitDir, "/usr/bin/git", append([]string{"--git-dir=" + gitDir}, args...)...)
+}
+
+// cappedReader returns an error once more than left bytes were read, so a tool fed from it stops.
+type cappedReader struct {
+	r    io.Reader
+	left int64
+	over bool
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if c.left -= int64(n); c.left < 0 {
+		c.over = true
+		return 0, errors.New("input over its limit")
+	}
+	return n, err
+}
+
+// cappedWriter refuses writes past left bytes.
+type cappedWriter struct {
+	w    io.Writer
+	left int64
+	over bool
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > c.left {
+		c.over = true
+		return 0, errors.New("output over its limit")
+	}
+	c.left -= int64(len(p))
+	return c.w.Write(p)
+}
+
 // newTool returns the constructor for every program Build runs. Each gets toolEnv, never the
 // caller's environment: GOFLAGS=-toolexec, GOROOT, a go.env file, a git config or a build cache that
 // an agent at the same uid can write would otherwise decide what is built (T34).
-func newTool(ctx context.Context, stage string, log io.Writer) func(dir, path string, args ...string) *exec.Cmd {
+func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
 	env := toolEnv(stage)
 	return func(dir, path string, args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // absolute binaries, fixed argv
@@ -194,7 +424,8 @@ func newTool(ctx context.Context, stage string, log io.Writer) func(dir, path st
 }
 
 // toolEnv is the whole environment of the tools Build runs: fixed values with caches inside stage,
-// plus the proxy settings, which choose the network path and not what is built.
+// plus the proxy settings, which choose the network path and not what is built. Git looks for no
+// repository above the stage, which sits inside the maintainer's home repository.
 func toolEnv(stage string) []string {
 	home := filepath.Join(stage, "home")
 	env := []string{
@@ -202,13 +433,14 @@ func toolEnv(stage string) []string {
 		"HOME=" + home,
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CEILING_DIRECTORIES=" + stage,
 		"GOENV=off",
 		"GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"),
 		"GOPROXY=off",
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
-		"GOFLAGS=-mod=readonly",
+		"GOFLAGS=-mod=readonly -buildvcs=false",
 		"CGO_ENABLED=0",
 	}
 	for _, k := range proxyEnv {
@@ -217,29 +449,6 @@ func toolEnv(stage string) []string {
 		}
 	}
 	return env
-}
-
-// regularFilesOnly refuses a commit whose build inputs hold anything but regular files. A symlink
-// would make Build read a host file outside the tree (a key the agent may not read) into the image,
-// where guest code from the same commit can print it; a submodule is a tree the commit does not
-// pin byte for byte (T34). Allowlist of modes, so a new kind of entry is refused too.
-func regularFilesOnly(tool func(dir, path string, args ...string) *exec.Cmd, root, commit string) error {
-	ls := tool(root, "/usr/bin/git", append([]string{"ls-tree", "-r", "-z", "--full-tree", "--format=%(objectmode) %(path)", commit, "--"}, buildInputs...)...)
-	ls.Stdout = nil
-	out, err := ls.Output()
-	if err != nil {
-		return fmt.Errorf("git ls-tree: %w", err)
-	}
-	for entry := range strings.SplitSeq(strings.TrimSuffix(string(out), "\x00"), "\x00") {
-		mode, path, ok := strings.Cut(entry, " ")
-		if !ok {
-			return fmt.Errorf("git ls-tree: unexpected entry %q", entry)
-		}
-		if mode != "100644" && mode != "100755" {
-			return fmt.Errorf("build input %q is not a regular file (mode %s); commit the file itself", path, mode)
-		}
-	}
-	return nil
 }
 
 // launcherCommit is the clean commit this binary was built from, or "" when the build carries no
@@ -269,9 +478,8 @@ func cleanRevision(settings []debug.BuildSetting) string {
 }
 
 // Check runs the self-test of image once and stores its Result and serial log under
-// state/results/<id>; a run that ends in an error leaves no result directory behind. A launcher
-// that is not a clean build of the image's commit judged the run with code nobody can name, so
-// its verdict is UNKNOWN (R1).
+// state/results/<id>; a run that ends in an error leaves no result directory behind. Only the
+// launcher that built the image can pass it (judge).
 func Check(ctx context.Context, image, cache, state string) (res Result, err error) {
 	held, err := lock(cache)
 	if err != nil {
@@ -290,6 +498,10 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	commit, err := readCommit(filepath.Join(dir, "commit"))
 	if err != nil {
 		return Result{}, err
+	}
+	builder, err := readCommit(filepath.Join(dir, "launcher"))
+	if err != nil {
+		return Result{}, fmt.Errorf("image names no building launcher (built before result schema %d; rebuild it): %w", resultSchema, err)
 	}
 
 	resultsDir := filepath.Join(state, "results")
@@ -323,7 +535,7 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	}
 
 	res = Result{
-		SchemaVersion: resultSchema, ID: id, RangeCommit: commit, LauncherCommit: launcherCommit(),
+		SchemaVersion: resultSchema, ID: id, Class: ClassCommit, RangeCommit: commit, BuildLauncherCommit: builder, LauncherCommit: launcherCommit(),
 		Image: image, ImageSHA256: sum, TargetKernel: TargetKernel, Manifest: manifest,
 	}
 	for _, f := range outcome.Facts {
@@ -331,7 +543,10 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 			res.GuestKernel = f.Value
 		}
 	}
-	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, commit)
+	if commit != builder {
+		res.Class = ClassBranch
+	}
+	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, builder)
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)
@@ -342,13 +557,23 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	return res, nil
 }
 
-func judge(o Outcome, launcher, image string) (verdict, reason string) {
+// Result classes. A branch image was built from a commit other than the building launcher's: its
+// guest program is that commit's code and reports its own facts, so its verdict is feedback for the
+// change, not evidence about the sensor (T33).
+const (
+	ClassCommit = "commit"
+	ClassBranch = "branch"
+)
+
+// judge gives the self-test verdict, but only the launcher that built the image (and so chose its
+// host-run inputs) may pass it; any other launcher judged with code that did not build it (R1).
+func judge(o Outcome, launcher, builder string) (verdict, reason string) {
 	if o.Invalid != "" {
 		return Invalid, o.Invalid
 	}
 	verdict, reason = Selftest(o.Facts)
-	if verdict == Pass && launcher != image {
-		return Unknown, fmt.Sprintf("launcher is not a clean build of the image commit %s (got %q)", image, launcher)
+	if verdict == Pass && launcher != builder {
+		return Unknown, fmt.Sprintf("launcher %q did not build this image (built by %s)", launcher, builder)
 	}
 	return verdict, reason
 }
@@ -394,7 +619,7 @@ func sweep(dir string, prefixes ...string) error {
 // maxImageFile caps one configuration file copied into the image (R5).
 const maxImageFile = 1 << 20
 
-// copyInto copies one file of the checked tree into the image tree with the mode it has there.
+// copyInto copies one file of the export into the image tree with the mode it has there.
 func copyInto(src, dst string, mode os.FileMode) error {
 	data, err := readSmall(src, maxImageFile)
 	if err != nil {
@@ -403,7 +628,7 @@ func copyInto(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil { //nolint:gosec // system directories in the image
 		return fmt.Errorf("image file: %w", err)
 	}
-	if err := os.WriteFile(dst, data, mode); err != nil { //nolint:gosec // dst is in our staging tree, from the fixed imageFiles table
+	if err := os.WriteFile(dst, data, mode); err != nil {
 		return fmt.Errorf("image file: %w", err)
 	}
 	// WriteFile applies the umask; the image must not depend on the builder's.
