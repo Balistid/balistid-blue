@@ -43,17 +43,45 @@ Each floor must be useful on its own, even if the next one never ships.
 - Fleet management, multi-tenant SOC features or a hosted service.
 - Claiming protection that has not been demonstrated by a test that fails without it.
 
+## How it fits together
+
+Today (floor 0, sensor proven): `kordon-range build` packs the sensor configuration from `deploy/` and the
+Laurel package into an Arch image; `kordon-range run` boots it once in QEMU inside bwrap, the guest checks
+the sensor and writes facts to a raw results disk, and the host turns them into a verdict (ADR 0004, 0009).
+Planned for floor 0: auditd → Laurel → collector → raw SQLite shards → ledger → Raspberry Pi witness
+(ADR 0005–0007). Each decision lives in one place: why in `adr/`, where we are in `STATUS.md`, what can go
+wrong in `THREAT_MODEL.md`, the numbers in `acceptance/`, and what lives where in this map.
+
 ## Repository map
+
+CI fails when a directory with tracked files has no row here, or a row names something that is not tracked.
 
 | Path | Purpose |
 |---|---|
 | `ENGINEERING.md` | Binding engineering rules (R1–R14) for humans and agents |
 | `CLAUDE.md`, `AGENTS.md` | Working instructions for Claude Code and Codex |
 | `STATUS.md` | Current floor, next step, open decisions (overwritten, never appended) |
+| `THREAT_MODEL.md` | Threats per floor with their control, proof and honest status |
 | `adr/` | Architecture decision records, one page each |
 | `acceptance/` | Acceptance numbers per floor, committed before the floor's code |
-| `tools/ci/` | Repository gates (docs budget, commit lint, action pinning) and their tests |
+| `cmd/kordon/` | The unprivileged command-line client (today only `version`) |
+| `cmd/kordon-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
+| `cmd/kordon-range-guest/` | Program inside the range VM that checks isolation and the sensor |
+| `internal/buildinfo/` | Version string stamped at release build |
+| `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
+| `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
+| `deploy/audit/` | Audit rules installed by `kordon-install` (ADR 0004) |
+| `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
+| `deploy/laurel/` | Laurel configuration |
+| `deploy/sysctl/` | Kernel settings (io_uring disabled) |
+| `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
+| `range/` | mkosi configuration and guest unit of the range image |
+| `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go) and their tests |
 | `githooks/` | Local hooks; CI is the authority, hooks give earlier feedback |
+| `.github/` | CI workflow, code owners, issue and pull request templates |
+
+A code graph (graphify) is deliberately not kept: at this size it would only add something to go stale.
+Revisit when floor 0 runs several processes.
 
 ## License
 
