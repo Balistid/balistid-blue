@@ -303,7 +303,7 @@ func copyObjectStore(ctx context.Context, root, dst string, lim limits) error {
 func rootDirEntries(r *os.Root, dir string, each func(name string) error) error {
 	f, err := r.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return fmt.Errorf("open %s: %w", dir, err)
 	}
 	defer f.Close() //nolint:errcheck // read-only directory
 	if st, err := f.Stat(); err != nil || !st.IsDir() {
@@ -330,7 +330,7 @@ func rootDirEntries(r *os.Root, dir string, each func(name string) error) error 
 func rootRegular(r *os.Root, name string) (*os.File, error) {
 	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open %s: %w", name, err)
 	}
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
 		return nil, errors.Join(fmt.Errorf("%s is not a regular file", name), err, f.Close())

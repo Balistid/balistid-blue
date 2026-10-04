@@ -391,7 +391,7 @@ func TestExportIsTheCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(src, "range", "mkosi.conf"))
+	got, err := os.ReadFile(filepath.Join(src, "range", "mkosi.conf")) //nolint:gosec // test export directory
 	if err != nil || string(got) != "[Distribution]\n" {
 		t.Fatalf("exported mkosi.conf = %q, %v; want the committed bytes", got, err)
 	}
@@ -475,6 +475,9 @@ func TestCappedReaderAndWriter(t *testing.T) {
 // The stage lies inside the maintainer's home repository; with the tool environment go build must
 // not stamp (and so not run git status in) the enclosing repository.
 func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/go"); err != nil {
+		t.Skip("Build runs /usr/bin/go, which this host does not have")
+	}
 	outer := t.TempDir()
 	if out, err := exec.CommandContext(t.Context(), "/usr/bin/git", "init", "-q", outer).CombinedOutput(); err != nil { //nolint:gosec // test temp repository
 		t.Fatalf("git init: %v %s", err, out)
@@ -565,7 +568,7 @@ func TestExportKeepsUnusualNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range names {
-		if got, err := os.ReadFile(filepath.Join(src, n)); err != nil || string(got) != n {
+		if got, err := os.ReadFile(filepath.Join(src, n)); err != nil || string(got) != n { //nolint:gosec // test export directory
 			t.Errorf("%q: got %q, %v", n, got, err)
 		}
 	}
@@ -776,14 +779,14 @@ func TestSourceRepositoryIsNotRead(t *testing.T) {
 	defer cancel()
 	stage := stageFor(t)
 	start := time.Now()
-	err, log := exportLogged(t, ctx, root, stage, head)
+	log, err := exportLogged(t, ctx, root, stage, head)
 	if err != nil {
 		t.Fatalf("export: %v (log %q)", err, log)
 	}
 	if time.Since(start) > 10*time.Second || strings.Contains(log, "PRIVATE-VALUE") {
 		t.Fatalf("root's configuration was read: %v, log %q", time.Since(start), log)
 	}
-	got, err := os.ReadFile(filepath.Join(stage, "src", "range", "mkosi.conf"))
+	got, err := os.ReadFile(filepath.Join(stage, "src", "range", "mkosi.conf")) //nolint:gosec // test export directory
 	if err != nil || string(got) != "[Distribution]\n" {
 		t.Fatalf("exported mkosi.conf = %q, %v; want the committed bytes", got, err)
 	}
@@ -791,7 +794,7 @@ func TestSourceRepositoryIsNotRead(t *testing.T) {
 
 // exportLogged runs fetchAndExport with a file as its log, as Build does with os.Stderr (a shared
 // in-memory buffer would race between the tools' output copiers).
-func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string) (error, string) {
+func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string) (string, error) {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "log")
 	if err != nil {
@@ -805,7 +808,7 @@ func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string)
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
-	return err, string(data)
+	return string(data), err
 }
 
 // Links in the object store that lead out of the repository (alternates, the commit-graph chain, an
@@ -840,7 +843,7 @@ func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
 		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
-		err, log := exportLogged(t, t.Context(), root, stageFor(t), head)
+		log, err := exportLogged(t, t.Context(), root, stageFor(t), head)
 		leaked := strings.Contains(log, "PRIVATE-VALUE") || err != nil && strings.Contains(err.Error(), "PRIVATE-VALUE")
 		if (err == nil) != ok || leaked {
 			t.Errorf("%s: export = %v, want ok=%v; log %q", name, err, ok, log)
