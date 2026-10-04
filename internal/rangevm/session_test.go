@@ -694,22 +694,13 @@ func TestExportLimits(t *testing.T) {
 	}
 }
 
-// The test binary carries no VCS stamp, so it is not a clean build of any commit: Build refuses
-// before it reads the repository.
-func TestBuildRefusesALauncherOfAnotherCommit(t *testing.T) {
+// The test binary carries no VCS stamp, so it names no commit to build: Build refuses before it
+// reads the repository.
+func TestBuildRefusesALauncherWithoutAStamp(t *testing.T) {
 	root, _ := testRepo(t)
 	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "is not a clean build of HEAD") {
+	if err == nil || !strings.Contains(err.Error(), "not a clean VCS build") {
 		t.Fatalf("Build = %v, want a refusal of the launcher", err)
-	}
-}
-
-func TestCheckLauncher(t *testing.T) {
-	commit := strings.Repeat("a", 40)
-	for launcher, ok := range map[string]bool{commit: true, "": false, strings.Repeat("b", 40): false} {
-		if err := checkLauncher(launcher, commit); (err == nil) != ok {
-			t.Errorf("checkLauncher(%q) = %v, want ok=%v", launcher, err, ok)
-		}
 	}
 }
 
@@ -766,35 +757,28 @@ func TestReadCappedStopsAtTheLimit(t *testing.T) {
 
 // When pack-objects fails early, rev-list must not stay blocked on a pipe the parent still holds.
 func TestCopyEndsWhenPackObjectsFails(t *testing.T) {
-	root, git := testRepo(t)
-	dir := filepath.Join(root, "deploy", "many")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for i := range 5000 {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(i)), []byte(fmt.Sprint(i)), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	git("add", ".")
-	git("commit", "-q", "-m", "many")
-	head := git("rev-parse", "HEAD")
-	git("config", "pack.threads", "-1")
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	stage := stageFor(t)
+	list := exec.CommandContext(ctx, "/usr/bin/yes")   // writes until its pipe closes
+	pack := exec.CommandContext(ctx, "/usr/bin/false") // fails at once
+	index := exec.CommandContext(ctx, "/usr/bin/cat")  // reads the empty pack stream
+	index.Stdout = io.Discard
 	start := time.Now()
-	err := fetchAndExport(newTool(ctx, stage, io.Discard), root, stage, head, defaultLimits())
+	err := copyObjects(list, pack, index, 1<<20)
 	if err == nil || time.Since(start) > 10*time.Second {
 		t.Fatalf("copy after a failed pack-objects: %v after %v, want a prompt error", err, time.Since(start))
 	}
 }
 
-// A FIFO among the repository's attributes stalls pack-objects; the deadline ends the copy.
+// An object file that is a FIFO stalls git reading root's store; the deadline ends the copy.
 func TestStalledCopyEndsAtTheDeadline(t *testing.T) {
 	root, git := testRepo(t)
 	head := git("rev-parse", "HEAD")
-	if err := syscall.Mkfifo(filepath.Join(root, ".gitattributes"), 0o600); err != nil {
+	path := filepath.Join(root, ".git", "objects", head[:2], head[2:])
+	if err := os.Rename(path, path+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -805,9 +789,45 @@ func TestStalledCopyEndsAtTheDeadline(t *testing.T) {
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Fatal("copy succeeded although pack-objects was stalled")
+			t.Fatal("copy succeeded although reading the object stalled")
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("copy did not end at its deadline")
+	}
+}
+
+// git never runs in root: configuration that includes a FIFO or names an attributes file outside
+// the repository, a FIFO .gitattributes and a replace ref change nothing and leak nothing.
+func TestSourceRepositoryIsNotRead(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret")
+	if err := os.WriteFile(secret, []byte("PRIVATE-VALUE!\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("replace", git("rev-parse", "HEAD:range/mkosi.conf"), git("hash-object", "-w", "/dev/null"))
+	git("config", "core.attributesFile", secret)
+	git("config", "include.path", filepath.Join(dir, "include"))
+	// Planted last: git in this test would block on them too.
+	for _, fifo := range []string{filepath.Join(dir, "include"), filepath.Join(root, ".gitattributes")} {
+		if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	stage := stageFor(t)
+	var log bytes.Buffer
+	start := time.Now()
+	if err := fetchAndExport(newTool(ctx, stage, &log), root, stage, head, defaultLimits()); err != nil {
+		t.Fatalf("export: %v (log %q)", err, log.String())
+	}
+	if time.Since(start) > 10*time.Second || strings.Contains(log.String(), "PRIVATE-VALUE") {
+		t.Fatalf("root's configuration was read: %v, log %q", time.Since(start), log.String())
+	}
+	got, err := os.ReadFile(filepath.Join(stage, "src", "range", "mkosi.conf"))
+	if err != nil || string(got) != "[Distribution]\n" {
+		t.Fatalf("exported mkosi.conf = %q, %v; want the committed bytes", got, err)
 	}
 }

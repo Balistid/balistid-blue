@@ -19,16 +19,15 @@ can `replace` with a host directory), and no file list makes that safe (R7).
 
 ## Decision
 
-1. Build makes an image only of HEAD, with a launcher that is a clean build of that same commit
-   (as before). Which commit's code may run on the host is decided by the maintainer who builds the
-   launcher; building a commit means running it.
-2. No file content comes from the work tree. `git rev-list --objects --no-walk` and `pack-objects`
-   send only that commit's objects, no history, through `git index-pack --fsck-objects` (names every
-   object by its recomputed hash, refuses malformed trees) into a fresh repository in the build
-   directory, where all of them must then be present, so a forged object is refused. The source
-   repository runs only `rev-parse`, `rev-list` and `pack-objects`, with lazy fetch off and no index
-   read; the attributes and configuration `pack-objects` reads can change only compression or stall
-   the copy, which a time limit ends.
+1. Build makes an image of the commit the launcher was built from (its clean VCS stamp; a launcher
+   without one is refused). Which commit's code may run on the host is decided by the maintainer who
+   builds the launcher; building a commit means running it.
+2. git never runs in the source repository: its configuration, attributes, refs and work tree are
+   writable by an agent. A repository of ours borrows its object store (`alternates`) and, with our
+   configuration, sends only the commit's objects (`rev-list --objects --no-walk`, `pack-objects`, no
+   history) through `index-pack --fsck-objects`, which names every object by its recomputed hash and
+   refuses malformed trees, into a fresh repository where all of them must be present, so a forged
+   object is refused. A time limit ends a copy that stalls on the object store (a FIFO).
 3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty
    directory. Only regular files (modes 100644 and 100755) with plain relative paths are accepted:
    no symlink, submodule, `..` or `.git`. Every file is created (never opened if it exists) with mode
@@ -53,8 +52,7 @@ can `replace` with a host directory), and no file list makes that safe (R7).
 - An agent's branch is built by the maintainer only after review, until the runner confines builds.
 - mkosi downloads the package snapshot on every build (no shared cache to poison); its workspace in
   `/var/tmp` stays a known gap, and a small pack can still inflate to large objects (DoS, T34).
-- Tests: work tree, index flags, replace refs and untracked files do not reach the export; repository
-  configuration and lazy fetch run nothing; a stalled or failed copy ends; forged objects, malformed
-  trees, symlinks, submodules,
+- Tests: the source's configuration, attributes, replace refs, index and work tree are not read; a
+  stalled or failed copy ends; forged objects, malformed trees, symlinks, submodules,
   unsafe paths, existing files and every limit are refused; unusual names and modes survive; no
   history is copied; a launcher of another commit is refused; no enclosing repository is stamped.

@@ -69,11 +69,11 @@ type Result struct {
 	Manifest       json.RawMessage `json:"manifest"`
 }
 
-// Build builds the image of HEAD of the repository at root with a launcher built from that same
-// commit, and stores it with its commit under cache/images. Building a commit runs its range/ and
-// packaging/ on this host, so only build commits whose code you would run (T34). No file content
-// comes from the work tree and nothing in root's object store is trusted: the tools build from an
-// export of the commit verified object by object (ADR 0010). Tool output goes to log.
+// Build builds the image of the commit the launcher was built from, read from the object store of
+// the repository at root, and stores it with its commit under cache/images. Building a commit runs
+// its range/ and packaging/ on this host, so only build commits whose code you would run (T34). git
+// never runs in root and nothing in its object store is trusted: the tools build from an export of
+// the commit verified object by object (ADR 0010). Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
 	held, err := lock(cache)
 	if err != nil {
@@ -92,18 +92,12 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	}
 	tool := newTool(ctx, stage, log)
 	src := filepath.Join(stage, "src")
-	head := sourceGit(tool, root, "rev-parse", "--verify", "HEAD^{commit}")
-	head.Stdout = nil
-	out, err := head.Output()
-	commit := strings.TrimSpace(string(out))
-	if err != nil || !commitRE.MatchString(commit) {
-		return "", fmt.Errorf("resolve HEAD: %q: %w", commit, err)
+	commit := launcherCommit()
+	if commit == "" {
+		return "", errors.New("launcher is not a clean VCS build of a commit (go run, -buildvcs=false or uncommitted changes)")
 	}
-	if err := checkLauncher(launcherCommit(), commit); err != nil {
-		return "", err
-	}
-	// The source repository's attributes and configuration can stall pack-objects (a FIFO), so the
-	// copy has a deadline; it takes well under a second today.
+	// Objects in root's store can be FIFOs or huge, so the copy has a deadline; it takes well under
+	// a second today.
 	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
 	defer cancel()
 	if err := fetchAndExport(newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
@@ -181,44 +175,35 @@ func defaultLimits() limits {
 // pack, index-pack names every object by its recomputed hash, and the export then reads only from
 // the stage repository, where a forged object is simply missing.
 func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error {
-	gitDir := filepath.Join(stage, "git")
-	if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", gitDir).Run(); err != nil {
-		return fmt.Errorf("git init: %w", err)
+	objectsDir, err := filepath.Abs(filepath.Join(root, ".git", "objects"))
+	if err != nil || strings.ContainsAny(objectsDir, "\n\r") {
+		return fmt.Errorf("object store of %s: %q: %w", root, objectsDir, err)
 	}
-	list := sourceGit(tool, root, "rev-list", "--objects", "--no-walk", commit)
-	pack := sourceGit(tool, root, "pack-objects", "--stdout")
+	if st, err := os.Stat(objectsDir); err != nil || !st.IsDir() {
+		return fmt.Errorf("object store of %s is not a directory: %w", root, err)
+	}
+	// git never runs in root: its configuration, attributes, refs and work tree are the agent's to
+	// write. A repository of ours borrows root's objects (alternates) and reads them with our own
+	// configuration; their content is still untrusted until index-pack has named it.
+	reader, gitDir := filepath.Join(stage, "reader"), filepath.Join(stage, "git")
+	for _, dir := range []string{reader, gitDir} {
+		if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", dir).Run(); err != nil {
+			return fmt.Errorf("git init: %w", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(reader, "objects", "info"), 0o700); err != nil {
+		return fmt.Errorf("alternates: %w", err)
+	}
+	if err := writeFileAtomic(filepath.Join(reader, "objects", "info", "alternates"), []byte(objectsDir+"\n")); err != nil {
+		return err
+	}
+	list := stageGit(tool, reader, "rev-list", "--objects", "--no-walk", commit)
+	pack := stageGit(tool, reader, "pack-objects", "--stdout")
 	// index-pack streams blobs over 1 MiB instead of holding them in memory; --fsck-objects refuses
 	// malformed trees (duplicate or full-path entries, bad order) that would export ambiguously.
 	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
-	// The children own the pipe between rev-list and pack-objects; the parent closes its ends as
-	// soon as they started, so either one exiting ends the other instead of leaving it blocked.
-	objects, listOut, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("pipe: %w", err)
-	}
-	list.Stdout, pack.Stdin, pack.Stdout = listOut, objects, nil
-	packOut, err := pack.StdoutPipe()
-	if err != nil {
-		return errors.Join(fmt.Errorf("git pack-objects: %w", err), objects.Close(), listOut.Close())
-	}
-	capped := &cappedReader{r: packOut, left: lim.pack}
-	index.Stdin = capped
-	listErr := list.Start()
-	packErr := pack.Start()
-	if err := errors.Join(objects.Close(), listOut.Close()); err != nil {
-		return fmt.Errorf("pipe: %w", err)
-	}
-	if listErr != nil || packErr != nil {
-		return errors.Join(fmt.Errorf("start copy of %s: %w", commit, errors.Join(listErr, packErr)), waitStarted(list, listErr), waitStarted(pack, packErr))
-	}
-	indexErr := index.Run()
-	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
-	copyErr := errors.Join(indexErr, packOut.Close(), pack.Wait(), list.Wait())
-	if capped.over {
-		return fmt.Errorf("commit %s is over %d bytes packed", commit, lim.pack)
-	}
-	if copyErr != nil {
-		return fmt.Errorf("copy %s into a verified repository: %w", commit, copyErr)
+	if err := copyObjects(list, pack, index, lim.pack); err != nil {
+		return fmt.Errorf("copy %s into a verified repository: %w", commit, err)
 	}
 	// Every object of the commit must have arrived under its own name.
 	check := stageGit(tool, gitDir, "rev-list", "--objects", "--no-walk", commit)
@@ -231,6 +216,38 @@ func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error
 		return err
 	}
 	return export(tool, gitDir, files, filepath.Join(stage, "src"), lim)
+}
+
+// copyObjects runs list | pack | index and refuses more than limit bytes into index. The children own
+// the pipe between list and pack; the parent closes its ends as soon as they started, so either one
+// exiting ends the other instead of leaving it blocked.
+func copyObjects(list, pack, index *exec.Cmd, limit int64) error {
+	objects, listOut, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	list.Stdout, pack.Stdin, pack.Stdout = listOut, objects, nil
+	packOut, err := pack.StdoutPipe()
+	if err != nil {
+		return errors.Join(err, objects.Close(), listOut.Close())
+	}
+	capped := &cappedReader{r: packOut, left: limit}
+	index.Stdin = capped
+	listErr := list.Start()
+	packErr := pack.Start()
+	if err := errors.Join(objects.Close(), listOut.Close()); err != nil {
+		return errors.Join(fmt.Errorf("pipe: %w", err), waitStarted(list, listErr), waitStarted(pack, packErr))
+	}
+	if listErr != nil || packErr != nil {
+		return errors.Join(listErr, packErr, waitStarted(list, listErr), waitStarted(pack, packErr))
+	}
+	indexErr := index.Run()
+	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
+	err = errors.Join(indexErr, packOut.Close(), pack.Wait(), list.Wait())
+	if capped.over {
+		return fmt.Errorf("over %d bytes packed", limit)
+	}
+	return err
 }
 
 // waitStarted reaps cmd if it started.
@@ -346,17 +363,6 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string, li
 // toolFunc builds the command for one program Build runs.
 type toolFunc func(dir, path string, args ...string) *exec.Cmd
 
-// sourceGit runs git on the repository at root: only rev-parse, rev-list and pack-objects, which
-// read no index. pack-objects does read the repository's attributes and configuration; they can
-// change how objects are compressed (index-pack verifies the content) or stall the copy (fetchTimeout).
-// rev-list follows replace refs, which only makes the stage check fail. Lazy fetch from a promisor
-// remote is off, so its configuration cannot start a program.
-func sourceGit(tool toolFunc, root string, args ...string) *exec.Cmd {
-	cmd := tool(root, "/usr/bin/git", args...)
-	cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
-	return cmd
-}
-
 // stageGit runs git on the verified repository in the stage.
 func stageGit(tool toolFunc, gitDir string, args ...string) *exec.Cmd {
 	return tool(gitDir, "/usr/bin/git", append([]string{"--git-dir=" + gitDir}, args...)...)
@@ -434,15 +440,6 @@ func toolEnv(stage string) []string {
 		}
 	}
 	return env
-}
-
-// checkLauncher refuses a build unless the launcher is a clean build of the commit it builds, so the
-// code that judges the image is the code that built it (R1).
-func checkLauncher(launcher, commit string) error {
-	if launcher != commit {
-		return fmt.Errorf("launcher %q is not a clean build of HEAD %s", launcher, commit)
-	}
-	return nil
 }
 
 // launcherCommit is the clean commit this binary was built from, or "" when the build carries no
