@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -475,8 +476,9 @@ func TestCappedReaderAndWriter(t *testing.T) {
 // The stage lies inside the maintainer's home repository; with the tool environment go build must
 // not stamp (and so not run git status in) the enclosing repository.
 func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/go"); err != nil {
-		t.Skip("Build runs /usr/bin/go, which this host does not have")
+	// Build runs /usr/bin/go; on a host whose /usr/bin/go is another Go (the CI runner's), skip.
+	if out, err := exec.CommandContext(t.Context(), "/usr/bin/go", "env", "GOVERSION").Output(); err != nil || strings.TrimSpace(string(out)) != runtime.Version() {
+		t.Skipf("/usr/bin/go is not this Go (%q, %v)", out, err)
 	}
 	outer := t.TempDir()
 	if out, err := exec.CommandContext(t.Context(), "/usr/bin/git", "init", "-q", outer).CombinedOutput(); err != nil { //nolint:gosec // test temp repository

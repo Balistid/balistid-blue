@@ -320,7 +320,7 @@ func rootDirEntries(r *os.Root, dir string, each func(name string) error) error 
 			return nil
 		}
 		if err != nil {
-			return err
+			return fmt.Errorf("list %s: %w", dir, err)
 		}
 	}
 }
@@ -375,7 +375,10 @@ func waitStarted(cmd *exec.Cmd, startErr error) error {
 	if startErr != nil {
 		return nil
 	}
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("%s: %w", filepath.Base(cmd.Path), err)
+	}
+	return nil
 }
 
 // readCapped reads r to EOF but stops, with an error, as soon as it has more than limit bytes.
@@ -535,7 +538,7 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 		c.over = true
 		return 0, errors.New("input over its limit")
 	}
-	return n, err
+	return n, err //nolint:wrapcheck // io.EOF must stay unwrapped for io.Copy
 }
 
 // cappedWriter refuses writes past left bytes.
@@ -551,7 +554,7 @@ func (c *cappedWriter) Write(p []byte) (int, error) {
 		return 0, errors.New("output over its limit")
 	}
 	c.left -= int64(len(p))
-	return c.w.Write(p)
+	return c.w.Write(p) //nolint:wrapcheck // a writer returns its destination's error as is
 }
 
 // newTool returns the constructor for every program Build runs. Each gets toolEnv, never the
