@@ -65,7 +65,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `adr/` | Architecture decision records, one page each |
 | `acceptance/` | Acceptance numbers per floor, committed before the floor's code |
 | `cmd/kordon/` | The unprivileged command-line client (today only `version`) |
-| `cmd/kordon-range/` | Range launcher: `build` an image of a commit, `run` it once (ADR 0009, 0010) |
+| `cmd/kordon-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
 | `cmd/kordon-range-guest/` | Program inside the range VM that checks isolation and the sensor |
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |

@@ -17,8 +17,8 @@ No recorder code yet: the collector and raw shards (ADR 0005) are next.
 
 ## Next step
 
-1. Agents must run range jobs themselves (range runner, ADR 0011): jobs `run`, `scenario` and `exec`, built on
-   ADR 0010 (images built from a verified export, host-run inputs from the launcher's commit).
+1. Agents must run range jobs themselves (range runner, ADR 0011): jobs `run`, `scenario` and `exec`, with
+   builds of unreviewed commits confined (bwrap, no `$HOME`); builds already use a verified export (ADR 0010).
 2. Step 9.3: `kordon-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)

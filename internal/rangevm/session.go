@@ -27,7 +27,7 @@ const (
 	keepResults  = 100
 	maxManifest  = 8 << 20
 	stampLayout  = "20060102T150405Z"
-	resultSchema = 2
+	resultSchema = 1
 )
 
 var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -56,33 +56,25 @@ var proxyEnv = []string{"http_proxy", "https_proxy", "no_proxy", "all_proxy", "H
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
 type Result struct {
-	SchemaVersion       int             `json:"schema_version"`
-	ID                  string          `json:"id"`
-	Class               string          `json:"class"`
-	RangeCommit         string          `json:"range_commit"`
-	BuildLauncherCommit string          `json:"build_launcher_commit"`
-	LauncherCommit      string          `json:"launcher_commit"`
-	Image               string          `json:"image"`
-	ImageSHA256         string          `json:"image_sha256"`
-	TargetKernel        string          `json:"target_kernel"`
-	GuestKernel         string          `json:"guest_kernel"`
-	Verdict             string          `json:"verdict"`
-	Reason              string          `json:"reason"`
-	Manifest            json.RawMessage `json:"manifest"`
+	SchemaVersion  int             `json:"schema_version"`
+	ID             string          `json:"id"`
+	RangeCommit    string          `json:"range_commit"`
+	LauncherCommit string          `json:"launcher_commit"`
+	Image          string          `json:"image"`
+	ImageSHA256    string          `json:"image_sha256"`
+	TargetKernel   string          `json:"target_kernel"`
+	GuestKernel    string          `json:"guest_kernel"`
+	Verdict        string          `json:"verdict"`
+	Reason         string          `json:"reason"`
+	Manifest       json.RawMessage `json:"manifest"`
 }
 
-// Build stores an image of commit target (HEAD of the repository at root when target is "") under
-// cache/images. Building a commit runs its range/ and packaging/ on this host, so those, and the
-// other inputs that steer a host tool, must be the launcher's own: target may differ from the
-// launcher's commit only in what goes into the guest (guestOnly). Nothing is read from the work
-// tree or trusted from root's object store: the two commits are copied into a fresh repository
-// that recomputes every object hash, and the tools build from a plain export of target there
-// (T34). Tool output goes to log.
-func Build(ctx context.Context, root, target, cache string, log io.Writer) (image string, err error) {
-	launcher := launcherCommit()
-	if launcher == "" {
-		return "", errors.New("launcher is not a clean VCS build (built with go run, -buildvcs=false or uncommitted changes)")
-	}
+// Build builds the image of HEAD of the repository at root with a launcher built from that same
+// commit, and stores it with its commit under cache/images. Building a commit runs its range/ and
+// packaging/ on this host, so only build commits whose code you would run (T34). Nothing is read
+// from the work tree or trusted from root's object store: the tools build from an export of the
+// commit verified object by object (ADR 0010). Tool output goes to log.
+func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
 	held, err := lock(cache)
 	if err != nil {
 		return "", err
@@ -100,8 +92,17 @@ func Build(ctx context.Context, root, target, cache string, log io.Writer) (imag
 	}
 	tool := newTool(ctx, stage, log)
 	src := filepath.Join(stage, "src")
-	commit, err := fetchAndExport(tool, root, stage, target, launcher)
-	if err != nil {
+	head := sourceGit(tool, root, "rev-parse", "--verify", "HEAD^{commit}")
+	head.Stdout = nil
+	out, err := head.Output()
+	commit := strings.TrimSpace(string(out))
+	if err != nil || !commitRE.MatchString(commit) {
+		return "", fmt.Errorf("resolve HEAD: %q: %w", commit, err)
+	}
+	if lc := launcherCommit(); lc != commit {
+		return "", fmt.Errorf("launcher %q is not a clean build of HEAD %s", lc, commit)
+	}
+	if err := fetchAndExport(tool, root, stage, commit); err != nil {
 		return "", err
 	}
 
@@ -138,10 +139,8 @@ func Build(ctx context.Context, root, target, cache string, log io.Writer) (imag
 	if err := mkosi.Run(); err != nil {
 		return "", fmt.Errorf("mkosi: %w", err)
 	}
-	for name, value := range map[string]string{"commit": commit, "launcher": launcher} {
-		if err := writeFileAtomic(filepath.Join(built, name), []byte(value+"\n")); err != nil {
-			return "", err
-		}
+	if err := writeFileAtomic(filepath.Join(built, "commit"), []byte(commit+"\n")); err != nil {
+		return "", err
 	}
 	sum, err := fileSHA256(ctx, filepath.Join(built, "image.raw"))
 	if err != nil {
@@ -158,75 +157,68 @@ func Build(ctx context.Context, root, target, cache string, log io.Writer) (imag
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
-// Export limits (R5): the repository is a few MiB today.
-const (
-	maxPack      = 256 << 20
-	maxListing   = 8 << 20
-	maxEntries   = 20000
-	maxBlob      = 32 << 20
-	maxExport    = 256 << 20
-	maxPathLen   = 512
-	maxPathDepth = 32
+// Export limits (R5). Only the built commit's own objects are copied, no history; today that is
+// about 110 KiB.
+var (
+	maxPack      int64 = 64 << 20
+	maxListing   int64 = 8 << 20
+	maxEntries         = 20000
+	maxBlob      int64 = 32 << 20
+	maxExport    int64 = 256 << 20
+	maxPathLen         = 512
+	maxPathDepth       = 32
 )
 
-// fetchAndExport resolves target, copies it and the launcher's commit from root into stage/git and
-// exports target to stage/src. root's own objects are never read directly: a loose object there
-// can carry other bytes than its name says, and git serves them unchecked, so the commits travel
-// as a pack that index-pack --strict verifies object by object.
-func fetchAndExport(tool toolFunc, root, stage, target, launcher string) (string, error) {
-	commit := target
-	if commit == "" {
-		head := sourceGit(tool, root, "rev-parse", "--verify", "HEAD^{commit}")
-		head.Stdout = nil
-		out, err := head.Output()
-		if err != nil {
-			return "", fmt.Errorf("resolve HEAD: %w", err)
-		}
-		commit = strings.TrimSpace(string(out))
-	}
-	if !commitRE.MatchString(commit) {
-		return "", fmt.Errorf("commit %q is not a full object name", commit)
-	}
+// fetchAndExport copies commit from the repository at root into a fresh repository in the stage
+// and exports its files to stage/src. root's objects are never read as content: a loose object
+// there can carry other bytes than its name says, and git serves them unchecked. They travel as a
+// pack, index-pack names every object by its recomputed hash, and the export then reads only from
+// the stage repository, where a forged object is simply missing.
+func fetchAndExport(tool toolFunc, root, stage, commit string) error {
 	gitDir := filepath.Join(stage, "git")
 	if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", gitDir).Run(); err != nil {
-		return "", fmt.Errorf("git init: %w", err)
+		return fmt.Errorf("git init: %w", err)
 	}
-	pack := sourceGit(tool, root, "pack-objects", "--stdout", "--revs")
-	pack.Stdin = strings.NewReader(commit + "\n" + launcher + "\n")
-	pack.Stdout = nil
+	list := sourceGit(tool, root, "rev-list", "--objects", "--no-walk", commit)
+	pack := sourceGit(tool, root, "pack-objects", "--stdout")
+	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
+	list.Stdout, pack.Stdout = nil, nil
+	var err error
+	if pack.Stdin, err = list.StdoutPipe(); err != nil {
+		return fmt.Errorf("git rev-list: %w", err)
+	}
 	packOut, err := pack.StdoutPipe()
 	if err != nil {
-		return "", fmt.Errorf("git pack-objects: %w", err)
+		return fmt.Errorf("git pack-objects: %w", err)
 	}
-	index := stageGit(tool, gitDir, "index-pack", "--stdin", "--strict")
 	capped := &cappedReader{r: packOut, left: maxPack}
 	index.Stdin = capped
+	if err := list.Start(); err != nil {
+		return fmt.Errorf("git rev-list: %w", err)
+	}
 	if err := pack.Start(); err != nil {
-		return "", fmt.Errorf("git pack-objects: %w", err)
+		return errors.Join(fmt.Errorf("git pack-objects: %w", err), list.Wait())
 	}
 	indexErr := index.Run()
 	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
-	packErr := errors.Join(packOut.Close(), pack.Wait())
+	copyErr := errors.Join(indexErr, packOut.Close(), pack.Wait(), list.Wait())
 	if capped.over {
-		return "", fmt.Errorf("commits %s and %s are over %d bytes", commit, launcher, maxPack)
+		return fmt.Errorf("commit %s is over %d bytes packed", commit, maxPack)
 	}
-	if err := errors.Join(indexErr, packErr); err != nil {
-		return "", fmt.Errorf("copy %s and %s into a verified repository: %w", commit, launcher, err)
+	if copyErr != nil {
+		return fmt.Errorf("copy %s into a verified repository: %w", commit, copyErr)
 	}
-	built, err := listTree(tool, gitDir, commit)
+	// Every object of the commit must have arrived under its own name.
+	check := stageGit(tool, gitDir, "rev-list", "--objects", "--no-walk", commit)
+	check.Stdout = io.Discard
+	if err := check.Run(); err != nil {
+		return fmt.Errorf("commit %s is incomplete or forged in its repository: %w", commit, err)
+	}
+	files, err := listTree(tool, gitDir, commit)
 	if err != nil {
-		return "", err
+		return err
 	}
-	if commit != launcher {
-		own, err := listTree(tool, gitDir, launcher)
-		if err != nil {
-			return "", err
-		}
-		if err := hostInputsMatch(built, own); err != nil {
-			return "", fmt.Errorf("commit %s against launcher %s: %w", commit, launcher, err)
-		}
-	}
-	return commit, export(tool, gitDir, built, filepath.Join(stage, "src"))
+	return export(tool, gitDir, files, filepath.Join(stage, "src"))
 }
 
 // entry is one file of a commit: its git mode and object name.
@@ -234,9 +226,10 @@ type entry struct{ mode, oid string }
 
 // listTree returns every file of commit, refusing anything but regular files (a symlink would make
 // a tool read outside the export, a submodule is content the commit does not hold) and paths that
-// are not plain relative paths. Allowlist of modes, so a new kind of entry is refused too.
+// are not plain relative paths. Allowlist of modes, so a new kind of entry is refused too. With -z
+// git prints each path raw after a tab.
 func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
-	ls := stageGit(tool, gitDir, "ls-tree", "-r", "-z", "--full-tree", "--format=%(objectmode) %(objectname) %(path)", commit)
+	ls := stageGit(tool, gitDir, "ls-tree", "-r", "-z", "--full-tree", commit)
 	ls.Stdout = nil
 	out, err := ls.StdoutPipe()
 	if err != nil {
@@ -246,7 +239,7 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 		return nil, fmt.Errorf("git ls-tree: %w", err)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(out, maxListing+1))
-	if len(data) > maxListing {
+	if int64(len(data)) > maxListing {
 		return nil, errors.Join(fmt.Errorf("tree of %s lists over %d bytes", commit, maxListing), out.Close(), ls.Wait())
 	}
 	if err := errors.Join(readErr, ls.Wait()); err != nil {
@@ -254,13 +247,13 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 	}
 	files := map[string]entry{}
 	for rec := range strings.SplitSeq(strings.TrimSuffix(string(data), "\x00"), "\x00") {
-		mode, rest, ok1 := strings.Cut(rec, " ")
-		oid, path, ok2 := strings.Cut(rest, " ")
-		if !ok1 || !ok2 || !commitRE.MatchString(oid) {
+		meta, path, ok := strings.Cut(rec, "\t")
+		fields := strings.Split(meta, " ")
+		if !ok || len(fields) != 3 || !commitRE.MatchString(fields[2]) {
 			return nil, fmt.Errorf("git ls-tree %s: unexpected entry %q", commit, rec)
 		}
-		if mode != "100644" && mode != "100755" {
-			return nil, fmt.Errorf("%q in %s is not a regular file (mode %s)", path, commit, mode)
+		if fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
+			return nil, fmt.Errorf("%q in %s is not a regular file (mode %s)", path, commit, fields[0])
 		}
 		if err := plainPath(path); err != nil {
 			return nil, fmt.Errorf("%q in %s: %w", path, commit, err)
@@ -268,7 +261,7 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 		if len(files) == maxEntries {
 			return nil, fmt.Errorf("tree of %s has over %d files", commit, maxEntries)
 		}
-		files[path] = entry{mode, oid}
+		files[path] = entry{fields[0], fields[2]}
 	}
 	return files, nil
 }
@@ -287,8 +280,8 @@ func plainPath(p string) error {
 	return nil
 }
 
-// export writes every file of the commit into dir, which must be empty. Files are created, never
-// opened through a link, and get exactly mode 0644 or 0755.
+// export writes every file of the commit into dir, which must be empty. Every file is created
+// (O_EXCL also refuses an existing link) and gets exactly mode 0644 or 0755.
 func export(tool toolFunc, gitDir string, files map[string]entry, dir string) error {
 	var total int64
 	for path, e := range files {
@@ -300,7 +293,7 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string) er
 		if e.mode == "100755" {
 			perm = 0o755
 		}
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, perm) //nolint:gosec // inside the fresh export directory
+		f, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, perm) //nolint:gosec // inside the fresh export directory
 		if err != nil {
 			return fmt.Errorf("export %s: %w", path, err)
 		}
@@ -319,45 +312,6 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string) er
 		}
 	}
 	return nil
-}
-
-// hostInputsMatch refuses a commit that differs from the launcher's own commit anywhere but in
-// guestOnly paths: everything else runs on this host or steers a host tool (mkosi configuration and
-// scripts, the PKGBUILD, go.mod), so only reviewed launcher code may supply it.
-func hostInputsMatch(built, own map[string]entry) error {
-	var changed []string
-	for path, e := range built {
-		if own[path] != e && !guestOnly(path, e.mode) {
-			changed = append(changed, path)
-		}
-	}
-	for path := range own {
-		if _, ok := built[path]; !ok && !guestOnly(path, "100644") {
-			changed = append(changed, path)
-		}
-	}
-	if len(changed) > 0 {
-		slices.Sort(changed)
-		return fmt.Errorf("changes host inputs %q; build it with a launcher from that commit", changed)
-	}
-	return nil
-}
-
-// guestOnly says whether a commit may change path against the launcher's commit: Go source that
-// can only end up in the guest program, sensor configuration copied into the image as data, and
-// files no build tool reads. range/ and packaging/ are never guest-only.
-func guestOnly(path, mode string) bool {
-	if strings.HasPrefix(path, "range/") || strings.HasPrefix(path, "packaging/") || !strings.Contains(path, "/") && !strings.HasSuffix(path, ".md") {
-		return false
-	}
-	switch top, _, _ := strings.Cut(path, "/"); top {
-	case "tools", "githooks", ".github":
-		return true
-	case "cmd", "internal":
-		return mode == "100644" && (strings.HasSuffix(path, ".go") || strings.Contains(path, "/testdata/"))
-	default:
-		return mode == "100644" && (top == "deploy" || top == "acceptance" || strings.HasSuffix(path, ".md"))
-	}
 }
 
 // toolFunc builds the command for one program Build runs.
@@ -478,8 +432,9 @@ func cleanRevision(settings []debug.BuildSetting) string {
 }
 
 // Check runs the self-test of image once and stores its Result and serial log under
-// state/results/<id>; a run that ends in an error leaves no result directory behind. Only the
-// launcher that built the image can pass it (judge).
+// state/results/<id>; a run that ends in an error leaves no result directory behind. A launcher
+// that is not a clean build of the image's commit judged the run with code nobody can name, so
+// its verdict is UNKNOWN (R1).
 func Check(ctx context.Context, image, cache, state string) (res Result, err error) {
 	held, err := lock(cache)
 	if err != nil {
@@ -498,10 +453,6 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	commit, err := readCommit(filepath.Join(dir, "commit"))
 	if err != nil {
 		return Result{}, err
-	}
-	builder, err := readCommit(filepath.Join(dir, "launcher"))
-	if err != nil {
-		return Result{}, fmt.Errorf("image names no building launcher (built before result schema %d; rebuild it): %w", resultSchema, err)
 	}
 
 	resultsDir := filepath.Join(state, "results")
@@ -535,7 +486,7 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	}
 
 	res = Result{
-		SchemaVersion: resultSchema, ID: id, Class: ClassCommit, RangeCommit: commit, BuildLauncherCommit: builder, LauncherCommit: launcherCommit(),
+		SchemaVersion: resultSchema, ID: id, RangeCommit: commit, LauncherCommit: launcherCommit(),
 		Image: image, ImageSHA256: sum, TargetKernel: TargetKernel, Manifest: manifest,
 	}
 	for _, f := range outcome.Facts {
@@ -543,10 +494,7 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 			res.GuestKernel = f.Value
 		}
 	}
-	if commit != builder {
-		res.Class = ClassBranch
-	}
-	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, builder)
+	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, commit)
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)
@@ -557,23 +505,13 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	return res, nil
 }
 
-// Result classes. A branch image was built from a commit other than the building launcher's: its
-// guest program is that commit's code and reports its own facts, so its verdict is feedback for the
-// change, not evidence about the sensor (T33).
-const (
-	ClassCommit = "commit"
-	ClassBranch = "branch"
-)
-
-// judge gives the self-test verdict, but only the launcher that built the image (and so chose its
-// host-run inputs) may pass it; any other launcher judged with code that did not build it (R1).
-func judge(o Outcome, launcher, builder string) (verdict, reason string) {
+func judge(o Outcome, launcher, image string) (verdict, reason string) {
 	if o.Invalid != "" {
 		return Invalid, o.Invalid
 	}
 	verdict, reason = Selftest(o.Facts)
-	if verdict == Pass && launcher != builder {
-		return Unknown, fmt.Sprintf("launcher %q did not build this image (built by %s)", launcher, builder)
+	if verdict == Pass && launcher != image {
+		return Unknown, fmt.Sprintf("launcher is not a clean build of the image commit %s (got %q)", image, launcher)
 	}
 	return verdict, reason
 }

@@ -27,12 +27,8 @@ func run(ctx context.Context) int {
 		return 1
 	}
 	switch {
-	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "build":
-		target := ""
-		if len(os.Args) == 3 {
-			target = os.Args[2]
-		}
-		image, err := rangevm.Build(ctx, ".", target, cache, os.Stderr)
+	case len(os.Args) == 2 && os.Args[1] == "build":
+		image, err := rangevm.Build(ctx, ".", cache, os.Stderr)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "kordon-range:", err)
 			return 1
@@ -51,7 +47,7 @@ func run(ctx context.Context) int {
 		}
 		return 0
 	default:
-		fmt.Fprintln(os.Stderr, "usage: kordon-range build [commit] | kordon-range run <image.raw>")
+		fmt.Fprintln(os.Stderr, "usage: kordon-range build | kordon-range run <image.raw>")
 		return 2
 	}
 }
