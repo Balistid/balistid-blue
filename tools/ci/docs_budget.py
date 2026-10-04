@@ -219,7 +219,8 @@ def components(paths: set[str]) -> set[str]:
 
 def mapped_paths(readme: str) -> set[str]:
     """Backticked paths in the first column of the table under the map heading. The raw text is read, so a
-    row hidden in an HTML comment or code fence still counts; reviewers see the rendered map."""
+    row hidden in an HTML comment or code fence still counts; accepted, the map is documentation, not a
+    boundary, and README.md is not code-owned."""
     found, in_map = set(), False
     for line in readme.splitlines():
         if line.startswith("## "):
