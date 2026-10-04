@@ -26,7 +26,8 @@ can `replace` with a host directory), and no file list makes that safe (R7).
    `git pack-objects` send only that commit's objects, no history, into a fresh repository in the
    build directory through `git index-pack`, which names every object by its recomputed hash; the
    commit's objects must then all be present there, so a forged object is refused. The source
-   repository runs only `rev-parse`, `rev-list` and `pack-objects`, with fsmonitor and lazy fetch off.
+   repository runs only `rev-parse`, `rev-list` and `pack-objects` (no index or attributes read), with
+   lazy fetch off; `index-pack --fsck-objects` refuses malformed trees.
 3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty
    directory. Only regular files (modes 100644 and 100755) with plain relative paths are accepted:
    no symlink, submodule, `..` or `.git`. Every file is created (never opened if it exists) with mode
@@ -52,6 +53,6 @@ can `replace` with a host directory), and no file list makes that safe (R7).
 - mkosi downloads the package snapshot on every build (no shared cache to poison); its workspace in
   `/var/tmp` stays a known gap, and a small pack can still inflate to large objects (DoS, T34).
 - Tests: work tree, index flags, replace refs and untracked files do not reach the export; repository
-  configuration and lazy fetch run nothing; a forged object, symlinks, submodules, unsafe paths,
-  existing files and every limit are refused; unusual names and file modes survive; no history is
-  copied; a launcher of another commit is refused; the guest build stamps no enclosing repository.
+  configuration and lazy fetch run nothing; forged objects, malformed trees, symlinks, submodules,
+  unsafe paths, existing files and every limit are refused; unusual names and modes survive; no
+  history is copied; a launcher of another commit is refused; no enclosing repository is stamped.
