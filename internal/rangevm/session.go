@@ -224,9 +224,9 @@ var (
 )
 
 // copyObjectStore copies root's object files into dst: loose objects and packs with their indexes,
-// by name, as regular files that are not links. Everything else (info/ with alternates and the
-// commit-graph, multi-pack-index, temporary files) is left behind, so git reads nothing it could
-// follow out of the store.
+// by name, as regular files inside the repository (links are followed only within it). Everything
+// else (info/ with alternates and the commit-graph, multi-pack-index, temporary files) is left
+// behind, so git reads nothing it could follow out of the store.
 func copyObjectStore(ctx context.Context, root, dst string, lim limits) error {
 	// Every path is opened through an os.Root, which refuses one that leaves root by a link in any
 	// component (.git or objects/xx swapped for a link, even between listing and opening), so only
@@ -301,7 +301,7 @@ func copyObjectStore(ctx context.Context, root, dst string, lim limits) error {
 // rootDirEntries calls each with the name of every entry of the directory dir in r, reading the
 // listing in batches so a huge directory costs no memory.
 func rootDirEntries(r *os.Root, dir string, each func(name string) error) error {
-	f, err := r.Open(dir)
+	f, err := r.OpenFile(dir, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err
 	}
@@ -325,10 +325,10 @@ func rootDirEntries(r *os.Root, dir string, each func(name string) error) error 
 	}
 }
 
-// rootRegular opens name in r for reading if it is a regular file that is not a link, without
-// blocking on a FIFO.
+// rootRegular opens name in r for reading if it is a regular file inside the repository (links are
+// followed only within it), without blocking on a FIFO.
 func rootRegular(r *os.Root, name string) (*os.File, error) {
-	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

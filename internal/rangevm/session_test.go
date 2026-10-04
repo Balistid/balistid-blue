@@ -808,8 +808,9 @@ func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string)
 	return err, string(data)
 }
 
-// Links in the object store (alternates, the commit-graph chain, an object file) are not followed:
-// a hidden file never reaches git, the export or the log.
+// Links in the object store that lead out of the repository (alternates, the commit-graph chain, an
+// object file, the pack directory) are not followed: a hidden file never reaches git, the export or
+// the log.
 func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
 	secret := filepath.Join(t.TempDir(), "secret")
 	if err := os.WriteFile(secret, []byte("PRIVATE-VALUE-1\nPRIVATE-VALUE-2\n"), 0o600); err != nil {
@@ -912,5 +913,27 @@ func TestForeignRepositoryIsNotCopied(t *testing.T) {
 	copied, _ := filepath.Glob(filepath.Join(stage, "reader", "objects", "??", "*"))
 	if len(copied) > 0 {
 		t.Fatalf("copied %d objects of the other repository: %v", len(copied), copied)
+	}
+}
+
+// A FIFO where the store has a directory is refused at once instead of blocking the open.
+func TestObjectStoreFIFOIsRefused(t *testing.T) {
+	root, git := testRepo(t)
+	pack := filepath.Join(root, ".git", "objects", "pack")
+	if err := os.Remove(pack); err != nil { // the empty pack directory git init made
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(pack, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := exportOf(t, root, git("rev-parse", "HEAD")); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("exported with a FIFO as the pack directory")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("opening the FIFO blocked the copy")
 	}
 }
