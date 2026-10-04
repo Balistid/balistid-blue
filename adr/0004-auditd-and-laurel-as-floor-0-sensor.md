@@ -1,6 +1,6 @@
 # 0004 — Use auditd with Laurel as the floor-0 sensor
 
-- Status: proposed (accepted after the smoke test on the target kernel passes)
+- Status: accepted 2026-10-04 (smoke test PASS on 7.2.8-arch1-2: range run 20261004T075611Z-3a36f42b, fa883b2)
 - Date: 2026-10-01, amended 2026-10-03 (release binary, io_uring disabled, socket check with the collector)
 - Decided-by: alex
 - Agent: claude/opus-5.5

@@ -1,6 +1,6 @@
 # 0009 — Run the attack range as throwaway QEMU VMs, confined on the host
 
-- Status: proposed (accepted after the first range run passes)
+- Status: accepted 2026-10-04 (range run 20261004T075611Z-3a36f42b on fa883b2 PASS, incl. Laurel output)
 - Date: 2026-10-02
 - Decided-by: alex
 - Agent: claude/opus-5.5
