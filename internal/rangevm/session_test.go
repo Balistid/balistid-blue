@@ -942,3 +942,13 @@ func TestObjectStoreFIFOIsRefused(t *testing.T) {
 		t.Fatal("opening the FIFO blocked the copy")
 	}
 }
+
+// Only a full object name reaches git: anything else could be read as an option or a revision range.
+func TestExportRefusesANonCommitName(t *testing.T) {
+	root, _ := testRepo(t)
+	for _, name := range []string{"", "HEAD", "--all", "-n1", strings.Repeat("a", 39), strings.Repeat("A", 40)} {
+		if _, err := exportOf(t, root, name); err == nil || !strings.Contains(err.Error(), "not a full object name") {
+			t.Errorf("export of %q = %v, want a refusal", name, err)
+		}
+	}
+}

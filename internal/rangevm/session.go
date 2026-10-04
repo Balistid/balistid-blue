@@ -181,6 +181,10 @@ func defaultLimits() limits {
 // pack, index-pack names every object by its recomputed hash, and the export then reads only from
 // the stage repository, where a forged object is simply missing.
 func fetchAndExport(ctx context.Context, tool toolFunc, root, stage, commit string, lim limits) error {
+	// commit reaches git argv; a name that is not 40 hex digits could be read as an option.
+	if !commitRE.MatchString(commit) {
+		return fmt.Errorf("commit %q is not a full object name", commit)
+	}
 	// git never runs in root, nor reads a file there: its configuration, attributes, refs, work tree
 	// and object store (alternates, commit-graph) are the agent's to write. The object files alone
 	// are copied into a repository of ours, and their content stays untrusted until index-pack has
