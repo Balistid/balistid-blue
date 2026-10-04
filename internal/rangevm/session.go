@@ -289,7 +289,7 @@ func copyObjectStore(ctx context.Context, root, dst string, lim limits) error {
 			return errors.Join(fmt.Errorf("object store: %w", err), in.Close())
 		}
 		capped := &cappedWriter{w: out, left: lim.store - total}
-		_, err = io.Copy(capped, in)
+		_, err = io.Copy(capped, ctxReader{ctx, in}) // the deadline also ends one slow, large file
 		err = errors.Join(err, in.Close(), out.Close())
 		if capped.over {
 			return fmt.Errorf("object store is over %d bytes", lim.store)

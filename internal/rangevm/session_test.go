@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -950,5 +951,24 @@ func TestExportRefusesANonCommitName(t *testing.T) {
 		if _, err := exportOf(t, root, name); err == nil || !strings.Contains(err.Error(), "not a full object name") {
 			t.Errorf("export of %q = %v, want a refusal", name, err)
 		}
+	}
+}
+
+// The copy deadline ends the object store copy between reads, not only between files: one large
+// pack file (sparse, so the test writes no real data first) must not run past it.
+func TestObjectStoreCopyStopsAtTheDeadline(t *testing.T) {
+	root, _ := testRepo(t)
+	pack := filepath.Join(root, ".git", "objects", "pack", "pack-"+strings.Repeat("a", 40)+".pack")
+	f, err := os.Create(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(f.Truncate(64<<20), f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Millisecond)
+	defer cancel()
+	if err := copyObjectStore(ctx, root, filepath.Join(stageFor(t), "objects"), defaultLimits()); err == nil {
+		t.Fatal("copied a 64 MiB pack past a 2 ms deadline")
 	}
 }
