@@ -13,18 +13,17 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 
 ## Decision
 
-1. `kordon-runner` is built by the maintainer from the ADR 0010 export of a `main` commit in the
-   runner's bare repository, with the ADR 0010 point 4 environment (`GOENV=off`, own `GOCACHE` and
-   `GOMODCACHE`, `GOPROXY=off`), commit set with `-ldflags -X`, never from a work tree; installed
-   where agents cannot write, never self-updated; a user oneshot and timer run one job at a time. It
-   boots only its own commit's image, built into its state at install by the maintainer (ADR 0010),
-   sha256 recorded; others refused.
-2. Agents cannot write its binary, configuration, deploy key (read-only, never the bot key,
-   unreadable by agents) or state; they read their results. At start it checks these denials, that
-   the sandbox cannot be turned off and that excluded commands are only allowlisted, in the Claude
-   managed, user and repository settings and every Codex profile (`/run/user/$UID` denied), else
-   refuses; empty environment. Its git: no system or global config or hooks, ssh `-F /dev/null`; it
-   fetches `main`.
+1. `kordon-runner` is built by the maintainer from the ADR 0010 export of a reviewed `main` commit,
+   with the ADR 0010 point 4 environment (`GOENV=off`, own `GOCACHE` and `GOMODCACHE`,
+   `GOPROXY=off`), commit set with `-ldflags -X`, never from a work tree; installed where agents
+   cannot write, never self-updated; a user oneshot and timer run one job at a time. It boots only
+   its own commit's image, built into its state at install by the maintainer (ADR 0010), sha256
+   recorded; others refused.
+2. Agents cannot write its binary, configuration or state; they read their results. At start it
+   checks these denials, that the sandbox cannot be turned off and that excluded commands are only
+   allowlisted, in the Claude managed, user and repository settings and every Codex profile
+   (`/run/user/$UID` denied), else refuses; empty environment. It runs no git and fetches nothing: a
+   newer `main` is a reinstall.
 3. Agent code never runs on the host. An agent job names one program file in the job directory, both
    capped; its bytes are copied onto a raw job disk attached `readonly=on`, which the guest unit
    runs only when attached. VMs run as in ADR 0009.
@@ -33,8 +32,9 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    expiry (R5). Maintainer jobs come only from `kordon-runner` writing its own state, which agents
    cannot (point 2); they and the timer go first.
 6. A job runs in a transient unit (`MemoryHigh` below `MemoryMax`, no swap, `TasksMax`, idle CPU,
-   `KeyringMode=private`, a wall clock). It starts only with free memory and disk above a reserve;
-   the runner stops it if available memory falls below the reserve. A stopped job is INVALID.
+   `KeyringMode=private`, a wall clock). It starts only with free memory above a reserve and free
+   disk above its maximum writes (overlay cap and results) plus a reserve; the runner stops it if
+   available memory falls below the reserve. A stopped job is INVALID.
 7. The runner reads a job directory only through an `os.Root`, without blocking: regular files,
    capped. Results name job, source, image and job disk sha256, runner commit, limits and exit;
    guest output is untrusted, printable text only. Evidence is only a `run` of the runner's own
