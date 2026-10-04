@@ -16,6 +16,7 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 - Write the acceptance criteria for the task before the code. For a floor, they live in
   `acceptance/<floor>.toml` and need the maintainer's approval before the first code commit (R3).
 - Every behaviour change ships with a test that fails on the parent commit (R4).
+- A new directory gets its row in the README repository map in the same pull request; CI enforces it.
 - Commit messages: Conventional Commits subject, blank line, body with the why, then exactly one
   trailer `Agent: claude/<model>` (for example `Agent: claude/opus-5.5`). Remove any
   `Co-Authored-By` or `Generated with` line a tool inserts; the commit-msg hook rejects them.
