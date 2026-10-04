@@ -281,3 +281,21 @@ unit = "s from boot to health OK on a smoke-tested kernel"
 rows = ["T26"]
 adr = "0007"
 method = "Range VM boot, 10 trials; UNKNOWN is a miss unless the kernel is untested, and then it must name that reason."
+
+# --- Range runner (ADR 0011; proposed with it, approved by the maintainer when it merges) ---
+
+[[metric]]
+id = "runner_build_memory_gib"
+max = 3
+unit = "GiB MemoryMax, no swap, of the unit that builds the runner's image at install"
+rows = ["T36"]
+adr = "0011"
+method = "The build of the installed commit passes under the cap (peak 2 GiB measured 2026-10-04). A probe unit with the same properties that allocates past the cap ends with Result=oom-kill, and journalctl -k shows no OOM kill outside that unit."
+
+[[metric]]
+id = "runner_job_memory_gib"
+max = 2.5
+unit = "GiB MemoryMax, no swap, of each job unit (the guest has 2048 MiB)"
+rows = ["T36"]
+adr = "0011"
+method = "20 runs of the runner's own image pass under the cap (peak 1.6 GiB measured 2026-10-04), and an exec job that touches all guest memory stays under it. The over-cap probe is as for the build: Result=oom-kill, no OOM kill outside the unit, and the job is INVALID."
