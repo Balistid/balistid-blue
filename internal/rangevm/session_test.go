@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
+	"crypto/rand"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,9 +122,9 @@ func TestJudge(t *testing.T) {
 		launcher string
 		want     string
 	}{
-		{"the launcher that built the image", pass, commit, Pass},
+		{"clean launcher of the image commit", pass, commit, Pass},
 		{"go run or dirty launcher", pass, "", Unknown},
-		{"a launcher that did not build the image", pass, strings.Repeat("b", 40), Unknown},
+		{"launcher of another commit", pass, strings.Repeat("b", 40), Unknown},
 		{"a NIC fails whatever the launcher", nic, "", Fail},
 		{"invalid run", Outcome{Invalid: "vm: exit status 1"}, commit, Invalid},
 	}
@@ -357,10 +357,10 @@ func stageFor(t *testing.T) string {
 	return stage
 }
 
-func exportOf(t *testing.T, root, target, launcher string) (string, error) {
+func exportOf(t *testing.T, root, commit string) (string, error) {
 	t.Helper()
 	stage := stageFor(t)
-	_, err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, target, launcher)
+	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, commit)
 	return filepath.Join(stage, "src"), err
 }
 
@@ -378,7 +378,7 @@ func TestExportIsTheCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	git("replace", git("rev-parse", "HEAD:range/mkosi.conf"), evil)
-	src, err := exportOf(t, root, "", head)
+	src, err := exportOf(t, root, head)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestExportRunsNoRepositoryConfig(t *testing.T) {
 	git("config", "core.fsmonitor", hook)
 	git("config", "filter.x.smudge", hook)
 	git("config", "filter.x.clean", hook)
-	if _, err := exportOf(t, root, "", head); err != nil {
+	if _, err := exportOf(t, root, head); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
@@ -437,7 +437,7 @@ func TestForgedObjectIsRefused(t *testing.T) {
 	if err := os.WriteFile(path, forged.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exportOf(t, root, "", git("rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "verified repository") {
+	if _, err := exportOf(t, root, git("rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "forged") {
 		t.Fatalf("export of a forged object = %v, want a refusal", err)
 	}
 }
@@ -457,7 +457,7 @@ func TestExportRefusesLinksAndSubmodules(t *testing.T) {
 		root, git := testRepo(t)
 		add(root, git)
 		git("commit", "-q", "-m", name)
-		_, err := exportOf(t, root, "", git("rev-parse", "HEAD"))
+		_, err := exportOf(t, root, git("rev-parse", "HEAD"))
 		if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
 			t.Errorf("%s: export = %v, want a refusal", name, err)
 		}
@@ -474,57 +474,6 @@ func TestPlainPath(t *testing.T) {
 		if err := plainPath(p); (err == nil) != ok {
 			t.Errorf("plainPath(%q) = %v, want ok=%v", p, err, ok)
 		}
-	}
-}
-
-// A commit built by another commit's launcher may change only what ends up in the guest.
-func TestHostInputsMustMatchTheLauncher(t *testing.T) {
-	own := map[string]entry{
-		"range/mkosi.conf": {"100644", "a"}, "packaging/laurel/PKGBUILD": {"100644", "a"}, "go.mod": {"100644", "a"},
-		"internal/rangeguest/guest.go": {"100644", "a"}, "deploy/sysctl/kordon.conf": {"100644", "a"}, "STATUS.md": {"100644", "a"},
-	}
-	for _, c := range []struct {
-		path, mode string
-		ok         bool
-	}{
-		{"range/mkosi.conf", "100644", false},
-		{"range/mkosi.build.d/x.go", "100755", false},
-		{"packaging/laurel/PKGBUILD", "100644", false},
-		{"go.mod", "100644", false},
-		{"go.work", "100644", false},
-		{".gitattributes", "100644", false},
-		{"internal/rangeguest/guest.go", "100755", false},
-		{"internal/rangeguest/x.s", "100644", false},
-		{"internal/rangeguest/guest.go", "100644", true},
-		{"cmd/kordon-range-guest/testdata/a.json", "100644", true},
-		{"deploy/sysctl/kordon.conf", "100644", true},
-		{"STATUS.md", "100644", true},
-		{"tools/ci/x.py", "100755", true},
-	} {
-		built := maps.Clone(own)
-		built[c.path] = entry{c.mode, "b"}
-		if err := hostInputsMatch(built, own); (err == nil) != c.ok {
-			t.Errorf("change %s (%s): %v, want ok=%v", c.path, c.mode, err, c.ok)
-		}
-	}
-	for path, ok := range map[string]bool{"range/mkosi.conf": false, "deploy/sysctl/kordon.conf": true} {
-		built := maps.Clone(own)
-		delete(built, path)
-		if err := hostInputsMatch(built, own); (err == nil) != ok {
-			t.Errorf("delete %s: %v, want ok=%v", path, err, ok)
-		}
-	}
-}
-
-func TestBranchChangingRangeIsRefused(t *testing.T) {
-	root, git := testRepo(t)
-	launcher := git("rev-parse", "HEAD")
-	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.conf"), []byte("[Content]\nExtraTrees=/home\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	git("commit", "-q", "-am", "branch")
-	if _, err := exportOf(t, root, git("rev-parse", "HEAD"), launcher); err == nil || !strings.Contains(err.Error(), "changes host inputs") {
-		t.Fatalf("export = %v, want a refusal of the changed range/", err)
 	}
 }
 
@@ -582,4 +531,169 @@ func goCache(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// Lazy fetch from a promisor remote would run the remote's upload-pack, which the repository's own
+// configuration names.
+func TestExportRunsNoLazyFetch(t *testing.T) {
+	root, git := testRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := filepath.Join(t.TempDir(), "upload-pack")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\nexit 1\n"), 0o700); err != nil { //nolint:gosec // test hook
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "range", "big"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "big")
+	head, oid := git("rev-parse", "HEAD"), git("rev-parse", "HEAD:range/big")
+	if err := os.Remove(filepath.Join(root, ".git", "objects", oid[:2], oid[2:])); err != nil {
+		t.Fatal(err)
+	}
+	git("config", "extensions.partialClone", "origin")
+	git("config", "remote.origin.url", root)
+	git("config", "remote.origin.promisor", "true")
+	git("config", "remote.origin.uploadpack", hook)
+	if _, err := exportOf(t, root, head); err == nil {
+		t.Fatal("exported a commit with a missing object")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("lazy fetch ran the remote's upload-pack: %v", err)
+	}
+}
+
+// With -z git prints paths raw; the export must reproduce every name byte for byte.
+func TestExportKeepsUnusualNames(t *testing.T) {
+	root, git := testRepo(t)
+	names := []string{"deploy/a b", "deploy/tab\there", "deploy/new\nline", "deploy/back\\slash", "deploy/é", "deploy/\"q\""}
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(root, filepath.Dir(n)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, n), []byte(n), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "names")
+	src, err := exportOf(t, root, git("rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if got, err := os.ReadFile(filepath.Join(src, n)); err != nil || string(got) != n {
+			t.Errorf("%q: got %q, %v", n, got, err)
+		}
+	}
+}
+
+func TestExportModesIgnoreTheUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	root, git := testRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.postinst"), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // test script
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "script")
+	src, err := exportOf(t, root, git("rev-parse", "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]os.FileMode{"mkosi.conf": 0o644, "mkosi.postinst": 0o755} {
+		if st, err := os.Stat(filepath.Join(src, "range", name)); err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: mode %v, %v; want %v", name, st.Mode().Perm(), err, want)
+		}
+	}
+}
+
+// The export creates every file; a name that already exists, as a file or a link, is refused.
+func TestExportCreatesEveryFile(t *testing.T) {
+	root, git := testRepo(t)
+	target := filepath.Join(t.TempDir(), "target")
+	stage := stageFor(t)
+	if err := os.MkdirAll(filepath.Join(stage, "src", "range"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(stage, "src", "range", "mkosi.conf")); err != nil {
+		t.Fatal(err)
+	}
+	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"))
+	if err == nil || !strings.Contains(err.Error(), "export range/mkosi.conf") {
+		t.Fatalf("export = %v, want a refusal of the existing link", err)
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Fatalf("export wrote through the link: %v", err)
+	}
+	stage = stageFor(t)
+	if err := os.MkdirAll(filepath.Join(stage, "src", "range"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "src", "range", "mkosi.conf"), []byte("planted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD")); err == nil {
+		t.Fatal("export overwrote an existing file")
+	}
+}
+
+// Only the commit's own objects are copied: a large file deleted earlier in history is not.
+func TestExportCopiesNoHistory(t *testing.T) {
+	root, git := testRepo(t)
+	big := make([]byte, 1<<20)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "range", "old"), big, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "old")
+	git("rm", "-q", "range/old")
+	git("commit", "-q", "-m", "gone")
+	saved := maxPack
+	maxPack = 64 << 10
+	defer func() { maxPack = saved }()
+	if _, err := exportOf(t, root, git("rev-parse", "HEAD")); err != nil {
+		t.Fatalf("export copied history: %v", err)
+	}
+}
+
+func TestExportLimits(t *testing.T) {
+	root, git := testRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "range", "two"), []byte("0123456789"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "two")
+	head := git("rev-parse", "HEAD")
+	for name, set := range map[string]func(){
+		"pack":    func() { maxPack = 64 },
+		"listing": func() { maxListing = 64 },
+		"entries": func() { maxEntries = 1 },
+		"blob":    func() { maxBlob = 5 },
+		"export":  func() { maxExport = 12 },
+	} {
+		saved := []any{maxPack, maxListing, maxEntries, maxBlob, maxExport}
+		set()
+		_, err := exportOf(t, root, head)
+		maxPack, maxListing, maxEntries, maxBlob, maxExport = saved[0].(int64), saved[1].(int64), saved[2].(int), saved[3].(int64), saved[4].(int64)
+		if err == nil || !strings.Contains(err.Error(), "over") {
+			t.Errorf("%s limit: export = %v, want a refusal", name, err)
+		}
+	}
+	if _, err := exportOf(t, root, head); err != nil {
+		t.Fatalf("export within the limits: %v", err)
+	}
+}
+
+// The test binary carries no VCS stamp, so it is not a clean build of any commit: Build refuses
+// before it reads the repository.
+func TestBuildRefusesALauncherOfAnotherCommit(t *testing.T) {
+	root, _ := testRepo(t)
+	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "is not a clean build of HEAD") {
+		t.Fatalf("Build = %v, want a refusal of the launcher", err)
+	}
 }
