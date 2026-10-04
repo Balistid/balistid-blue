@@ -16,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func names(t *testing.T, dir string) []string {
@@ -736,5 +737,77 @@ func TestExportRefusesMalformedTrees(t *testing.T) {
 		if _, err := exportOf(t, root, commit); err == nil {
 			t.Errorf("%s: exported a malformed tree", name)
 		}
+	}
+}
+
+// countingReader serves n bytes and counts what was read, so a test can see a read stop early
+// without an unbounded reader (a broken limit would then eat the host's memory).
+type countingReader struct{ left, read int64 }
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.left == 0 {
+		return 0, io.EOF
+	}
+	n := min(int64(len(p)), c.left)
+	c.left -= n
+	c.read += n
+	return int(n), nil
+}
+
+func TestReadCappedStopsAtTheLimit(t *testing.T) {
+	r := &countingReader{left: 16 << 20}
+	if _, err := readCapped(r, 1<<10); err == nil {
+		t.Fatal("read 16 MiB under a 1 KiB limit without an error")
+	}
+	if r.read > 1<<16 {
+		t.Fatalf("read %d bytes under a 1 KiB limit; want it to stop at the limit", r.read)
+	}
+}
+
+// When pack-objects fails early, rev-list must not stay blocked on a pipe the parent still holds.
+func TestCopyEndsWhenPackObjectsFails(t *testing.T) {
+	root, git := testRepo(t)
+	dir := filepath.Join(root, "deploy", "many")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5000 {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprint(i)), []byte(fmt.Sprint(i)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "many")
+	head := git("rev-parse", "HEAD")
+	git("config", "pack.threads", "-1")
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	stage := stageFor(t)
+	start := time.Now()
+	err := fetchAndExport(newTool(ctx, stage, io.Discard), root, stage, head, defaultLimits())
+	if err == nil || time.Since(start) > 10*time.Second {
+		t.Fatalf("copy after a failed pack-objects: %v after %v, want a prompt error", err, time.Since(start))
+	}
+}
+
+// A FIFO among the repository's attributes stalls pack-objects; the deadline ends the copy.
+func TestStalledCopyEndsAtTheDeadline(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	if err := syscall.Mkfifo(filepath.Join(root, ".gitattributes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	stage := stageFor(t)
+	done := make(chan error, 1)
+	go func() { done <- fetchAndExport(newTool(ctx, stage, io.Discard), root, stage, head, defaultLimits()) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("copy succeeded although pack-objects was stalled")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("copy did not end at its deadline")
 	}
 }

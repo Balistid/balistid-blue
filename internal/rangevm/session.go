@@ -71,9 +71,9 @@ type Result struct {
 
 // Build builds the image of HEAD of the repository at root with a launcher built from that same
 // commit, and stores it with its commit under cache/images. Building a commit runs its range/ and
-// packaging/ on this host, so only build commits whose code you would run (T34). Nothing is read
-// from the work tree or trusted from root's object store: the tools build from an export of the
-// commit verified object by object (ADR 0010). Tool output goes to log.
+// packaging/ on this host, so only build commits whose code you would run (T34). No file content
+// comes from the work tree and nothing in root's object store is trusted: the tools build from an
+// export of the commit verified object by object (ADR 0010). Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
 	held, err := lock(cache)
 	if err != nil {
@@ -102,7 +102,11 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	if err := checkLauncher(launcherCommit(), commit); err != nil {
 		return "", err
 	}
-	if err := fetchAndExport(tool, root, stage, commit, defaultLimits()); err != nil {
+	// The source repository's attributes and configuration can stall pack-objects (a FIFO), so the
+	// copy has a deadline; it takes well under a second today.
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+	if err := fetchAndExport(newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
 		return "", err
 	}
 
@@ -164,6 +168,9 @@ type limits struct {
 	entries, pathLen, depth     int
 }
 
+// fetchTimeout bounds copying and exporting the commit (§7).
+const fetchTimeout = 2 * time.Minute
+
 func defaultLimits() limits {
 	return limits{pack: 64 << 20, listing: 8 << 20, blob: 32 << 20, export: 256 << 20, entries: 20000, pathLen: 512, depth: 32}
 }
@@ -183,22 +190,26 @@ func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error
 	// index-pack streams blobs over 1 MiB instead of holding them in memory; --fsck-objects refuses
 	// malformed trees (duplicate or full-path entries, bad order) that would export ambiguously.
 	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
-	list.Stdout, pack.Stdout = nil, nil
-	var err error
-	if pack.Stdin, err = list.StdoutPipe(); err != nil {
-		return fmt.Errorf("git rev-list: %w", err)
+	// The children own the pipe between rev-list and pack-objects; the parent closes its ends as
+	// soon as they started, so either one exiting ends the other instead of leaving it blocked.
+	objects, listOut, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
 	}
+	list.Stdout, pack.Stdin, pack.Stdout = listOut, objects, nil
 	packOut, err := pack.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("git pack-objects: %w", err)
+		return errors.Join(fmt.Errorf("git pack-objects: %w", err), objects.Close(), listOut.Close())
 	}
 	capped := &cappedReader{r: packOut, left: lim.pack}
 	index.Stdin = capped
-	if err := list.Start(); err != nil {
-		return fmt.Errorf("git rev-list: %w", err)
+	listErr := list.Start()
+	packErr := pack.Start()
+	if err := errors.Join(objects.Close(), listOut.Close()); err != nil {
+		return fmt.Errorf("pipe: %w", err)
 	}
-	if err := pack.Start(); err != nil {
-		return errors.Join(fmt.Errorf("git pack-objects: %w", err), list.Wait())
+	if listErr != nil || packErr != nil {
+		return errors.Join(fmt.Errorf("start copy of %s: %w", commit, errors.Join(listErr, packErr)), waitStarted(list, listErr), waitStarted(pack, packErr))
 	}
 	indexErr := index.Run()
 	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
@@ -222,6 +233,23 @@ func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error
 	return export(tool, gitDir, files, filepath.Join(stage, "src"), lim)
 }
 
+// waitStarted reaps cmd if it started.
+func waitStarted(cmd *exec.Cmd, startErr error) error {
+	if startErr != nil {
+		return nil
+	}
+	return cmd.Wait()
+}
+
+// readCapped reads r to EOF but stops, with an error, as soon as it has more than limit bytes.
+func readCapped(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err == nil && int64(len(data)) > limit {
+		err = fmt.Errorf("over %d bytes", limit)
+	}
+	return data, err
+}
+
 // entry is one file of a commit: its git mode and object name.
 type entry struct{ mode, oid string }
 
@@ -239,11 +267,11 @@ func listTree(tool toolFunc, gitDir, commit string, lim limits) (map[string]entr
 	if err := ls.Start(); err != nil {
 		return nil, fmt.Errorf("git ls-tree: %w", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(out, lim.listing+1))
-	if int64(len(data)) > lim.listing {
-		return nil, errors.Join(fmt.Errorf("tree of %s lists over %d bytes", commit, lim.listing), out.Close(), ls.Wait())
+	data, readErr := readCapped(out, lim.listing)
+	if readErr != nil {
+		return nil, errors.Join(fmt.Errorf("tree of %s: %w", commit, readErr), out.Close(), ls.Wait())
 	}
-	if err := errors.Join(readErr, ls.Wait()); err != nil {
+	if err := ls.Wait(); err != nil {
 		return nil, fmt.Errorf("git ls-tree %s: %w", commit, err)
 	}
 	files := map[string]entry{}
@@ -318,9 +346,11 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string, li
 // toolFunc builds the command for one program Build runs.
 type toolFunc func(dir, path string, args ...string) *exec.Cmd
 
-// sourceGit runs git on the repository at root. Only rev-parse, rev-list and pack-objects run there;
-// they read no index or attributes. rev-list follows replace refs, which only makes the stage check
-// fail. Lazy fetch from a promisor remote is off, so its configuration cannot start a program.
+// sourceGit runs git on the repository at root: only rev-parse, rev-list and pack-objects, which
+// read no index. pack-objects does read the repository's attributes and configuration; they can
+// change how objects are compressed (index-pack verifies the content) or stall the copy (fetchTimeout).
+// rev-list follows replace refs, which only makes the stage check fail. Lazy fetch from a promisor
+// remote is off, so its configuration cannot start a program.
 func sourceGit(tool toolFunc, root string, args ...string) *exec.Cmd {
 	cmd := tool(root, "/usr/bin/git", args...)
 	cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
