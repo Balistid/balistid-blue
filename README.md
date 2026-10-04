@@ -45,7 +45,7 @@ Each floor must be useful on its own, even if the next one never ships.
 
 ## How it fits together
 
-Today (floor 0, sensor proven): `kordon-range build` packs the sensor configuration from `deploy/` and the
+Today: `kordon-range build` packs the sensor configuration from `deploy/` and the
 Laurel package into an Arch image; `kordon-range run` boots it once in QEMU inside bwrap, the guest checks
 the sensor and writes facts to a raw results disk, and the host turns them into a verdict (ADR 0004, 0009).
 Planned for floor 0: auditd → Laurel → collector → raw SQLite shards → ledger → Raspberry Pi witness
@@ -70,7 +70,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
-| `deploy/audit/` | Audit rules installed by `kordon-install` (ADR 0004) |
+| `deploy/audit/` | Audit rules; the range image uses them, `kordon-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |

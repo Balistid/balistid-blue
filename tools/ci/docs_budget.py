@@ -218,7 +218,8 @@ def components(paths: set[str]) -> set[str]:
 
 
 def mapped_paths(readme: str) -> set[str]:
-    """Backticked paths in the first column of the table under the map heading."""
+    """Backticked paths in the first column of the table under the map heading. The raw text is read, so a
+    row hidden in an HTML comment or code fence still counts; reviewers see the rendered map."""
     found, in_map = set(), False
     for line in readme.splitlines():
         if line.startswith("## "):
@@ -236,10 +237,9 @@ def map_violations(repo: Path, entries: list[tuple[str, str, str]]) -> list[str]
         return ["README.md: missing; it holds the repository map"]
     mapped = mapped_paths(blob(repo, readme).decode("utf-8", "replace"))
     violations = [f"README.md: repository map has no row for `{c}`" for c in sorted(components(paths) - mapped)]
-    for name in sorted(mapped):
-        real = name in components(paths) if name.endswith("/") else name in paths
-        if not real:
-            violations.append(f"README.md: repository map names `{name}`, which is not tracked")
+    known = components(paths) | paths
+    for name in sorted(mapped - known):
+        violations.append(f"README.md: repository map names `{name}`, which is not a component or a tracked file")
     return violations
 
 
