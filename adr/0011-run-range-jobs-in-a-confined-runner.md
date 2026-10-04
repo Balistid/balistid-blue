@@ -32,9 +32,9 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    expiry (R5). Maintainer jobs come only from `kordon-runner` writing its own state, which agents
    cannot (point 2); they and the timer go first.
 6. A job runs in a transient unit (`MemoryHigh` below `MemoryMax`, no swap, `TasksMax`, idle CPU,
-   `KeyringMode=private`, a wall clock). It starts only with free memory above a reserve and free
-   disk above its maximum writes (overlay cap and results) plus a reserve; the runner stops it if
-   available memory falls below the reserve. A stopped job is INVALID.
+   `KeyringMode=private`, a wall clock). It starts only above a memory reserve and, on each
+   filesystem it writes, a disk reserve plus the sum of its caps (3× per-file `--fsize`: overlay,
+   results, vars; job disk; kept output); below the memory reserve it is stopped, and INVALID.
 7. The runner reads a job directory only through an `os.Root`, without blocking: regular files,
    capped. Results name job, source, image and job disk sha256, runner commit, limits and exit;
    guest output is untrusted, printable text only. Evidence is only a `run` of the runner's own
