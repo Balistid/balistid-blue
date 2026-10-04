@@ -11,15 +11,14 @@ No recorder code yet: the collector and raw shards (ADR 0005) are next.
 ## Done in the last session
 
 - PR #15 range, #16 acceptance numbers approved, #17 ADR 0004 amendment, #18 sensor smoke test.
-- This pull request: ADR 0004 and 0009 accepted with the run from `main`.
+- PR #19: ADR 0004 and 0009 accepted with the run from `main`. PR #20: README repository map, kept true by CI.
 - Known gaps kept open: audit=1 is set but not proven at runtime (ADR 0004); x32 ABI syscalls match no audit
   rule (THREAT_MODEL T8), mitigation chosen before the host install.
 
 ## Next step
 
-1. Repository map in README kept current by CI (next pull request).
+1. Agents must run range jobs themselves (range runner, ADR 0010 to be planned with the maintainer).
 2. Step 9.3: `kordon-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
-3. Agents must run range jobs themselves (range runner, ADR 0010 to be planned with the maintainer).
 
 ## Open decisions (maintainer)
 
