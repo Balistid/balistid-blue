@@ -201,9 +201,53 @@ def doc_cap(path: str) -> int | None:
     return None
 
 
+# The README's "Repository map" table must name every component directory, and only real paths, so the
+# map cannot drift from the tree. Under these roots a component is two levels deep (cmd/<name>/).
+MAP_HEADING = "## Repository map"
+DEEP_ROOTS = {"cmd", "internal", "deploy", "packaging", "tools"}
+
+
+def components(paths: set[str]) -> set[str]:
+    found = set()
+    for path in paths:
+        parts = path.split("/")
+        if len(parts) > 1:
+            depth = 2 if parts[0] in DEEP_ROOTS and len(parts) > 2 else 1
+            found.add("/".join(parts[:depth]) + "/")
+    return found
+
+
+def mapped_paths(readme: str) -> set[str]:
+    """Backticked paths in the first column of the table under the map heading."""
+    found, in_map = set(), False
+    for line in readme.splitlines():
+        if line.startswith("## "):
+            in_map = line.strip() == MAP_HEADING
+        elif in_map and line.startswith("|"):
+            first = line.split("|")[1] if line.count("|") >= 2 else ""
+            found.update(re.findall(r"`([^`]+)`", first))
+    return found
+
+
+def map_violations(repo: Path, entries: list[tuple[str, str, str]]) -> list[str]:
+    paths = {path for _, _, path in entries}
+    readme = next((sha for _, sha, path in entries if path == "README.md"), None)
+    if readme is None:
+        return ["README.md: missing; it holds the repository map"]
+    mapped = mapped_paths(blob(repo, readme).decode("utf-8", "replace"))
+    violations = [f"README.md: repository map has no row for `{c}`" for c in sorted(components(paths) - mapped)]
+    for name in sorted(mapped):
+        real = name in components(paths) if name.endswith("/") else name in paths
+        if not real:
+            violations.append(f"README.md: repository map names `{name}`, which is not tracked")
+    return violations
+
+
 def check(repo: Path, rev: str | None = None) -> list[str]:
     violations = []
-    for mode, sha, path in tracked_entries(repo, rev):
+    entries = tracked_entries(repo, rev)
+    violations.extend(map_violations(repo, entries))
+    for mode, sha, path in entries:
         if mode not in REGULAR_MODES:
             violations.append(f"{path}: mode {mode} is not a regular file")
             continue

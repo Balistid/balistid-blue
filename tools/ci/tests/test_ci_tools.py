@@ -198,10 +198,18 @@ class CommitLintRangeTest(unittest.TestCase):
             self.assertEqual(commit_lint.main(rng), 1)
 
 
+def map_readme(paths) -> str:
+    """A README whose repository map names exactly the components of paths."""
+    rows = "".join(f"| `{c}` | x |\n" for c in sorted(docs_budget.components(set(paths))))
+    return "# x\n\n## Repository map\n\n| Path | Purpose |\n|---|---|\n" + rows
+
+
 class DocsBudgetTest(unittest.TestCase):
     def _repo_with(self, files: dict[str, str]) -> tempfile.TemporaryDirectory:
         tmp = tempfile.TemporaryDirectory()
         repo = new_repo(tmp.name)
+        files = dict(files)
+        files.setdefault("README.md", map_readme(files))
         for name, content in files.items():
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +218,7 @@ class DocsBudgetTest(unittest.TestCase):
         return tmp
 
     def test_allowlisted_paths_pass(self):
-        files = {"README.md": "a\n", "adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "LICENSE": "d\n"}
+        files = {"adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "LICENSE": "d\n"}
         with self._repo_with(files) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
 
@@ -278,6 +286,38 @@ class DocsBudgetTest(unittest.TestCase):
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GO_MOD = "module github.com/example/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 GO_SUM_LINE = "golang.org/x/sys v0.20.0/go.mod h1:" + "A" * 43 + "="
+
+
+class RepositoryMapTest(unittest.TestCase):
+    _repo_with = DocsBudgetTest._repo_with
+    files = {"adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "cmd/kordon/main.go": "package main\n"}
+
+    def budget(self, readme: str) -> int:
+        with self._repo_with({**self.files, "README.md": readme}) as tmp:
+            return docs_budget.main(["--repo", tmp])
+
+    def test_complete_map_passes(self):
+        self.assertEqual(self.budget(map_readme(self.files)), 0)
+
+    def test_missing_row_fails(self):
+        self.assertEqual(self.budget(map_readme(self.files).replace("| `cmd/kordon/` | x |\n", "")), 1)
+
+    def test_row_for_untracked_path_fails(self):
+        self.assertEqual(self.budget(map_readme(self.files) + "| `cmd/gone/` | x |\n"), 1)
+
+    def test_mention_outside_the_table_or_first_column_does_not_count(self):
+        readme = map_readme(self.files).replace("| `cmd/kordon/` | x |\n", "| x | `cmd/kordon/` |\n")
+        self.assertEqual(self.budget(readme + "\nSee `cmd/kordon/`.\n"), 1)
+
+    def test_missing_readme_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            (repo / "LICENSE").write_text("x\n")
+            git(repo, "add", "LICENSE")
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_map_under_another_heading_does_not_count(self):
+        self.assertEqual(self.budget(map_readme(self.files).replace("## Repository map", "## Map")), 1)
 
 
 class GoLayoutTest(unittest.TestCase):
@@ -379,7 +419,8 @@ def history_with_secret_in_go_mod(tmp: str) -> tuple[Path, str]:
     """main: a clean go.mod; then commit A adds a token line, commit B removes it again."""
     repo = new_repo(tmp)
     (repo / "go.mod").write_text(GO_MOD)
-    git(repo, "add", "go.mod")
+    (repo / "README.md").write_text(map_readme(["go.mod"]))
+    git(repo, "add", "go.mod", "README.md")
     git(repo, "commit", "-q", "--no-verify", "-m", "base")
     base = git(repo, "rev-parse", "HEAD").strip()
     (repo / "go.mod").write_text(GO_MOD + "// ghp_" + "a" * 36 + "\n")
