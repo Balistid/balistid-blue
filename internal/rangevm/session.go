@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -101,11 +102,11 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if commit == "" {
 		return "", errors.New("launcher is not a clean VCS build of a commit (go run, -buildvcs=false or uncommitted changes)")
 	}
-	// Files in root's object store can be FIFOs, so the copy has a deadline; it takes well under a
+	// Reading root's object store and git's work on it are bounded in time; it takes well under a
 	// second today.
 	fetchCtx, cancel := context.WithTimeout(ctx, copyTimeout)
 	defer cancel()
-	if err := fetchAndExport(newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
+	if err := fetchAndExport(fetchCtx, newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
 		return "", err
 	}
 
@@ -179,7 +180,7 @@ func defaultLimits() limits {
 // there can carry other bytes than its name says, and git serves them unchecked. They travel as a
 // pack, index-pack names every object by its recomputed hash, and the export then reads only from
 // the stage repository, where a forged object is simply missing.
-func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error {
+func fetchAndExport(ctx context.Context, tool toolFunc, root, stage, commit string, lim limits) error {
 	// git never runs in root, nor reads a file there: its configuration, attributes, refs, work tree
 	// and object store (alternates, commit-graph) are the agent's to write. The object files alone
 	// are copied into a repository of ours, and their content stays untrusted until index-pack has
@@ -190,17 +191,18 @@ func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error
 			return fmt.Errorf("git init: %w", err)
 		}
 	}
-	if err := copyObjectStore(filepath.Join(root, ".git", "objects"), filepath.Join(reader, "objects"), lim); err != nil {
+	if err := copyObjectStore(ctx, filepath.Join(root, ".git", "objects"), filepath.Join(reader, "objects"), lim); err != nil {
 		return err
 	}
-	list := stageGit(tool, reader, "-c", "core.bigFileThreshold=1m", "rev-list", "--objects", "--no-walk", commit)
+	list := stageGit(tool, reader, "rev-list", "--objects", "--no-walk", commit)
 	pack := stageGit(tool, reader, "-c", "core.bigFileThreshold=1m", "pack-objects", "--stdout")
 	// index-pack streams blobs over 1 MiB instead of holding them in memory; --fsck-objects refuses
 	// malformed trees (duplicate or full-path entries, bad order) that would export ambiguously.
 	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
-	list.Stderr, pack.Stderr, index.Stderr = io.Discard, io.Discard, io.Discard
+	var msgs printableTail
+	list.Stderr, pack.Stderr, index.Stderr = &msgs, &msgs, &msgs
 	if err := copyObjects(list, pack, index, lim.pack); err != nil {
-		return fmt.Errorf("copy %s into a verified repository: %w", commit, err)
+		return fmt.Errorf("copy %s into a verified repository: %w (git: %s)", commit, err, msgs.String())
 	}
 	// Every object of the commit must have arrived under its own name.
 	check := stageGit(tool, gitDir, "rev-list", "--objects", "--no-walk", commit)
@@ -225,41 +227,37 @@ var (
 // by name, as regular files that are not links. Everything else (info/ with alternates and the
 // commit-graph, multi-pack-index, temporary files) is left behind, so git reads nothing it could
 // follow out of the store.
-func copyObjectStore(src, dst string, lim limits) error {
+func copyObjectStore(ctx context.Context, src, dst string, lim limits) error {
 	var files []string
-	top, err := plainDirEntries(src)
+	seen := 0
+	keep := func(dir string, match *regexp.Regexp) error {
+		return plainDirEntries(filepath.Join(src, dir), func(name string) error {
+			if seen++; seen > lim.objects {
+				return fmt.Errorf("object store has over %d entries", lim.objects)
+			}
+			if match.MatchString(name) {
+				files = append(files, filepath.Join(dir, name))
+			}
+			return ctx.Err()
+		})
+	}
+	err := plainDirEntries(src, func(name string) error {
+		switch {
+		case looseDirRE.MatchString(name):
+			return keep(name, looseFileRE)
+		case name == "pack":
+			return keep(name, packFileRE)
+		}
+		return nil
+	})
 	if err != nil {
 		return fmt.Errorf("object store: %w", err)
 	}
-	for _, name := range top {
-		switch {
-		case looseDirRE.MatchString(name):
-			inner, err := plainDirEntries(filepath.Join(src, name))
-			if err != nil {
-				return fmt.Errorf("object store: %w", err)
-			}
-			for _, f := range inner {
-				if looseFileRE.MatchString(f) {
-					files = append(files, filepath.Join(name, f))
-				}
-			}
-		case name == "pack":
-			inner, err := plainDirEntries(filepath.Join(src, name))
-			if err != nil {
-				return fmt.Errorf("object store: %w", err)
-			}
-			for _, f := range inner {
-				if packFileRE.MatchString(f) {
-					files = append(files, filepath.Join(name, f))
-				}
-			}
-		}
-	}
-	if len(files) > lim.objects {
-		return fmt.Errorf("object store has over %d files", lim.objects)
-	}
 	var total int64
 	for _, rel := range files {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("object store: %w", err)
+		}
 		in, err := openRegular(filepath.Join(src, rel))
 		if err != nil {
 			return fmt.Errorf("object store: %w", err)
@@ -285,25 +283,36 @@ func copyObjectStore(src, dst string, lim limits) error {
 	return nil
 }
 
-// plainDirEntries lists dir, which must be a directory and not a link. Entries that are links are
-// refused when opened (openRegular).
-func plainDirEntries(dir string) ([]string, error) {
+// plainDirEntries calls each with the name of every entry of dir, which must be a directory and not
+// a link, reading the listing in batches so a huge directory costs no memory. Entries that are links
+// are refused when opened (openRegular).
+func plainDirEntries(dir string, each func(name string) error) error {
 	st, err := os.Lstat(dir)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if !st.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", dir)
+		return fmt.Errorf("%s is not a directory", dir)
 	}
-	entries, err := os.ReadDir(dir)
+	f, err := os.Open(dir) //nolint:gosec // checked above to be a directory in root's object store
 	if err != nil {
-		return nil, err
+		return err
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
+	defer f.Close() //nolint:errcheck // read-only directory
+	for {
+		names, err := f.Readdirnames(1024)
+		for _, n := range names {
+			if err := each(n); err != nil {
+				return err
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return names, nil
 }
 
 // copyObjects runs list | pack | index and refuses more than limit bytes into index. The children own
@@ -448,18 +457,46 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string, li
 	return nil
 }
 
+// printableTail keeps the first 2 KiB written to it with every byte outside printable ASCII
+// replaced, so git's messages about agent-written objects can explain a failure without carrying
+// terminal escapes into the log. Several copier goroutines write to it.
+type printableTail struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (p *printableTail) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, c := range b {
+		if len(p.buf) == 2<<10 {
+			break
+		}
+		if c < ' ' || c > '~' {
+			c = '?'
+		}
+		p.buf = append(p.buf, c)
+	}
+	return len(b), nil
+}
+
+func (p *printableTail) String() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return string(p.buf)
+}
+
 // toolFunc builds the command for one program Build runs.
 type toolFunc func(dir, path string, args ...string) *exec.Cmd
 
-// stageGit runs git on the verified repository in the stage.
 // stageGit runs git on a stage repository. Object headers are the agent's bytes and can claim any
-// size, and git allocates by them, so it runs under an address-space limit and fails instead of
-// eating the host's memory.
+// size, and git allocates by them, so it runs under a data-size limit and fails instead of eating
+// the host's memory. Address space is not limited: git maps packs and reserves an arena per thread.
 func stageGit(tool toolFunc, gitDir string, args ...string) *exec.Cmd {
-	return tool(gitDir, "/usr/bin/prlimit", append([]string{"--as=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=" + gitDir}, args...)...)
+	return tool(gitDir, "/usr/bin/prlimit", append([]string{"--data=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=" + gitDir}, args...)...)
 }
 
-// gitMemory is the address-space limit of git on the stage repositories (bytes).
+// gitMemory is the data-size limit of git on the stage repositories (bytes).
 const gitMemory = 1 << 30
 
 // cappedReader returns an error once more than left bytes were read, so a tool fed from it stops.

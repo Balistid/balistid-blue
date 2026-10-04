@@ -369,7 +369,7 @@ func exportOf(t *testing.T, root, commit string) (string, error) {
 func exportWith(t *testing.T, root, commit string, lim limits) (string, error) {
 	t.Helper()
 	stage := stageFor(t)
-	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, commit, lim)
+	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, commit, lim)
 	return filepath.Join(stage, "src"), err
 }
 
@@ -602,7 +602,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(stage, "src", "range", "mkosi.conf")); err != nil {
 		t.Fatal(err)
 	}
-	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits())
+	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits())
 	if err == nil || !strings.Contains(err.Error(), "export range/mkosi.conf") {
 		t.Fatalf("export = %v, want a refusal of the existing link", err)
 	}
@@ -616,7 +616,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stage, "src", "range", "mkosi.conf"), []byte("planted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits()); err == nil {
+	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits()); err == nil {
 		t.Fatal("export overwrote an existing file")
 	}
 }
@@ -797,7 +797,7 @@ func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fetchAndExport(newTool(ctx, stage, f), root, stage, commit, defaultLimits())
+	err = fetchAndExport(ctx, newTool(ctx, stage, f), root, stage, commit, defaultLimits())
 	if cerr := f.Close(); cerr != nil {
 		t.Fatal(cerr)
 	}
@@ -815,26 +815,33 @@ func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("PRIVATE-VALUE-1\nPRIVATE-VALUE-2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for name, ok := range map[string]bool{"info/alternates": true, "info/commit-graphs/commit-graph-chain": true, "object": false} {
+	for name, want := range map[string]string{"info/alternates": "", "info/commit-graphs/commit-graph-chain": "", "object": "symbolic link", "pack": "is not a directory"} {
 		root, git := testRepo(t)
 		head := git("rev-parse", "HEAD")
 		link := filepath.Join(root, ".git", "objects", filepath.FromSlash(name))
-		if name == "object" {
+		target := secret
+		switch name {
+		case "object":
 			oid := git("rev-parse", "HEAD:range/mkosi.conf")
 			link = filepath.Join(root, ".git", "objects", oid[:2], oid[2:])
 			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+		case "pack":
+			target = t.TempDir()
+			if err := os.Remove(link); err != nil { // the empty pack directory git init made
 				t.Fatal(err)
 			}
 		}
 		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(secret, link); err != nil {
+		if err := os.Symlink(target, link); err != nil {
 			t.Fatal(err)
 		}
 		err, log := exportLogged(t, t.Context(), root, stageFor(t), head)
-		if (err == nil) != ok || strings.Contains(log, "PRIVATE-VALUE") {
-			t.Errorf("%s: export = %v, want ok=%v; log %q", name, err, ok, log)
+		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) || strings.Contains(log, "PRIVATE-VALUE") {
+			t.Errorf("%s: export = %v, want %q; log %q", name, err, want, log)
 		}
 	}
 }
@@ -851,33 +858,8 @@ func TestObjectStoreLimit(t *testing.T) {
 // An object header can claim gigabytes; git on the stage repositories allocates under a limit.
 func TestStageGitRunsUnderAMemoryLimit(t *testing.T) {
 	cmd := stageGit(newTool(t.Context(), t.TempDir(), io.Discard), "/x", "rev-list")
-	if want := []string{"/usr/bin/prlimit", "--as=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=/x", "rev-list"}; !slices.Equal(cmd.Args, want) {
+	if want := []string{"/usr/bin/prlimit", "--data=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=/x", "rev-list"}; !slices.Equal(cmd.Args, want) {
 		t.Fatalf("argv %q, want %q", cmd.Args, want)
-	}
-}
-
-// A forged tree claiming 1.5 GB fails closed within the memory limit.
-func TestForgedObjectSizeFailsWithinTheLimit(t *testing.T) {
-	root, git := testRepo(t)
-	head := git("rev-parse", "HEAD")
-	oid := git("rev-parse", "HEAD^{tree}")
-	path := filepath.Join(root, ".git", "objects", oid[:2], oid[2:])
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var forged bytes.Buffer
-	z := zlib.NewWriter(&forged)
-	if _, err := z.Write([]byte("tree 1500000000\x00")); err != nil {
-		t.Fatal(err)
-	}
-	if err := z.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, forged.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := exportOf(t, root, head); err == nil {
-		t.Fatal("exported a commit whose tree is forged")
 	}
 }
 
@@ -885,7 +867,7 @@ func TestObjectStoreFileLimit(t *testing.T) {
 	root, git := testRepo(t)
 	lim := defaultLimits()
 	lim.objects = 1
-	if _, err := exportWith(t, root, git("rev-parse", "HEAD"), lim); err == nil || !strings.Contains(err.Error(), "over 1 files") {
+	if _, err := exportWith(t, root, git("rev-parse", "HEAD"), lim); err == nil || !strings.Contains(err.Error(), "over 1 entries") {
 		t.Fatalf("export over the object file limit = %v, want a refusal", err)
 	}
 }

@@ -27,8 +27,8 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
    commit's objects (`rev-list --objects --no-walk`, `pack-objects`, no history) go through
    `index-pack --fsck-objects`, which names every object by its recomputed hash and refuses
    malformed trees, into a fresh repository where all must be present, so a forged object is
-   refused. These git runs have an address-space limit (object headers can claim any size), keep
-   their messages out of the log, and the copy has a time limit.
+   refused. These git runs have a data-size limit (object headers can claim any size), their
+   messages reach the log only as printable text, and the copy has a time limit.
 3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty
    directory. Only regular files (modes 100644 and 100755) with plain relative paths are accepted:
    no symlink, submodule, `..` or `.git`. Every file is created (never opened if it exists) with mode
