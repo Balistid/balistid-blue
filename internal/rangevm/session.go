@@ -99,10 +99,10 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	if err != nil || !commitRE.MatchString(commit) {
 		return "", fmt.Errorf("resolve HEAD: %q: %w", commit, err)
 	}
-	if lc := launcherCommit(); lc != commit {
-		return "", fmt.Errorf("launcher %q is not a clean build of HEAD %s", lc, commit)
+	if err := checkLauncher(launcherCommit(), commit); err != nil {
+		return "", err
 	}
-	if err := fetchAndExport(tool, root, stage, commit); err != nil {
+	if err := fetchAndExport(tool, root, stage, commit, defaultLimits()); err != nil {
 		return "", err
 	}
 
@@ -157,30 +157,31 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
-// Export limits (R5). Only the built commit's own objects are copied, no history; today that is
-// about 110 KiB.
-var (
-	maxPack      int64 = 64 << 20
-	maxListing   int64 = 8 << 20
-	maxEntries         = 20000
-	maxBlob      int64 = 32 << 20
-	maxExport    int64 = 256 << 20
-	maxPathLen         = 512
-	maxPathDepth       = 32
-)
+// limits bound an export (R5). Only the built commit's own objects are copied, no history; today
+// that is about 110 KiB.
+type limits struct {
+	pack, listing, blob, export int64
+	entries, pathLen, depth     int
+}
+
+func defaultLimits() limits {
+	return limits{pack: 64 << 20, listing: 8 << 20, blob: 32 << 20, export: 256 << 20, entries: 20000, pathLen: 512, depth: 32}
+}
 
 // fetchAndExport copies commit from the repository at root into a fresh repository in the stage
 // and exports its files to stage/src. root's objects are never read as content: a loose object
 // there can carry other bytes than its name says, and git serves them unchecked. They travel as a
 // pack, index-pack names every object by its recomputed hash, and the export then reads only from
 // the stage repository, where a forged object is simply missing.
-func fetchAndExport(tool toolFunc, root, stage, commit string) error {
+func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error {
 	gitDir := filepath.Join(stage, "git")
 	if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", gitDir).Run(); err != nil {
 		return fmt.Errorf("git init: %w", err)
 	}
 	list := sourceGit(tool, root, "rev-list", "--objects", "--no-walk", commit)
 	pack := sourceGit(tool, root, "pack-objects", "--stdout")
+	// index-pack streams blobs over 1 MiB instead of holding them in memory; --fsck-objects refuses
+	// malformed trees (duplicate or full-path entries, bad order) that would export ambiguously.
 	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
 	list.Stdout, pack.Stdout = nil, nil
 	var err error
@@ -191,7 +192,7 @@ func fetchAndExport(tool toolFunc, root, stage, commit string) error {
 	if err != nil {
 		return fmt.Errorf("git pack-objects: %w", err)
 	}
-	capped := &cappedReader{r: packOut, left: maxPack}
+	capped := &cappedReader{r: packOut, left: lim.pack}
 	index.Stdin = capped
 	if err := list.Start(); err != nil {
 		return fmt.Errorf("git rev-list: %w", err)
@@ -203,7 +204,7 @@ func fetchAndExport(tool toolFunc, root, stage, commit string) error {
 	// Closing the pipe stops a pack-objects still writing after a refused or failed copy.
 	copyErr := errors.Join(indexErr, packOut.Close(), pack.Wait(), list.Wait())
 	if capped.over {
-		return fmt.Errorf("commit %s is over %d bytes packed", commit, maxPack)
+		return fmt.Errorf("commit %s is over %d bytes packed", commit, lim.pack)
 	}
 	if copyErr != nil {
 		return fmt.Errorf("copy %s into a verified repository: %w", commit, copyErr)
@@ -214,11 +215,11 @@ func fetchAndExport(tool toolFunc, root, stage, commit string) error {
 	if err := check.Run(); err != nil {
 		return fmt.Errorf("commit %s is incomplete or forged in its repository: %w", commit, err)
 	}
-	files, err := listTree(tool, gitDir, commit)
+	files, err := listTree(tool, gitDir, commit, lim)
 	if err != nil {
 		return err
 	}
-	return export(tool, gitDir, files, filepath.Join(stage, "src"))
+	return export(tool, gitDir, files, filepath.Join(stage, "src"), lim)
 }
 
 // entry is one file of a commit: its git mode and object name.
@@ -228,8 +229,8 @@ type entry struct{ mode, oid string }
 // a tool read outside the export, a submodule is content the commit does not hold) and paths that
 // are not plain relative paths. Allowlist of modes, so a new kind of entry is refused too. With -z
 // git prints each path raw after a tab.
-func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
-	ls := stageGit(tool, gitDir, "ls-tree", "-r", "-z", "--full-tree", commit)
+func listTree(tool toolFunc, gitDir, commit string, lim limits) (map[string]entry, error) {
+	ls := stageGit(tool, gitDir, "ls-tree", "-r", "-z", commit)
 	ls.Stdout = nil
 	out, err := ls.StdoutPipe()
 	if err != nil {
@@ -238,9 +239,9 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 	if err := ls.Start(); err != nil {
 		return nil, fmt.Errorf("git ls-tree: %w", err)
 	}
-	data, readErr := io.ReadAll(io.LimitReader(out, maxListing+1))
-	if int64(len(data)) > maxListing {
-		return nil, errors.Join(fmt.Errorf("tree of %s lists over %d bytes", commit, maxListing), out.Close(), ls.Wait())
+	data, readErr := io.ReadAll(io.LimitReader(out, lim.listing+1))
+	if int64(len(data)) > lim.listing {
+		return nil, errors.Join(fmt.Errorf("tree of %s lists over %d bytes", commit, lim.listing), out.Close(), ls.Wait())
 	}
 	if err := errors.Join(readErr, ls.Wait()); err != nil {
 		return nil, fmt.Errorf("git ls-tree %s: %w", commit, err)
@@ -255,11 +256,11 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 		if fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
 			return nil, fmt.Errorf("%q in %s is not a regular file (mode %s)", path, commit, fields[0])
 		}
-		if err := plainPath(path); err != nil {
+		if err := plainPath(path, lim); err != nil {
 			return nil, fmt.Errorf("%q in %s: %w", path, commit, err)
 		}
-		if len(files) == maxEntries {
-			return nil, fmt.Errorf("tree of %s has over %d files", commit, maxEntries)
+		if len(files) == lim.entries {
+			return nil, fmt.Errorf("tree of %s has over %d files", commit, lim.entries)
 		}
 		files[path] = entry{fields[0], fields[2]}
 	}
@@ -267,9 +268,9 @@ func listTree(tool toolFunc, gitDir, commit string) (map[string]entry, error) {
 }
 
 // plainPath accepts a clean relative path below the export directory that names no .git.
-func plainPath(p string) error {
+func plainPath(p string, lim limits) error {
 	parts := strings.Split(p, "/")
-	if len(p) > maxPathLen || len(parts) > maxPathDepth || p != filepath.Clean(p) || !filepath.IsLocal(p) {
+	if len(p) > lim.pathLen || len(parts) > lim.depth {
 		return errors.New("not a plain relative path")
 	}
 	for _, part := range parts {
@@ -282,7 +283,7 @@ func plainPath(p string) error {
 
 // export writes every file of the commit into dir, which must be empty. Every file is created
 // (O_EXCL also refuses an existing link) and gets exactly mode 0644 or 0755.
-func export(tool toolFunc, gitDir string, files map[string]entry, dir string) error {
+func export(tool toolFunc, gitDir string, files map[string]entry, dir string, lim limits) error {
 	var total int64
 	for path, e := range files {
 		dst := filepath.Join(dir, path)
@@ -298,17 +299,17 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string) er
 			return fmt.Errorf("export %s: %w", path, err)
 		}
 		cat := stageGit(tool, gitDir, "cat-file", "blob", e.oid)
-		capped := &cappedWriter{w: f, left: maxBlob}
+		capped := &cappedWriter{w: f, left: lim.blob}
 		cat.Stdout = capped
 		err = errors.Join(cat.Run(), f.Chmod(perm), f.Close())
 		if capped.over {
-			return fmt.Errorf("export %s: over %d bytes", path, maxBlob)
+			return fmt.Errorf("export %s: over %d bytes", path, lim.blob)
 		}
 		if err != nil {
 			return fmt.Errorf("export %s: %w", path, err)
 		}
-		if total += maxBlob - capped.left; total > maxExport {
-			return fmt.Errorf("export is over %d bytes", maxExport)
+		if total += lim.blob - capped.left; total > lim.export {
+			return fmt.Errorf("export is over %d bytes", lim.export)
 		}
 	}
 	return nil
@@ -317,11 +318,11 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string) er
 // toolFunc builds the command for one program Build runs.
 type toolFunc func(dir, path string, args ...string) *exec.Cmd
 
-// sourceGit runs git on the repository at root. Only rev-parse and pack-objects run there, which
-// read no index, attributes or replace refs; lazy fetch from a promisor remote and fsmonitor are off
-// so its configuration cannot make them reach the network or start a program.
+// sourceGit runs git on the repository at root. Only rev-parse, rev-list and pack-objects run there;
+// they read no index or attributes. rev-list follows replace refs, which only makes the stage check
+// fail. Lazy fetch from a promisor remote is off, so its configuration cannot start a program.
 func sourceGit(tool toolFunc, root string, args ...string) *exec.Cmd {
-	cmd := tool(root, "/usr/bin/git", append([]string{"-c", "core.fsmonitor=false"}, args...)...)
+	cmd := tool(root, "/usr/bin/git", args...)
 	cmd.Env = append(cmd.Env, "GIT_NO_LAZY_FETCH=1")
 	return cmd
 }
@@ -403,6 +404,15 @@ func toolEnv(stage string) []string {
 		}
 	}
 	return env
+}
+
+// checkLauncher refuses a build unless the launcher is a clean build of the commit it builds, so the
+// code that judges the image is the code that built it (R1).
+func checkLauncher(launcher, commit string) error {
+	if launcher != commit {
+		return fmt.Errorf("launcher %q is not a clean build of HEAD %s", launcher, commit)
+	}
+	return nil
 }
 
 // launcherCommit is the clean commit this binary was built from, or "" when the build carries no

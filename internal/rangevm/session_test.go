@@ -5,6 +5,8 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -359,8 +361,13 @@ func stageFor(t *testing.T) string {
 
 func exportOf(t *testing.T, root, commit string) (string, error) {
 	t.Helper()
+	return exportWith(t, root, commit, defaultLimits())
+}
+
+func exportWith(t *testing.T, root, commit string, lim limits) (string, error) {
+	t.Helper()
 	stage := stageFor(t)
-	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, commit)
+	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, commit, lim)
 	return filepath.Join(stage, "src"), err
 }
 
@@ -391,7 +398,8 @@ func TestExportIsTheCommit(t *testing.T) {
 	}
 }
 
-// The repository's own configuration (an agent can plant one) runs nothing during a build.
+// The repository's own configuration (an agent can plant one) runs nothing during a build. The
+// commands used today read no index, so this guards against adding one that does.
 func TestExportRunsNoRepositoryConfig(t *testing.T) {
 	root, git := testRepo(t)
 	marker := filepath.Join(t.TempDir(), "ran")
@@ -469,9 +477,9 @@ func TestPlainPath(t *testing.T) {
 		"range/mkosi.conf": true, "internal/rangeguest/x_test.go": true,
 		"../x": false, "a/../b": false, "./a": false, "a//b": false, "/etc/passwd": false, "a/": false,
 		".git/config": false, "a/.GIT/b": false, "": false, strings.Repeat("a/", 40) + "b": false,
-		strings.Repeat("x", maxPathLen+1): false,
+		strings.Repeat("x", defaultLimits().pathLen+1): false,
 	} {
-		if err := plainPath(p); (err == nil) != ok {
+		if err := plainPath(p, defaultLimits()); (err == nil) != ok {
 			t.Errorf("plainPath(%q) = %v, want ok=%v", p, err, ok)
 		}
 	}
@@ -619,7 +627,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(stage, "src", "range", "mkosi.conf")); err != nil {
 		t.Fatal(err)
 	}
-	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"))
+	err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits())
 	if err == nil || !strings.Contains(err.Error(), "export range/mkosi.conf") {
 		t.Fatalf("export = %v, want a refusal of the existing link", err)
 	}
@@ -633,7 +641,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stage, "src", "range", "mkosi.conf"), []byte("planted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD")); err == nil {
+	if err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits()); err == nil {
 		t.Fatal("export overwrote an existing file")
 	}
 }
@@ -652,10 +660,9 @@ func TestExportCopiesNoHistory(t *testing.T) {
 	git("commit", "-q", "-m", "old")
 	git("rm", "-q", "range/old")
 	git("commit", "-q", "-m", "gone")
-	saved := maxPack
-	maxPack = 64 << 10
-	defer func() { maxPack = saved }()
-	if _, err := exportOf(t, root, git("rev-parse", "HEAD")); err != nil {
+	lim := defaultLimits()
+	lim.pack = 64 << 10
+	if _, err := exportWith(t, root, git("rev-parse", "HEAD"), lim); err != nil {
 		t.Fatalf("export copied history: %v", err)
 	}
 }
@@ -668,18 +675,16 @@ func TestExportLimits(t *testing.T) {
 	git("add", ".")
 	git("commit", "-q", "-m", "two")
 	head := git("rev-parse", "HEAD")
-	for name, set := range map[string]func(){
-		"pack":    func() { maxPack = 64 },
-		"listing": func() { maxListing = 64 },
-		"entries": func() { maxEntries = 1 },
-		"blob":    func() { maxBlob = 5 },
-		"export":  func() { maxExport = 12 },
+	for name, set := range map[string]func(*limits){
+		"pack":    func(l *limits) { l.pack = 64 },
+		"listing": func(l *limits) { l.listing = 64 },
+		"entries": func(l *limits) { l.entries = 1 },
+		"blob":    func(l *limits) { l.blob = 5 },
+		"export":  func(l *limits) { l.export = 12 },
 	} {
-		saved := []any{maxPack, maxListing, maxEntries, maxBlob, maxExport}
-		set()
-		_, err := exportOf(t, root, head)
-		maxPack, maxListing, maxEntries, maxBlob, maxExport = saved[0].(int64), saved[1].(int64), saved[2].(int), saved[3].(int64), saved[4].(int64)
-		if err == nil || !strings.Contains(err.Error(), "over") {
+		lim := defaultLimits()
+		set(&lim)
+		if _, err := exportWith(t, root, head, lim); err == nil || !strings.Contains(err.Error(), "over") {
 			t.Errorf("%s limit: export = %v, want a refusal", name, err)
 		}
 	}
@@ -695,5 +700,41 @@ func TestBuildRefusesALauncherOfAnotherCommit(t *testing.T) {
 	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "is not a clean build of HEAD") {
 		t.Fatalf("Build = %v, want a refusal of the launcher", err)
+	}
+}
+
+func TestCheckLauncher(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	for launcher, ok := range map[string]bool{commit: true, "": false, strings.Repeat("b", 40): false} {
+		if err := checkLauncher(launcher, commit); (err == nil) != ok {
+			t.Errorf("checkLauncher(%q) = %v, want ok=%v", launcher, err, ok)
+		}
+	}
+}
+
+// Malformed trees that git itself never writes but an agent can plant: a duplicate name and a name
+// with a slash would export ambiguously, so the copy refuses them.
+func TestExportRefusesMalformedTrees(t *testing.T) {
+	for name, entries := range map[string]string{
+		"duplicate": "100644 x\x00%[1]s100644 x\x00%[2]s",
+		"full path": "100644 a/b\x00%[1]s",
+	} {
+		root, git := testRepo(t)
+		raw := func(hexOID string) string {
+			b, err := hex.DecodeString(hexOID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(b)
+		}
+		oid := git("rev-parse", "HEAD:range/mkosi.conf")
+		tree := filepath.Join(t.TempDir(), "tree")
+		if err := os.WriteFile(tree, fmt.Appendf(nil, entries, raw(oid), raw(oid)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		commit := git("commit-tree", git("hash-object", "-w", "--literally", "-t", "tree", tree), "-m", name)
+		if _, err := exportOf(t, root, commit); err == nil {
+			t.Errorf("%s: exported a malformed tree", name)
+		}
 	}
 }
