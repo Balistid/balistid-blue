@@ -1,6 +1,6 @@
 # 0010 — Build range images from a verified export of the launcher's own commit
 
-- Status: proposed
+- Status: accepted 2026-10-04 (build and run from `main` PASS on 7.2.8-arch1-2: range run 20261004T203204Z-9fb1da84, bde5578)
 - Date: 2026-10-04
 - Decided-by: alex
 - Agent: claude/opus-5.5
