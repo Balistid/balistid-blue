@@ -959,7 +959,7 @@ func TestExportRefusesANonCommitName(t *testing.T) {
 func TestObjectStoreCopyStopsAtTheDeadline(t *testing.T) {
 	root, _ := testRepo(t)
 	pack := filepath.Join(root, ".git", "objects", "pack", "pack-"+strings.Repeat("a", 40)+".pack")
-	f, err := os.Create(pack)
+	f, err := os.Create(pack) //nolint:gosec // test temp repository
 	if err != nil {
 		t.Fatal(err)
 	}
