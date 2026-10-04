@@ -184,14 +184,14 @@ func fetchAndExport(ctx context.Context, tool toolFunc, root, stage, commit stri
 	// git never runs in root, nor reads a file there: its configuration, attributes, refs, work tree
 	// and object store (alternates, commit-graph) are the agent's to write. The object files alone
 	// are copied into a repository of ours, and their content stays untrusted until index-pack has
-	// named it; git's messages about them stay out of the log.
+	// named it; git's messages about them reach the error only as printable text (printableTail).
 	reader, gitDir := filepath.Join(stage, "reader"), filepath.Join(stage, "git")
 	for _, dir := range []string{reader, gitDir} {
 		if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", dir).Run(); err != nil {
 			return fmt.Errorf("git init: %w", err)
 		}
 	}
-	if err := copyObjectStore(ctx, filepath.Join(root, ".git", "objects"), filepath.Join(reader, "objects"), lim); err != nil {
+	if err := copyObjectStore(ctx, root, filepath.Join(reader, "objects"), lim); err != nil {
 		return err
 	}
 	list := stageGit(tool, reader, "rev-list", "--objects", "--no-walk", commit)
@@ -227,21 +227,36 @@ var (
 // by name, as regular files that are not links. Everything else (info/ with alternates and the
 // commit-graph, multi-pack-index, temporary files) is left behind, so git reads nothing it could
 // follow out of the store.
-func copyObjectStore(ctx context.Context, src, dst string, lim limits) error {
+func copyObjectStore(ctx context.Context, root, dst string, lim limits) error {
+	// Every path is opened through an os.Root, which refuses one that leaves root by a link in any
+	// component (.git or objects/xx swapped for a link, even between listing and opening), so only
+	// files inside the repository the maintainer builds can be copied.
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("object store: %w", err)
+	}
+	defer r.Close() //nolint:errcheck // read-only
+	store := filepath.Join(".git", "objects")
 	var files []string
 	seen := 0
+	count := func() error {
+		if seen++; seen > lim.objects {
+			return fmt.Errorf("object store has over %d entries", lim.objects)
+		}
+		return ctx.Err()
+	}
 	keep := func(dir string, match *regexp.Regexp) error {
-		return plainDirEntries(filepath.Join(src, dir), func(name string) error {
-			if seen++; seen > lim.objects {
-				return fmt.Errorf("object store has over %d entries", lim.objects)
-			}
+		return rootDirEntries(r, filepath.Join(store, dir), func(name string) error {
 			if match.MatchString(name) {
 				files = append(files, filepath.Join(dir, name))
 			}
-			return ctx.Err()
+			return count()
 		})
 	}
-	err := plainDirEntries(src, func(name string) error {
+	err = rootDirEntries(r, store, func(name string) error {
+		if err := count(); err != nil {
+			return err
+		}
 		switch {
 		case looseDirRE.MatchString(name):
 			return keep(name, looseFileRE)
@@ -258,7 +273,7 @@ func copyObjectStore(ctx context.Context, src, dst string, lim limits) error {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("object store: %w", err)
 		}
-		in, err := openRegular(filepath.Join(src, rel))
+		in, err := rootRegular(r, filepath.Join(store, rel))
 		if err != nil {
 			return fmt.Errorf("object store: %w", err)
 		}
@@ -283,22 +298,17 @@ func copyObjectStore(ctx context.Context, src, dst string, lim limits) error {
 	return nil
 }
 
-// plainDirEntries calls each with the name of every entry of dir, which must be a directory and not
-// a link, reading the listing in batches so a huge directory costs no memory. Entries that are links
-// are refused when opened (openRegular).
-func plainDirEntries(dir string, each func(name string) error) error {
-	st, err := os.Lstat(dir)
-	if err != nil {
-		return err
-	}
-	if !st.IsDir() {
-		return fmt.Errorf("%s is not a directory", dir)
-	}
-	f, err := os.Open(dir) //nolint:gosec // checked above to be a directory in root's object store
+// rootDirEntries calls each with the name of every entry of the directory dir in r, reading the
+// listing in batches so a huge directory costs no memory.
+func rootDirEntries(r *os.Root, dir string, each func(name string) error) error {
+	f, err := r.Open(dir)
 	if err != nil {
 		return err
 	}
 	defer f.Close() //nolint:errcheck // read-only directory
+	if st, err := f.Stat(); err != nil || !st.IsDir() {
+		return errors.Join(fmt.Errorf("%s is not a directory", dir), err)
+	}
 	for {
 		names, err := f.Readdirnames(1024)
 		for _, n := range names {
@@ -313,6 +323,19 @@ func plainDirEntries(dir string, each func(name string) error) error {
 			return err
 		}
 	}
+}
+
+// rootRegular opens name in r for reading if it is a regular file that is not a link, without
+// blocking on a FIFO.
+func rootRegular(r *os.Root, name string) (*os.File, error) {
+	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return nil, errors.Join(fmt.Errorf("%s is not a regular file", name), err, f.Close())
+	}
+	return f, nil
 }
 
 // copyObjects runs list | pack | index and refuses more than limit bytes into index. The children own

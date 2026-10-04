@@ -815,7 +815,7 @@ func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("PRIVATE-VALUE-1\nPRIVATE-VALUE-2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"info/alternates": "", "info/commit-graphs/commit-graph-chain": "", "object": "symbolic link", "pack": "is not a directory"} {
+	for name, ok := range map[string]bool{"info/alternates": true, "info/commit-graphs/commit-graph-chain": true, "object": false, "pack": false} {
 		root, git := testRepo(t)
 		head := git("rev-parse", "HEAD")
 		link := filepath.Join(root, ".git", "objects", filepath.FromSlash(name))
@@ -840,8 +840,9 @@ func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
 			t.Fatal(err)
 		}
 		err, log := exportLogged(t, t.Context(), root, stageFor(t), head)
-		if want == "" && err != nil || want != "" && (err == nil || !strings.Contains(err.Error(), want)) || strings.Contains(log, "PRIVATE-VALUE") {
-			t.Errorf("%s: export = %v, want %q; log %q", name, err, want, log)
+		leaked := strings.Contains(log, "PRIVATE-VALUE") || err != nil && strings.Contains(err.Error(), "PRIVATE-VALUE")
+		if (err == nil) != ok || leaked {
+			t.Errorf("%s: export = %v, want ok=%v; log %q", name, err, ok, log)
 		}
 	}
 }
@@ -889,5 +890,27 @@ func TestOnlyObjectFilesAreCopied(t *testing.T) {
 	}
 	if _, err := exportOf(t, root, head); err == nil {
 		t.Fatal("export used an alternates file of root's store")
+	}
+}
+
+// .git replaced by a link to another repository: its objects are outside root and never copied.
+func TestForeignRepositoryIsNotCopied(t *testing.T) {
+	foreign, _ := testRepo(t)
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	moved := filepath.Join(t.TempDir(), "git")
+	if err := os.Rename(filepath.Join(root, ".git"), moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(foreign, ".git"), filepath.Join(root, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	stage := stageFor(t)
+	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, head, defaultLimits()); err == nil {
+		t.Fatal("exported through a .git link to another repository")
+	}
+	copied, _ := filepath.Glob(filepath.Join(stage, "reader", "objects", "??", "*"))
+	if len(copied) > 0 {
+		t.Fatalf("copied %d objects of the other repository: %v", len(copied), copied)
 	}
 }
