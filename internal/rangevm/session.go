@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -75,6 +76,11 @@ type Result struct {
 // never runs in root and nothing in its object store is trusted: the tools build from an export of
 // the commit verified object by object (ADR 0010). Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
+	return buildCommit(ctx, root, cache, log, launcherCommit(), fetchTimeout)
+}
+
+// buildCommit is Build for a given commit and copy time limit.
+func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, copyTimeout time.Duration) (image string, err error) {
 	held, err := lock(cache)
 	if err != nil {
 		return "", err
@@ -92,13 +98,12 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	}
 	tool := newTool(ctx, stage, log)
 	src := filepath.Join(stage, "src")
-	commit := launcherCommit()
 	if commit == "" {
 		return "", errors.New("launcher is not a clean VCS build of a commit (go run, -buildvcs=false or uncommitted changes)")
 	}
-	// Objects in root's store can be FIFOs or huge, so the copy has a deadline; it takes well under
-	// a second today.
-	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	// Files in root's object store can be FIFOs, so the copy has a deadline; it takes well under a
+	// second today.
+	fetchCtx, cancel := context.WithTimeout(ctx, copyTimeout)
 	defer cancel()
 	if err := fetchAndExport(newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
 		return "", err
@@ -158,15 +163,15 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 // limits bound an export (R5). Only the built commit's own objects are copied, no history; today
 // that is about 110 KiB.
 type limits struct {
-	pack, listing, blob, export int64
-	entries, pathLen, depth     int
+	pack, listing, blob, export, store int64
+	entries, objects, pathLen, depth   int
 }
 
 // fetchTimeout bounds copying and exporting the commit (§7).
 const fetchTimeout = 2 * time.Minute
 
 func defaultLimits() limits {
-	return limits{pack: 64 << 20, listing: 8 << 20, blob: 32 << 20, export: 256 << 20, entries: 20000, pathLen: 512, depth: 32}
+	return limits{pack: 64 << 20, listing: 8 << 20, blob: 32 << 20, export: 256 << 20, store: 1 << 30, entries: 20000, objects: 200000, pathLen: 512, depth: 32}
 }
 
 // fetchAndExport copies commit from the repository at root into a fresh repository in the stage
@@ -175,33 +180,25 @@ func defaultLimits() limits {
 // pack, index-pack names every object by its recomputed hash, and the export then reads only from
 // the stage repository, where a forged object is simply missing.
 func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error {
-	objectsDir, err := filepath.Abs(filepath.Join(root, ".git", "objects"))
-	if err != nil || strings.ContainsAny(objectsDir, "\n\r") {
-		return fmt.Errorf("object store of %s: %q: %w", root, objectsDir, err)
-	}
-	if st, err := os.Stat(objectsDir); err != nil || !st.IsDir() {
-		return fmt.Errorf("object store of %s is not a directory: %w", root, err)
-	}
-	// git never runs in root: its configuration, attributes, refs and work tree are the agent's to
-	// write. A repository of ours borrows root's objects (alternates) and reads them with our own
-	// configuration; their content is still untrusted until index-pack has named it.
+	// git never runs in root, nor reads a file there: its configuration, attributes, refs, work tree
+	// and object store (alternates, commit-graph) are the agent's to write. The object files alone
+	// are copied into a repository of ours, and their content stays untrusted until index-pack has
+	// named it; git's messages about them stay out of the log.
 	reader, gitDir := filepath.Join(stage, "reader"), filepath.Join(stage, "git")
 	for _, dir := range []string{reader, gitDir} {
 		if err := tool(stage, "/usr/bin/git", "init", "--quiet", "--bare", "--template=", dir).Run(); err != nil {
 			return fmt.Errorf("git init: %w", err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(reader, "objects", "info"), 0o700); err != nil {
-		return fmt.Errorf("alternates: %w", err)
-	}
-	if err := writeFileAtomic(filepath.Join(reader, "objects", "info", "alternates"), []byte(objectsDir+"\n")); err != nil {
+	if err := copyObjectStore(filepath.Join(root, ".git", "objects"), filepath.Join(reader, "objects"), lim); err != nil {
 		return err
 	}
-	list := stageGit(tool, reader, "rev-list", "--objects", "--no-walk", commit)
-	pack := stageGit(tool, reader, "pack-objects", "--stdout")
+	list := stageGit(tool, reader, "-c", "core.bigFileThreshold=1m", "rev-list", "--objects", "--no-walk", commit)
+	pack := stageGit(tool, reader, "-c", "core.bigFileThreshold=1m", "pack-objects", "--stdout")
 	// index-pack streams blobs over 1 MiB instead of holding them in memory; --fsck-objects refuses
 	// malformed trees (duplicate or full-path entries, bad order) that would export ambiguously.
 	index := stageGit(tool, gitDir, "-c", "core.bigFileThreshold=1m", "index-pack", "--stdin", "--fsck-objects")
+	list.Stderr, pack.Stderr, index.Stderr = io.Discard, io.Discard, io.Discard
 	if err := copyObjects(list, pack, index, lim.pack); err != nil {
 		return fmt.Errorf("copy %s into a verified repository: %w", commit, err)
 	}
@@ -216,6 +213,97 @@ func fetchAndExport(tool toolFunc, root, stage, commit string, lim limits) error
 		return err
 	}
 	return export(tool, gitDir, files, filepath.Join(stage, "src"), lim)
+}
+
+var (
+	looseDirRE  = regexp.MustCompile(`^[0-9a-f]{2}$`)
+	looseFileRE = regexp.MustCompile(`^[0-9a-f]{38}$`)
+	packFileRE  = regexp.MustCompile(`^pack-[0-9a-f]{40}\.(pack|idx)$`)
+)
+
+// copyObjectStore copies root's object files into dst: loose objects and packs with their indexes,
+// by name, as regular files that are not links. Everything else (info/ with alternates and the
+// commit-graph, multi-pack-index, temporary files) is left behind, so git reads nothing it could
+// follow out of the store.
+func copyObjectStore(src, dst string, lim limits) error {
+	var files []string
+	top, err := plainDirEntries(src)
+	if err != nil {
+		return fmt.Errorf("object store: %w", err)
+	}
+	for _, name := range top {
+		switch {
+		case looseDirRE.MatchString(name):
+			inner, err := plainDirEntries(filepath.Join(src, name))
+			if err != nil {
+				return fmt.Errorf("object store: %w", err)
+			}
+			for _, f := range inner {
+				if looseFileRE.MatchString(f) {
+					files = append(files, filepath.Join(name, f))
+				}
+			}
+		case name == "pack":
+			inner, err := plainDirEntries(filepath.Join(src, name))
+			if err != nil {
+				return fmt.Errorf("object store: %w", err)
+			}
+			for _, f := range inner {
+				if packFileRE.MatchString(f) {
+					files = append(files, filepath.Join(name, f))
+				}
+			}
+		}
+	}
+	if len(files) > lim.objects {
+		return fmt.Errorf("object store has over %d files", lim.objects)
+	}
+	var total int64
+	for _, rel := range files {
+		in, err := openRegular(filepath.Join(src, rel))
+		if err != nil {
+			return fmt.Errorf("object store: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dst, rel)), 0o700); err != nil {
+			return errors.Join(fmt.Errorf("object store: %w", err), in.Close())
+		}
+		out, err := os.OpenFile(filepath.Join(dst, rel), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // inside the fresh reader repository
+		if err != nil {
+			return errors.Join(fmt.Errorf("object store: %w", err), in.Close())
+		}
+		capped := &cappedWriter{w: out, left: lim.store - total}
+		_, err = io.Copy(capped, in)
+		err = errors.Join(err, in.Close(), out.Close())
+		if capped.over {
+			return fmt.Errorf("object store is over %d bytes", lim.store)
+		}
+		if err != nil {
+			return fmt.Errorf("object store %s: %w", rel, err)
+		}
+		total = lim.store - capped.left
+	}
+	return nil
+}
+
+// plainDirEntries lists dir, which must be a directory and not a link. Entries that are links are
+// refused when opened (openRegular).
+func plainDirEntries(dir string) ([]string, error) {
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if !st.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names, nil
 }
 
 // copyObjects runs list | pack | index and refuses more than limit bytes into index. The children own
@@ -364,9 +452,15 @@ func export(tool toolFunc, gitDir string, files map[string]entry, dir string, li
 type toolFunc func(dir, path string, args ...string) *exec.Cmd
 
 // stageGit runs git on the verified repository in the stage.
+// stageGit runs git on a stage repository. Object headers are the agent's bytes and can claim any
+// size, and git allocates by them, so it runs under an address-space limit and fails instead of
+// eating the host's memory.
 func stageGit(tool toolFunc, gitDir string, args ...string) *exec.Cmd {
-	return tool(gitDir, "/usr/bin/git", append([]string{"--git-dir=" + gitDir}, args...)...)
+	return tool(gitDir, "/usr/bin/prlimit", append([]string{"--as=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=" + gitDir}, args...)...)
 }
+
+// gitMemory is the address-space limit of git on the stage repositories (bytes).
+const gitMemory = 1 << 30
 
 // cappedReader returns an error once more than left bytes were read, so a tool fed from it stops.
 type cappedReader struct {

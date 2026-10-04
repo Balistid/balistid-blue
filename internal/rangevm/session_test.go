@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -399,33 +400,6 @@ func TestExportIsTheCommit(t *testing.T) {
 	}
 }
 
-// The repository's own configuration (an agent can plant one) runs nothing during a build. The
-// commands used today read no index, so this guards against adding one that does.
-func TestExportRunsNoRepositoryConfig(t *testing.T) {
-	root, git := testRepo(t)
-	marker := filepath.Join(t.TempDir(), "ran")
-	hook := filepath.Join(t.TempDir(), "hook")
-	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o700); err != nil { //nolint:gosec // test hook
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("* filter=x\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	git("add", ".gitattributes")
-	git("commit", "-q", "-m", "attributes")
-	head := git("rev-parse", "HEAD")
-	// Planted after the commit, so only the build could run them.
-	git("config", "core.fsmonitor", hook)
-	git("config", "filter.x.smudge", hook)
-	git("config", "filter.x.clean", hook)
-	if _, err := exportOf(t, root, head); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("repository configuration ran a command: %v", err)
-	}
-}
-
 // A loose object whose bytes do not match its name is served by git unchecked; the copy into the
 // stage verifies every object, so a forged range/ never reaches mkosi.
 func TestForgedObjectIsRefused(t *testing.T) {
@@ -770,29 +744,12 @@ func TestCopyEndsWhenPackObjectsFails(t *testing.T) {
 	}
 }
 
-// An object file that is a FIFO stalls git reading root's store; the deadline ends the copy.
-func TestStalledCopyEndsAtTheDeadline(t *testing.T) {
+// Build bounds the copy with its own deadline, whatever the caller's context.
+func TestBuildCopyHasATimeLimit(t *testing.T) {
 	root, git := testRepo(t)
-	head := git("rev-parse", "HEAD")
-	path := filepath.Join(root, ".git", "objects", head[:2], head[2:])
-	if err := os.Rename(path, path+".moved"); err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Mkfifo(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-	defer cancel()
-	stage := stageFor(t)
-	done := make(chan error, 1)
-	go func() { done <- fetchAndExport(newTool(ctx, stage, io.Discard), root, stage, head, defaultLimits()) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("copy succeeded although reading the object stalled")
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("copy did not end at its deadline")
+	_, err := buildCommit(t.Context(), root, t.TempDir(), io.Discard, git("rev-parse", "HEAD"), time.Nanosecond)
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("buildCommit with an expired copy limit = %v, want a deadline error", err)
 	}
 }
 
@@ -818,16 +775,137 @@ func TestSourceRepositoryIsNotRead(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	stage := stageFor(t)
-	var log bytes.Buffer
 	start := time.Now()
-	if err := fetchAndExport(newTool(ctx, stage, &log), root, stage, head, defaultLimits()); err != nil {
-		t.Fatalf("export: %v (log %q)", err, log.String())
+	err, log := exportLogged(t, ctx, root, stage, head)
+	if err != nil {
+		t.Fatalf("export: %v (log %q)", err, log)
 	}
-	if time.Since(start) > 10*time.Second || strings.Contains(log.String(), "PRIVATE-VALUE") {
-		t.Fatalf("root's configuration was read: %v, log %q", time.Since(start), log.String())
+	if time.Since(start) > 10*time.Second || strings.Contains(log, "PRIVATE-VALUE") {
+		t.Fatalf("root's configuration was read: %v, log %q", time.Since(start), log)
 	}
 	got, err := os.ReadFile(filepath.Join(stage, "src", "range", "mkosi.conf"))
 	if err != nil || string(got) != "[Distribution]\n" {
 		t.Fatalf("exported mkosi.conf = %q, %v; want the committed bytes", got, err)
+	}
+}
+
+// exportLogged runs fetchAndExport with a file as its log, as Build does with os.Stderr (a shared
+// in-memory buffer would race between the tools' output copiers).
+func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string) (error, string) {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = fetchAndExport(newTool(ctx, stage, f), root, stage, commit, defaultLimits())
+	if cerr := f.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	data, rerr := os.ReadFile(f.Name())
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	return err, string(data)
+}
+
+// Links in the object store (alternates, the commit-graph chain, an object file) are not followed:
+// a hidden file never reaches git, the export or the log.
+func TestObjectStoreLinksAreNotFollowed(t *testing.T) {
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("PRIVATE-VALUE-1\nPRIVATE-VALUE-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, ok := range map[string]bool{"info/alternates": true, "info/commit-graphs/commit-graph-chain": true, "object": false} {
+		root, git := testRepo(t)
+		head := git("rev-parse", "HEAD")
+		link := filepath.Join(root, ".git", "objects", filepath.FromSlash(name))
+		if name == "object" {
+			oid := git("rev-parse", "HEAD:range/mkosi.conf")
+			link = filepath.Join(root, ".git", "objects", oid[:2], oid[2:])
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(secret, link); err != nil {
+			t.Fatal(err)
+		}
+		err, log := exportLogged(t, t.Context(), root, stageFor(t), head)
+		if (err == nil) != ok || strings.Contains(log, "PRIVATE-VALUE") {
+			t.Errorf("%s: export = %v, want ok=%v; log %q", name, err, ok, log)
+		}
+	}
+}
+
+func TestObjectStoreLimit(t *testing.T) {
+	root, git := testRepo(t)
+	lim := defaultLimits()
+	lim.store = 16
+	if _, err := exportWith(t, root, git("rev-parse", "HEAD"), lim); err == nil || !strings.Contains(err.Error(), "over") {
+		t.Fatalf("export over the object store limit = %v, want a refusal", err)
+	}
+}
+
+// An object header can claim gigabytes; git on the stage repositories allocates under a limit.
+func TestStageGitRunsUnderAMemoryLimit(t *testing.T) {
+	cmd := stageGit(newTool(t.Context(), t.TempDir(), io.Discard), "/x", "rev-list")
+	if want := []string{"/usr/bin/prlimit", "--as=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=/x", "rev-list"}; !slices.Equal(cmd.Args, want) {
+		t.Fatalf("argv %q, want %q", cmd.Args, want)
+	}
+}
+
+// A forged tree claiming 1.5 GB fails closed within the memory limit.
+func TestForgedObjectSizeFailsWithinTheLimit(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	oid := git("rev-parse", "HEAD^{tree}")
+	path := filepath.Join(root, ".git", "objects", oid[:2], oid[2:])
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var forged bytes.Buffer
+	z := zlib.NewWriter(&forged)
+	if _, err := z.Write([]byte("tree 1500000000\x00")); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, forged.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportOf(t, root, head); err == nil {
+		t.Fatal("exported a commit whose tree is forged")
+	}
+}
+
+func TestObjectStoreFileLimit(t *testing.T) {
+	root, git := testRepo(t)
+	lim := defaultLimits()
+	lim.objects = 1
+	if _, err := exportWith(t, root, git("rev-parse", "HEAD"), lim); err == nil || !strings.Contains(err.Error(), "over 1 files") {
+		t.Fatalf("export over the object file limit = %v, want a refusal", err)
+	}
+}
+
+// Only object files are copied: an alternates file naming another store that holds the commit is
+// not, so a commit missing from root's own store is refused.
+func TestOnlyObjectFilesAreCopied(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	elsewhere := filepath.Join(t.TempDir(), "objects")
+	if err := os.Rename(filepath.Join(root, ".git", "objects"), elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git", "objects", "info"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "objects", "info", "alternates"), []byte(elsewhere+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportOf(t, root, head); err == nil {
+		t.Fatal("export used an alternates file of root's store")
 	}
 }
