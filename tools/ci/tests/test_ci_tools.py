@@ -241,7 +241,8 @@ class DocsBudgetTest(unittest.TestCase):
             repo = new_repo(tmp)
             (repo / ".gitattributes").write_text("STATUS.md working-tree-encoding=UTF-16LE\n")
             (repo / "STATUS.md").write_bytes(("\u20ac" * 1700).encode("utf-16-le"))
-            git(repo, "add", ".gitattributes", "STATUS.md")
+            (repo / "README.md").write_text(map_readme([]))
+            git(repo, "add", ".gitattributes", "STATUS.md", "README.md")
             self.assertLess((repo / "STATUS.md").stat().st_size, 4800)
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
@@ -255,6 +256,8 @@ class DocsBudgetTest(unittest.TestCase):
     def test_submodule_entry_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
+            (repo / "README.md").write_text(map_readme(["tools/ci/tests/test_sub.py"]))
+            git(repo, "add", "README.md")
             git(repo, "update-index", "--add", "--cacheinfo",
                 "160000," + "a" * 40 + ",tools/ci/tests/test_sub.py")
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
@@ -315,6 +318,30 @@ class RepositoryMapTest(unittest.TestCase):
             (repo / "LICENSE").write_text("x\n")
             git(repo, "add", "LICENSE")
             self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_components(self):
+        paths = {"LICENSE", "cmd/x.go", "tools/ci/tests/t.py", ".github/workflows/c.yml", "internal/a/b/x.go"}
+        self.assertEqual(docs_budget.components(paths), {"cmd/", "tools/ci/", ".github/", "internal/a/"})
+
+    def test_row_for_missing_file_fails(self):
+        self.assertEqual(self.budget(map_readme(self.files) + "| `GONE.md` | x |\n"), 1)
+
+    def test_each_commit_of_a_range_needs_its_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            (repo / "README.md").write_text(map_readme(["LICENSE"]))
+            (repo / "LICENSE").write_text("x\n")
+            git(repo, "add", "README.md", "LICENSE")
+            git(repo, "commit", "-q", "--no-verify", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            (repo / "cmd/kordon").mkdir(parents=True)
+            (repo / "cmd/kordon/main.go").write_text("package main\n")
+            git(repo, "add", "cmd/kordon/main.go")
+            git(repo, "commit", "-q", "--no-verify", "-m", "code without its row")
+            (repo / "README.md").write_text(map_readme(["LICENSE", "cmd/kordon/main.go"]))
+            git(repo, "commit", "-q", "--no-verify", "-am", "row")
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
+            self.assertEqual(docs_budget.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
 
     def test_map_under_another_heading_does_not_count(self):
         self.assertEqual(self.budget(map_readme(self.files).replace("## Repository map", "## Map")), 1)
