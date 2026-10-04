@@ -4,21 +4,22 @@ Updated: 2026-10-04 by claude/opus-5.5
 
 ## Where we are
 
-Floor 0 (recorder): the attack range (ADR 0009) and the sensor (auditd + Laurel, ADR 0004) are merged and
-accepted; range run 20261004T075611Z-3a36f42b on `main` (fa883b2, kernel 7.2.8-arch1-2) passed every check.
-No recorder code yet: the collector and raw shards (ADR 0005) are next.
+Floor 0 (recorder): the attack range (ADR 0009), the sensor (auditd + Laurel, ADR 0004) and the build from a
+verified export (ADR 0010) are merged and accepted; range run 20261004T203204Z-9fb1da84, built and run from
+`main` (bde5578, kernel 7.2.8-arch1-2), passed every check. No recorder code yet.
 
 ## Done in the last session
 
-- PR #15 range, #16 acceptance numbers approved, #17 ADR 0004 amendment, #18 sensor smoke test.
-- PR #19: ADR 0004 and 0009 accepted with the run from `main`. PR #20: README repository map, kept true by CI.
+- PR #22: the range builds only the launcher's own commit, from a verified export (ADR 0010). PR #23:
+  `internal/rangeguest` code-owned. This pull request: ADR 0010 accepted with the run from `main`.
 - Known gaps kept open: audit=1 is set but not proven at runtime (ADR 0004); x32 ABI syscalls match no audit
-  rule (THREAT_MODEL T8), mitigation chosen before the host install.
+  rule (THREAT_MODEL T8), mitigation chosen before the host install; a build runs its commit's PKGBUILD and
+  mkosi configuration on the host (T34), so only reviewed commits are built.
 
 ## Next step
 
-1. Agents must run range jobs themselves (range runner, ADR 0011): jobs `run`, `scenario` and `exec`, with
-   builds of unreviewed commits confined (bwrap, no `$HOME`); builds already use a verified export (ADR 0010).
+1. Agents must run range jobs themselves: a confined runner that boots only its own commit's image and runs
+   an agent's program from a read-only job disk (ADR 0011, in review); it builds no branches.
 2. Step 9.3: `kordon-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)
