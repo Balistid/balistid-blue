@@ -1,8 +1,11 @@
 package rangevm
 
 import (
+	"bytes"
+	"compress/zlib"
 	"context"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -119,9 +122,9 @@ func TestJudge(t *testing.T) {
 		launcher string
 		want     string
 	}{
-		{"clean launcher of the image commit", pass, commit, Pass},
+		{"the launcher that built the image", pass, commit, Pass},
 		{"go run or dirty launcher", pass, "", Unknown},
-		{"launcher of another commit", pass, strings.Repeat("b", 40), Unknown},
+		{"a launcher that did not build the image", pass, strings.Repeat("b", 40), Unknown},
 		{"a NIC fails whatever the launcher", nic, "", Fail},
 		{"invalid run", Outcome{Invalid: "vm: exit status 1"}, commit, Invalid},
 	}
@@ -247,16 +250,18 @@ func withoutGit(env []string) []string {
 }
 
 // testRepo creates a repository holding range/mkosi.conf and returns its root and a git runner.
-func testRepo(t *testing.T) (string, func(args ...string)) {
+func testRepo(t *testing.T) (string, func(args ...string) string) {
 	t.Helper()
 	root := t.TempDir()
-	git := func(args ...string) {
+	git := func(args ...string) string {
 		t.Helper()
 		cmd := exec.CommandContext(t.Context(), "/usr/bin/git", append([]string{"-C", root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...) //nolint:gosec // test temp repository
 		cmd.Env = withoutGit(os.Environ())
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v %s", args, err, out)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
 		}
+		return strings.TrimSpace(string(out))
 	}
 	if err := os.MkdirAll(filepath.Join(root, "range"), 0o700); err != nil {
 		t.Fatal(err)
@@ -268,18 +273,6 @@ func testRepo(t *testing.T) (string, func(args ...string)) {
 	git("add", ".")
 	git("commit", "-q", "-m", "x")
 	return root, git
-}
-
-func TestBuildRefusesInputsThatDifferFromHead(t *testing.T) {
-	root, _ := testRepo(t)
-	// mkosi would read this untracked file, so the image would not be what the commit says.
-	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.local.conf"), []byte("[Content]\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "build inputs differ") {
-		t.Fatalf("Build = %v, want a refusal for the untracked file", err)
-	}
 }
 
 func TestCopyIntoIgnoresTheUmask(t *testing.T) {
@@ -309,43 +302,6 @@ func TestSourceDateEpochMatchesTheImageConfig(t *testing.T) {
 	}
 }
 
-// A committed symlink would make Build copy a host file outside the tree, such as a key the agent
-// may not read, into the image (T34).
-func TestBuildRefusesSymlinkInput(t *testing.T) {
-	root, git := testRepo(t)
-	secret := filepath.Join(t.TempDir(), "secret")
-	if err := os.WriteFile(secret, []byte("key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "deploy", "sysctl"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(secret, filepath.Join(root, "deploy", "sysctl", "kordon.conf")); err != nil {
-		t.Fatal(err)
-	}
-	git("add", ".")
-	git("commit", "-q", "-m", "link")
-	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), `"deploy/sysctl/kordon.conf" is not a regular file`) {
-		t.Fatalf("Build = %v, want a refusal for the symlink", err)
-	}
-}
-
-func TestBuildRefusesSubmodule(t *testing.T) {
-	root, git := testRepo(t)
-	// An uninitialised submodule: a gitlink in the commit and an empty directory, which git status
-	// reports as clean.
-	if err := os.MkdirAll(filepath.Join(root, "cmd", "sub"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	git("update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,cmd/sub")
-	git("commit", "-q", "-m", "submodule")
-	_, err := Build(t.Context(), root, t.TempDir(), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), `"cmd/sub" is not a regular file (mode 160000)`) {
-		t.Fatalf("Build = %v, want a refusal for the submodule", err)
-	}
-}
-
 func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
 	for _, k := range proxyEnv {
 		t.Setenv(k, "") // restored after the test
@@ -360,8 +316,9 @@ func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
 	stage := t.TempDir()
 	home := filepath.Join(stage, "home")
 	want := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
-		"GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"), "GOMODCACHE=" + filepath.Join(home, "gomod"),
-		"GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off", "GOFLAGS=-mod=readonly", "CGO_ENABLED=0",
+		"GIT_CEILING_DIRECTORIES=" + stage, "GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"),
+		"GOMODCACHE=" + filepath.Join(home, "gomod"), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off",
+		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0",
 		"https_proxy=http://proxy:3128"}
 	cmd := newTool(t.Context(), stage, io.Discard)("/", "/usr/bin/true")
 	if !slices.Equal(cmd.Env, want) {
@@ -386,4 +343,243 @@ func TestCopyIntoRefusesSymlink(t *testing.T) {
 	if _, err := os.Lstat(dst); !os.IsNotExist(err) {
 		t.Fatalf("destination exists after a refused copy: %v", err)
 	}
+}
+
+// stageFor makes the stage directories fetchAndExport expects.
+func stageFor(t *testing.T) string {
+	t.Helper()
+	stage := t.TempDir()
+	for _, d := range []string{"home", "src"} {
+		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return stage
+}
+
+func exportOf(t *testing.T, root, target, launcher string) (string, error) {
+	t.Helper()
+	stage := stageFor(t)
+	_, err := fetchAndExport(newTool(t.Context(), stage, io.Discard), root, stage, target, launcher)
+	return filepath.Join(stage, "src"), err
+}
+
+// The export is the commit: not the work tree, an index flag, a replace ref or an untracked file,
+// all of which an agent at the maintainer's uid controls (T34).
+func TestExportIsTheCommit(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	evil := git("hash-object", "-w", "/dev/null") // an empty blob
+	git("update-index", "--assume-unchanged", "range/mkosi.conf")
+	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.conf"), []byte("[Content]\nExtraTrees=/home\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.local.conf"), []byte("[Content]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("replace", git("rev-parse", "HEAD:range/mkosi.conf"), evil)
+	src, err := exportOf(t, root, "", head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(src, "range", "mkosi.conf"))
+	if err != nil || string(got) != "[Distribution]\n" {
+		t.Fatalf("exported mkosi.conf = %q, %v; want the committed bytes", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(src, "range", "mkosi.local.conf")); !os.IsNotExist(err) {
+		t.Fatalf("untracked file exported: %v", err)
+	}
+}
+
+// The repository's own configuration (an agent can plant one) runs nothing during a build.
+func TestExportRunsNoRepositoryConfig(t *testing.T) {
+	root, git := testRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := filepath.Join(t.TempDir(), "hook")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o700); err != nil { //nolint:gosec // test hook
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitattributes"), []byte("* filter=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".gitattributes")
+	git("commit", "-q", "-m", "attributes")
+	head := git("rev-parse", "HEAD")
+	// Planted after the commit, so only the build could run them.
+	git("config", "core.fsmonitor", hook)
+	git("config", "filter.x.smudge", hook)
+	git("config", "filter.x.clean", hook)
+	if _, err := exportOf(t, root, "", head); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("repository configuration ran a command: %v", err)
+	}
+}
+
+// A loose object whose bytes do not match its name is served by git unchecked; the copy into the
+// stage verifies every object, so a forged range/ never reaches mkosi.
+func TestForgedObjectIsRefused(t *testing.T) {
+	root, git := testRepo(t)
+	oid := git("rev-parse", "HEAD:range/mkosi.conf")
+	path := filepath.Join(root, ".git", "objects", oid[:2], oid[2:])
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var forged bytes.Buffer
+	z := zlib.NewWriter(&forged)
+	if _, err := z.Write([]byte("blob 15\x00[Content]\nX=1\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, forged.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exportOf(t, root, "", git("rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "verified repository") {
+		t.Fatalf("export of a forged object = %v, want a refusal", err)
+	}
+}
+
+func TestExportRefusesLinksAndSubmodules(t *testing.T) {
+	for name, add := range map[string]func(root string, git func(...string) string){
+		"symlink": func(root string, git func(...string) string) {
+			if err := os.Symlink("/etc/passwd", filepath.Join(root, "range", "kordon-range-guest.service")); err != nil {
+				t.Fatal(err)
+			}
+			git("add", ".")
+		},
+		"submodule": func(_ string, git func(...string) string) {
+			git("update-index", "--add", "--cacheinfo", "160000,"+git("rev-parse", "HEAD")+",cmd/sub")
+		},
+	} {
+		root, git := testRepo(t)
+		add(root, git)
+		git("commit", "-q", "-m", name)
+		_, err := exportOf(t, root, "", git("rev-parse", "HEAD"))
+		if err == nil || !strings.Contains(err.Error(), "is not a regular file") {
+			t.Errorf("%s: export = %v, want a refusal", name, err)
+		}
+	}
+}
+
+func TestPlainPath(t *testing.T) {
+	for p, ok := range map[string]bool{
+		"range/mkosi.conf": true, "internal/rangeguest/x_test.go": true,
+		"../x": false, "a/../b": false, "./a": false, "a//b": false, "/etc/passwd": false, "a/": false,
+		".git/config": false, "a/.GIT/b": false, "": false, strings.Repeat("a/", 40) + "b": false,
+		strings.Repeat("x", maxPathLen+1): false,
+	} {
+		if err := plainPath(p); (err == nil) != ok {
+			t.Errorf("plainPath(%q) = %v, want ok=%v", p, err, ok)
+		}
+	}
+}
+
+// A commit built by another commit's launcher may change only what ends up in the guest.
+func TestHostInputsMustMatchTheLauncher(t *testing.T) {
+	own := map[string]entry{
+		"range/mkosi.conf": {"100644", "a"}, "packaging/laurel/PKGBUILD": {"100644", "a"}, "go.mod": {"100644", "a"},
+		"internal/rangeguest/guest.go": {"100644", "a"}, "deploy/sysctl/kordon.conf": {"100644", "a"}, "STATUS.md": {"100644", "a"},
+	}
+	for _, c := range []struct {
+		path, mode string
+		ok         bool
+	}{
+		{"range/mkosi.conf", "100644", false},
+		{"range/mkosi.build.d/x.go", "100755", false},
+		{"packaging/laurel/PKGBUILD", "100644", false},
+		{"go.mod", "100644", false},
+		{"go.work", "100644", false},
+		{".gitattributes", "100644", false},
+		{"internal/rangeguest/guest.go", "100755", false},
+		{"internal/rangeguest/x.s", "100644", false},
+		{"internal/rangeguest/guest.go", "100644", true},
+		{"cmd/kordon-range-guest/testdata/a.json", "100644", true},
+		{"deploy/sysctl/kordon.conf", "100644", true},
+		{"STATUS.md", "100644", true},
+		{"tools/ci/x.py", "100755", true},
+	} {
+		built := maps.Clone(own)
+		built[c.path] = entry{c.mode, "b"}
+		if err := hostInputsMatch(built, own); (err == nil) != c.ok {
+			t.Errorf("change %s (%s): %v, want ok=%v", c.path, c.mode, err, c.ok)
+		}
+	}
+	for path, ok := range map[string]bool{"range/mkosi.conf": false, "deploy/sysctl/kordon.conf": true} {
+		built := maps.Clone(own)
+		delete(built, path)
+		if err := hostInputsMatch(built, own); (err == nil) != ok {
+			t.Errorf("delete %s: %v, want ok=%v", path, err, ok)
+		}
+	}
+}
+
+func TestBranchChangingRangeIsRefused(t *testing.T) {
+	root, git := testRepo(t)
+	launcher := git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.conf"), []byte("[Content]\nExtraTrees=/home\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("commit", "-q", "-am", "branch")
+	if _, err := exportOf(t, root, git("rev-parse", "HEAD"), launcher); err == nil || !strings.Contains(err.Error(), "changes host inputs") {
+		t.Fatalf("export = %v, want a refusal of the changed range/", err)
+	}
+}
+
+func TestCappedReaderAndWriter(t *testing.T) {
+	r := &cappedReader{r: strings.NewReader("12345"), left: 4}
+	if _, err := io.ReadAll(r); err == nil || !r.over {
+		t.Fatalf("read 5 bytes with a cap of 4: %v over=%v", err, r.over)
+	}
+	var b bytes.Buffer
+	w := &cappedWriter{w: &b, left: 4}
+	if _, err := w.Write([]byte("12345")); err == nil || !w.over || b.Len() != 0 {
+		t.Fatalf("wrote 5 bytes with a cap of 4: %v over=%v wrote=%d", err, w.over, b.Len())
+	}
+}
+
+// The stage lies inside the maintainer's home repository; with the tool environment go build must
+// not stamp (and so not run git status in) the enclosing repository.
+func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
+	outer := t.TempDir()
+	if out, err := exec.CommandContext(t.Context(), "/usr/bin/git", "init", "-q", outer).CombinedOutput(); err != nil { //nolint:gosec // test temp repository
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	stage := filepath.Join(outer, "stage")
+	if err := os.MkdirAll(filepath.Join(stage, "home"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(stage, "src")
+	if err := os.MkdirAll(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"go.mod": "module m\n\ngo 1.27\n", "main.go": "package main\n\nfunc main() {}\n"} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tool := newTool(t.Context(), stage, io.Discard)
+	build := tool(src, "/usr/bin/go", "build", "-o", filepath.Join(stage, "bin"), ".")
+	build.Env = append(build.Env, "GOCACHE="+goCache(t)) // a warm cache keeps the test fast
+	if err := build.Run(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.CommandContext(t.Context(), "/usr/bin/go", "version", "-m", filepath.Join(stage, "bin")).Output() //nolint:gosec // test binary
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), "vcs.") {
+		t.Fatalf("guest build stamped the enclosing repository:\n%s", out)
+	}
+}
+
+func goCache(t *testing.T) string {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "/usr/bin/go", "env", "GOCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
 }
