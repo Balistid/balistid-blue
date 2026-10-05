@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // Host binaries and firmware, by absolute path (ENGINEERING.md 7, Processes).
@@ -30,6 +32,8 @@ const (
 	results   = "results.raw"
 	firmVars  = "vars.fd"
 	resultsID = "balistid-results"
+	jobDisk   = "job.raw"
+	jobID     = "balistid-job"
 )
 
 // Limits of one run (ADR 0009, points 3–5).
@@ -77,8 +81,8 @@ func overlayArgv() []string {
 
 // qemuArgv is the VM: no default devices, no NIC, no display, and `format=` on every drive so no
 // guest-written bytes are ever probed as an image header (ADR 0009, point 2).
-func qemuArgv() []string {
-	return []string{
+func qemuArgv(job bool) []string {
+	argv := []string{
 		qemuPath,
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
@@ -88,8 +92,14 @@ func qemuArgv() []string {
 		"-drive", "if=virtio,format=qcow2,file=" + inRun + "/" + overlay,
 		"-drive", "if=none,id=results,format=raw,file=" + inRun + "/" + results,
 		"-device", "virtio-blk-pci,drive=results,serial=" + resultsID,
-		"-serial", "stdio",
 	}
+	if job {
+		// The run directory is read-only in the sandbox as well, so the guest cannot change its job.
+		argv = append(argv,
+			"-drive", "if=none,id=job,format=raw,readonly=on,file="+inRun+"/"+jobDisk,
+			"-device", "virtio-blk-pci,drive=job,serial="+jobID)
+	}
+	return append(argv, "-serial", "stdio")
 }
 
 // Outcome of one run. Invalid is empty only when the VM exited cleanly and the results stream
@@ -101,7 +111,12 @@ type Outcome struct {
 
 // Run boots base once in a fresh run directory under parent, copies at most SerialBudget bytes of
 // serial output to serial, and deletes the run directory afterwards (R5).
-func Run(ctx context.Context, base, parent string, serial io.Writer) (out Outcome, err error) {
+//
+// A non-nil job is a job disk image (rangejob.EncodeDisk) attached read-only for the guest to run.
+func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte) (out Outcome, err error) {
+	if job != nil && len(job) != rangejob.DiskBytes {
+		return Outcome{}, fmt.Errorf("job disk is %d bytes, want %d", len(job), rangejob.DiskBytes)
+	}
 	st, err := os.Stat(base)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("base image: %w", err)
@@ -115,20 +130,24 @@ func Run(ctx context.Context, base, parent string, serial io.Writer) (out Outcom
 			err = errors.Join(err, fmt.Errorf("remove run directory: %w", rmErr))
 		}
 	}()
-	if err := prepare(runDir); err != nil {
+	if err := prepare(runDir, job); err != nil {
 		return Outcome{}, err
 	}
-	// Each file QEMU writes stays below the base's virtual size plus the results disk.
-	fsize := st.Size() + ResultsBytes
+	fsize := WriteCap(st.Size())
 
 	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, overlayArgv()...), setupTimeout, SerialBudget, io.Discard); why != "" {
 		return Outcome{Invalid: "overlay: " + why}, nil
 	}
-	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, qemuArgv()...), RunTimeout, SerialBudget, serial); why != "" {
+	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, qemuArgv(job != nil)...), RunTimeout, SerialBudget, serial); why != "" {
 		return Outcome{Invalid: "vm: " + why}, nil
 	}
 	return readResults(filepath.Join(runDir, results)), nil
 }
+
+// WriteCap is the size limit of each of the three files QEMU can write (overlay, results, firmware
+// variables) for a base image of baseSize bytes; prlimit applies it per file, so a run can write up
+// to three times this much (ADR 0011, point 6).
+func WriteCap(baseSize int64) int64 { return baseSize + ResultsBytes }
 
 // readResults treats every problem with the results disk as INVALID: a compromised QEMU can
 // chmod, grow or garble the one file it may write, and none of that may pass or vanish.
@@ -154,7 +173,12 @@ func readResults(path string) Outcome {
 
 // prepare writes the zeroed results disk, a private copy of the firmware variables and the empty
 // overlay file that qemu-img fills; the sandbox can write only these three files.
-func prepare(runDir string) error {
+func prepare(runDir string, job []byte) error {
+	if job != nil {
+		if err := os.WriteFile(filepath.Join(runDir, jobDisk), job, 0o400); err != nil { //nolint:gosec // run directory created by Run
+			return fmt.Errorf("job disk: %w", err)
+		}
+	}
 	if err := os.WriteFile(filepath.Join(runDir, overlay), nil, 0o600); err != nil {
 		return fmt.Errorf("overlay: %w", err)
 	}
