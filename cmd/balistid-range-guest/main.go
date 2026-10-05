@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,19 +124,16 @@ func runJob(ctx context.Context, dev string) error {
 	if err := os.WriteFile(jobProgram, program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
 		return fmt.Errorf("job program: %w", err)
 	}
-	// The open descriptor follows the log through a rotation, which a path and an offset would not;
-	// a log Laurel has not created yet is read from its start afterwards.
-	var offset int64
+	// The descriptor opened before the job shows whether Laurel rotated the log meanwhile.
 	before, err := os.Open(laurelLog)
-	switch {
-	case err == nil:
-		defer before.Close() //nolint:errcheck // read-only
-		if offset, err = before.Seek(0, io.SeekEnd); err != nil {
-			add(rangevm.FactJobError, "cannot read the Laurel log")
-			return write(facts)
-		}
-	case !errors.Is(err, fs.ErrNotExist):
+	if err != nil {
 		add(rangevm.FactJobError, "cannot open the Laurel log")
+		return write(facts)
+	}
+	defer before.Close() //nolint:errcheck // read-only
+	offset, err := before.Seek(0, io.SeekEnd)
+	if err != nil {
+		add(rangevm.FactJobError, "cannot read the Laurel log")
 		return write(facts)
 	}
 
@@ -189,7 +185,7 @@ func readJob(dev string) ([]byte, [32]byte, error) {
 }
 
 // unitResult returns the job unit's result and its main process's exit status (a signal number
-// for timeout, signal or oom-kill). systemd-run exits 0 only for success; any other exit is 1
+// for timeout, signal or oom-kill). systemd-run exits 0 only for success; any other exit is non-zero
 // for a failed job and a failed start alike, so then systemd's own record decides, and only for a
 // unit that exists and failed: systemctl shows a missing unit as a zeroed "success".
 func unitResult(ctx context.Context, runErr error) (result, status string) {
@@ -209,47 +205,26 @@ func unitResult(ctx context.Context, runErr error) (result, status string) {
 	return props["Result"], props["ExecMainStatus"]
 }
 
-// laurelWindow returns at most limit bytes the Laurel log gained after offset: the rest of the file
-// open since before the job (renamed, if Laurel rotated it), then the current log if it is another
-// file. A second rotation within one job would lose the middle file, so any rotation is reported and
-// the host treats the window as incomplete.
+// laurelWindow returns at most limit bytes the Laurel log gained after offset, and "no" only when
+// that is everything the job caused: a rotation meanwhile ("rotated") may hide records in a file
+// this never reads, and a cut window ("yes") lacks the rest. The host accepts only "no".
 func laurelWindow(before *os.File, path string, offset, limit int64) ([]byte, string) {
-	if before == nil {
-		f, err := os.Open(path) //nolint:gosec // the fixed Laurel log path
-		if err != nil {
-			return nil, "error"
-		}
-		defer f.Close() //nolint:errcheck // read-only
-		data, err := io.ReadAll(io.LimitReader(f, limit+1))
-		switch {
-		case err != nil:
-			return nil, "error"
-		case int64(len(data)) > limit:
-			return data[:limit], "yes"
-		}
-		return data, "no"
-	}
-	var buf bytes.Buffer
 	if _, err := before.Seek(offset, io.SeekStart); err != nil {
 		return nil, "error"
 	}
-	if _, err := io.Copy(&buf, io.LimitReader(before, limit+1)); err != nil {
+	data, err := io.ReadAll(io.LimitReader(before, limit+1))
+	if err != nil {
 		return nil, "error"
 	}
-	cut := "no"
 	old, errOld := before.Stat()
 	now, errNow := os.Stat(path)
-	if errOld != nil || errNow != nil || !os.SameFile(old, now) {
-		cut = "rotated"
-		if f, err := os.Open(path); err == nil { //nolint:gosec // the fixed Laurel log path
-			_, _ = io.Copy(&buf, io.LimitReader(f, limit+1))
-			_ = f.Close()
-		}
+	switch {
+	case errOld != nil || errNow != nil || !os.SameFile(old, now):
+		return nil, "rotated"
+	case int64(len(data)) > limit:
+		return data[:limit], "yes"
 	}
-	if int64(buf.Len()) > limit {
-		return buf.Bytes()[:limit], "yes"
-	}
-	return buf.Bytes(), cut
+	return data, "no"
 }
 
 // cappedBuffer keeps the first left bytes written and notes that more came.
