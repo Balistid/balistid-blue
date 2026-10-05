@@ -25,6 +25,19 @@ const (
 	FactPCINet = "pci_net"
 )
 
+// Facts of an exec job (ADR 0011): the program's sha256 as the guest decoded it, its exit, and its
+// output and the Laurel log written while it ran, as base64 chunks in order. The host matches no
+// pattern on them; the agent reads them.
+const (
+	FactJobSHA256    = "job_sha256"
+	FactJobExit      = "job_exit"
+	FactJobOut       = "job_out"
+	FactJobOutCut    = "job_out_truncated"
+	FactJobLaurel    = "job_laurel"
+	FactJobLaurelCut = "job_laurel_truncated"
+	FactJobError     = "job_error"
+)
+
 // capsLaurel is CAP_DAC_READ_SEARCH (bit 2) and CAP_SYS_PTRACE (bit 19), the only capabilities
 // Laurel keeps after dropping root (ADR 0004).
 const capsLaurel = "0000000000080004"
