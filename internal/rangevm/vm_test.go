@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // The sandbox is an allowlist: any added mount, share or capability must change this test.
@@ -38,9 +40,29 @@ func TestSandboxArgvIsExactlyTheAllowlist(t *testing.T) {
 	}
 }
 
+// The job disk is the only addition a job makes, and it is read-only.
+func TestQemuArgvWithAJob(t *testing.T) {
+	plain, job := qemuArgv(false), qemuArgv(true)
+	want := append(slices.Clone(plain[:len(plain)-2]),
+		"-drive", "if=none,id=job,format=raw,readonly=on,file=/range/run/job.raw",
+		"-device", "virtio-blk-pci,drive=job,serial=balistid-job",
+		"-serial", "stdio")
+	if !slices.Equal(job, want) {
+		t.Fatalf("job argv:\n got %q\nwant %q", job, want)
+	}
+}
+
+func TestRunRefusesAJobDiskOfTheWrongSize(t *testing.T) {
+	for _, n := range []int{0, 1, rangejob.DiskBytes - 1, rangejob.DiskBytes + 1} {
+		if _, err := Run(t.Context(), "/nonexistent", t.TempDir(), &bytes.Buffer{}, make([]byte, n)); err == nil || !strings.Contains(err.Error(), "job disk") {
+			t.Errorf("job disk of %d bytes: %v", n, err)
+		}
+	}
+}
+
 // The VM argv is exact as well: no device, NIC or option appears without changing this test.
 func TestQemuArgv(t *testing.T) {
-	argv := qemuArgv()
+	argv := qemuArgv(false)
 	want := []string{
 		"/usr/bin/qemu-system-x86_64",
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",

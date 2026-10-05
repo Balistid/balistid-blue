@@ -679,7 +679,7 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	if err != nil {
 		return Result{}, fmt.Errorf("serial log: %w", err)
 	}
-	outcome, runErr := Run(ctx, image, filepath.Join(cache, "runs"), serial)
+	outcome, runErr := Run(ctx, image, filepath.Join(cache, "runs"), serial, nil)
 	if err := errors.Join(runErr, serial.Close()); err != nil {
 		return Result{}, err
 	}
