@@ -1,0 +1,179 @@
+package rangerun
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+const runJSON = `{"schema_version":1,"kind":"run","trials":1}`
+
+func newInbox(t *testing.T) (string, *os.Root) {
+	t.Helper()
+	dir := t.TempDir()
+	root, err := OpenInbox(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return dir, root
+}
+
+func addJob(t *testing.T, inbox, name, request string, mtime time.Time) {
+	t.Helper()
+	dir := filepath.Join(inbox, name)
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "job.json"), []byte(request), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(dir, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNextTakesEachJobOnceInNameOrder(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	addJob(t, dir, "b", `{"schema_version":1,"kind":"run","trials":2}`, now)
+	addJob(t, dir, "a", runJSON, now)
+	var l Ledger
+	for _, want := range []string{"a", "b"} {
+		if job, ok := Next(inbox, &l, now); !ok || job.Name != want {
+			t.Fatalf("Next = %q %v, want %q", job.Name, ok, want)
+		}
+	}
+	if job, ok := Next(inbox, &l, now.Add(time.Hour)); ok {
+		t.Fatalf("a job was taken twice: %q", job.Name)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
+		t.Fatalf("the inbox changed: %v %v", entries, err)
+	}
+}
+
+// Times and inodes are the agent's to set; a job is its name and content.
+func TestTheSameJobRunsOnceAndAnotherNameRunsAgain(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	addJob(t, dir, "j", runJSON, now.Add(48*time.Hour))
+	var l Ledger
+	if _, ok := Next(inbox, &l, now); !ok {
+		t.Fatal("first job not taken")
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "j")); err != nil {
+		t.Fatal(err)
+	}
+	addJob(t, dir, "j", runJSON, now.Add(-72*time.Hour))
+	if job, ok := Next(inbox, &l, now.Add(time.Hour)); ok {
+		t.Fatalf("the same name and content ran again: %q", job.Name)
+	}
+	addJob(t, dir, "k", runJSON, now)
+	if job, ok := Next(inbox, &l, now.Add(time.Hour)); !ok || job.Name != "k" {
+		t.Fatalf("the same request under another name did not run: %q %v", job.Name, ok)
+	}
+}
+
+// Expiry runs on the runner's clock from when it first saw the directory.
+func TestExpiryUsesTheRunnersClock(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	var l Ledger
+	l.Entries = make([]Entry, Quota) // the quota is full, so the job waits
+	for i := range l.Entries {
+		l.Entries[i] = Entry{Key: string(rune('a' + i)), Seen: now, Status: Taken}
+	}
+	addJob(t, dir, "waits", runJSON, now.Add(10*24*time.Hour))
+	if _, ok := Next(inbox, &l, now); ok {
+		t.Fatal("a job was taken over the quota")
+	}
+	if _, ok := Next(inbox, &l, now.Add(Expiry)); ok {
+		t.Fatal("a job past its expiry on the runner's clock was taken")
+	}
+	if len(l.Clock) != 1 {
+		t.Fatalf("clock holds %d directories, want the one in the inbox", len(l.Clock))
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "waits")); err != nil {
+		t.Fatal(err)
+	}
+	Next(inbox, &l, now.Add(Expiry))
+	if len(l.Clock) != 0 {
+		t.Fatal("the clock kept a directory that left the inbox")
+	}
+}
+
+// A full inbox does not stop the runner: what the quota cannot reach in a day expires, and a new
+// job is taken in the next window.
+func TestALargeInboxExpiresAndTheRunnerGoesOn(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	for i := range 41 {
+		addJob(t, dir, fmt.Sprintf("j%02d", 40-i), runJSON, now)
+	}
+	var l Ledger
+	var taken []string
+	for i := range 41 {
+		if job, ok := Next(inbox, &l, now.Add(time.Duration(i)*time.Minute)); ok {
+			taken = append(taken, job.Name)
+		}
+	}
+	if len(taken) != Quota || taken[0] != "j00" {
+		t.Fatalf("took %v, want the first %d in name order", taken, Quota)
+	}
+	later := now.Add(QuotaWindow)
+	addJob(t, dir, "new", runJSON, now)
+	if job, ok := Next(inbox, &l, later); !ok || job.Name != "new" {
+		t.Fatalf("after a window the new job was not taken: %q %v", job.Name, ok)
+	}
+}
+
+func TestBrokenJobsCountAgainstTheQuotaOnce(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	for i := range Quota + 2 {
+		addJob(t, dir, string(rune('a'+i)), `{}`, now)
+	}
+	var l Ledger
+	for range 3 {
+		Next(inbox, &l, now)
+	}
+	if got := l.used(now); got != Quota {
+		t.Fatalf("used %d of the quota, want exactly %d", got, Quota)
+	}
+	later := now.Add(QuotaWindow)
+	addJob(t, dir, "z", runJSON, later)
+	if job, ok := Next(inbox, &l, later); !ok || job.Name != "z" {
+		t.Fatalf("the quota did not reopen after its window: %q %v", job.Name, ok)
+	}
+}
+
+func TestOpenInboxRefusesALink(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "inbox")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if root, err := OpenInbox(link); err == nil {
+		_ = root.Close()
+		t.Fatal("a symlinked inbox was opened")
+	}
+}
+
+func TestTheLedgerStaysBounded(t *testing.T) {
+	now := time.Now()
+	var l Ledger
+	for i := range MaxLedger + 50 {
+		l.add(string(rune(i)), now, Taken)
+	}
+	l.prune(now)
+	if len(l.Entries) > MaxLedger {
+		t.Fatalf("ledger has %d entries", len(l.Entries))
+	}
+	l = Ledger{Entries: []Entry{{Key: "old", Seen: now.Add(-keepTaken), Status: Taken}}}
+	l.prune(now)
+	if len(l.Entries) != 0 {
+		t.Fatal("a taken job outlived keepTaken")
+	}
+}
