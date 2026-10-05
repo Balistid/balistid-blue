@@ -31,7 +31,7 @@ const (
 const (
 	FactJobSHA256    = "job_sha256"
 	FactJobResult    = "job_result"
-	FactJobExit      = "job_exit"
+	FactJobExit      = "job_exit" // a signal number unless job_result is success or exit-code
 	FactJobOut       = "job_out"
 	FactJobOutCut    = "job_out_truncated"
 	FactJobLaurel    = "job_laurel"
