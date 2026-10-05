@@ -70,7 +70,7 @@ func TestQemuArgv(t *testing.T) {
 		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "2",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd",
 		"-drive", "if=pflash,unit=1,format=raw,file=/range/run/vars.fd",
-		"-boot", "strict=on",
+		"-fw_cfg", "name=opt/org.tianocore/EFIShellSupport,string=no",
 		"-drive", "if=none,id=root,format=qcow2,file=/range/run/overlay.qcow2",
 		"-device", "virtio-blk-pci,drive=root,bootindex=0",
 		"-drive", "if=none,id=results,format=raw,file=/range/run/results.raw",

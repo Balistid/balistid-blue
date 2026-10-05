@@ -89,9 +89,10 @@ func qemuArgv(job bool) []string {
 		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "2",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file=" + ovmfCode,
 		"-drive", "if=pflash,unit=1,format=raw,file=" + inRun + "/" + firmVars,
-		// Only the root disk may boot: with no boot order OVMF tries disks in PCI order, and the job
-		// disk, whose bytes an agent chooses, comes first.
-		"-boot", "strict=on",
+		// Only the root disk may boot: bootindex=0 makes OVMF keep this disk's boot option and delete
+		// the other disks' (QemuBootOrderLib), so the job disk, whose bytes an agent chooses, never
+		// boots; without the built-in shell, a failed boot cannot fall back to a startup.nsh on it.
+		"-fw_cfg", "name=opt/org.tianocore/EFIShellSupport,string=no",
 		"-drive", "if=none,id=root,format=qcow2,file=" + inRun + "/" + overlay,
 		"-device", "virtio-blk-pci,drive=root,bootindex=0",
 		"-drive", "if=none,id=results,format=raw,file=" + inRun + "/" + results,
