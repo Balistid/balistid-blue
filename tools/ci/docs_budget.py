@@ -75,6 +75,7 @@ LAYOUT: tuple[str, ...] = (
     # Attack range (ADR 0009).
     "range/mkosi.conf",
     "range/balistid-range-guest.service",
+    "range/balistid-job.conf",
 )
 
 REGULAR_MODES = {"100644", "100755"}
