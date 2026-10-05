@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import subprocess
@@ -523,6 +524,88 @@ class GoGateTest(unittest.TestCase):
     def test_builds_must_match(self):
         self.assertEqual(go_gate.same_problems(b"x", b"x"), [])
         self.assertTrue(go_gate.same_problems(b"x", b"y"))
+
+
+class OwnedDepsTest(unittest.TestCase):
+    M = "example.com/kordon"
+    OWNERS = ("# owned\n\n/range/ @Jvc0n\n/deploy/ @Jvc0n\n/packaging/ @Jvc0n\n/cmd/kordon-range/ @Jvc0n\n"
+              "/cmd/kordon-range-guest/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
+    MOD = "module example.com/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
+
+    def pkg(self, rel, **extra):
+        return {"ImportPath": f"{self.M}/{rel}", "Module": {"Path": self.M, "Main": True}, **extra}
+
+    def deps(self, *extra):
+        pkgs = [{"ImportPath": "os", "Standard": True}, self.pkg("internal/rangevm"),
+                self.pkg("cmd/kordon-range"), self.pkg("cmd/kordon-range-guest"), *extra]
+        return "\n".join(json.dumps(p, indent=1) for p in pkgs)
+
+    def problems(self, deps=None, owners=None, mod=None):
+        return go_gate.owned_problems(self.deps() if deps is None else deps,
+                                      self.OWNERS if owners is None else owners,
+                                      self.MOD if mod is None else mod)
+
+    def test_owned_tree_passes(self):
+        self.assertEqual(self.problems(), [])
+
+    def test_unowned_package_fails(self):
+        self.assertTrue(self.problems(deps=self.deps(self.pkg("internal/util"))))
+
+    def test_subpackage_of_owned_dir_passes(self):
+        self.assertEqual(self.problems(deps=self.deps(self.pkg("internal/rangevm/sub"))), [])
+
+    def test_foreign_or_lookalike_packages_fail(self):
+        cases = [{"ImportPath": "example.com/x", "Module": {"Path": "example.com/x"}},
+                 {"ImportPath": f"{self.M}-evil/x", "Module": {"Path": self.M, "Main": True}},
+                 {"ImportPath": f"{self.M}/internal/rangevm/v", "Module": {"Path": self.M}},
+                 {"ImportPath": "os"}]
+        for pkg in cases:
+            with self.subTest(pkg=pkg):
+                self.assertTrue(self.problems(deps=self.deps(pkg)))
+
+    def test_missing_root_or_bad_input_fails(self):
+        for deps in ("", "[]", "not json", json.dumps(self.pkg("internal/rangevm"))):
+            with self.subTest(deps=deps):
+                self.assertTrue(self.problems(deps=deps))
+
+    def test_module_comes_from_go_mod(self):
+        for mod in ("", "go 1.27\n", self.MOD.replace("example.com/kordon", "example.com/other"),
+                    self.MOD + "module example.com/kordon\n"):
+            with self.subTest(mod=mod):
+                self.assertTrue(self.problems(mod=mod))
+
+    def test_unowned_image_path_fails(self):
+        for path in go_gate.OWNED_PATHS:
+            with self.subTest(path=path):
+                self.assertTrue(self.problems(owners=self.OWNERS.replace(f"/{path}/ @Jvc0n\n", "")))
+
+    def test_lines_that_could_take_an_owner_away_fail(self):
+        for line in ("/internal/", "/internal/rangevm/session.go", "/range/mkosi.conf  ",
+                     "/internal/rangevm/ #@Jvc0n", "/internal/rangevm/\u00a0@Jvc0n", "/internal/rangevm/\t@Jvc0n",
+                     "/internal/rangevm/ @agent-bot", "/internal/rangevm/ @Jvc0n @agent-bot",
+                     "/internal/rangevm/ @Jvc0n # note", " /internal/rangevm/ @Jvc0n"):
+            with self.subTest(line=line):
+                self.assertTrue(self.problems(owners=self.OWNERS + line + "\n"))
+
+    def test_owner_line_hidden_in_a_comment_fails(self):
+        for sep in ("\u2028", "\u0085", "\r", "\f"):
+            with self.subTest(sep=sep):
+                owners = self.OWNERS.replace("/range/ @Jvc0n\n", "") + f"# x{sep}/range/ @Jvc0n\n"
+                self.assertTrue(self.problems(owners=owners))
+
+    def test_patterns_it_cannot_evaluate_fail(self):
+        for line in ("* @Jvc0n", "*.go @Jvc0n", "internal/ @Jvc0n", "/internal/**/x @Jvc0n",
+                     "/a/../range/ @Jvc0n", "/ @Jvc0n"):
+            with self.subTest(line=line):
+                self.assertTrue(self.problems(owners=self.OWNERS + line + "\n"))
+
+    def test_real_codeowners_is_evaluable(self):
+        root = Path(__file__).resolve().parents[3]
+        rules, problems = go_gate.codeowners_rules((root / ".github/CODEOWNERS").read_text())
+        self.assertEqual(problems, [])
+        for path in (*go_gate.OWNED_ROOTS, *go_gate.OWNED_PATHS):
+            with self.subTest(path=path):
+                self.assertTrue(go_gate.is_owned(path, rules))
 
 
 A_SHA, B_SHA, ZERO_SHA = "a" * 40, "b" * 40, "0" * 40

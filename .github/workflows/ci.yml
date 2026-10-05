@@ -67,6 +67,11 @@ jobs:
           test -z "${cgo_files//[[:space:]]/}" || { echo "cgo is forbidden (ADR 0003): $cgo_files"; exit 1; }
           go vet ./...
           golangci-lint run ./...
+      - name: Every package of the range binaries is code-owned (ADR 0011)
+        run: |
+          go list -deps -json ./cmd/kordon-range ./cmd/kordon-range-guest > "$RUNNER_TEMP/deps.json"
+          python3 tools/ci/go_gate.py owned --deps "$RUNNER_TEMP/deps.json" \
+            --codeowners .github/CODEOWNERS --go-mod go.mod
       - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)
         run: |
           (cd "$RUNNER_TEMP" && go mod download -json "golang.org/x/vuln@${GOVULNCHECK_VERSION}") > "$RUNNER_TEMP/vuln.json"
