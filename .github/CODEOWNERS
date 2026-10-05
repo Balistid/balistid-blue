@@ -21,6 +21,7 @@
 /deploy/ @Jvc0n
 /range/ @Jvc0n
 /cmd/balistid/ @Jvc0n
+/cmd/balistid-runner/ @Jvc0n
 /internal/buildinfo/ @Jvc0n
 /internal/rangevm/ @Jvc0n
 /internal/rangeguest/ @Jvc0n
