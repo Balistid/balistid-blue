@@ -18,14 +18,14 @@ func TestLaurelWindowIsCompleteOnlyWithoutARotation(t *testing.T) {
 		}
 	}
 	appendTo := func(path, s string) {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // test temp dir
 		must(err)
 		_, err = f.WriteString(s)
 		must(err)
 		must(f.Close())
 	}
 	appendTo(log, "old\n")
-	before, err := os.Open(log)
+	before, err := os.Open(log) //nolint:gosec // test temp dir
 	must(err)
 	defer before.Close() //nolint:errcheck // test
 	offset, err := before.Seek(0, io.SeekEnd)

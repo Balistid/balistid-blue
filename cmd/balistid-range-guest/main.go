@@ -52,7 +52,7 @@ func run() error {
 	ctx := context.Background()
 	diagnose(ctx)
 	if dev, err := rangeguest.JobDevice(os.DirFS("/sys")); err != nil {
-		return err
+		return fmt.Errorf("job disk: %w", err)
 	} else if dev != "" {
 		return runJob(ctx, dev)
 	}
