@@ -2,6 +2,7 @@ package rangevm
 
 import (
 	"fmt"
+	"strconv"
 	"slices"
 	"strings"
 )
@@ -106,4 +107,65 @@ func Selftest(facts []Record) (verdict, reason string) {
 		return Unknown, fmt.Sprintf("guest kernel %q is not the target %q", seen[FactKernel], TargetKernel)
 	}
 	return Pass, "isolated guest on the target kernel; every sensor check passed"
+}
+
+// Ran is the verdict of an exec job that ran and reported in full. It says nothing about the
+// sensor: the agent judges the output and Laurel records itself (ADR 0011, point 7).
+const Ran = "RAN"
+
+// ExecReport checks that facts are the report of an exec job of the program with sha256 want:
+// only exec facts, each single fact once, the guest's hash equal to want, a result systemd
+// recorded for a program that started (systemd's own exec and setup failures are exit-code 200 and
+// above, which a program cannot be told apart from), the canary seen and the whole Laurel window
+// from one file, uncut. Anything else is INVALID; another kernel is UNKNOWN.
+func ExecReport(facts []Record, want string) (verdict, reason string) {
+	single := map[string]string{}
+	for _, f := range facts {
+		switch f.Name {
+		case FactJobOut, FactJobLaurel:
+		case FactJobError:
+			return Invalid, "the guest could not run the job"
+		case FactKernel, FactJobSHA256, FactJobResult, FactJobExit, FactJobOutCut, FactJobLaurelCut, "canary":
+			if _, dup := single[f.Name]; dup {
+				return Invalid, fmt.Sprintf("fact %q reported twice", f.Name)
+			}
+			single[f.Name] = f.Value
+		default:
+			return Invalid, fmt.Sprintf("unexpected fact %q in an exec report", f.Name)
+		}
+	}
+	if len(single) != 7 {
+		return Invalid, fmt.Sprintf("exec report has %d of 7 facts", len(single))
+	}
+	switch {
+	case single[FactJobSHA256] != want:
+		return Invalid, "the guest ran another program than the job disk's"
+	case !programRan(single[FactJobResult], single[FactJobExit]):
+		return Invalid, "systemd's record does not show that the program ran"
+	case single["canary"] != "seen" || single[FactJobLaurelCut] != "no":
+		return Invalid, "the Laurel window may be incomplete"
+	case single[FactKernel] != TargetKernel:
+		return Unknown, fmt.Sprintf("guest kernel %q is not the target %q", single[FactKernel], TargetKernel)
+	}
+	return Ran, "the job ran; its output and Laurel records are the agent's to judge"
+}
+
+// programRan allows only the systemd results of a program that started: success with status 0,
+// its own exit below 200 (systemd's exec and setup failures use 200 and above), or its end by a
+// signal, core dump, timeout or OOM kill. Any other result, such as resources, is INVALID.
+func programRan(result, status string) bool {
+	switch result {
+	case "success":
+		return status == "0"
+	case "exit-code":
+		return below200(status)
+	case "signal", "core-dump", "timeout", "oom-kill":
+		return true
+	}
+	return false
+}
+
+func below200(status string) bool {
+	n, err := strconv.Atoi(status)
+	return err == nil && n >= 0 && n < 200
 }
