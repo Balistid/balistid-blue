@@ -1,6 +1,6 @@
-# Kordon
+# Balistid Blue
 
-Kordon is a local-first security control plane for a single Linux host. It does not ship its own
+Balistid Blue is a local-first security control plane for a single Linux host. It does not ship its own
 sensors. It runs maintained open-source security tools under one command layer and turns their
 output into a small number of cases a single person can understand and act on.
 
@@ -10,7 +10,7 @@ Status: pre-alpha. Nothing here is ready to protect a machine yet. See `STATUS.m
 
 Single-host Linux users (developer workstations, homelabs, a self-hosted AI server) get either
 nothing or tooling built for a SOC team: a manager, an indexer, a dashboard and a full-time analyst.
-Kordon aims at the opposite end: one install, sane defaults, few interruptions, and every verdict
+Balistid Blue aims at the opposite end: one install, sane defaults, few interruptions, and every verdict
 explained.
 
 ## What makes it different
@@ -45,8 +45,8 @@ Each floor must be useful on its own, even if the next one never ships.
 
 ## How it fits together
 
-Today: `kordon-range build` packs the sensor configuration from `deploy/` and the
-Laurel package into an Arch image; `kordon-range run` boots it once in QEMU inside bwrap, the guest checks
+Today: `balistid-range build` packs the sensor configuration from `deploy/` and the
+Laurel package into an Arch image; `balistid-range run` boots it once in QEMU inside bwrap, the guest checks
 the sensor and writes facts to a raw results disk, and the host turns them into a verdict (ADR 0004, 0009).
 Planned for floor 0: auditd → Laurel → collector → raw SQLite shards → ledger → Raspberry Pi witness
 (ADR 0005–0007). Each decision lives in one place: why in `adr/`, where we are in `STATUS.md`, what can go
@@ -64,13 +64,13 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `THREAT_MODEL.md` | Threats per floor with their control, proof and honest status |
 | `adr/` | Architecture decision records, one page each |
 | `acceptance/` | Acceptance numbers per floor, committed before the floor's code |
-| `cmd/kordon/` | The unprivileged command-line client (today only `version`) |
-| `cmd/kordon-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
-| `cmd/kordon-range-guest/` | Program inside the range VM that checks isolation and the sensor |
+| `cmd/balistid/` | The unprivileged command-line client (today only `version`) |
+| `cmd/balistid-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
+| `cmd/balistid-range-guest/` | Program inside the range VM that checks isolation and the sensor |
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
-| `deploy/audit/` | Audit rules; the range image uses them, `kordon-install` will (ADR 0004) |
+| `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |

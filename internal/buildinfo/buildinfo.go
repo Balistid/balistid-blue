@@ -6,7 +6,7 @@ import "fmt"
 // Version is set at release build time with -ldflags "-X"; a development build says so.
 var Version = "dev"
 
-// String returns the name and version printed by `kordon version`.
+// String returns the name and version printed by `balistid version`.
 func String() string {
-	return fmt.Sprintf("kordon %s", Version)
+	return fmt.Sprintf("balistid %s", Version)
 }

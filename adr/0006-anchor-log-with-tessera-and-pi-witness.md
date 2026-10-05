@@ -16,11 +16,11 @@ answers checkpoint submissions and keeps the latest checkpoint per log. The C2SP
 
 ## Decision
 
-1. `kordon-ledger` (ADR 0007) appends to an embedded Tessera POSIX log. Entries are hashes and
+1. `balistid-ledger` (ADR 0007) appends to an embedded Tessera POSIX log. Entries are hashes and
    ranges, never record bodies, each type with its own versioned encoding defined in code with test
-   vectors. Loss events and health state are logged as entries too. Checkpoints are signed notes with Ed25519; origin and keys come from `kordon-install`.
+   vectors. Loss events and health state are logged as entries too. Checkpoints are signed notes with Ed25519; origin and keys come from `balistid-install`.
 2. A witness, litewitness, runs on the maintainer's Raspberry Pi. The host firewall drops traffic to
-   every Pi address for uids other than `kordon-relay`; the Pi accepts only its WireGuard peer. The
+   every Pi address for uids other than `balistid-relay`; the Pi accepts only its WireGuard peer. The
    host stores no credential that can cosign; root can still announce a shutdown and silence alerts
    for a limited time (`acceptance/0.toml`).
    Submission is outside the append path; recording never waits for the Pi.

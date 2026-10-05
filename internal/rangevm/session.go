@@ -39,18 +39,18 @@ var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 const sourceDateEpoch = "1790899200"
 
 // imageFiles are copied from the checked tree into the image: the guest unit and the floor-0 sensor
-// configuration exactly as kordon-install will place it on a host (ADR 0004).
+// configuration exactly as balistid-install will place it on a host (ADR 0004).
 // The CI gate checks these sources are code-owned (OWNED_PATHS, tools/ci/go_gate.py): change both.
 var imageFiles = []struct {
 	src, dst string
 	mode     os.FileMode
 }{
-	{"range/kordon-range-guest.service", "usr/lib/systemd/system/kordon-range-guest.service", 0o644},
-	{"deploy/audit/kordon.rules", "etc/audit/rules.d/kordon.rules", 0o640},
+	{"range/balistid-range-guest.service", "usr/lib/systemd/system/balistid-range-guest.service", 0o644},
+	{"deploy/audit/balistid.rules", "etc/audit/rules.d/balistid.rules", 0o640},
 	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
 	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},
 	{"deploy/laurel/config.toml", "etc/laurel/config.toml", 0o644},
-	{"deploy/sysctl/kordon.conf", "etc/sysctl.d/90-kordon.conf", 0o644},
+	{"deploy/sysctl/balistid.conf", "etc/sysctl.d/90-balistid.conf", 0o644},
 }
 
 // proxyEnv are the only variables makepkg inherits besides its own paths: network settings, not
@@ -112,7 +112,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	}
 
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
-	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/kordon-range/guest"), "./cmd/kordon-range-guest")
+	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
@@ -715,7 +715,7 @@ func judge(o Outcome, launcher, image string) (verdict, reason string) {
 	return verdict, reason
 }
 
-// lock lets one kordon-range at a time own the cache, then removes the staging, build and run
+// lock lets one balistid-range at a time own the cache, then removes the staging, build and run
 // directories a killed earlier invocation left behind (R5). The lock lives as long as the open
 // file, held by this process and the tools it starts, so a crash never leaves it held.
 func lock(cache string) (*os.File, error) {
@@ -728,7 +728,7 @@ func lock(cache string) (*os.File, error) {
 		return nil, fmt.Errorf("cache lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.Join(fmt.Errorf("another kordon-range is running (%s): %w", f.Name(), err), f.Close())
+		return nil, errors.Join(fmt.Errorf("another balistid-range is running (%s): %w", f.Name(), err), f.Close())
 	}
 	errs := []error{sweep(cache, "stage-", "build-"), sweep(runs, "run-")}
 	if err := errors.Join(errs...); err != nil {

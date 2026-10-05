@@ -18,7 +18,7 @@ records still in its WAL file (SQLite probe during review).
 1. Evidence is the bytes the sensor delivered (ADR 0004) with our gap-free `seq`, the provider, its
    sequence number and the receive time. The collector is the only writer (ADR 0007).
 2. Each record has a leaf hash over a versioned, length-prefixed byte encoding of all those fields
-   (SHA-256, label `kordon/raw/v1`). The exact encoding lives in code with test vectors; a change
+   (SHA-256, label `balistid/raw/v1`). The exact encoding lives in code with test vectors; a change
    gets a new label.
 3. One SQLite database per day, or earlier at a size limit; WAL with `synchronous=FULL`. A shard is
    sealed (WAL checkpointed, journal mode switched, file and directory fsynced, file hashed) before
@@ -28,7 +28,7 @@ records still in its WAL file (SQLite probe during review).
    stored evidence is never evicted to make room, so a flood cannot push it out. The collector deletes
    a shard only when the ledger reports its seal anchored and cosigned and it is older than the
    minimum age, measured between two witness cosignature times, never by the host clock. Beyond that only the maintainer can
-   expire shards, through `kordon-install`. The headroom for loss records is reserved on disk.
+   expire shards, through `balistid-install`. The headroom for loss records is reserved on disk.
 5. Normalized events (OCSF 1.9.0) are a derived view rebuilt from raw shards. Every row carries
    `schema_version` and `normalizer_version`; readers reject an unknown major version. The class
    mapping is decided in the normalizer ADR and proven by raw fixtures with expected OCSF classes

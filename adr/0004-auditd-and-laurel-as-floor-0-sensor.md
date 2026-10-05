@@ -19,9 +19,9 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
 
 1. Floor 0 records through auditd and Laurel. Our PKGBUILD packages the official release binary
    `laurel-0.8.2-x86_64-glibc.tar.gz` pinned by sha256, so no toolchain or crates download is part of a
-   build; Laurel runs as a separate process, not linked into Kordon.
+   build; Laurel runs as a separate process, not linked into Balistid Blue.
 2. Audit rules (including `-b`, `-f`, `-r`), `auditd.conf` and the Laurel config live in the
-   repository and are installed only by `kordon-install` (R1, R8). The rules end with `-e 2`; `-f 1`
+   repository and are installed only by `balistid-install` (R1, R8). The rules end with `-e 2`; `-f 1`
    and `disk_full_action` keep a flood from halting the host. Rules cover ptrace, `process_vm_writev`,
    `execveat` and `memfd_create`, the usual ways around exec records.
    io_uring is disabled (`kernel.io_uring_disabled=2`); io_uring audit rules stay UNKNOWN. Whether the
@@ -32,8 +32,8 @@ Audit exit rules do not see io_uring operations unless io_uring rules are loaded
 4. Required properties, implemented in code with tests: every loss signal we can read (kernel `lost`
    including resets, dispatcher overflow, Laurel and collector reconnects) becomes an event; sensor
    health is fresh or UNKNOWN (R6), with a canary that must arrive on a schedule. How the loaded rules
-   are checked against the repository is designed with `kordon-auditstat` (ADR 0007).
-5. R13 covers Kordon's processes; auditd, and Laurel until it drops privileges, are OS components that
+   are checked against the repository is designed with `balistid-auditstat` (ADR 0007).
+5. R13 covers Balistid Blue's processes; auditd, and Laurel until it drops privileges, are OS components that
    run as root. This ADR records that exception.
 
 ## Alternatives considered

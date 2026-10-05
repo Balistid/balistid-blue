@@ -1,4 +1,4 @@
-module github.com/Balistid/kordon
+module github.com/Balistid/balistid-blue
 
 go 1.27
 

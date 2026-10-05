@@ -1,6 +1,6 @@
 # Security policy
 
-Kordon is pre-alpha and not yet suitable for protecting a machine.
+Balistid Blue is pre-alpha and not yet suitable for protecting a machine.
 
 ## Reporting a vulnerability
 
@@ -11,8 +11,8 @@ within 7 days.
 ## Scope
 
 In scope: code in this repository, its install path and its CI configuration.
-Out of scope: the upstream tools Kordon orchestrates (report those upstream), and findings that need
-root on the protected host before Kordon starts, unless Kordon claims to detect exactly that.
+Out of scope: the upstream tools Balistid Blue orchestrates (report those upstream), and findings that need
+root on the protected host before Balistid Blue starts, unless Balistid Blue claims to detect exactly that.
 
 ## Supply chain
 

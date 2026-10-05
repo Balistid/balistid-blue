@@ -13,7 +13,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 
 ## Decision
 
-1. `kordon-runner` is built by the maintainer from the ADR 0010 export of a reviewed `main` commit,
+1. `balistid-runner` is built by the maintainer from the ADR 0010 export of a reviewed `main` commit,
    with the ADR 0010 point 4 environment (`GOENV=off`, own `GOCACHE` and `GOMODCACHE`,
    `GOPROXY=off`), commit set with `-ldflags -X`, never from a work tree; installed where agents
    cannot write, never self-updated; a user oneshot and timer run one job at a time. It boots only
@@ -29,7 +29,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    runs only when attached. VMs run as in ADR 0009.
 4. Jobs: `run` (self-test, N trials), `exec` (the job-disk program); output capped on results disk.
 5. Every inbox request is an agent job, whatever it claims: strict, capped JSON, one inbox quota,
-   expiry (R5). Maintainer jobs come only from `kordon-runner` writing its own state, which agents
+   expiry (R5). Maintainer jobs come only from `balistid-runner` writing its own state, which agents
    cannot (point 2); they and the timer go first.
 6. A job runs in a transient unit (`MemoryHigh` below `MemoryMax`, no swap, `TasksMax`, idle CPU,
    `KeyringMode=private`, a wall clock). It starts only above a memory reserve and, on each
@@ -44,7 +44,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 ## Alternatives considered
 
 - A launcher per `main` commit runs repository code on the host again; a dedicated uid (better on
-  T33) waits for `kordon-install`; `/dev/kvm` for agents widens every session.
+  T33) waits for `balistid-install`; `/dev/kvm` for agents widens every session.
 
 ## Consequences
 

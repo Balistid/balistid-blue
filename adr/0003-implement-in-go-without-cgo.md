@@ -1,4 +1,4 @@
-# 0003 — Implement Kordon in Go, without cgo
+# 0003 — Implement Balistid Blue in Go, without cgo
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01

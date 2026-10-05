@@ -1,4 +1,4 @@
-title = "kordon gitleaks config"
+title = "balistid gitleaks config"
 
 [extend]
 useDefault = true

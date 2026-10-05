@@ -29,7 +29,7 @@ const (
 	overlay   = "overlay.qcow2"
 	results   = "results.raw"
 	firmVars  = "vars.fd"
-	resultsID = "kordon-results"
+	resultsID = "balistid-results"
 )
 
 // Limits of one run (ADR 0009, points 3–5).

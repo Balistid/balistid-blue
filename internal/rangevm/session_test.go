@@ -338,7 +338,7 @@ func TestCopyIntoRefusesSymlink(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(dir, "kordon.conf")
+	link := filepath.Join(dir, "balistid.conf")
 	if err := os.Symlink(secret, link); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ func TestForgedObjectIsRefused(t *testing.T) {
 func TestExportRefusesLinksAndSubmodules(t *testing.T) {
 	for name, add := range map[string]func(root string, git func(...string) string){
 		"symlink": func(root string, git func(...string) string) {
-			if err := os.Symlink("/etc/passwd", filepath.Join(root, "range", "kordon-range-guest.service")); err != nil {
+			if err := os.Symlink("/etc/passwd", filepath.Join(root, "range", "balistid-range-guest.service")); err != nil {
 				t.Fatal(err)
 			}
 			git("add", ".")

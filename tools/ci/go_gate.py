@@ -50,7 +50,7 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
 
 
 # The binaries and the image inputs of session.go (imageFiles, range/, packaging/); change together.
-OWNED_ROOTS = ("cmd/kordon-range", "cmd/kordon-range-guest")
+OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest")
 OWNED_PATHS = ("range", "deploy", "packaging")
 MAINTAINER = "@Jvc0n"
 # Every line is an anchored plain path owned by the maintainer alone. GitHub lets a later line take

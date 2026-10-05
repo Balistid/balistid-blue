@@ -17,7 +17,7 @@ them; a server-side gate binds every contributor.
 ## Decision
 
 1. `ENGINEERING.md` is the binding rulebook; changes to it need an ADR.
-2. Enforcement lives in CI on a private GitHub repository under the `Kordon-Sec` organisation on the
+2. Enforcement lives in CI on a private GitHub repository under the `Balistid` organisation on the
    GitHub Team plan, so that a ruleset on `main` is enforced server-side: pull request required,
    required status checks, no force-push, no deletion, linear history, no bypass.
 3. (Superseded by ADR 0002: a GitHub App pushes; code owners guard the gates.) Agents never push. A token with Contents: write can merge a pull request through the API, and

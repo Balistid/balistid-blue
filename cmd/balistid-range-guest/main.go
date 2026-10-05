@@ -1,4 +1,4 @@
-// Command kordon-range-guest runs inside a range VM, checks the guest's isolation and its floor-0
+// Command balistid-range-guest runs inside a range VM, checks the guest's isolation and its floor-0
 // sensor (ADR 0004 smoke test), writes the facts to the results disk and exits; its systemd unit
 // powers the VM off either way (ADR 0009, point 5). A check that cannot run reports an error value,
 // which the host judges as a failure, so the facts are written even when the sensor is broken.
@@ -21,12 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Balistid/kordon/internal/rangeguest"
-	"github.com/Balistid/kordon/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/rangeguest"
+	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
 const (
-	resultsDisk   = "/dev/disk/by-id/virtio-kordon-results"
+	resultsDisk   = "/dev/disk/by-id/virtio-balistid-results"
 	laurelLog     = "/var/log/laurel/audit.log"
 	auditdState   = "/run/audit/auditd.state"
 	ioUringSysctl = "/proc/sys/kernel/io_uring_disabled"
@@ -42,7 +42,7 @@ type fact struct{ name, value string }
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "kordon-range-guest:", err)
+		fmt.Fprintln(os.Stderr, "balistid-range-guest:", err)
 		os.Exit(1)
 	}
 }
@@ -259,7 +259,7 @@ func canary(ctx context.Context) string {
 	if _, err := rand.Read(b[:]); err != nil {
 		return "error: " + err.Error()
 	}
-	token := "kordon-canary-" + hex.EncodeToString(b[:])
+	token := "balistid-canary-" + hex.EncodeToString(b[:])
 	if err := exec.CommandContext(ctx, "/usr/bin/true", token).Run(); err != nil { //nolint:gosec // the token is our own random hex
 		return "error: " + err.Error()
 	}
@@ -346,7 +346,7 @@ func diagnose(ctx context.Context) {
 		{"/usr/bin/ls", "-l", "/etc/audit", "/var/log/laurel"},
 	} {
 		out, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput() //nolint:gosec // absolute binaries, fixed argv
-		fmt.Printf("kordon-range-guest: $ %s (err %v)\n%s\n", strings.Join(argv, " "), err, out)
+		fmt.Printf("balistid-range-guest: $ %s (err %v)\n%s\n", strings.Join(argv, " "), err, out)
 	}
 }
 
@@ -355,13 +355,13 @@ func diagnose(ctx context.Context) {
 func printLines(path, substr string) {
 	data, err := os.ReadFile(path) //nolint:gosec // fixed log path
 	if err != nil {
-		fmt.Println("kordon-range-guest:", err)
+		fmt.Println("balistid-range-guest:", err)
 		return
 	}
 	printed := 0
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, substr) && printed < 8<<10 {
-			fmt.Printf("kordon-range-guest: %s: %.2000s\n", path, line)
+			fmt.Printf("balistid-range-guest: %s: %.2000s\n", path, line)
 			printed += len(line)
 		}
 	}
