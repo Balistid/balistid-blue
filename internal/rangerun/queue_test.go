@@ -27,7 +27,7 @@ func addJob(t *testing.T, inbox, name, request string, mtime time.Time) {
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "job.json"), []byte(request), 0o640); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "job.json"), []byte(request), 0o640); err != nil { //nolint:gosec // the runner reads jobs through its group
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(dir, mtime, mtime); err != nil {
