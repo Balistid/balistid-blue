@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/Kordon-Sec/kordon/internal/rangevm"
+	"github.com/Balistid/kordon/internal/rangevm"
 )
 
 func main() {

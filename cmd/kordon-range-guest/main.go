@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Kordon-Sec/kordon/internal/rangeguest"
-	"github.com/Kordon-Sec/kordon/internal/rangevm"
+	"github.com/Balistid/kordon/internal/rangeguest"
+	"github.com/Balistid/kordon/internal/rangevm"
 )
 
 const (
