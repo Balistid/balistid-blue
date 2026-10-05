@@ -125,7 +125,7 @@ func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
 // ContentKey is the sha256 of a job's request and program, each length-prefixed so no split of
 // the bytes between them gives the same key.
 func ContentKey(job rangejob.Job) string {
-	request, _ := json.Marshal(job.Request) //nolint:errcheck // ints and strings always encode
+	request, _ := json.Marshal(job.Request) // ints and strings always encode
 	h := sha256.New()
 	for _, part := range [][]byte{request, job.Program} {
 		h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(part))))
