@@ -44,3 +44,17 @@ func TestLaurelWindowFollowsARotation(t *testing.T) {
 		t.Fatalf("over the cap: %q %s", w, cut)
 	}
 }
+
+// A log Laurel creates only during the job is read whole; a missing one is an error, not empty.
+func TestLaurelWindowWithoutALogBefore(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "audit.log")
+	if _, cut := laurelWindow(nil, log, 0, 1<<20); cut != "error" {
+		t.Fatalf("no log at all: %s", cut)
+	}
+	if err := os.WriteFile(log, []byte("job\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if w, cut := laurelWindow(nil, log, 0, 1<<20); string(w) != "job\n" || cut != "no" {
+		t.Fatalf("log created during the job: %q %s", w, cut)
+	}
+}

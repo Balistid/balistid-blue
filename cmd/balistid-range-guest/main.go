@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,16 +125,19 @@ func runJob(ctx context.Context, dev string) error {
 	if err := os.WriteFile(jobProgram, program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
 		return fmt.Errorf("job program: %w", err)
 	}
-	// The open descriptor follows the log through a rotation, which a path and an offset would not.
+	// The open descriptor follows the log through a rotation, which a path and an offset would not;
+	// a log Laurel has not created yet is read from its start afterwards.
+	var offset int64
 	before, err := os.Open(laurelLog)
-	if err != nil {
+	switch {
+	case err == nil:
+		defer before.Close() //nolint:errcheck // read-only
+		if offset, err = before.Seek(0, io.SeekEnd); err != nil {
+			add(rangevm.FactJobError, "cannot read the Laurel log")
+			return write(facts)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
 		add(rangevm.FactJobError, "cannot open the Laurel log")
-		return write(facts)
-	}
-	defer before.Close() //nolint:errcheck // read-only
-	offset, err := before.Seek(0, io.SeekEnd)
-	if err != nil {
-		add(rangevm.FactJobError, "cannot read the Laurel log")
 		return write(facts)
 	}
 
@@ -148,8 +152,7 @@ func runJob(ctx context.Context, dev string) error {
 	var out cappedBuffer
 	out.left = jobOutCap
 	cmd.Stdout, cmd.Stderr = &out, &out
-	_ = cmd.Run() // its exit is 1 for a timeout and a start failure alike; the unit says which
-	result, status := unitResult(ctx)
+	result, status := unitResult(ctx, cmd.Run())
 	add(rangevm.FactJobResult, result)
 	add(rangevm.FactJobExit, status)
 	add(rangevm.FactJobOutCut, yesNo(out.cut))
@@ -185,21 +188,47 @@ func readJob(dev string) ([]byte, [32]byte, error) {
 	return program, sum, nil
 }
 
-// unitResult returns the job unit's result (success, exit-code, timeout, oom-kill, …) and the main
-// process's exit status, from systemd rather than from the job's own output.
-func unitResult(ctx context.Context) (result, status string) {
-	out := output(ctx, "/usr/bin/systemctl", "show", "-P", "Result", "-P", "ExecMainStatus", jobUnit+".service")
-	fields := strings.Fields(out)
-	if len(fields) != 2 {
+// unitResult returns the job unit's result and its main process's exit status (a signal number
+// for timeout, signal or oom-kill). systemd-run exits 0 only for success; any other exit is 1
+// for a failed job and a failed start alike, so then systemd's own record decides, and only for a
+// unit that exists and failed: systemctl shows a missing unit as a zeroed "success".
+func unitResult(ctx context.Context, runErr error) (result, status string) {
+	if runErr == nil {
+		return "success", "0"
+	}
+	props := map[string]string{}
+	out := output(ctx, "/usr/bin/systemctl", "show", "--property=LoadState,ActiveState,Result,ExecMainStatus", jobUnit+".service")
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			props[k] = v
+		}
+	}
+	if props["LoadState"] != "loaded" || props["ActiveState"] != "failed" || props["Result"] == "" || props["Result"] == "success" {
 		return "unknown", "unknown"
 	}
-	return fields[0], fields[1]
+	return props["Result"], props["ExecMainStatus"]
 }
 
 // laurelWindow returns at most limit bytes the Laurel log gained after offset: the rest of the file
 // open since before the job (renamed, if Laurel rotated it), then the current log if it is another
-// file. A second rotation within one job would lose the middle file, so a rotation is reported.
+// file. A second rotation within one job would lose the middle file, so any rotation is reported and
+// the host treats the window as incomplete.
 func laurelWindow(before *os.File, path string, offset, limit int64) ([]byte, string) {
+	if before == nil {
+		f, err := os.Open(path) //nolint:gosec // the fixed Laurel log path
+		if err != nil {
+			return nil, "error"
+		}
+		defer f.Close() //nolint:errcheck // read-only
+		data, err := io.ReadAll(io.LimitReader(f, limit+1))
+		switch {
+		case err != nil:
+			return nil, "error"
+		case int64(len(data)) > limit:
+			return data[:limit], "yes"
+		}
+		return data, "no"
+	}
 	var buf bytes.Buffer
 	if _, err := before.Seek(offset, io.SeekStart); err != nil {
 		return nil, "error"
