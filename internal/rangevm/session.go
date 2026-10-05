@@ -46,6 +46,7 @@ var imageFiles = []struct {
 	mode     os.FileMode
 }{
 	{"range/balistid-range-guest.service", "usr/lib/systemd/system/balistid-range-guest.service", 0o644},
+	{"range/balistid-job.conf", "usr/lib/sysusers.d/balistid-job.conf", 0o644},
 	{"deploy/audit/balistid.rules", "etc/audit/rules.d/balistid.rules", 0o640},
 	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
 	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},

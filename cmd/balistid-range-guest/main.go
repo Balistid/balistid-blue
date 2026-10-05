@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
@@ -50,6 +51,11 @@ func main() {
 func run() error {
 	ctx := context.Background()
 	diagnose(ctx)
+	if dev, err := rangeguest.JobDevice(os.DirFS("/sys")); err != nil {
+		return err
+	} else if dev != "" {
+		return runJob(ctx, dev)
+	}
 	var facts []fact
 	add := func(name, value string) { facts = append(facts, fact{name, value}) }
 
@@ -87,6 +93,139 @@ func run() error {
 	add("overflow_journal", journal)
 	add("audit_lost_after", lost)
 	return write(facts)
+}
+
+// Limits of an exec job's report: the results disk holds 16 MiB, and base64 adds a third.
+const (
+	jobChunk     = 32 << 10
+	jobOutCap    = 2 << 20
+	jobLaurelCap = 6 << 20
+	jobProgram   = "/run/balistid-job/program"
+)
+
+// runJob runs the job disk's program instead of the self-test, which would disable audit and flood
+// auditd under it. The program runs as the unprivileged balistid-job user in its own transient unit,
+// so a timeout or its limits end every process it started; what it did is left to the agent to judge
+// from its output and the Laurel records written meanwhile.
+func runJob(ctx context.Context, dev string) error {
+	var facts []fact
+	add := func(name, value string) { facts = append(facts, fact{name, value}) }
+	add(rangevm.FactKernel, readTrim("/proc/sys/kernel/osrelease"))
+	program, sum, err := readJob(dev)
+	if err != nil {
+		add(rangevm.FactJobError, err.Error())
+		return write(facts)
+	}
+	add(rangevm.FactJobSHA256, hex.EncodeToString(sum[:]))
+	if err := os.MkdirAll(filepath.Dir(jobProgram), 0o755); err != nil { //nolint:gosec // world-readable so the job user can exec it
+		return fmt.Errorf("job directory: %w", err)
+	}
+	if err := os.WriteFile(jobProgram, program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
+		return fmt.Errorf("job program: %w", err)
+	}
+	offset := fileSize(laurelLog)
+
+	ctx, cancel := context.WithTimeout(ctx, (rangejob.MaxTimeoutS+30)*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/usr/bin/systemd-run", "--wait", "--pipe", "--collect", "--quiet", //nolint:gosec // fixed argv
+		"-p", "User=balistid-job", "-p", fmt.Sprintf("RuntimeMaxSec=%d", rangejob.MaxTimeoutS),
+		"-p", "MemoryMax=1G", "-p", "TasksMax=256", "--", jobProgram)
+	var out cappedBuffer
+	out.left = jobOutCap
+	cmd.Stdout, cmd.Stderr = &out, &out
+	runErr := cmd.Run()
+	add(rangevm.FactJobExit, exitText(runErr))
+	add(rangevm.FactJobOutCut, yesNo(out.cut))
+	for _, c := range rangeguest.Chunks(out.buf.Bytes(), jobChunk) {
+		add(rangevm.FactJobOut, c)
+	}
+
+	add("canary", canary(ctx)) // once seen, Laurel has written everything before it
+	window, cut := readFrom(laurelLog, offset, jobLaurelCap)
+	add(rangevm.FactJobLaurelCut, cut)
+	for _, c := range rangeguest.Chunks(window, jobChunk) {
+		add(rangevm.FactJobLaurel, c)
+	}
+	return write(facts)
+}
+
+// readJob reads the whole job disk and returns the program only if every byte is as encoded.
+func readJob(dev string) ([]byte, [32]byte, error) {
+	f, err := os.Open(dev) //nolint:gosec // the device found by its virtio serial
+	if err != nil {
+		return nil, [32]byte{}, errors.New("cannot open the job disk")
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	disk := make([]byte, rangejob.DiskBytes+1)
+	n, err := io.ReadFull(f, disk)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || n != rangejob.DiskBytes {
+		return nil, [32]byte{}, errors.New("job disk has the wrong size")
+	}
+	program, sum, err := rangejob.DecodeDisk(disk[:n])
+	if err != nil {
+		return nil, [32]byte{}, fmt.Errorf("job disk: %w", err)
+	}
+	return program, sum, nil
+}
+
+func exitText(err error) string {
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return "0"
+	case errors.As(err, &exit):
+		return strconv.Itoa(exit.ExitCode())
+	default:
+		return "error"
+	}
+}
+
+func fileSize(path string) int64 {
+	st, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+// readFrom returns at most limit bytes of path from offset on, and whether it was cut or the log
+// was rotated meanwhile (then it starts again at 0, and earlier lines of the job may be missing).
+func readFrom(path string, offset, limit int64) ([]byte, string) {
+	f, err := os.Open(path) //nolint:gosec // fixed log path
+	if err != nil {
+		return nil, "error"
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	cut := "no"
+	if st, err := f.Stat(); err != nil || st.Size() < offset {
+		offset, cut = 0, "rotated"
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, "error"
+	}
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, "error"
+	}
+	if int64(len(data)) > limit {
+		return data[:limit], "yes"
+	}
+	return data, cut
+}
+
+// cappedBuffer keeps the first left bytes written and notes that more came.
+type cappedBuffer struct {
+	buf  bytes.Buffer
+	left int
+	cut  bool
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	n := min(len(p), c.left)
+	c.buf.Write(p[:n])
+	c.left -= n
+	c.cut = c.cut || n < len(p)
+	return len(p), nil
 }
 
 func write(facts []fact) error {
