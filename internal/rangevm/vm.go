@@ -89,7 +89,11 @@ func qemuArgv(job bool) []string {
 		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "2",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file=" + ovmfCode,
 		"-drive", "if=pflash,unit=1,format=raw,file=" + inRun + "/" + firmVars,
-		"-drive", "if=virtio,format=qcow2,file=" + inRun + "/" + overlay,
+		// Only the root disk may boot: with no boot order OVMF tries disks in PCI order, and the job
+		// disk, whose bytes an agent chooses, comes first.
+		"-boot", "strict=on",
+		"-drive", "if=none,id=root,format=qcow2,file=" + inRun + "/" + overlay,
+		"-device", "virtio-blk-pci,drive=root,bootindex=0",
 		"-drive", "if=none,id=results,format=raw,file=" + inRun + "/" + results,
 		"-device", "virtio-blk-pci,drive=results,serial=" + resultsID,
 	}
@@ -146,7 +150,7 @@ func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte)
 
 // WriteCap is the size limit of each of the three files QEMU can write (overlay, results, firmware
 // variables) for a base image of baseSize bytes; prlimit applies it per file, so a run can write up
-// to three times this much (ADR 0011, point 6).
+// to three times this much, which the runner's disk admission must reserve (ADR 0011, point 6).
 func WriteCap(baseSize int64) int64 { return baseSize + ResultsBytes }
 
 // readResults treats every problem with the results disk as INVALID: a compromised QEMU can
