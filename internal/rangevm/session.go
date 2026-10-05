@@ -40,6 +40,7 @@ const sourceDateEpoch = "1790899200"
 
 // imageFiles are copied from the checked tree into the image: the guest unit and the floor-0 sensor
 // configuration exactly as kordon-install will place it on a host (ADR 0004).
+// The CI gate checks these sources are code-owned (OWNED_PATHS, tools/ci/go_gate.py): change both.
 var imageFiles = []struct {
 	src, dst string
 	mode     os.FileMode
