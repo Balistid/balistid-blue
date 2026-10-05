@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"syscall"
@@ -36,7 +37,7 @@ const (
 )
 
 // Entry is a job the runner has read: a taken one is known by its name and the sha256 of what was
-// read, so it runs once under that name while the same request may run again under another.
+// read, so it runs once per name within 30 days while the same request may run under another name.
 type Entry struct {
 	Key    string    `json:"key"`
 	Seen   time.Time `json:"seen"`
@@ -44,8 +45,10 @@ type Entry struct {
 }
 
 // Ledger is the runner's record of the inbox, kept in its state. Clock holds, for each job
-// directory now in the inbox (name, device, inode), when the runner first saw it: expiry runs on
-// the runner's clock, not on times the agent sets, and replacing a directory restarts only its own.
+// directory now in the inbox (name, device, inode), when its continuous presence began: expiry runs
+// on the runner's clock, not on times the agent sets, and restarts after any scan that did not list
+// the directory, which is no more than resubmitting it. Agents build a job outside the inbox and
+// rename it in, since a half-written job is rejected.
 type Ledger struct {
 	Entries []Entry              `json:"entries"`
 	Clock   map[string]time.Time `json:"clock"`
@@ -73,7 +76,10 @@ func OpenInbox(path string) (*os.Root, error) {
 // that fails to read is rejected once and counts against the quota like a taken one.
 func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
 	l.prune(now)
-	names := readNames(inbox)
+	names, err := readNames(inbox)
+	if err != nil {
+		return rangejob.Job{}, false // keep the clock: a failed listing must not restart expiry
+	}
 	slices.Sort(names)
 	clock := map[string]time.Time{}
 	var live []string
@@ -108,7 +114,7 @@ func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
 			}
 			continue
 		}
-		if key := name + ":" + ContentKey(job); !l.has(key) {
+		if key := "taken:" + name + ":" + ContentKey(job); !l.has(key) {
 			l.add(key, now, Taken)
 			return job, true
 		}
@@ -128,14 +134,17 @@ func ContentKey(job rangejob.Job) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func readNames(inbox *os.Root) []string {
+func readNames(inbox *os.Root) ([]string, error) {
 	f, err := inbox.Open(".")
 	if err != nil {
-		return nil
+		return nil, errors.New("cannot list the inbox")
 	}
-	defer f.Close()                             //nolint:errcheck // read-only
-	names, _ := f.Readdirnames(MaxInboxEntries) //nolint:errcheck // a partial list is a smaller scan
-	return names
+	defer f.Close() //nolint:errcheck // read-only
+	names, err := f.Readdirnames(MaxInboxEntries)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, errors.New("cannot list the inbox")
+	}
+	return names, nil
 }
 
 func (l *Ledger) has(key string) bool {
