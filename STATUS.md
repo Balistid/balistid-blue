@@ -24,6 +24,6 @@ verified export (ADR 0010) are merged and accepted; range run 20261004T203204Z-9
 
 ## Open decisions (maintainer)
 
-- Project name.
+- Project name: BALISTID chosen (4.10.), GitHub org renamed to `Balistid` (5.10.); renaming the repo and the product is still open.
 - Hardware signing keys for R2 (budget approved in principle).
 - Before the host install: x32 mitigation, and whether the host runs without io_uring.

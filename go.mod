@@ -1,4 +1,4 @@
-module github.com/Kordon-Sec/kordon
+module github.com/Balistid/kordon
 
 go 1.27
 

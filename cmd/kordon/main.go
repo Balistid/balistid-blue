@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Kordon-Sec/kordon/internal/buildinfo"
+	"github.com/Balistid/kordon/internal/buildinfo"
 )
 
 func main() {
