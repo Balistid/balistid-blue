@@ -180,7 +180,7 @@ func readResults(path string) Outcome {
 // overlay file that qemu-img fills; the sandbox can write only these three files.
 func prepare(runDir string, job []byte) error {
 	if job != nil {
-		if err := os.WriteFile(filepath.Join(runDir, jobDisk), job, 0o400); err != nil { //nolint:gosec // run directory created by Run
+		if err := os.WriteFile(filepath.Join(runDir, jobDisk), job, 0o400); err != nil {
 			return fmt.Errorf("job disk: %w", err)
 		}
 	}
