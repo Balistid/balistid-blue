@@ -20,7 +20,7 @@ verified export (ADR 0010) are merged and accepted; range run 20261004T203204Z-9
 
 1. Agents must run range jobs themselves: a confined runner that boots only its own commit's image and runs
    an agent's program from a read-only job disk (ADR 0011, in review); it builds no branches.
-2. Step 9.3: `kordon-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
+2. Step 9.3: `balistid-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)
 

@@ -50,7 +50,7 @@ func TestQemuArgv(t *testing.T) {
 		"-drive", "if=pflash,unit=1,format=raw,file=/range/run/vars.fd",
 		"-drive", "if=virtio,format=qcow2,file=/range/run/overlay.qcow2",
 		"-drive", "if=none,id=results,format=raw,file=/range/run/results.raw",
-		"-device", "virtio-blk-pci,drive=results,serial=kordon-results",
+		"-device", "virtio-blk-pci,drive=results,serial=balistid-results",
 		"-serial", "stdio",
 	}
 	if !slices.Equal(argv, want) {

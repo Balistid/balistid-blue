@@ -1,4 +1,4 @@
-# CLAUDE.md — Kordon
+# CLAUDE.md — Balistid Blue
 
 Instructions for Claude Code in this repository. `ENGINEERING.md` is binding and wins over any global
 policy here. Global personal rules (language, tone, confidence lines) still apply to chat.
@@ -20,10 +20,12 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 - Commit messages: Conventional Commits subject, blank line, body with the why, then exactly one
   trailer `Agent: claude/<model>` (for example `Agent: claude/opus-5.5`). Remove any
   `Co-Authored-By` or `Generated with` line a tool inserts; the commit-msg hook rejects them.
-- Push and open pull requests as `kordon-sec-bot` (ADR 0002). Git in this clone already uses the
-  bot as credential helper; for the API use `GH_TOKEN=$(python3 ~/.config/kordon/bot-token.py) gh ...`.
+- Push and open pull requests as `balistid-bot` (ADR 0002). Git in this clone already uses the
+  bot as credential helper; for the API use
+  `t=$(python3 ~/.config/balistid/bot-token.py) && [ -n "$t" ] && GH_TOKEN=$t gh ...`, because gh falls
+  back to the maintainer's login when the token is empty.
   If the helper or the key is missing, stop and tell the maintainer; never use their credentials.
-- Merge with `gh api -X PUT repos/Balistid/kordon/pulls/<n>/merge -F merge_method=rebase` only
+- Merge with `gh api -X PUT repos/Balistid/balistid-blue/pulls/<n>/merge -F merge_method=rebase` only
   after all six checks are green. A pull request that touches owned paths (`.github/CODEOWNERS`)
   waits for the maintainer's approval; tell them what to review and why, in two sentences.
 - For review by Codex, queue a request as described in the maintainer's global instructions;
@@ -34,7 +36,7 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 ## Hard limits
 
 - No root actions on the host. Root work happens inside the isolated VM range or through
-  `kordon-install` run by the maintainer (R8).
+  `balistid-install` run by the maintainer (R8).
 - No host-specific data in the repo: usernames, home paths, hostnames, tokens, IPs of the real host.
 - No new prose files outside the docs allowlist (R12). Decisions go to `adr/`, state to `STATUS.md`.
 - No new sensor or daemon without an ADR that names the existing tool and why it is not enough (R9).

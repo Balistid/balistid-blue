@@ -7,7 +7,7 @@
 
 ## Context
 
-`kordon-range build` (ADR 0009) checked that the work tree matched HEAD, then built from it. Review
+The range launcher's `build` (ADR 0009) checked that the work tree matched HEAD, then built from it. Review
 of pull request #22 showed, with probes, that an agent at the maintainer's uid can pass that check
 while the build reads other bytes (`git replace`, `assume-unchanged`, symlinks, forged loose objects),
 and that git run in that repository obeys its configuration, attributes and store metadata, which

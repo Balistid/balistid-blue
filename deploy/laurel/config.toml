@@ -1,6 +1,6 @@
-# Laurel for Kordon floor 0 (ADR 0004): the v0.8.2 example configuration without its sample process
+# Laurel for Balistid Blue floor 0 (ADR 0004): the v0.8.2 example configuration without its sample process
 # labels. Laurel drops root to _laurel and keeps only CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH.
-# Installed only by kordon-install.
+# Installed only by balistid-install.
 directory = "/var/log/laurel"
 user = "_laurel"
 statusreport-period = 0

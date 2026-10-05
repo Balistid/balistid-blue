@@ -1,4 +1,4 @@
-# 0007 — Split Kordon into small processes with separate identities
+# 0007 — Split Balistid Blue into small processes with separate identities
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01
@@ -17,19 +17,19 @@ are inside the threat model.
 
 | Process | Identity | Privilege | Reads | Writes / network |
 |---|---|---|---|---|
-| `kordon-auditstat` | own uid | `CAP_AUDIT_CONTROL` | audit status, loaded rules | fixed-size reports |
-| `kordon-collector` | own uid | none | Laurel socket, reports, ledger status | shards, canary; stream |
-| `kordon-ledger` | own uid | none, no network | collector stream | log tiles, signing key |
-| `kordon-relay` | own uid | none | tiles | HTTP and witness, WireGuard only |
-| `kordon-normalize` | own uid | none | sealed shards | derived database |
+| `balistid-auditstat` | own uid | `CAP_AUDIT_CONTROL` | audit status, loaded rules | fixed-size reports |
+| `balistid-collector` | own uid | none | Laurel socket, reports, ledger status | shards, canary; stream |
+| `balistid-ledger` | own uid | none, no network | collector stream | log tiles, signing key |
+| `balistid-relay` | own uid | none | tiles | HTTP and witness, WireGuard only |
+| `balistid-normalize` | own uid | none | sealed shards | derived database |
 | CLI, UI | user | none | derived database, status | requests over sockets |
 
-1. This ADR amends R13: the one long-running privileged Kordon process is `kordon-auditstat`; it parses no
+1. This ADR amends R13: the one long-running privileged Balistid Blue process is `balistid-auditstat`; it parses no
    sensor data and only reports fixed structures. The collector needs no privilege.
 2. Every local Unix socket checks its peer with `SO_PEERCRED` against a per-socket uid allowlist and accepts
    only typed, size-capped requests; anything else is refused and counted in a per-minute summary.
 3. Binaries, units, configuration and keys belong to root or their service user and are installed by
-   `kordon-install`; the maintainer's user, and so the agents, can read the derived database but
+   `balistid-install`; the maintainer's user, and so the agents, can read the derived database but
    cannot write it or any of these. Raw records leave the collector only towards ledger and normalizer.
 4. Units use systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateNetwork` except
    the relay, restricted capabilities and address families) and live in the repository.
@@ -45,7 +45,7 @@ are inside the threat model.
 ## Consequences
 
 - Tests: the maintainer's uid cannot impersonate Laurel, read the raw stream, or write shards, tiles,
-  keys, units or the derived database; unknown requests are refused; only `kordon-auditstat` holds a
+  keys, units or the derived database; unknown requests are refused; only `balistid-auditstat` holds a
   capability (`/proc/self/status`); the relay holds no key.
 - `ENGINEERING.md` R13 is updated in the pull request that adds the first unit file.
 - Each unit scores at most the `systemd-analyze security` threshold in `acceptance/0.toml`; any

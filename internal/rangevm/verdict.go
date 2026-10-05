@@ -32,7 +32,7 @@ const capsLaurel = "0000000000080004"
 // expected is every fact the guest reports besides the kernel, with the one value that passes.
 // Isolation: no interface but loopback and no network-class PCI device (present before any driver
 // binds, so a slow driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
-// Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/kordon.rules (audit=1 at
+// Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
 // _laurel with only its two capabilities, a canary through Laurel, -e 2 refusing and recording a
 // disable, io_uring refused with a control that the probe tells both states apart, and a

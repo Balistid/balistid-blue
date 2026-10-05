@@ -42,20 +42,20 @@ func TestStatusFieldAndUserName(t *testing.T) {
 }
 
 func TestHasExecArg(t *testing.T) {
-	log := `{"ID":"1:2","SYSCALL":{"syscall":"execve"},"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","kordon-canary-ab"]}}
+	log := `{"ID":"1:2","SYSCALL":{"syscall":"execve"},"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","balistid-canary-ab"]}}
 not json
-{"ID":"1:3","EXECVE":{"argc":2,"ARGV":["/usr/bin/echo","kordon-canary-abc-other"]}}
+{"ID":"1:3","EXECVE":{"argc":2,"ARGV":["/usr/bin/echo","balistid-canary-abc-other"]}}
 `
-	if !HasExecArg(strings.NewReader(log), "kordon-canary-ab") {
+	if !HasExecArg(strings.NewReader(log), "balistid-canary-ab") {
 		t.Fatal("token in ARGV not found")
 	}
-	for _, miss := range []string{"kordon-canary-a", "kordon-canary-zz"} {
+	for _, miss := range []string{"balistid-canary-a", "balistid-canary-zz"} {
 		if HasExecArg(strings.NewReader(log), miss) {
 			t.Fatalf("%q matched; only a whole argv element may match", miss)
 		}
 	}
 	// The token anywhere else in an event is not an exec of it.
-	if HasExecArg(strings.NewReader(`{"PROCTITLE":{"ARGV":["kordon-canary-x"]},"note":"kordon-canary-x"}`), "kordon-canary-x") {
+	if HasExecArg(strings.NewReader(`{"PROCTITLE":{"ARGV":["balistid-canary-x"]},"note":"balistid-canary-x"}`), "balistid-canary-x") {
 		t.Fatal("matched outside EXECVE")
 	}
 }

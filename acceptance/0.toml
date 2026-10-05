@@ -103,7 +103,7 @@ method = "go test -fuzz in CI or the range; corpus committed under testdata."
 [[metric]]
 id = "rss_mib"
 max = 512
-unit = "MiB, all Kordon processes at 1000 records/s, at burst_rate with 64 KiB records, and at 50 execs/s with 2048 KiB records"
+unit = "MiB, all Balistid Blue processes at 1000 records/s, at burst_rate with 64 KiB records, and at 50 execs/s with 2048 KiB records"
 rows = ["T20"]
 adr = "0007"
 method = "Maximum summed RSS from /proc over each run."
@@ -111,7 +111,7 @@ method = "Maximum summed RSS from /proc over each run."
 [[metric]]
 id = "cpu_cores"
 max = 0.5
-unit = "cores, all Kordon processes at 1000 records/s"
+unit = "cores, all Balistid Blue processes at 1000 records/s"
 rows = ["T20"]
 adr = "0007"
 method = "CPU time over a 10 min run divided by wall time."
@@ -132,7 +132,7 @@ max = 150
 unit = "GiB of raw shards; at the cap new records are dropped with a loss entry"
 rows = ["T4"]
 adr = "0005"
-method = "Fill test. Stored shards are never evicted; the maintainer can expire shards through kordon-install."
+method = "Fill test. Stored shards are never evicted; the maintainer can expire shards through balistid-install."
 
 [[metric]]
 id = "capacity_margin"
@@ -206,7 +206,7 @@ max = 120
 unit = "s from injected kernel or dispatcher loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
-method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials. kordon-auditstat polls at most every 5 s."
+method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials. balistid-auditstat polls at most every 5 s."
 
 [[metric]]
 id = "silence_alarm_s"
@@ -261,7 +261,7 @@ method = "Fill test on the Pi image; reaching the cap alerts."
 [[metric]]
 id = "systemd_exposure"
 max = 2.5
-unit = "systemd-analyze security score, every unit except kordon-auditstat"
+unit = "systemd-analyze security score, every unit except balistid-auditstat"
 rows = ["T18"]
 adr = "0007"
 method = "systemd-analyze security on the installed units in the range VM."
@@ -269,7 +269,7 @@ method = "systemd-analyze security on the installed units in the range VM."
 [[metric]]
 id = "systemd_exposure_auditstat"
 max = 4.0
-unit = "systemd-analyze security score for kordon-auditstat"
+unit = "systemd-analyze security score for balistid-auditstat"
 rows = ["T18"]
 adr = "0007"
 method = "As above."

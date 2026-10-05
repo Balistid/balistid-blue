@@ -1,0 +1,19 @@
+## Balistid Blue floor-0 audit rules (ADR 0004). Installed only by balistid-install.
+## -f 1 logs a failure instead of panicking; -r 0 so no rate limit drops records at the kernel. The
+## backlog is a starting value; step 9.3 measures burst_rate against it.
+-D
+-b 65536
+--backlog_wait_time 60000
+-f 1
+-r 0
+
+## Exec records, and the usual ways around them: another process's memory, an anonymous file.
+-a always,exit -F arch=b64 -S execve,execveat -k balistid-exec
+-a always,exit -F arch=b32 -S execve,execveat -k balistid-exec
+-a always,exit -F arch=b64 -S ptrace,process_vm_writev -k balistid-inject
+-a always,exit -F arch=b32 -S ptrace,process_vm_writev -k balistid-inject
+-a always,exit -F arch=b64 -S memfd_create -k balistid-memfd
+-a always,exit -F arch=b32 -S memfd_create -k balistid-memfd
+
+## Last: no rule or state change until reboot.
+-e 2

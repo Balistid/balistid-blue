@@ -1,4 +1,4 @@
-// Command kordon-range builds the range base image and runs its self-test (ADR 0009). It runs as
+// Command balistid-range builds the range base image and runs its self-test (ADR 0009). It runs as
 // the maintainer from the repository root; the VM, not this program, is the isolation boundary.
 package main
 
@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/Balistid/kordon/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
 func main() {
@@ -23,14 +23,14 @@ func main() {
 func run(ctx context.Context) int {
 	cache, state, err := dirs()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "kordon-range:", err)
+		fmt.Fprintln(os.Stderr, "balistid-range:", err)
 		return 1
 	}
 	switch {
 	case len(os.Args) == 2 && os.Args[1] == "build":
 		image, err := rangevm.Build(ctx, ".", cache, os.Stderr)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "kordon-range:", err)
+			fmt.Fprintln(os.Stderr, "balistid-range:", err)
 			return 1
 		}
 		fmt.Println(image)
@@ -38,7 +38,7 @@ func run(ctx context.Context) int {
 	case len(os.Args) == 3 && os.Args[1] == "run":
 		res, err := rangevm.Check(ctx, os.Args[2], cache, state)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "kordon-range:", err)
+			fmt.Fprintln(os.Stderr, "balistid-range:", err)
 			return 1
 		}
 		fmt.Printf("%s: %s (result %s)\n", res.Verdict, res.Reason, res.ID)
@@ -47,7 +47,7 @@ func run(ctx context.Context) int {
 		}
 		return 0
 	default:
-		fmt.Fprintln(os.Stderr, "usage: kordon-range build | kordon-range run <image.raw>")
+		fmt.Fprintln(os.Stderr, "usage: balistid-range build | balistid-range run <image.raw>")
 		return 2
 	}
 }
@@ -65,5 +65,5 @@ func dirs() (cache, state string, err error) {
 		}
 		state = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(c, "kordon-range"), filepath.Join(state, "kordon-range"), nil
+	return filepath.Join(c, "balistid-range"), filepath.Join(state, "balistid-range"), nil
 }

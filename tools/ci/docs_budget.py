@@ -69,12 +69,12 @@ LAYOUT: tuple[str, ...] = (
     "deploy/auditd/auditd.conf",
     "deploy/laurel/config.toml",
     "deploy/auditd/laurel-plugin.conf",
-    "deploy/sysctl/kordon.conf",
+    "deploy/sysctl/balistid.conf",
     "deploy/systemd/*.service",
     "deploy/systemd/*.timer",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
-    "range/kordon-range-guest.service",
+    "range/balistid-range-guest.service",
 )
 
 REGULAR_MODES = {"100644", "100755"}

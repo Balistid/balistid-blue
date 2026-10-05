@@ -22,5 +22,5 @@
 /range/ @Jvc0n
 /internal/rangevm/ @Jvc0n
 /internal/rangeguest/ @Jvc0n
-/cmd/kordon-range/ @Jvc0n
-/cmd/kordon-range-guest/ @Jvc0n
+/cmd/balistid-range/ @Jvc0n
+/cmd/balistid-range-guest/ @Jvc0n

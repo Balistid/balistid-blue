@@ -83,9 +83,9 @@ func TestRequiredFactsArePinned(t *testing.T) {
 	}
 }
 
-// The expected audit settings must be the ones deploy/audit/kordon.rules loads.
+// The expected audit settings must be the ones deploy/audit/balistid.rules loads.
 func TestExpectedAuditSettingsMatchTheRules(t *testing.T) {
-	rules, err := os.ReadFile("../../deploy/audit/kordon.rules")
+	rules, err := os.ReadFile("../../deploy/audit/balistid.rules")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,14 +20,14 @@ A change is done when all of these hold, verified now and not from memory:
 
 | # | Rule |
 |---|---|
-| R1 | Only what runs from a committed hash exists. Code, units, policies, sudoers and tmpfiles live in the repo; the root layer is installed only by `kordon-install` from a sha256 manifest. |
+| R1 | Only what runs from a committed hash exists. Code, units, policies, sudoers and tmpfiles live in the repo; the root layer is installed only by `balistid-install` from a sha256 manifest. |
 | R2 | The registry of approved digests is out of agent reach: manifests count only when signed with the maintainer's hardware key. |
 | R3 | Acceptance numbers are written before code; a miss blocks deployment. |
 | R4 | Done means a test that fails on the parent commit. |
 | R5 | Every store has an exit (close/expire), a size cap and retention from day one. Caches and baselines are keyed by content, not mtime. |
 | R6 | Missing is not healthy. A security decision on error, timeout or unknown input returns deny/UNKNOWN; OK is never a default. |
 | R7 | Boundaries are allowlists with negative tests. A third review round finding a defect in the same change, or a defect introduced by a fix, means redesign, not another patch. |
-| R8 | No root action outside `kordon-install`. |
+| R8 | No root action outside `balistid-install`. |
 | R9 | Do not write a sensor someone already maintains. A new component needs an ADR naming the existing tool, why it is not enough and what changes. |
 | R10 | Every detection and boundary names its `THREAT_MODEL.md` row and ships an attack scenario that triggers it and a legitimate one that does not. |
 | R11 | Every commit carries exactly one `Agent:` trailer (`alex`, `claude/<model>`, `codex/<model>`). No advertising trailers. |
@@ -54,7 +54,7 @@ A change is done when all of these hold, verified now and not from memory:
   at most 72 characters, blank second line, `Agent:` trailer. Enforced by `tools/ci/commit_lint.py`
   locally (commit-msg hook) and in CI over the whole pull request range.
 - History is linear. Rebase merges only; no merge commits, no force-push to `main`, no deleting `main`.
-- Agents push and merge only as `kordon-sec-bot` (ADR 0002). Changes to paths in
+- Agents push and merge only as `balistid-bot` (ADR 0002). Changes to paths in
   `.github/CODEOWNERS` (gates, rules, ADRs, acceptance numbers) need the maintainer's approval.
 - One logical change per pull request. The pull request template checklist is filled in honestly;
   an unchecked box needs a reason.
@@ -97,7 +97,7 @@ Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; t
   timeouts.
 - **Untrusted input.** Readers are size-capped (`io.LimitReader`); protocol messages are decoded
   strictly (`DisallowUnknownFields`, explicit version check). Every parser has a fuzz target (R10).
-- **Files Kordon writes whole** (configs, keys, manifests, exports): mode 0600, or 0640 with
+- **Files Balistid Blue writes whole** (configs, keys, manifests, exports): mode 0600, or 0640 with
   `//nolint:gosec // group-readable for <uid>` (lint: gosec G306); written to a temp file, fsynced,
   renamed, then the directory fsynced. Paths under directories another uid can write are opened
   without following symlinks. SQLite shards and Tessera tiles manage their own files: their safety

@@ -288,13 +288,13 @@ class DocsBudgetTest(unittest.TestCase):
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-GO_MOD = "module github.com/example/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
+GO_MOD = "module github.com/example/balistid\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 GO_SUM_LINE = "golang.org/x/sys v0.20.0/go.mod h1:" + "A" * 43 + "="
 
 
 class RepositoryMapTest(unittest.TestCase):
     _repo_with = DocsBudgetTest._repo_with
-    files = {"adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "cmd/kordon/main.go": "package main\n"}
+    files = {"adr/0001-x.md": "b\n", "tools/ci/x.py": "c\n", "cmd/balistid/main.go": "package main\n"}
 
     def budget(self, readme: str) -> int:
         with self._repo_with({**self.files, "README.md": readme}) as tmp:
@@ -304,14 +304,14 @@ class RepositoryMapTest(unittest.TestCase):
         self.assertEqual(self.budget(map_readme(self.files)), 0)
 
     def test_missing_row_fails(self):
-        self.assertEqual(self.budget(map_readme(self.files).replace("| `cmd/kordon/` | x |\n", "")), 1)
+        self.assertEqual(self.budget(map_readme(self.files).replace("| `cmd/balistid/` | x |\n", "")), 1)
 
     def test_row_for_untracked_path_fails(self):
         self.assertEqual(self.budget(map_readme(self.files) + "| `cmd/gone/` | x |\n"), 1)
 
     def test_mention_outside_the_table_or_first_column_does_not_count(self):
-        readme = map_readme(self.files).replace("| `cmd/kordon/` | x |\n", "| x | `cmd/kordon/` |\n")
-        self.assertEqual(self.budget(readme + "\nSee `cmd/kordon/`.\n"), 1)
+        readme = map_readme(self.files).replace("| `cmd/balistid/` | x |\n", "| x | `cmd/balistid/` |\n")
+        self.assertEqual(self.budget(readme + "\nSee `cmd/balistid/`.\n"), 1)
 
     def test_missing_readme_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,11 +335,11 @@ class RepositoryMapTest(unittest.TestCase):
             git(repo, "add", "README.md", "LICENSE")
             git(repo, "commit", "-q", "--no-verify", "-m", "base")
             base = git(repo, "rev-parse", "HEAD").strip()
-            (repo / "cmd/kordon").mkdir(parents=True)
-            (repo / "cmd/kordon/main.go").write_text("package main\n")
-            git(repo, "add", "cmd/kordon/main.go")
+            (repo / "cmd/balistid").mkdir(parents=True)
+            (repo / "cmd/balistid/main.go").write_text("package main\n")
+            git(repo, "add", "cmd/balistid/main.go")
             git(repo, "commit", "-q", "--no-verify", "-m", "code without its row")
-            (repo / "README.md").write_text(map_readme(["LICENSE", "cmd/kordon/main.go"]))
+            (repo / "README.md").write_text(map_readme(["LICENSE", "cmd/balistid/main.go"]))
             git(repo, "commit", "-q", "--no-verify", "-am", "row")
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
             self.assertEqual(docs_budget.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
@@ -362,30 +362,30 @@ class GoLayoutTest(unittest.TestCase):
             "go.mod": GO_MOD + "\nrequire (\n\tgolang.org/x/sys v0.20.0 // indirect\n)\n",
             "go.sum": GO_SUM_LINE + "\n",
             ".golangci.yml": "version: \"2\"\n",
-            "cmd/kordon/main.go": "package main\n",
+            "cmd/balistid/main.go": "package main\n",
             "internal/store/shard.go": "package store\n",
             "internal/store/seal/seal_test.go": "package seal\n",
             "internal/store/testdata/leaf.json": "{}\n",
             "internal/store/seal/testdata/vectors.jsonl": "{}\n",
-            "cmd/kordon/testdata/args.json": "{}\n",
+            "cmd/balistid/testdata/args.json": "{}\n",
             "packaging/laurel/PKGBUILD": "pkgname=laurel\n",
-            "deploy/audit/kordon.rules": "-e 2\n",
+            "deploy/audit/balistid.rules": "-e 2\n",
             "deploy/auditd/auditd.conf": "q_depth = 2000\n",
             "deploy/laurel/config.toml": "[auditlog]\n",
             "deploy/auditd/laurel-plugin.conf": "active = yes\n",
-            "deploy/sysctl/kordon.conf": "kernel.io_uring_disabled = 2\n",
-            "deploy/systemd/kordon-collector.service": "[Service]\n",
-            "deploy/systemd/kordon-verify.timer": "[Timer]\n",
+            "deploy/sysctl/balistid.conf": "kernel.io_uring_disabled = 2\n",
+            "deploy/systemd/balistid-collector.service": "[Service]\n",
+            "deploy/systemd/balistid-verify.timer": "[Timer]\n",
             "range/mkosi.conf": "[Distribution]\n",
-            "range/kordon-range-guest.service": "[Unit]\n",
+            "range/balistid-range-guest.service": "[Unit]\n",
         }, 0)
 
     def test_paths_outside_the_go_layout_fail(self):
-        for name in ("cmd/kordon/deep/x.go", "internal/a/b/c/x.go", "cmd/x.go", "internal/x.go",
+        for name in ("cmd/balistid/deep/x.go", "internal/a/b/c/x.go", "cmd/x.go", "internal/x.go",
                      "internal/a/go.mod", "go.work", "testdata/x.json", "internal/a/x.json",
                      "internal/a/testdata/deep/x.json", "packaging/PKGBUILD",
-                     "packaging/laurel/build.sh", "deploy/audit/kordon.conf",
-                     "deploy/systemd/kordon.socket", "deploy/systemd/sub/x.service",
+                     "packaging/laurel/build.sh", "deploy/audit/balistid.conf",
+                     "deploy/systemd/balistid.socket", "deploy/systemd/sub/x.service",
                      "deploy/auditd/other.conf", "src/main.go", "range/mkosi.postinst",
                      "range/mkosi.extra/etc/x.conf", "range/other.conf", "range/sub/x.service",
                      "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service",
@@ -403,7 +403,7 @@ class GoLayoutTest(unittest.TestCase):
         for extra in ("replace golang.org/x/sys => ../sys", "// ghp_" + "a" * 36,
                       "exclude golang.org/x/sys v0.1.0", "godebug default=go1.21",
                       "tool golang.org/x/tools/cmd/stringer", "require x v1 // note",
-                      "module github.com/example/kordon // c"):
+                      "module github.com/example/balistid // c"):
             with self.subTest(extra=extra):
                 self.assert_budget({"go.mod": GO_MOD + extra + "\n"}, 1)
 
@@ -423,13 +423,13 @@ class GoLayoutMoreTest(unittest.TestCase):
     assert_budget = GoLayoutTest.assert_budget
 
     def test_every_testdata_pattern_admits_its_files(self):
-        for name in ("cmd/kordon/testdata/a.jsonl", "internal/store/testdata/a.jsonl",
+        for name in ("cmd/balistid/testdata/a.jsonl", "internal/store/testdata/a.jsonl",
                      "internal/store/seal/testdata/a.json", "internal/store/seal/testdata/b.jsonl"):
             with self.subTest(name=name):
                 self.assert_budget({name: "{}\n"}, 0)
 
     def test_go_under_testdata_fails(self):
-        for name in ("internal/buildinfo/testdata/bad.go", "cmd/kordon/testdata/x.go"):
+        for name in ("internal/buildinfo/testdata/bad.go", "cmd/balistid/testdata/x.go"):
             with self.subTest(name=name):
                 self.assert_budget({name: "package x\n"}, 1)
 
@@ -489,7 +489,7 @@ class RescanTest(unittest.TestCase):
                 self.assertFalse(rescan_skipped.skipped(target.name))
 
     def test_files_gitleaks_scans_are_not_copied(self):
-        self.assertFalse(rescan_skipped.skipped("cmd/kordon/main.go"))
+        self.assertFalse(rescan_skipped.skipped("cmd/balistid/main.go"))
         self.assertTrue(rescan_skipped.skipped(".gitleaks.toml"))
         self.assertTrue(rescan_skipped.skipped("go.sum"))
 
@@ -527,17 +527,17 @@ class GoGateTest(unittest.TestCase):
 
 
 class OwnedDepsTest(unittest.TestCase):
-    M = "example.com/kordon"
-    OWNERS = ("# owned\n\n/range/ @Jvc0n\n/deploy/ @Jvc0n\n/packaging/ @Jvc0n\n/cmd/kordon-range/ @Jvc0n\n"
-              "/cmd/kordon-range-guest/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
-    MOD = "module example.com/kordon\n\ngo 1.27\n\ntoolchain go1.27.1\n"
+    M = "example.com/balistid"
+    OWNERS = ("# owned\n\n/range/ @Jvc0n\n/deploy/ @Jvc0n\n/packaging/ @Jvc0n\n/cmd/balistid-range/ @Jvc0n\n"
+              "/cmd/balistid-range-guest/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
+    MOD = "module example.com/balistid\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 
     def pkg(self, rel, **extra):
         return {"ImportPath": f"{self.M}/{rel}", "Module": {"Path": self.M, "Main": True}, **extra}
 
     def deps(self, *extra):
         pkgs = [{"ImportPath": "os", "Standard": True}, self.pkg("internal/rangevm"),
-                self.pkg("cmd/kordon-range"), self.pkg("cmd/kordon-range-guest"), *extra]
+                self.pkg("cmd/balistid-range"), self.pkg("cmd/balistid-range-guest"), *extra]
         return "\n".join(json.dumps(p, indent=1) for p in pkgs)
 
     def problems(self, deps=None, owners=None, mod=None):
@@ -569,8 +569,8 @@ class OwnedDepsTest(unittest.TestCase):
                 self.assertTrue(self.problems(deps=deps))
 
     def test_module_comes_from_go_mod(self):
-        for mod in ("", "go 1.27\n", self.MOD.replace("example.com/kordon", "example.com/other"),
-                    self.MOD + "module example.com/kordon\n"):
+        for mod in ("", "go 1.27\n", self.MOD.replace("example.com/balistid", "example.com/other"),
+                    self.MOD + "module example.com/balistid\n"):
             with self.subTest(mod=mod):
                 self.assertTrue(self.problems(mod=mod))
 

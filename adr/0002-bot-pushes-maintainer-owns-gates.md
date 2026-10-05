@@ -13,7 +13,7 @@ push, open and merge every change by hand, which blocked daily work. Tested on 2
 
 ## Decision
 
-1. Agents push branches, open pull requests and merge through `kordon-sec-bot`, a GitHub App
+1. Agents push branches, open pull requests and merge through `balistid-bot`, a GitHub App
    installed on this repository only. Permissions: contents and pull requests read/write, actions
    and checks read. No administration, no workflows. Installation tokens live one hour.
 2. `.github/CODEOWNERS` assigns the gates and the rules to the maintainer: `tools/ci/`, `.github/`,
