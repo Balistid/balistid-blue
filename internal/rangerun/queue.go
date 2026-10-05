@@ -1,0 +1,167 @@
+// Package rangerun is the range runner of ADR 0011. It runs as its own user and reads agents'
+// jobs from an inbox it never changes: what it has looked at, and every limit, lives in its state.
+package rangerun
+
+import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"syscall"
+	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
+)
+
+// Limits of the inbox (ADR 0011, point 5). Agents share one uid and own the inbox: each removes
+// its job once it has read the result, and one agent filling the inbox can delay the others' jobs,
+// which is accepted (agent jobs are never evidence) and only bounded here.
+const (
+	MaxInboxEntries = 1024                // names listed per scan, then taken in name order
+	Expiry          = 24 * time.Hour      // after the runner first saw the directory
+	Quota           = 8                   // agent jobs taken or rejected per QuotaWindow
+	QuotaWindow     = 24 * time.Hour      //
+	MaxLedger       = 256                 // entries kept; the oldest go first (R5)
+	keepTaken       = 30 * 24 * time.Hour //
+)
+
+// Ledger statuses.
+const (
+	Taken    = "taken"
+	Rejected = "rejected"
+)
+
+// Entry is a job the runner has read: a taken one is known by its name and the sha256 of what was
+// read, so it runs once under that name while the same request may run again under another.
+type Entry struct {
+	Key    string    `json:"key"`
+	Seen   time.Time `json:"seen"`
+	Status string    `json:"status"`
+}
+
+// Ledger is the runner's record of the inbox, kept in its state. Clock holds, for each job
+// directory now in the inbox (name, device, inode), when the runner first saw it: expiry runs on
+// the runner's clock, not on times the agent sets, and replacing a directory restarts only its own.
+type Ledger struct {
+	Entries []Entry              `json:"entries"`
+	Clock   map[string]time.Time `json:"clock"`
+}
+
+// OpenInbox opens path as the inbox only if it is a directory and not a link to one.
+func OpenInbox(path string) (*os.Root, error) {
+	want, err := os.Lstat(path)
+	if err != nil || !want.IsDir() {
+		return nil, errors.New("inbox is not a plain directory")
+	}
+	inbox, err := os.OpenRoot(path + "/.")
+	if err != nil {
+		return nil, errors.New("cannot open the inbox")
+	}
+	if got, err := inbox.Stat("."); err != nil || !os.SameFile(want, got) {
+		_ = inbox.Close()
+		return nil, errors.New("inbox changed while it was opened")
+	}
+	return inbox, nil
+}
+
+// Next returns the first job, in name order, that has not expired and whose name and content the
+// ledger has not taken, and records it; or false when none is left or the quota is used up. A job
+// that fails to read is rejected once and counts against the quota like a taken one.
+func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
+	l.prune(now)
+	names := readNames(inbox)
+	slices.Sort(names)
+	clock := map[string]time.Time{}
+	var live []string
+	for _, name := range names {
+		fi, err := inbox.Lstat(name)
+		if err != nil || !fi.IsDir() {
+			continue
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		id := fmt.Sprintf("%s:%d:%d", name, st.Dev, st.Ino)
+		first, seen := l.Clock[id]
+		if !seen {
+			first = now
+		}
+		clock[id] = first
+		if now.Sub(first) < Expiry {
+			live = append(live, name)
+		}
+	}
+	l.Clock = clock
+	for _, name := range live {
+		if l.used(now) >= Quota {
+			return rangejob.Job{}, false
+		}
+		job, err := rangejob.ReadJob(inbox, name)
+		if err != nil {
+			if key := "rejected:" + name; !l.has(key) {
+				l.add(key, now, Rejected)
+			}
+			continue
+		}
+		if key := name + ":" + ContentKey(job); !l.has(key) {
+			l.add(key, now, Taken)
+			return job, true
+		}
+	}
+	return rangejob.Job{}, false
+}
+
+// ContentKey is the sha256 of a job's request and program, each length-prefixed so no split of
+// the bytes between them gives the same key.
+func ContentKey(job rangejob.Job) string {
+	request, _ := json.Marshal(job.Request) //nolint:errcheck // ints and strings always encode
+	h := sha256.New()
+	for _, part := range [][]byte{request, job.Program} {
+		h.Write(binary.BigEndian.AppendUint64(nil, uint64(len(part))))
+		h.Write(part)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func readNames(inbox *os.Root) []string {
+	f, err := inbox.Open(".")
+	if err != nil {
+		return nil
+	}
+	defer f.Close()                             //nolint:errcheck // read-only
+	names, _ := f.Readdirnames(MaxInboxEntries) //nolint:errcheck // a partial list is a smaller scan
+	return names
+}
+
+func (l *Ledger) has(key string) bool {
+	return slices.ContainsFunc(l.Entries, func(e Entry) bool { return e.Key == key })
+}
+
+func (l *Ledger) add(key string, now time.Time, status string) {
+	l.Entries = append(l.Entries, Entry{Key: key, Seen: now, Status: status})
+	if len(l.Entries) > MaxLedger {
+		l.Entries = l.Entries[len(l.Entries)-MaxLedger:]
+	}
+}
+
+// used counts the jobs taken or rejected within the quota window.
+func (l *Ledger) used(now time.Time) int {
+	n := 0
+	for _, e := range l.Entries {
+		if now.Sub(e.Seen) < QuotaWindow {
+			n++
+		}
+	}
+	return n
+}
+
+// prune drops entries after keepTaken (R5); a directory left in the inbox that long expired on
+// the runner's clock long before, so it is not read again.
+func (l *Ledger) prune(now time.Time) {
+	l.Entries = slices.DeleteFunc(l.Entries, func(e Entry) bool { return now.Sub(e.Seen) >= keepTaken })
+}
