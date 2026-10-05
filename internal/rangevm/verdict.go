@@ -30,6 +30,7 @@ const (
 // pattern on them; the agent reads them.
 const (
 	FactJobSHA256    = "job_sha256"
+	FactJobResult    = "job_result"
 	FactJobExit      = "job_exit"
 	FactJobOut       = "job_out"
 	FactJobOutCut    = "job_out_truncated"

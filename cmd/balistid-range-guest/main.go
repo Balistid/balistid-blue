@@ -101,6 +101,7 @@ const (
 	jobOutCap    = 2 << 20
 	jobLaurelCap = 6 << 20
 	jobProgram   = "/run/balistid-job/program"
+	jobUnit      = "balistid-job-run"
 )
 
 // runJob runs the job disk's program instead of the self-test, which would disable audit and flood
@@ -123,25 +124,41 @@ func runJob(ctx context.Context, dev string) error {
 	if err := os.WriteFile(jobProgram, program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
 		return fmt.Errorf("job program: %w", err)
 	}
-	offset := fileSize(laurelLog)
+	// The open descriptor follows the log through a rotation, which a path and an offset would not.
+	before, err := os.Open(laurelLog)
+	if err != nil {
+		add(rangevm.FactJobError, "cannot open the Laurel log")
+		return write(facts)
+	}
+	defer before.Close() //nolint:errcheck // read-only
+	offset, err := before.Seek(0, io.SeekEnd)
+	if err != nil {
+		add(rangevm.FactJobError, "cannot read the Laurel log")
+		return write(facts)
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, (rangejob.MaxTimeoutS+30)*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "/usr/bin/systemd-run", "--wait", "--pipe", "--collect", "--quiet", //nolint:gosec // fixed argv
-		"-p", "User=balistid-job", "-p", fmt.Sprintf("RuntimeMaxSec=%d", rangejob.MaxTimeoutS),
+	// TimeoutStopSec keeps the kill of every job process inside the context, NoNewPrivileges matches
+	// an agent in the host sandbox, and the named unit stays so its result can be read below.
+	cmd := exec.CommandContext(ctx, "/usr/bin/systemd-run", "--wait", "--pipe", "--quiet", //nolint:gosec // fixed argv
+		"--unit="+jobUnit, "-p", "User=balistid-job", "-p", "NoNewPrivileges=yes",
+		"-p", fmt.Sprintf("RuntimeMaxSec=%d", rangejob.MaxTimeoutS), "-p", "TimeoutStopSec=10",
 		"-p", "MemoryMax=1G", "-p", "TasksMax=256", "--", jobProgram)
 	var out cappedBuffer
 	out.left = jobOutCap
 	cmd.Stdout, cmd.Stderr = &out, &out
-	runErr := cmd.Run()
-	add(rangevm.FactJobExit, exitText(runErr))
+	_ = cmd.Run() // its exit is 1 for a timeout and a start failure alike; the unit says which
+	result, status := unitResult(ctx)
+	add(rangevm.FactJobResult, result)
+	add(rangevm.FactJobExit, status)
 	add(rangevm.FactJobOutCut, yesNo(out.cut))
 	for _, c := range rangeguest.Chunks(out.buf.Bytes(), jobChunk) {
 		add(rangevm.FactJobOut, c)
 	}
 
 	add("canary", canary(ctx)) // once seen, Laurel has written everything before it
-	window, cut := readFrom(laurelLog, offset, jobLaurelCap)
+	window, cut := laurelWindow(before, laurelLog, offset, jobLaurelCap)
 	add(rangevm.FactJobLaurelCut, cut)
 	for _, c := range rangeguest.Chunks(window, jobChunk) {
 		add(rangevm.FactJobLaurel, c)
@@ -168,49 +185,42 @@ func readJob(dev string) ([]byte, [32]byte, error) {
 	return program, sum, nil
 }
 
-func exitText(err error) string {
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		return "0"
-	case errors.As(err, &exit):
-		return strconv.Itoa(exit.ExitCode())
-	default:
-		return "error"
+// unitResult returns the job unit's result (success, exit-code, timeout, oom-kill, …) and the main
+// process's exit status, from systemd rather than from the job's own output.
+func unitResult(ctx context.Context) (result, status string) {
+	out := output(ctx, "/usr/bin/systemctl", "show", "-P", "Result", "-P", "ExecMainStatus", jobUnit+".service")
+	fields := strings.Fields(out)
+	if len(fields) != 2 {
+		return "unknown", "unknown"
 	}
+	return fields[0], fields[1]
 }
 
-func fileSize(path string) int64 {
-	st, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return st.Size()
-}
-
-// readFrom returns at most limit bytes of path from offset on, and whether it was cut or the log
-// was rotated meanwhile (then it starts again at 0, and earlier lines of the job may be missing).
-func readFrom(path string, offset, limit int64) ([]byte, string) {
-	f, err := os.Open(path) //nolint:gosec // fixed log path
-	if err != nil {
+// laurelWindow returns at most limit bytes the Laurel log gained after offset: the rest of the file
+// open since before the job (renamed, if Laurel rotated it), then the current log if it is another
+// file. A second rotation within one job would lose the middle file, so a rotation is reported.
+func laurelWindow(before *os.File, path string, offset, limit int64) ([]byte, string) {
+	var buf bytes.Buffer
+	if _, err := before.Seek(offset, io.SeekStart); err != nil {
 		return nil, "error"
 	}
-	defer f.Close() //nolint:errcheck // read-only
+	if _, err := io.Copy(&buf, io.LimitReader(before, limit+1)); err != nil {
+		return nil, "error"
+	}
 	cut := "no"
-	if st, err := f.Stat(); err != nil || st.Size() < offset {
-		offset, cut = 0, "rotated"
+	old, errOld := before.Stat()
+	now, errNow := os.Stat(path)
+	if errOld != nil || errNow != nil || !os.SameFile(old, now) {
+		cut = "rotated"
+		if f, err := os.Open(path); err == nil { //nolint:gosec // the fixed Laurel log path
+			_, _ = io.Copy(&buf, io.LimitReader(f, limit+1))
+			_ = f.Close()
+		}
 	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, "error"
+	if int64(buf.Len()) > limit {
+		return buf.Bytes()[:limit], "yes"
 	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, "error"
-	}
-	if int64(len(data)) > limit {
-		return data[:limit], "yes"
-	}
-	return data, cut
+	return buf.Bytes(), cut
 }
 
 // cappedBuffer keeps the first left bytes written and notes that more came.
