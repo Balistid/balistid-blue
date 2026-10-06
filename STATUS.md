@@ -1,29 +1,35 @@
 # Status
 
-Updated: 2026-10-04 by claude/opus-5.5
+Updated: 2026-10-06 by claude/opus-5.5
 
 ## Where we are
 
 Floor 0 (recorder): the attack range (ADR 0009), the sensor (auditd + Laurel, ADR 0004) and the build from a
-verified export (ADR 0010) are merged and accepted; range run 20261004T203204Z-9fb1da84, built and run from
-`main` (bde5578, kernel 7.2.8-arch1-2), passed every check. No recorder code yet.
+verified export (ADR 0010) are accepted. The range runner of ADR 0011 (proposed) is written and tested end to
+end by hand from `main` (cf92ed0): its own image built by `balistid-runner build`, an evidence run PASS on
+7.2.8-arch1-2, and an agent exec job RAN with its 5 s `timeout_s` enforced in the guest and its output and Laurel
+records escaped in its result. It is not installed: it ran at the maintainer's uid, which proves function, not
+trust. No recorder code yet.
 
 ## Done in the last session
 
-- PR #22: the range builds only the launcher's own commit, from a verified export (ADR 0010). PR #23:
-  `internal/rangeguest` code-owned. This pull request: ADR 0010 accepted with the run from `main`.
-- Known gaps kept open: audit=1 is set but not proven at runtime (ADR 0004); x32 ABI syscalls match no audit
-  rule (THREAT_MODEL T8), mitigation chosen before the host install; a build runs its commit's PKGBUILD and
-  mkosi configuration on the host (T34), so only reviewed commits are built.
+- #38–#44: job disk carries `timeout_s`; strict exec report and `Printable`; ledger on disk (schema 2, evidence
+  latch, pending runs, failed commits); admission and memory watch (reserves 4 GiB memory, 5 GiB disk);
+  `BuildCommit`/`OpenImage`; results the maintainer's group reads; `cmd/balistid-runner` (`build`, `tick`).
+- Accepted residuals (#44): a FAIL is lost only if both its result write and the ledger save fail; small clock
+  set-backs before evidence falls due postpone it (needs clock control, T22); `Next` does not log rejections.
+- `THREAT_MODEL.md` (9596/9600 bytes) and ADR 0011 (60/60 lines) are at their caps.
 
 ## Next step
 
-1. Agents must run range jobs themselves: a confined runner that boots only its own commit's image and runs
-   an agent's program from a read-only job disk (ADR 0011, in review); it builds no branches.
+1. Step C: units and tmpfiles under `deploy/runner/` (tick unit `UMask=0027`, results `agent/` and `evidence/`
+   2750 setgid), the `go list -deps` gate and CI publish with sha256 for `cmd/balistid-runner` (before any
+   install), then the install procedure and acceptance (PR 13).
 2. Step 9.3: `balistid-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)
 
-- Project name: BALISTID chosen (4.10.), GitHub org renamed to `Balistid` (5.10.); renaming the repo and the product is still open.
+- Renaming the repo and the product (org is `Balistid`).
 - Hardware signing keys for R2 (budget approved in principle).
 - Before the host install: x32 mitigation, and whether the host runs without io_uring.
+- Raise the caps of `THREAT_MODEL.md` and ADRs (needs an ADR).
