@@ -93,15 +93,22 @@ func OpenInbox(path string) (*os.Root, error) {
 	return inbox, nil
 }
 
+// Rejection is a job Next rejected and recorded in this call: its name, which is the agent's
+// bytes, and why ReadJob refused it.
+type Rejection struct {
+	Name, Reason string
+}
+
 // Next returns and records the first job, in name order, not expired and not taken by name and
 // content; false when none is left or the quota is used up, an error when the inbox cannot be
-// listed. A job that fails to read is rejected once and counts against the quota. Next changes l
-// whatever it returns, so the caller saves l after every call and before it runs the job.
-func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool, error) {
+// listed. A job that fails to read is rejected once and counts against the quota; the rejections
+// this call recorded come back for the caller to log. Next changes l whatever it returns, so the
+// caller saves l after every call and before it runs the job.
+func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool, []Rejection, error) {
 	l.prune(now)
 	names, err := readNames(inbox)
 	if err != nil {
-		return rangejob.Job{}, false, err // keep the clock: a failed listing must not restart expiry
+		return rangejob.Job{}, false, nil, err // keep the clock: a failed listing must not restart expiry
 	}
 	slices.Sort(names)
 	clock := map[string]time.Time{}
@@ -126,23 +133,25 @@ func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool, error) 
 		}
 	}
 	l.Clock = clock
+	var rejected []Rejection
 	for _, name := range live {
 		if l.used(now) >= Quota {
-			return rangejob.Job{}, false, nil
+			return rangejob.Job{}, false, rejected, nil
 		}
 		job, err := rangejob.ReadJob(inbox, name)
 		if err != nil {
 			if key := "rejected:" + nameKey(name); !l.has(key) {
 				l.add(key, now, Rejected)
+				rejected = append(rejected, Rejection{Name: name, Reason: err.Error()})
 			}
 			continue
 		}
 		if key := "taken:" + nameKey(name) + ":" + ContentKey(job); !l.has(key) {
 			l.add(key, now, Taken)
-			return job, true, nil
+			return job, true, rejected, nil
 		}
 	}
-	return rangejob.Job{}, false, nil
+	return rangejob.Job{}, false, rejected, nil
 }
 
 // nameKey is the sha256 of an inbox name: any name the file system allows becomes a key that

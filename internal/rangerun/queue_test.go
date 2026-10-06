@@ -43,11 +43,11 @@ func TestNextTakesEachJobOnceInNameOrder(t *testing.T) {
 	addJob(t, dir, "a", runJSON, now)
 	var l Ledger
 	for _, want := range []string{"a", "b"} {
-		if job, ok, err := Next(inbox, &l, now); err != nil || !ok || job.Name != want {
+		if job, ok, _, err := Next(inbox, &l, now); err != nil || !ok || job.Name != want {
 			t.Fatalf("Next = %q %v %v, want %q", job.Name, ok, err, want)
 		}
 	}
-	if job, ok, err := Next(inbox, &l, now.Add(time.Hour)); ok || err != nil {
+	if job, ok, _, err := Next(inbox, &l, now.Add(time.Hour)); ok || err != nil {
 		t.Fatalf("a job was taken twice: %q %v", job.Name, err)
 	}
 	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
@@ -61,18 +61,18 @@ func TestTheSameJobRunsOnceAndAnotherNameRunsAgain(t *testing.T) {
 	dir, inbox := newInbox(t)
 	addJob(t, dir, "j", runJSON, now.Add(48*time.Hour))
 	var l Ledger
-	if _, ok, err := Next(inbox, &l, now); !ok || err != nil {
+	if _, ok, _, err := Next(inbox, &l, now); !ok || err != nil {
 		t.Fatalf("first job not taken: %v", err)
 	}
 	if err := os.RemoveAll(filepath.Join(dir, "j")); err != nil {
 		t.Fatal(err)
 	}
 	addJob(t, dir, "j", runJSON, now.Add(-72*time.Hour))
-	if job, ok, err := Next(inbox, &l, now.Add(time.Hour)); ok || err != nil {
+	if job, ok, _, err := Next(inbox, &l, now.Add(time.Hour)); ok || err != nil {
 		t.Fatalf("the same name and content ran again: %q %v", job.Name, err)
 	}
 	addJob(t, dir, "k", runJSON, now)
-	if job, ok, err := Next(inbox, &l, now.Add(time.Hour)); err != nil || !ok || job.Name != "k" {
+	if job, ok, _, err := Next(inbox, &l, now.Add(time.Hour)); err != nil || !ok || job.Name != "k" {
 		t.Fatalf("the same request under another name did not run: %q %v %v", job.Name, ok, err)
 	}
 }
@@ -87,10 +87,10 @@ func TestExpiryUsesTheRunnersClock(t *testing.T) {
 		l.Entries[i] = Entry{Key: string(rune('a' + i)), Seen: now, Status: Taken}
 	}
 	addJob(t, dir, "waits", runJSON, now.Add(10*24*time.Hour))
-	if _, ok, err := Next(inbox, &l, now); ok || err != nil {
+	if _, ok, _, err := Next(inbox, &l, now); ok || err != nil {
 		t.Fatalf("a job was taken over the quota: %v", err)
 	}
-	if _, ok, err := Next(inbox, &l, now.Add(Expiry)); ok || err != nil {
+	if _, ok, _, err := Next(inbox, &l, now.Add(Expiry)); ok || err != nil {
 		t.Fatalf("a job past its expiry on the runner's clock was taken: %v", err)
 	}
 	if len(l.Clock) != 1 {
@@ -99,7 +99,7 @@ func TestExpiryUsesTheRunnersClock(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(dir, "waits")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Next(inbox, &l, now.Add(Expiry)); err != nil {
+	if _, _, _, err := Next(inbox, &l, now.Add(Expiry)); err != nil {
 		t.Fatal(err)
 	}
 	if len(l.Clock) != 0 {
@@ -118,7 +118,7 @@ func TestALargeInboxExpiresAndTheRunnerGoesOn(t *testing.T) {
 	var l Ledger
 	var taken []string
 	for i := range 41 {
-		job, ok, err := Next(inbox, &l, now.Add(time.Duration(i)*time.Minute))
+		job, ok, _, err := Next(inbox, &l, now.Add(time.Duration(i)*time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,7 +131,7 @@ func TestALargeInboxExpiresAndTheRunnerGoesOn(t *testing.T) {
 	}
 	later := now.Add(QuotaWindow)
 	addJob(t, dir, "new", runJSON, now)
-	if job, ok, err := Next(inbox, &l, later); err != nil || !ok || job.Name != "new" {
+	if job, ok, _, err := Next(inbox, &l, later); err != nil || !ok || job.Name != "new" {
 		t.Fatalf("after a window the new job was not taken: %q %v %v", job.Name, ok, err)
 	}
 }
@@ -144,7 +144,7 @@ func TestBrokenJobsCountAgainstTheQuotaOnce(t *testing.T) {
 	}
 	var l Ledger
 	for range 3 {
-		if _, _, err := Next(inbox, &l, now); err != nil {
+		if _, _, _, err := Next(inbox, &l, now); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -153,7 +153,7 @@ func TestBrokenJobsCountAgainstTheQuotaOnce(t *testing.T) {
 	}
 	later := now.Add(QuotaWindow)
 	addJob(t, dir, "z", runJSON, later)
-	if job, ok, err := Next(inbox, &l, later); err != nil || !ok || job.Name != "z" {
+	if job, ok, _, err := Next(inbox, &l, later); err != nil || !ok || job.Name != "z" {
 		t.Fatalf("the quota did not reopen after its window: %q %v %v", job.Name, ok, err)
 	}
 }
@@ -167,14 +167,14 @@ func TestNextReportsAnInboxItCannotList(t *testing.T) {
 	for i := range l.Entries {
 		l.Entries[i] = Entry{Key: fmt.Sprintf("taken:x%d", i), Seen: now, Status: Taken}
 	}
-	if _, _, err := Next(inbox, &l, now); err != nil || len(l.Clock) != 1 {
+	if _, _, _, err := Next(inbox, &l, now); err != nil || len(l.Clock) != 1 {
 		t.Fatalf("Next = %v with %d clock times, want the job clocked", err, len(l.Clock))
 	}
 	clock := maps.Clone(l.Clock)
 	if err := inbox.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if job, ok, err := Next(inbox, &l, now.Add(time.Hour)); err == nil || ok {
+	if job, ok, _, err := Next(inbox, &l, now.Add(time.Hour)); err == nil || ok {
 		t.Fatalf("Next on an inbox it cannot list = %q %v %v, want an error", job.Name, ok, err)
 	}
 	if !maps.Equal(l.Clock, clock) {
