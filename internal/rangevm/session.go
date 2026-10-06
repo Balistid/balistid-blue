@@ -82,9 +82,20 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 	return buildCommit(ctx, root, cache, log, launcherCommit(), fetchTimeout)
 }
 
+// BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
+// range runner, whose commit is set at build time (ADR 0011, point 2), builds its own image this
+// way. root is laid out like a repository (root/.git/objects) and is read only as Build reads it.
+// On a retention error the image is stored and its path returned with the error.
+func BuildCommit(ctx context.Context, root, cache string, log io.Writer, commit string) (string, error) {
+	if !commitRE.MatchString(commit) {
+		return "", errors.New("commit is not 40 lower-case hex digits")
+	}
+	return buildCommit(ctx, root, cache, log, commit, fetchTimeout)
+}
+
 // buildCommit is Build for a given commit and copy time limit.
 func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, copyTimeout time.Duration) (image string, err error) {
-	held, err := lock(cache)
+	held, err := Lock(cache)
 	if err != nil {
 		return "", err
 	}
@@ -636,21 +647,12 @@ func cleanRevision(settings []debug.BuildSetting) string {
 // that is not a clean build of the image's commit judged the run with code nobody can name, so
 // its verdict is UNKNOWN (R1).
 func Check(ctx context.Context, image, cache, state string) (res Result, err error) {
-	held, err := lock(cache)
+	held, err := Lock(cache)
 	if err != nil {
 		return Result{}, err
 	}
 	defer func() { err = errors.Join(err, closeLock(held)) }()
-	sum, err := fileSHA256(ctx, image)
-	if err != nil {
-		return Result{}, err
-	}
-	dir := filepath.Dir(image)
-	manifest, err := readManifest(filepath.Join(dir, "image.manifest"))
-	if err != nil {
-		return Result{}, err
-	}
-	commit, err := readCommit(filepath.Join(dir, "commit"))
+	img, err := OpenImage(ctx, image)
 	if err != nil {
 		return Result{}, err
 	}
@@ -686,15 +688,15 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	}
 
 	res = Result{
-		SchemaVersion: resultSchema, ID: id, RangeCommit: commit, LauncherCommit: launcherCommit(),
-		Image: image, ImageSHA256: sum, TargetKernel: TargetKernel, Manifest: manifest,
+		SchemaVersion: resultSchema, ID: id, RangeCommit: img.Commit, LauncherCommit: launcherCommit(),
+		Image: image, ImageSHA256: img.SHA256, TargetKernel: TargetKernel, Manifest: img.Manifest,
 	}
 	for _, f := range outcome.Facts {
 		if f.Name == FactKernel {
 			res.GuestKernel = f.Value
 		}
 	}
-	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, commit)
+	res.Verdict, res.Reason = JudgeSelftest(outcome, res.LauncherCommit, img.Commit)
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)
@@ -705,21 +707,53 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	return res, nil
 }
 
-func judge(o Outcome, launcher, image string) (verdict, reason string) {
+// Image is a built base image and what identifies it: its sha256, the commit it was built from
+// and mkosi's package manifest, all read from the files Build stores next to it.
+type Image struct {
+	SHA256   string
+	Commit   string
+	Manifest json.RawMessage
+}
+
+// OpenImage reads what identifies the image at path: a regular file that is not itself a symlink,
+// beside a version-1 manifest and a full commit id.
+func OpenImage(ctx context.Context, path string) (Image, error) {
+	sum, err := fileSHA256(ctx, path)
+	if err != nil {
+		return Image{}, fmt.Errorf("image: %w", err)
+	}
+	dir := filepath.Dir(path)
+	manifest, err := readManifest(filepath.Join(dir, "image.manifest"))
+	if err != nil {
+		return Image{}, err
+	}
+	commit, err := readCommit(filepath.Join(dir, "commit"))
+	if err != nil {
+		return Image{}, err
+	}
+	return Image{SHA256: sum, Commit: commit, Manifest: manifest}, nil
+}
+
+// JudgeSelftest is the verdict of a self-test run of an image built from commit image, judged by
+// a launcher built from commit launcher ("" when that is unknown): Selftest, except that a PASS is
+// UNKNOWN unless both are the same full commit id (R1), so "dev" builds never pass.
+func JudgeSelftest(o Outcome, launcher, image string) (verdict, reason string) {
 	if o.Invalid != "" {
 		return Invalid, o.Invalid
 	}
 	verdict, reason = Selftest(o.Facts)
-	if verdict == Pass && launcher != image {
+	if verdict == Pass && (launcher != image || !commitRE.MatchString(launcher)) {
 		return Unknown, fmt.Sprintf("launcher is not a clean build of the image commit %s (got %q)", image, launcher)
 	}
 	return verdict, reason
 }
 
-// lock lets one balistid-range at a time own the cache, then removes the staging, build and run
-// directories a killed earlier invocation left behind (R5). The lock lives as long as the open
-// file, held by this process and the tools it starts, so a crash never leaves it held.
-func lock(cache string) (*os.File, error) {
+// Lock lets one holder at a time own the cache, then removes the staging, build and run
+// directories a killed earlier holder left behind (R5). The lock lives as long as the open file:
+// Build passes it to mkosi, and a run's QEMU dies with its caller (bwrap --die-with-parent), so a
+// crash never leaves it held. Build, BuildCommit and Check take it themselves, so a caller holding
+// it must not call them.
+func Lock(cache string) (*os.File, error) {
 	runs := filepath.Join(cache, "runs")
 	if err := os.MkdirAll(runs, 0o700); err != nil {
 		return nil, fmt.Errorf("cache directory: %w", err)
