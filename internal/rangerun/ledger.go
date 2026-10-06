@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ const maxKeyBytes = 135
 
 const ledgerSchema = 1
 
+var commitID = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 // Errors of LoadLedger. A lost or unreadable ledger must not read as an empty one, which would
 // reset the quota and the once-per-name rule. ErrNoLedger also matches fs.ErrNotExist.
 var (
@@ -35,6 +38,7 @@ type ledgerFile struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Entries       *[]Entry              `json:"entries"`
 	Clock         *map[string]time.Time `json:"clock"`
+	Evidence      *Evidence             `json:"evidence"`
 }
 
 // LoadLedger reads path, without following a link or blocking, if it is a regular file of at most
@@ -106,10 +110,10 @@ func decodeLedger(data []byte) (Ledger, error) {
 	if f.SchemaVersion != ledgerSchema {
 		return Ledger{}, fmt.Errorf("schema_version must be %d", ledgerSchema)
 	}
-	if f.Entries == nil || f.Clock == nil {
-		return Ledger{}, errors.New("entries and clock are required")
+	if f.Entries == nil || f.Clock == nil || f.Evidence == nil {
+		return Ledger{}, errors.New("entries, clock and evidence are required")
 	}
-	l := Ledger{Entries: *f.Entries, Clock: *f.Clock}
+	l := Ledger{Entries: *f.Entries, Clock: *f.Clock, Evidence: *f.Evidence}
 	if err := l.check(); err != nil {
 		return Ledger{}, err
 	}
@@ -132,7 +136,11 @@ func encodeLedger(l Ledger) ([]byte, error) {
 	for id, t := range l.Clock {
 		clock[id] = t.UTC()
 	}
-	data, err := json.Marshal(ledgerFile{SchemaVersion: ledgerSchema, Entries: &entries, Clock: &clock})
+	ev := l.Evidence
+	if !ev.LastRun.IsZero() {
+		ev.LastRun = ev.LastRun.UTC()
+	}
+	data, err := json.Marshal(ledgerFile{SchemaVersion: ledgerSchema, Entries: &entries, Clock: &clock, Evidence: &ev})
 	if err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
@@ -171,6 +179,13 @@ func (l Ledger) check() error {
 		if !validTime(t) {
 			return errors.New("a clock time is zero or out of range")
 		}
+	}
+	if e := l.Evidence; e.Commit == "" {
+		if !e.LastRun.IsZero() || e.Failed != "" {
+			return errors.New("evidence without a commit")
+		}
+	} else if !commitID.MatchString(e.Commit) || !validTime(e.LastRun) || (e.Failed != "" && !resultName.MatchString(e.Failed)) {
+		return errors.New("evidence commit, time or failed id is malformed")
 	}
 	return nil
 }

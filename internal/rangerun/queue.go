@@ -50,8 +50,17 @@ type Entry struct {
 // the directory, which is no more than resubmitting it. Agents build a job outside the inbox and
 // rename it in, since a half-written job is rejected.
 type Ledger struct {
-	Entries []Entry
-	Clock   map[string]time.Time
+	Entries  []Entry
+	Clock    map[string]time.Time
+	Evidence Evidence
+}
+
+// Evidence is the runner's record of its own evidence runs: the commit they were of, when the last
+// one ran, and the id of a FAIL, which fails that commit for good (ADR 0011, point 7).
+type Evidence struct {
+	Commit  string    `json:"commit"`
+	LastRun time.Time `json:"last_run"`
+	Failed  string    `json:"failed"`
 }
 
 // OpenInbox opens path as the inbox only if it is a directory and not a link to one.

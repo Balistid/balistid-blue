@@ -67,6 +67,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `cmd/balistid/` | The unprivileged command-line client (today only `version`) |
 | `cmd/balistid-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
 | `cmd/balistid-range-guest/` | Program inside the range VM that checks isolation and the sensor |
+| `cmd/balistid-runner/` | Range runner: `build` its image at install, `tick` one evidence run or agent job (ADR 0011) |
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |

@@ -18,13 +18,15 @@ func sampleLedger(now time.Time) Ledger {
 			{Key: "taken:a:" + strings.Repeat("0", 64), Seen: now.Add(-time.Hour), Status: Taken},
 			{Key: "rejected:b", Seen: now, Status: Rejected},
 		},
-		Clock: map[string]time.Time{"a:2049:12": now.Add(-time.Hour), "b:2049:13": now},
+		Clock:    map[string]time.Time{"a:2049:12": now.Add(-time.Hour), "b:2049:13": now},
+		Evidence: Evidence{Commit: strings.Repeat("c", 40), LastRun: now, Failed: "20261006T090000Z-0000000f"},
 	}
 }
 
 // sameLedger compares instants, not locations: LoadLedger returns UTC.
 func sameLedger(a, b Ledger) bool {
-	if len(a.Entries) != len(b.Entries) || len(a.Clock) != len(b.Clock) {
+	if len(a.Entries) != len(b.Entries) || len(a.Clock) != len(b.Clock) ||
+		a.Evidence.Commit != b.Evidence.Commit || a.Evidence.Failed != b.Evidence.Failed || !a.Evidence.LastRun.Equal(b.Evidence.LastRun) {
 		return false
 	}
 	for i, e := range a.Entries {
@@ -95,7 +97,7 @@ func TestLoadLedgerRefusesCorrupt(t *testing.T) {
 		return `{"key":"` + key + `","seen":` + seen + `,"status":"` + status + `"}`
 	}
 	ledger := func(entries, clock string) string {
-		return `{"schema_version":1,"entries":[` + entries + `],"clock":{` + clock + `}}`
+		return `{"schema_version":1,"entries":[` + entries + `],"clock":{` + clock + `},"evidence":{"commit":"","last_run":"0001-01-01T00:00:00Z","failed":""}}`
 	}
 	many := func(n int, f func(int) string) string {
 		parts := make([]string, n)
@@ -140,7 +142,13 @@ func TestLoadLedgerRefusesCorrupt(t *testing.T) {
 		"too many clock times": ledger(``, many(MaxInboxEntries+1, func(i int) string {
 			return fmt.Sprintf(`"zzmarker%d:1:2":%s`, i, seen)
 		})),
-		"oversize": valid + strings.Repeat(" ", MaxLedgerBytes),
+		"oversize":                   valid + strings.Repeat(" ", MaxLedgerBytes),
+		"evidence absent":            strings.Replace(valid, `,`+`"evidence":{"commit":"","last_run":"0001-01-01T00:00:00Z","failed":""}`, ``, 1),
+		"evidence time, no commit":   strings.Replace(valid, `"last_run":"0001-01-01T00:00:00Z"`, `"last_run":`+seen, 1),
+		"evidence failed, no commit": strings.Replace(valid, `"failed":""`, `"failed":"20261006T090000Z-00000001"`, 1),
+		"evidence commit upper case": strings.Replace(valid, `"commit":"","last_run":"0001-01-01T00:00:00Z"`, `"commit":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","last_run":`+seen, 1),
+		"evidence commit, zero time": strings.Replace(valid, `"commit":""`, `"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`, 1),
+		"evidence failed malformed":  strings.Replace(valid, `"commit":"","last_run":"0001-01-01T00:00:00Z","failed":""`, `"commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","last_run":`+seen+`,"failed":"zzmarker"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := ledgerPath(t)
@@ -236,14 +244,16 @@ func TestSaveLedgerRefusesWhatLoadRefuses(t *testing.T) {
 		clock[fmt.Sprintf("j%d:1:2", i)] = now
 	}
 	for name, l := range map[string]Ledger{
-		"too many entries":     {Entries: full(MaxLedger + 1)},
-		"too many clock times": {Clock: clock},
-		"bad status":           {Entries: []Entry{{Key: "taken:j", Seen: now, Status: "done"}}},
-		"empty key":            {Entries: []Entry{{Key: "", Seen: now, Status: Taken}}},
-		"key not in alphabet":  {Entries: []Entry{{Key: "rejected:\xff", Seen: now, Status: Rejected}}},
-		"zero seen":            {Entries: []Entry{{Key: "taken:j", Status: Taken}}},
-		"zero clock time":      {Clock: map[string]time.Time{"j:1:2": {}}},
-		"year past 9999":       {Entries: []Entry{{Key: "taken:j", Seen: now.AddDate(8000, 0, 0), Status: Taken}}},
+		"too many entries":         {Entries: full(MaxLedger + 1)},
+		"too many clock times":     {Clock: clock},
+		"bad status":               {Entries: []Entry{{Key: "taken:j", Seen: now, Status: "done"}}},
+		"empty key":                {Entries: []Entry{{Key: "", Seen: now, Status: Taken}}},
+		"key not in alphabet":      {Entries: []Entry{{Key: "rejected:\xff", Seen: now, Status: Rejected}}},
+		"zero seen":                {Entries: []Entry{{Key: "taken:j", Status: Taken}}},
+		"zero clock time":          {Clock: map[string]time.Time{"j:1:2": {}}},
+		"year past 9999":           {Entries: []Entry{{Key: "taken:j", Seen: now.AddDate(8000, 0, 0), Status: Taken}}},
+		"evidence of no commit":    {Evidence: Evidence{LastRun: now}},
+		"evidence of a non-commit": {Evidence: Evidence{Commit: "dev", LastRun: now}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := ledgerPath(t)
@@ -340,8 +350,8 @@ func TestALedgerFromAnyInboxSurvivesTheDisk(t *testing.T) {
 
 func FuzzLoadLedger(f *testing.F) {
 	for _, s := range []string{
-		`{"schema_version":1,"entries":[],"clock":{}}`,
-		`{"schema_version":1,"entries":[{"key":"taken:a:00","seen":"2026-10-06T10:00:00.5+02:00","status":"taken"}],"clock":{"a:1:2":"2026-10-06T10:00:00Z"}}`,
+		`{"schema_version":1,"entries":[],"clock":{},"evidence":{"commit":"","last_run":"0001-01-01T00:00:00Z","failed":""}}`,
+		`{"schema_version":1,"entries":[{"key":"taken:a:00","seen":"2026-10-06T10:00:00.5+02:00","status":"taken"}],"clock":{"a:1:2":"2026-10-06T10:00:00Z"},"evidence":{"commit":"","last_run":"0001-01-01T00:00:00Z","failed":""}}`,
 		`{"schema_version":1,"entries":[{"key":"rejected:ab","seen":"2026-10-06T10:00:00Z","status":"rejected"}],"clock":{}} `,
 		`{"schema_version":1,"entries":[],"clock":{}}{}`,
 		`{"schema_version":1,"Entries":[],"CLOCK":{},"entries":null}`,
