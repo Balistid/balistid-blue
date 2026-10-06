@@ -112,16 +112,16 @@ func runJob(ctx context.Context, dev string) error {
 	var facts []fact
 	add := func(name, value string) { facts = append(facts, fact{name, value}) }
 	add(rangevm.FactKernel, readTrim("/proc/sys/kernel/osrelease"))
-	program, sum, err := readJob(dev)
+	job, err := readJob(dev)
 	if err != nil {
 		add(rangevm.FactJobError, err.Error())
 		return write(facts)
 	}
-	add(rangevm.FactJobSHA256, hex.EncodeToString(sum[:]))
+	add(rangevm.FactJobSHA256, hex.EncodeToString(job.SHA256[:]))
 	if err := os.MkdirAll(filepath.Dir(jobProgram), 0o755); err != nil { //nolint:gosec // world-readable so the job user can exec it
 		return fmt.Errorf("job directory: %w", err)
 	}
-	if err := os.WriteFile(jobProgram, program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
+	if err := os.WriteFile(jobProgram, job.Program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
 		return fmt.Errorf("job program: %w", err)
 	}
 	// The descriptor opened before the job shows whether Laurel rotated the log meanwhile.
@@ -137,14 +137,8 @@ func runJob(ctx context.Context, dev string) error {
 		return write(facts)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, (rangejob.MaxTimeoutS+30)*time.Second)
+	cmd, ctx, cancel := jobCommand(ctx, job)
 	defer cancel()
-	// TimeoutStopSec keeps the kill of every job process inside the context, NoNewPrivileges matches
-	// an agent in the host sandbox, and the named unit stays so its result can be read below.
-	cmd := exec.CommandContext(ctx, "/usr/bin/systemd-run", "--wait", "--pipe", "--quiet", //nolint:gosec // fixed argv
-		"--unit="+jobUnit, "-p", "User=balistid-job", "-p", "NoNewPrivileges=yes",
-		"-p", fmt.Sprintf("RuntimeMaxSec=%d", rangejob.MaxTimeoutS), "-p", "TimeoutStopSec=10",
-		"-p", "MemoryMax=1G", "-p", "TasksMax=256", "--", jobProgram)
 	var out cappedBuffer
 	out.left = jobOutCap
 	cmd.Stdout, cmd.Stderr = &out, &out
@@ -165,23 +159,40 @@ func runJob(ctx context.Context, dev string) error {
 	return write(facts)
 }
 
-// readJob reads the whole job disk and returns the program only if every byte is as encoded.
-func readJob(dev string) ([]byte, [32]byte, error) {
+// jobStopSec is the unit's TimeoutStopSec: how long systemd waits after SIGTERM before SIGKILL.
+const jobStopSec = 10
+
+// jobCommand runs the job's program as the unprivileged balistid-job user in the named transient
+// unit jobUnit, which stays so its result can be read afterwards. systemd ends it, and every
+// process it started, after the job disk's time limit; NoNewPrivileges matches an agent in the
+// host sandbox. The returned context, which also bounds reading the result, outlasts the limit,
+// the stop and its repeat after SIGKILL, and a margin, so the unit and not the context ends the job.
+func jobCommand(ctx context.Context, job rangejob.Disk) (*exec.Cmd, context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(job.TimeoutS+2*jobStopSec+20)*time.Second)
+	cmd := exec.CommandContext(ctx, "/usr/bin/systemd-run", "--wait", "--pipe", "--quiet", //nolint:gosec // fixed argv; the limit is an integer from the checked disk
+		"--unit="+jobUnit, "-p", "User=balistid-job", "-p", "NoNewPrivileges=yes",
+		"-p", fmt.Sprintf("RuntimeMaxSec=%d", job.TimeoutS), "-p", fmt.Sprintf("TimeoutStopSec=%d", jobStopSec),
+		"-p", "MemoryMax=1G", "-p", "TasksMax=256", "--", jobProgram)
+	return cmd, ctx, cancel
+}
+
+// readJob reads the whole job disk and returns what it carries only if every byte is as encoded.
+func readJob(dev string) (rangejob.Disk, error) {
 	f, err := os.Open(dev) //nolint:gosec // the device found by its virtio serial
 	if err != nil {
-		return nil, [32]byte{}, errors.New("cannot open the job disk")
+		return rangejob.Disk{}, errors.New("cannot open the job disk")
 	}
 	defer f.Close() //nolint:errcheck // read-only
 	disk := make([]byte, rangejob.DiskBytes+1)
 	n, err := io.ReadFull(f, disk)
 	if !errors.Is(err, io.ErrUnexpectedEOF) || n != rangejob.DiskBytes {
-		return nil, [32]byte{}, errors.New("job disk has the wrong size")
+		return rangejob.Disk{}, errors.New("job disk has the wrong size")
 	}
-	program, sum, err := rangejob.DecodeDisk(disk[:n])
+	job, err := rangejob.DecodeDisk(disk[:n])
 	if err != nil {
-		return nil, [32]byte{}, fmt.Errorf("job disk: %w", err)
+		return rangejob.Disk{}, fmt.Errorf("job disk: %w", err)
 	}
-	return program, sum, nil
+	return job, nil
 }
 
 // unitResult returns the job unit's result and its main process's exit status (a signal number
