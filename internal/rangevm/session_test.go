@@ -5,6 +5,7 @@ import (
 	"compress/zlib"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -61,7 +62,7 @@ func TestLockRemovesStaleDirectoriesAndExcludesASecondHolder(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	held, err := lock(cache)
+	held, err := Lock(cache)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +75,13 @@ func TestLockRemovesStaleDirectoriesAndExcludesASecondHolder(t *testing.T) {
 	if got := names(t, filepath.Join(cache, "runs")); len(got) != 0 {
 		t.Fatalf("stale run directories left: %q", got)
 	}
-	if _, err := lock(cache); err == nil {
+	if _, err := Lock(cache); err == nil {
 		t.Fatal("a second holder got the lock")
 	}
 	if err := closeLock(held); err != nil {
 		t.Fatal(err)
 	}
-	again, err := lock(cache)
+	again, err := Lock(cache)
 	if err != nil {
 		t.Fatalf("lock after release: %v", err)
 	}
@@ -135,8 +136,14 @@ func TestJudge(t *testing.T) {
 		{"invalid run", Outcome{Invalid: "vm: exit status 1"}, commit, Invalid},
 	}
 	for _, c := range cases {
-		if got, reason := judge(c.o, c.launcher, commit); got != c.want {
+		if got, reason := JudgeSelftest(c.o, c.launcher, commit); got != c.want {
 			t.Errorf("%s: judge = %s (%s), want %s", c.name, got, reason, c.want)
+		}
+	}
+	// Equal is not enough: neither side may be a placeholder such as an unset build version.
+	for _, both := range []string{"", "dev", strings.ToUpper(commit)} {
+		if got, _ := JudgeSelftest(pass, both, both); got != Unknown {
+			t.Errorf("launcher and image both %q: %s, want %s", both, got, Unknown)
 		}
 	}
 }
@@ -970,5 +977,107 @@ func TestObjectStoreCopyStopsAtTheDeadline(t *testing.T) {
 	defer cancel()
 	if err := copyObjectStore(ctx, root, filepath.Join(stageFor(t), "objects"), defaultLimits()); err == nil {
 		t.Fatal("copied a 64 MiB pack past a 2 ms deadline")
+	}
+}
+
+// The runner names its commit (ADR 0011, point 2); anything that is not a full lower-case commit
+// id is refused before the cache is even locked.
+func TestBuildCommitRefusesANonCommitFirst(t *testing.T) {
+	root, git := testRepo(t)
+	head := git("rev-parse", "HEAD")
+	for _, c := range []string{"", "dev", strings.ToUpper(head), head[:39], head + "0", "-" + head[1:]} {
+		cache := t.TempDir()
+		if _, err := BuildCommit(t.Context(), root, cache, io.Discard, c); err == nil || !strings.Contains(err.Error(), "not 40 lower-case hex") {
+			t.Errorf("BuildCommit(%q) = %v, want a refusal", c, err)
+		}
+		if got := names(t, cache); len(got) != 0 {
+			t.Errorf("BuildCommit(%q) left %q in the cache", c, got)
+		}
+	}
+}
+
+// BuildCommit builds the commit it is given, not HEAD and not the launcher's: an older commit of
+// the repository exports and reaches the guest build (which this test repository cannot pass), and
+// a commit missing from it does not.
+func TestBuildCommitBuildsTheNamedCommit(t *testing.T) {
+	root, git := testRepo(t)
+	old := git("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(root, "range", "mkosi.conf"), []byte("[Distribution]\nRelease=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("commit", "-q", "-am", "y")
+	_, err := BuildCommit(t.Context(), root, t.TempDir(), io.Discard, old)
+	if err == nil || !strings.Contains(err.Error(), "build guest program") {
+		t.Fatalf("BuildCommit(older commit) = %v, want it to reach the guest build", err)
+	}
+	_, err = BuildCommit(t.Context(), root, t.TempDir(), io.Discard, strings.Repeat("ab", 20))
+	if err == nil || strings.Contains(err.Error(), "build guest program") {
+		t.Fatalf("BuildCommit(missing commit) = %v, want the copy to refuse it", err)
+	}
+}
+
+func storeImage(t *testing.T, images, name, commit string) string {
+	t.Helper()
+	dir := filepath.Join(images, name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"image.raw":      "image " + name,
+		"image.manifest": `{"manifest_version":1,"packages":[{"name":"linux","version":"7.2.8"}]}`,
+		"commit":         commit + "\n",
+	}
+	for f, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return filepath.Join(dir, "image.raw")
+}
+
+func TestOpenImage(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	path := storeImage(t, t.TempDir(), "x", commit)
+	img, err := OpenImage(t.Context(), path)
+	sum := sha256.Sum256([]byte("image x"))
+	if err != nil || img.Commit != commit || img.SHA256 != hex.EncodeToString(sum[:]) || len(img.Manifest) == 0 {
+		t.Fatalf("OpenImage = %+v, %v", img, err)
+	}
+	// Beside its own commit and manifest, so only the link itself can be refused.
+	link := filepath.Join(filepath.Dir(path), "link.raw")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenImage(t.Context(), link); err == nil {
+		t.Fatal("OpenImage followed a link")
+	}
+	if err := os.Remove(filepath.Join(filepath.Dir(path), "commit")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenImage(t.Context(), path); err == nil {
+		t.Fatal("OpenImage of an image without its commit succeeded")
+	}
+}
+
+func TestLockExcludesBuildAndCheck(t *testing.T) {
+	root, git := testRepo(t)
+	cache := t.TempDir()
+	held, err := Lock(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(t.Context(), filepath.Join(cache, "none"), cache, t.TempDir()); err == nil || !strings.Contains(err.Error(), "another balistid-range") {
+		t.Errorf("Check under the lock = %v", err)
+	}
+	if _, err := BuildCommit(t.Context(), root, cache, io.Discard, git("rev-parse", "HEAD")); err == nil || !strings.Contains(err.Error(), "another balistid-range") {
+		t.Errorf("BuildCommit under the lock = %v", err)
+	}
+	if err := held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := Lock(cache); err != nil {
+		t.Fatalf("Lock after Close = %v", err)
+	} else if err := again.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
