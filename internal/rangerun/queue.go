@@ -50,9 +50,31 @@ type Entry struct {
 // the directory, which is no more than resubmitting it. Agents build a job outside the inbox and
 // rename it in, since a half-written job is rejected.
 type Ledger struct {
-	Entries []Entry
-	Clock   map[string]time.Time
+	Entries  []Entry
+	Clock    map[string]time.Time
+	Evidence Evidence
 }
+
+// Evidence is the runner's record of its own evidence runs (ADR 0011, point 7): the commit and
+// time of the last PASS, and every evidence FAIL, which fails its commit for good and whose result
+// outlives retention; at MaxFailed of them the runner stops until the maintainer reviews the ledger.
+type Evidence struct {
+	Commit   string      `json:"commit"`
+	LastPass time.Time   `json:"last_pass"`
+	Failed   []FailedRun `json:"failed"`
+	Pending  string      `json:"pending"` // the evidence run under way, until its verdict is in the ledger
+	// Due latches once evidence falls due and only a PASS clears it, so a clock set back cannot.
+	Due bool `json:"due"`
+}
+
+// FailedRun is an evidence FAIL: the commit and the id of its result.
+type FailedRun struct {
+	Commit string `json:"commit"`
+	ID     string `json:"id"`
+}
+
+// MaxFailed caps the failed evidence runs the ledger keeps (R5).
+const MaxFailed = 16
 
 // OpenInbox opens path as the inbox only if it is a directory and not a link to one.
 func OpenInbox(path string) (*os.Root, error) {

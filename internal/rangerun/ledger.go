@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
@@ -20,7 +21,7 @@ const MaxLedgerBytes = 1 << 20
 // maxKeyBytes is the longest key Next makes: "taken:" + 64 hex + ":" + 64 hex = 135.
 const maxKeyBytes = 135
 
-const ledgerSchema = 1
+const ledgerSchema = 2
 
 // Errors of LoadLedger. A lost or unreadable ledger must not read as an empty one, which would
 // reset the quota and the once-per-name rule. ErrNoLedger also matches fs.ErrNotExist.
@@ -35,6 +36,7 @@ type ledgerFile struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Entries       *[]Entry              `json:"entries"`
 	Clock         *map[string]time.Time `json:"clock"`
+	Evidence      *Evidence             `json:"evidence"`
 }
 
 // LoadLedger reads path, without following a link or blocking, if it is a regular file of at most
@@ -66,27 +68,37 @@ func SaveLedger(path string, l Ledger) error {
 }
 
 func readLedger(path string) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the runner's own state file; O_NOFOLLOW refuses a link
+	data, err := readFile(path, MaxLedgerBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %w", ErrNoLedger, err)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrCorruptLedger, err)
 	}
+	return data, nil
+}
+
+// readFile reads the regular file at path, at most limit bytes, without following a link in its
+// last component or blocking on a FIFO.
+func readFile(path string, limit int) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the runner's own files; O_NOFOLLOW refuses a link
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
 	defer f.Close() //nolint:errcheck // read-only
 	st, err := f.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCorruptLedger, err)
+		return nil, fmt.Errorf("stat: %w", err)
 	}
 	if !st.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s is not a regular file", ErrCorruptLedger, path)
+		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxLedgerBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrCorruptLedger, err)
+		return nil, fmt.Errorf("read: %w", err)
 	}
-	if len(data) > MaxLedgerBytes {
-		return nil, fmt.Errorf("%w: %s is over %d bytes", ErrCorruptLedger, path, MaxLedgerBytes)
+	if len(data) > limit {
+		return nil, fmt.Errorf("%s is over %d bytes", path, limit)
 	}
 	return data, nil
 }
@@ -106,10 +118,10 @@ func decodeLedger(data []byte) (Ledger, error) {
 	if f.SchemaVersion != ledgerSchema {
 		return Ledger{}, fmt.Errorf("schema_version must be %d", ledgerSchema)
 	}
-	if f.Entries == nil || f.Clock == nil {
-		return Ledger{}, errors.New("entries and clock are required")
+	if f.Entries == nil || f.Clock == nil || f.Evidence == nil {
+		return Ledger{}, errors.New("entries, clock and evidence are required")
 	}
-	l := Ledger{Entries: *f.Entries, Clock: *f.Clock}
+	l := Ledger{Entries: *f.Entries, Clock: *f.Clock, Evidence: *f.Evidence}
 	if err := l.check(); err != nil {
 		return Ledger{}, err
 	}
@@ -132,7 +144,14 @@ func encodeLedger(l Ledger) ([]byte, error) {
 	for id, t := range l.Clock {
 		clock[id] = t.UTC()
 	}
-	data, err := json.Marshal(ledgerFile{SchemaVersion: ledgerSchema, Entries: &entries, Clock: &clock})
+	ev := l.Evidence
+	if !ev.LastPass.IsZero() {
+		ev.LastPass = ev.LastPass.UTC()
+	}
+	if ev.Failed == nil {
+		ev.Failed = []FailedRun{}
+	}
+	data, err := json.Marshal(ledgerFile{SchemaVersion: ledgerSchema, Entries: &entries, Clock: &clock, Evidence: &ev})
 	if err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
@@ -170,6 +189,21 @@ func (l Ledger) check() error {
 		}
 		if !validTime(t) {
 			return errors.New("a clock time is zero or out of range")
+		}
+	}
+	e := l.Evidence
+	if e.Commit == "" && !e.LastPass.IsZero() || e.Commit != "" && (!buildinfo.IsCommitID(e.Commit) || !validTime(e.LastPass)) {
+		return errors.New("evidence commit or time is malformed")
+	}
+	if e.Pending != "" && !resultName.MatchString(e.Pending) {
+		return errors.New("the pending evidence run is malformed")
+	}
+	if e.Failed == nil || len(e.Failed) > MaxFailed {
+		return fmt.Errorf("evidence needs a list of at most %d failed runs", MaxFailed)
+	}
+	for _, f := range e.Failed {
+		if !buildinfo.IsCommitID(f.Commit) || !resultName.MatchString(f.ID) {
+			return errors.New("a failed evidence run is malformed")
 		}
 	}
 	return nil

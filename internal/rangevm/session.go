@@ -21,6 +21,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/buildinfo"
 )
 
 // Retention (R5): base images are about a GiB each; results are small.
@@ -31,8 +33,6 @@ const (
 	stampLayout  = "20060102T150405Z"
 	resultSchema = 1
 )
-
-var commitRE = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // sourceDateEpoch is the SourceDateEpoch of range/mkosi.conf, so the Laurel package, like the rest
 // of the image, does not change with the build time.
@@ -87,7 +87,7 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 // way. root is laid out like a repository (root/.git/objects) and is read only as Build reads it.
 // On a retention error the image is stored and its path returned with the error.
 func BuildCommit(ctx context.Context, root, cache string, log io.Writer, commit string) (string, error) {
-	if !commitRE.MatchString(commit) {
+	if !buildinfo.IsCommitID(commit) {
 		return "", errors.New("commit is not 40 lower-case hex digits")
 	}
 	return buildCommit(ctx, root, cache, log, commit, fetchTimeout)
@@ -195,7 +195,7 @@ func defaultLimits() limits {
 // the stage repository, where a forged object is simply missing.
 func fetchAndExport(ctx context.Context, tool toolFunc, root, stage, commit string, lim limits) error {
 	// commit reaches git argv; a name that is not 40 hex digits could be read as an option.
-	if !commitRE.MatchString(commit) {
+	if !buildinfo.IsCommitID(commit) {
 		return fmt.Errorf("commit %q is not a full object name", commit)
 	}
 	// git never runs in root, nor reads a file there: its configuration, attributes, refs, work tree
@@ -435,7 +435,7 @@ func listTree(tool toolFunc, gitDir, commit string, lim limits) (map[string]entr
 	for rec := range strings.SplitSeq(strings.TrimSuffix(string(data), "\x00"), "\x00") {
 		meta, path, ok := strings.Cut(rec, "\t")
 		fields := strings.Split(meta, " ")
-		if !ok || len(fields) != 3 || !commitRE.MatchString(fields[2]) {
+		if !ok || len(fields) != 3 || !buildinfo.IsCommitID(fields[2]) {
 			return nil, fmt.Errorf("git ls-tree %s: unexpected entry %q", commit, rec)
 		}
 		if fields[0] != "100644" && fields[0] != "100755" || fields[1] != "blob" {
@@ -636,7 +636,7 @@ func cleanRevision(settings []debug.BuildSetting) string {
 			modified = s.Value != "false"
 		}
 	}
-	if modified || !commitRE.MatchString(rev) {
+	if modified || !buildinfo.IsCommitID(rev) {
 		return ""
 	}
 	return rev
@@ -742,7 +742,7 @@ func JudgeSelftest(o Outcome, launcher, image string) (verdict, reason string) {
 		return Invalid, o.Invalid
 	}
 	verdict, reason = Selftest(o.Facts)
-	if verdict == Pass && (launcher != image || !commitRE.MatchString(launcher)) {
+	if verdict == Pass && (launcher != image || !buildinfo.IsCommitID(launcher)) {
 		return Unknown, fmt.Sprintf("launcher is not a clean build of the image commit %s (got %q)", image, launcher)
 	}
 	return verdict, reason
@@ -884,7 +884,7 @@ func readCommit(path string) (string, error) {
 		return "", fmt.Errorf("image commit: %w", err)
 	}
 	commit := string(bytes.TrimSpace(data))
-	if !commitRE.MatchString(commit) {
+	if !buildinfo.IsCommitID(commit) {
 		return "", fmt.Errorf("image commit %q is not a full commit id", commit)
 	}
 	return commit, nil
