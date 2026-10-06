@@ -5,7 +5,7 @@ toolchain: go.mod pins `toolchain go<version>` and the running toolchain reports
            upstream version (no distribution suffix such as `X:nodwarf5`).
 modsum:    a module fetched with `go mod download -json` has the pinned h1 hash.
 same:      two release builds are byte-identical.
-owned:     every package the range binaries compile, and the paths that go into the range image,
+owned:     every package the range binaries, the runner and the client compile, and the paths that go into the range image,
            is in the main module and code-owned (ADR 0011): an agent change there would run on
            the host or in the evidence image, so it waits for the maintainer.
 """
@@ -49,8 +49,9 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
     return [] if ha == hb else [f"release builds differ: {ha} != {hb}"]
 
 
-# The binaries and the image inputs of session.go (imageFiles, range/, packaging/); change together.
-OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest")
+# The binaries (the range launcher and guest, the runner and the client root installs, ADR 0011) and the
+# image inputs of session.go (imageFiles, range/, packaging/); change together with ci.yml.
+OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid")
 OWNED_PATHS = ("range", "deploy", "packaging")
 MAINTAINER = "@Jvc0n"
 # Every line is an anchored plain path owned by the maintainer alone. GitHub lets a later line take
@@ -118,7 +119,7 @@ def owned_problems(deps_json: str, codeowners: str, go_mod: str) -> list[str]:
         rel = path[len(module_path) + 1:]
         seen.add(rel)
         if not is_owned(rel, rules):
-            problems.append(f"{rel}: compiled into a range binary but has no code owner")
+            problems.append(f"{rel}: compiled into a gated binary but has no code owner")
     problems += [f"{r}: missing from the dependency list" for r in OWNED_ROOTS if r not in seen]
     problems += [f"{p}: goes into the range image but has no code owner"
                  for p in OWNED_PATHS if not is_owned(p, rules)]

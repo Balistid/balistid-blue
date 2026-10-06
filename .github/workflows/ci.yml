@@ -67,9 +67,9 @@ jobs:
           test -z "${cgo_files//[[:space:]]/}" || { echo "cgo is forbidden (ADR 0003): $cgo_files"; exit 1; }
           go vet ./...
           golangci-lint run ./...
-      - name: Every package of the range binaries is code-owned (ADR 0011)
+      - name: Every package of the range binaries, the runner and the client is code-owned (ADR 0011)
         run: |
-          go list -deps -json ./cmd/balistid-range ./cmd/balistid-range-guest > "$RUNNER_TEMP/deps.json"
+          go list -deps -json ./cmd/balistid-range ./cmd/balistid-range-guest ./cmd/balistid-runner ./cmd/balistid > "$RUNNER_TEMP/deps.json"
           python3 tools/ci/go_gate.py owned --deps "$RUNNER_TEMP/deps.json" \
             --codeowners .github/CODEOWNERS --go-mod go.mod
       - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)
@@ -129,6 +129,7 @@ jobs:
         run: CGO_ENABLED=1 go test -race ./...
 
   go-release:
+    needs: go-static
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -156,14 +157,20 @@ jobs:
           mkdir -p "$a" "$b" "$RUNNER_TEMP/home-b" "$RUNNER_TEMP/tmp-b"
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
-          (cd "$a" && go build -trimpath -buildvcs=false -ldflags "$flags" -o balistid ./cmd/balistid)
-          (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \
-            GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \
-            go build -trimpath -buildvcs=false -ldflags "$flags" -o balistid ./cmd/balistid)
-          sha256sum "$a/balistid" "$b/balistid"
-          python3 tools/ci/go_gate.py same "$a/balistid" "$b/balistid"
-          # -X with a stale package path is silently ignored and both builds still match.
-          test "$("$a/balistid" version)" = "balistid ${GITHUB_SHA}"
+          for cmd in balistid balistid-runner; do
+            (cd "$a" && go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
+            (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \
+              GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \
+              go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
+          done
+          # Only now does project code run (version); a hash is printed only for a build that passed.
+          # The runner's is the binary's part of the install manifest of ADR 0011.
+          for cmd in balistid balistid-runner; do
+            python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
+            # -X with a stale package path is silently ignored and both builds still match.
+            test "$("$a/$cmd" version)" = "balistid ${GITHUB_SHA}"
+            sha256sum "$a/$cmd"
+          done
 
   selftest:
     runs-on: ubuntu-24.04
