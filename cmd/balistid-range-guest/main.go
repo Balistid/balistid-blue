@@ -95,13 +95,11 @@ func run() error {
 	return write(facts)
 }
 
-// Limits of an exec job's report: the results disk holds 16 MiB, and base64 adds a third.
+// The exec job's program and its transient unit; the report's limits are rangevm's, which the
+// host checks.
 const (
-	jobChunk     = 32 << 10
-	jobOutCap    = 2 << 20
-	jobLaurelCap = 6 << 20
-	jobProgram   = "/run/balistid-job/program"
-	jobUnit      = "balistid-job-run"
+	jobProgram = "/run/balistid-job/program"
+	jobUnit    = "balistid-job-run"
 )
 
 // runJob runs the job disk's program instead of the self-test, which would disable audit and flood
@@ -140,20 +138,20 @@ func runJob(ctx context.Context, dev string) error {
 	cmd, ctx, cancel := jobCommand(ctx, job)
 	defer cancel()
 	var out cappedBuffer
-	out.left = jobOutCap
+	out.left = rangevm.JobOutCap
 	cmd.Stdout, cmd.Stderr = &out, &out
 	result, status := unitResult(ctx, cmd.Run())
 	add(rangevm.FactJobResult, result)
 	add(rangevm.FactJobExit, status)
 	add(rangevm.FactJobOutCut, yesNo(out.cut))
-	for _, c := range rangeguest.Chunks(out.buf.Bytes(), jobChunk) {
+	for _, c := range rangeguest.Chunks(out.buf.Bytes(), rangevm.JobChunk) {
 		add(rangevm.FactJobOut, c)
 	}
 
 	add("canary", canary(ctx)) // once seen, Laurel has written everything before it
-	window, cut := laurelWindow(before, laurelLog, offset, jobLaurelCap)
+	window, cut := laurelWindow(before, laurelLog, offset, rangevm.JobLaurelCap)
 	add(rangevm.FactJobLaurelCut, cut)
-	for _, c := range rangeguest.Chunks(window, jobChunk) {
+	for _, c := range rangeguest.Chunks(window, rangevm.JobChunk) {
 		add(rangevm.FactJobLaurel, c)
 	}
 	return write(facts)
@@ -195,8 +193,8 @@ func readJob(dev string) (rangejob.Disk, error) {
 	return job, nil
 }
 
-// unitResult returns the job unit's result and its main process's exit status (a signal number
-// for timeout, signal or oom-kill). systemd-run exits 0 only for success; any other exit is non-zero
+// unitResult returns the job unit's result and its main process's exit status (a signal number for
+// signal; for timeout or oom-kill a signal number or the program's own exit). systemd-run exits 0 only for success; any other exit is non-zero
 // for a failed job and a failed start alike, so then systemd's own record decides, and only for a
 // unit that exists and failed: systemctl shows a missing unit as a zeroed "success".
 func unitResult(ctx context.Context, runErr error) (result, status string) {
