@@ -622,6 +622,123 @@ func TestResultsAreLoggedWithReasonAndRule(t *testing.T) {
 	}
 }
 
+// A rejected inbox job is logged once, when the ledger records it, with its name and reason
+// escaped and the rule version; the next tick finds it in the ledger and logs nothing.
+func TestARejectionIsLoggedOnce(t *testing.T) {
+	now := time.Now()
+	cases := map[string]struct {
+		add          func(t *testing.T, tr testRunner)
+		name, reason string
+	}{
+		"hostile name": {func(t *testing.T, tr testRunner) {
+			tr.addJob(t, "job\x1b[2J\nrm", execRequest, program)
+		}, `job\x1b[2J\x0arm`, "job name must be lower-case letters, digits and dashes"},
+		"symlinked job.json": {func(t *testing.T, tr testRunner) {
+			target := filepath.Join(tr.root, "request.json")
+			if err := os.WriteFile(target, []byte(`{"schema_version":1,"kind":"run","trials":1}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(tr.Inbox, "job-1")
+			if err := os.Mkdir(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir, rangejob.RequestFile)); err != nil {
+				t.Fatal(err)
+			}
+		}, "job-1", "job.json: not a regular file"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			tr := newTestRunner(t, now, evidenceDone(now))
+			var log bytes.Buffer
+			tr.Log = slog.New(slog.NewTextHandler(&log, nil))
+			c.add(t, tr)
+			if err := tr.Tick(t.Context()); err != nil || len(tr.vm.disks) != 0 {
+				t.Fatalf("tick %v, %d runs", err, len(tr.vm.disks))
+			}
+			line := log.String()
+			if strings.Count(line, "\n") != 1 || !strings.Contains(line, "decision=rejected") ||
+				!strings.Contains(line, "job="+c.name+" ") || !strings.Contains(line, `reason="`+c.reason+`"`) ||
+				!strings.Contains(line, RuleVersion) || strings.ContainsRune(line, 0x1b) {
+				t.Fatalf("log: %q", line)
+			}
+			log.Reset()
+			tr.now = func() time.Time { return now.Add(time.Minute) }
+			if err := tr.Tick(t.Context()); err != nil || log.Len() != 0 {
+				t.Fatalf("second tick %v, log: %q", err, log.String())
+			}
+		})
+	}
+}
+
+// Every rejection a tick records is logged: beside a job it takes, several in one tick, and those
+// recorded before the quota stops the scan; a reason is escaped like a name.
+func TestEveryRejectionIsLogged(t *testing.T) {
+	now := time.Now()
+	rejected := func(log string) []string {
+		var lines []string
+		for line := range strings.Lines(log) {
+			if strings.Contains(line, "decision=rejected") {
+				lines = append(lines, line)
+			}
+		}
+		return lines
+	}
+	setup := func(t *testing.T) (testRunner, *bytes.Buffer) {
+		tr := newTestRunner(t, now, evidenceDone(now))
+		var log bytes.Buffer
+		tr.Log = slog.New(slog.NewTextHandler(&log, nil))
+		return tr, &log
+	}
+	t.Run("beside a job taken", func(t *testing.T) {
+		tr, log := setup(t)
+		tr.addJob(t, "a", "{}", nil)
+		tr.addJob(t, "b", execRequest, program)
+		if err := tr.Tick(t.Context()); err != nil || len(tr.vm.disks) != 1 {
+			t.Fatalf("tick %v, %d runs", err, len(tr.vm.disks))
+		}
+		if lines := rejected(log.String()); len(lines) != 1 || !strings.Contains(lines[0], "job=a ") {
+			t.Fatalf("rejections logged: %q", lines)
+		}
+	})
+	t.Run("several in one tick", func(t *testing.T) {
+		tr, log := setup(t)
+		tr.addJob(t, "a", "{}", nil)
+		tr.addJob(t, "b", "{}", nil)
+		if err := tr.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if lines := rejected(log.String()); len(lines) != 2 {
+			t.Fatalf("rejections logged: %q", lines)
+		}
+	})
+	t.Run("up to the quota", func(t *testing.T) {
+		tr, log := setup(t)
+		for i := range Quota + 1 {
+			tr.addJob(t, fmt.Sprintf("job-%d", i), "{}", nil)
+		}
+		if err := tr.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		lines := rejected(log.String())
+		if len(lines) != Quota {
+			t.Fatalf("rejections logged: %q", lines)
+		}
+		for i, line := range lines {
+			if !strings.Contains(line, fmt.Sprintf("job=job-%d ", i)) {
+				t.Fatalf("rejection %d: %q", i, line)
+			}
+		}
+	})
+	t.Run("reason escaped", func(t *testing.T) {
+		tr, log := setup(t)
+		tr.logRejection(Rejection{Name: "a", Reason: "bad\x1b[2J\""})
+		if line := log.String(); !strings.Contains(line, `reason=bad\x1b[2J\x22 `) || strings.ContainsRune(line, 0x1b) {
+			t.Fatalf("log: %q", line)
+		}
+	})
+}
+
 // Fail-closed branches each have their case: a VM that cannot start or reports INVALID, a stop
 // between trials, an UNKNOWN trial, state someone else owns, a pending run without its result.
 func TestRunnerFailsClosed(t *testing.T) {

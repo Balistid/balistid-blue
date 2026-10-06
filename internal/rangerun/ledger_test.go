@@ -322,7 +322,7 @@ func TestALedgerFromAnyInboxSurvivesTheDisk(t *testing.T) {
 	}
 	var l Ledger
 	for {
-		_, ok, err := Next(inbox, &l, now)
+		_, ok, _, err := Next(inbox, &l, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -344,7 +344,7 @@ func TestALedgerFromAnyInboxSurvivesTheDisk(t *testing.T) {
 	if !sameLedger(loaded, l) {
 		t.Fatalf("the ledger changed on disk:\nsaved  %+v\nloaded %+v", l, loaded)
 	}
-	if _, ok, err := Next(inbox, &loaded, now.Add(time.Minute)); ok || err != nil {
+	if _, ok, _, err := Next(inbox, &loaded, now.Add(time.Minute)); ok || err != nil {
 		t.Fatalf("after a reload Next took a job again: %v %v", ok, err)
 	}
 	if !sameLedger(loaded, l) {

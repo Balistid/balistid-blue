@@ -257,7 +257,10 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 		return fmt.Errorf("tick: %w", err)
 	}
 	defer inbox.Close() //nolint:errcheck // read-only
-	job, ok, nextErr := Next(inbox, l, now)
+	job, ok, rejected, nextErr := Next(inbox, l, now)
+	for _, rej := range rejected {
+		r.logRejection(rej)
+	}
 	// The ledger is on disk before the job runs: a crash or kill after this point never gives the
 	// job a second run or the agents their quota back.
 	if err := errors.Join(nextErr, SaveLedger(r.ledgerPath(), *l)); err != nil || !ok {
@@ -272,6 +275,13 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 		return r.execJob(ctx, img, info, job)
 	}
 	return fmt.Errorf("tick: job %s has no kind the runner knows", job.Name)
+}
+
+// logRejection logs a rejection once, as the ledger records it. The name is the agent's bytes; the
+// reason is ReadJob's fixed text, which never quotes what the job holds, escaped all the same.
+func (r *Runner) logRejection(rej Rejection) {
+	r.Log.Info("inbox job", "decision", Rejected, "job", rangevm.Printable(rej.Name, 80),
+		"reason", rangevm.Printable(rej.Reason, 200), "rule", RuleVersion)
 }
 
 func (r *Runner) runJob(ctx context.Context, img image, info *JobInfo, trials int) error {
