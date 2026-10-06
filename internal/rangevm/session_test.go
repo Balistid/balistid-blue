@@ -328,16 +328,17 @@ func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	stage := t.TempDir() // before TMPDIR changes below
 	for k, v := range map[string]string{"GOFLAGS": "-toolexec=/tmp/x", "GOROOT": "/tmp/goroot", "GOCACHE": "/tmp/cache",
-		"LD_PRELOAD": "/tmp/x.so", "GIT_DIR": "/tmp/repo", "https_proxy": "http://proxy:3128"} {
+		"LD_PRELOAD": "/tmp/x.so", "GIT_DIR": "/tmp/repo", "TMPDIR": "/tmp/shared", "XDG_CACHE_HOME": "/tmp/cache",
+		"https_proxy": "http://proxy:3128"} {
 		t.Setenv(k, v)
 	}
-	stage := t.TempDir()
 	home := filepath.Join(stage, "home")
 	want := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CEILING_DIRECTORIES=" + stage, "GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off",
-		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0",
+		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0", "TMPDIR=" + filepath.Join(stage, "tmp"),
 		"https_proxy=http://proxy:3128"}
 	cmd := newTool(t.Context(), stage, io.Discard)("/", "/usr/bin/true")
 	if !slices.Equal(cmd.Env, want) {
@@ -499,13 +500,12 @@ func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
 		t.Fatalf("git init: %v %s", err, out)
 	}
 	stage := filepath.Join(outer, "stage")
-	if err := os.MkdirAll(filepath.Join(stage, "home"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, d := range stageDirs {
+		if err := os.MkdirAll(filepath.Join(stage, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	src := filepath.Join(stage, "src")
-	if err := os.MkdirAll(src, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	for name, body := range map[string]string{"go.mod": "module m\n\ngo 1.27\n", "main.go": "package main\n\nfunc main() {}\n"} {
 		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -999,6 +999,194 @@ func TestBuildCommitRefusesANonCommitFirst(t *testing.T) {
 		if got := names(t, cache); len(got) != 0 {
 			t.Errorf("BuildCommit(%q) left %q in the cache", c, got)
 		}
+	}
+}
+
+// mkosi gets every writable directory inside the stage, which the build creates and removes: its
+// workspace defaults to /var/tmp and, at a system uid, its package cache to /var/cache (T34). It
+// maps one uid, so a killed build leaves only files the next Lock can remove.
+func TestBuildKeepsMkosiDirectoriesInTheStage(t *testing.T) {
+	stage, built := t.TempDir(), t.TempDir()
+	cmd := mkosiCommand(newTool(t.Context(), stage, io.Discard), stage, built)
+	if want := append(toolEnv(stage), "MKOSI_FORCE_USERNS_FALLBACK=1"); !slices.Equal(cmd.Env, want) {
+		t.Errorf("mkosi environment\n got %q\nwant %q", cmd.Env, want)
+	}
+	if cmd.Path != "/usr/bin/mkosi" || cmd.Dir != filepath.Join(stage, "src") {
+		t.Errorf("mkosi runs %s in %s", cmd.Path, cmd.Dir)
+	}
+	args := cmd.Args[1:]
+	if args[len(args)-1] != "build" {
+		t.Fatalf("mkosi argv %q does not end in the build verb", args)
+	}
+	inStage := func(path string) bool {
+		rel, err := filepath.Rel(stage, path)
+		return err == nil && filepath.IsLocal(rel)
+	}
+	// mkosi creates its workspace with mkdtemp inside the given directory, so it must exist.
+	created := func(path string) bool {
+		return inStage(path) && slices.Contains(stageDirs, strings.TrimPrefix(path, stage+"/"))
+	}
+	named := map[string]string{}
+	for _, a := range args[:len(args)-1] {
+		opt, path, ok := strings.Cut(a, "=")
+		if !ok || !filepath.IsAbs(path) {
+			t.Fatalf("mkosi option %q does not name an absolute path", a)
+		}
+		named[opt] = path
+		if opt != "--output-directory" && !inStage(path) {
+			t.Errorf("mkosi option %s is outside the stage's directories", a)
+		}
+	}
+	if named["--output-directory"] != built {
+		t.Errorf("mkosi output directory = %q, want %q", named["--output-directory"], built)
+	}
+	for _, opt := range []string{"--workspace-directory", "--package-cache-directory"} {
+		if !created(named[opt]) {
+			t.Errorf("mkosi %s = %q, want a directory the stage creates", opt, named[opt])
+		}
+	}
+	tmp := ""
+	for _, kv := range toolEnv(stage) {
+		if v, ok := strings.CutPrefix(kv, "TMPDIR="); ok {
+			tmp = v
+		}
+	}
+	if !created(tmp) {
+		t.Errorf("tool TMPDIR = %q, want a directory the stage creates", tmp)
+	}
+}
+
+// A killed mkosi leaves directories without owner permissions (an overlay work directory is mode
+// 000, here not empty); the next Lock still sweeps the stage, and follows no symlink out of it.
+func TestSweepRemovesDirectoriesWithoutPermissions(t *testing.T) {
+	cache, outside := t.TempDir(), t.TempDir()
+	locked := filepath.Join(outside, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(cache, "stage-x", "mkosi-workspace", "work")
+	if err := os.MkdirAll(filepath.Join(work, "work"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "work", "f"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range []string{filepath.Join(cache, "stage-x", "link"), filepath.Join(cache, "stage-link")} {
+		if err := os.Symlink(outside, l); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, mode := range map[string]os.FileMode{filepath.Join(work, "work"): 0, work: 0o500, locked: 0, outside: 0o750} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o700) }) //nolint:gosec // let TempDir clean up
+	}
+	held, err := Lock(cache)
+	if err != nil {
+		t.Fatalf("Lock after a killed build: %v", err)
+	}
+	if err := closeLock(held); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{filepath.Join(cache, "stage-x"), filepath.Join(cache, "stage-link")} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived the sweep: %v", p, err)
+		}
+	}
+	for path, want := range map[string]os.FileMode{outside: 0o750, locked: 0} {
+		st, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != want {
+			t.Errorf("%s outside the stage has mode %v, want %v", path, st.Mode().Perm(), want)
+		}
+	}
+}
+
+// A process at the build's uid swaps a directory of the stage for a hard link to a file outside
+// while the stage is opened for removal; the file outside keeps its mode.
+func TestOpenDirsChangesNoSwappedName(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(outside, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	stage := t.TempDir()
+	d := filepath.Join(stage, "d")
+	for range 3000 {
+		if err := os.Mkdir(d, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if os.Remove(d) == nil {
+				_ = os.Link(outside, d)
+			}
+		}()
+		_ = openDirs(stage)
+		<-done
+		st, err := os.Stat(outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o400 {
+			t.Fatalf("file outside the stage has mode %v after openDirs", st.Mode().Perm())
+		}
+		if err := os.Remove(d); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func deepTree(t *testing.T, depth int) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(append([]string{root}, slices.Repeat([]string{"a"}, depth)...)...), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// T36: a planted tree deeper than any stage fails closed instead of costing memory quadratic in its depth.
+func TestOpenDirsRefusesATreeTooDeep(t *testing.T) {
+	if err := openDirs(deepTree(t, maxStageDepth)); err != nil {
+		t.Fatalf("tree at the limit: %v", err)
+	}
+	if err := openDirs(deepTree(t, maxStageDepth+1)); err == nil || !strings.Contains(err.Error(), "directories deep") {
+		t.Fatalf("tree over the limit: %v", err)
+	}
+}
+
+// Errors opening the root and listing a directory are returned, not treated as a name to skip.
+func TestOpenDirsReturnsItsErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root searches a mode 000 directory")
+	}
+	shut := t.TempDir()
+	if err := os.Mkdir(filepath.Join(shut, "c"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shut, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(shut, 0o700) }) //nolint:gosec // let TempDir clean up
+	if err := openDirs(filepath.Join(shut, "c")); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("openDirs below an unsearchable directory: %v", err)
+	}
+	root := deepTree(t, 200)
+	var old syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &old); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &old) })
+	low := syscall.Rlimit{Cur: 64, Max: old.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &low); err != nil {
+		t.Fatal(err)
+	}
+	if err := openDirs(root); !errors.Is(err, syscall.EMFILE) {
+		t.Fatalf("openDirs with 64 descriptors on a 200-deep tree: %v", err)
 	}
 }
 

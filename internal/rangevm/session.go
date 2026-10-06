@@ -105,7 +105,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
-	for _, d := range []string{"home", "src", "src-pkg", "build", "log", "pkg"} {
+	for _, d := range stageDirs {
 		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
 			return "", fmt.Errorf("staging directory: %w", err)
 		}
@@ -149,7 +149,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 			err = errors.Join(err, removeDir(built))
 		}
 	}()
-	mkosi := tool(src, "/usr/bin/mkosi", "--directory="+filepath.Join(src, "range"), "--extra-tree="+tree, "--package-directory="+pkgs, "--output-directory="+built, "build")
+	mkosi := mkosiCommand(tool, stage, built)
 	// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
 	// and the next invocation never sweeps a build directory mkosi still writes.
 	mkosi.ExtraFiles = []*os.File{held}
@@ -172,6 +172,24 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("store image: %w", err)
 	}
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
+}
+
+// stageDirs are created in every build's stage before any tool runs.
+var stageDirs = []string{"home", "src", "src-pkg", "build", "log", "pkg", "tmp", "mkosi-workspace", "mkosi-pkgcache"}
+
+// mkosiCommand builds the image from the export in stage into built. mkosi's defaults are /var/tmp
+// for the workspace (shared on the host for the maintainer, T34) and, at a system uid, /var/cache
+// for packages (read-only under the runner's ProtectSystem=strict).
+func mkosiCommand(tool toolFunc, stage, built string) *exec.Cmd {
+	src := filepath.Join(stage, "src")
+	cmd := tool(src, "/usr/bin/mkosi", "--directory="+filepath.Join(src, "range"), "--extra-tree="+filepath.Join(stage, "tree"),
+		"--package-directory="+filepath.Join(stage, "pkg"), "--output-directory="+built,
+		"--workspace-directory="+filepath.Join(stage, "mkosi-workspace"),
+		"--package-cache-directory="+filepath.Join(stage, "mkosi-pkgcache"), "build")
+	// One uid mapped: no foreign or delegated uid ranges, and ForeignUIDRange=yes fails the build
+	// instead of leaving output that the sweep and prune could never remove.
+	cmd.Env = append(cmd.Env, "MKOSI_FORCE_USERNS_FALLBACK=1")
+	return cmd
 }
 
 // limits bound an export (R5). Only the built commit's own objects are copied, no history; today
@@ -588,9 +606,9 @@ func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
 	}
 }
 
-// toolEnv is the whole environment of the tools Build runs: fixed values with caches inside stage,
-// plus the proxy settings, which choose the network path and not what is built. Git looks for no
-// repository above the stage, which sits inside the maintainer's home repository.
+// toolEnv is the whole environment of the tools Build runs: fixed values with caches and temporary
+// files inside stage, plus the proxy settings, which choose the network path and not what is built.
+// Git looks for no repository above the stage, which sits inside the maintainer's home repository.
 func toolEnv(stage string) []string {
 	home := filepath.Join(stage, "home")
 	env := []string{
@@ -607,6 +625,7 @@ func toolEnv(stage string) []string {
 		"GOWORK=off",
 		"GOFLAGS=-mod=readonly -buildvcs=false",
 		"CGO_ENABLED=0",
+		"TMPDIR=" + filepath.Join(stage, "tmp"),
 	}
 	for _, k := range proxyEnv {
 		if v, ok := os.LookupEnv(k); ok {
@@ -946,9 +965,81 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// removeDir removes path and everything below it. A killed mkosi leaves directories without owner
+// permissions (an overlay work directory is mode 000), which RemoveAll cannot enter.
 func removeDir(path string) error {
-	if err := os.RemoveAll(path); err != nil {
+	if err := errors.Join(openDirs(path), os.RemoveAll(path)); err != nil {
 		return fmt.Errorf("remove %s: %w", path, err)
+	}
+	return nil
+}
+
+// oPath is Linux's O_PATH (amd64, arm64), which syscall exports only on some architectures. Were it wrong, the mode 000
+// directory of TestSweepRemovesDirectoriesWithoutPermissions could not be opened.
+const oPath = 0x200000
+
+// maxStageDepth bounds the walk (T36): every level holds a descriptor, its path and its listing, so a planted deep tree
+// would cost memory quadratic in its depth. This host's /usr is 27 levels deep (2026-10-06).
+const maxStageDepth = 256
+
+// openDirs gives every directory below path mode 0700 where it lacks owner rwx. Each directory is
+// opened from its parent's descriptor (O_PATH, O_NOFOLLOW, O_DIRECTORY) and changed through that
+// descriptor, so a name swapped for a symlink or a hard link to a file is never changed. A path that
+// is not a directory (a symlink in a sweep) is left to RemoveAll, which removes only its name.
+func openDirs(path string) error {
+	fd, err := syscall.Open(path, oPath|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if notDir(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open directories %s: %w", path, err)
+	}
+	if err := openDirsAt(fd, path, 0); err != nil {
+		return fmt.Errorf("open directories: %w", err)
+	}
+	return nil
+}
+
+func notDir(err error) bool {
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// openDirsAt fixes the directory fd, named name in errors, then every directory below it; it closes fd.
+func openDirsAt(fd int, name string, depth int) (err error) {
+	defer func() { err = errors.Join(err, syscall.Close(fd)) }()
+	if depth > maxStageDepth {
+		return fmt.Errorf("%s: more than %d directories deep", name, maxStageDepth)
+	}
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	// An O_PATH descriptor cannot be fchmod'ed; its /proc link names exactly the directory opened.
+	if st.Mode&0o700 != 0o700 {
+		if err := os.Chmod("/proc/self/fd/"+strconv.Itoa(fd), 0o700); err != nil { //nolint:gosec // a directory, owner only
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	list, err := syscall.Openat(fd, ".", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	dir := os.NewFile(uintptr(list), name)
+	names, err := dir.Readdirnames(-1)
+	if err := errors.Join(err, dir.Close()); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	for _, n := range names {
+		child, err := syscall.Openat(fd, n, oPath|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+		if notDir(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("%s: %w", filepath.Join(name, n), err)
+		}
+		if err := openDirsAt(child, filepath.Join(name, n), depth+1); err != nil {
+			return err
+		}
 	}
 	return nil
 }
