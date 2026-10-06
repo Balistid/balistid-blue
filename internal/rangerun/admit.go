@@ -23,9 +23,12 @@ const (
 	maxMemInfo         = 64 << 10
 )
 
-// Causes with which a context from Watch ends when the host, not the job, is the problem; the job
-// is then INVALID. Causes wrap them, so compare with errors.Is.
+// ErrNotAdmitted wraps a refusal because the host is short of its reserves, which only delays a
+// job; any other Admit error means the host could not be read. The other two are the causes with
+// which a context from Watch ends when the host, not the job, is the problem; the job is then
+// INVALID. Compare with errors.Is.
 var (
+	ErrNotAdmitted   = errors.New("not admitted: the host is short of its reserves")
 	ErrMemoryReserve = errors.New("memory available fell below the reserve")
 	ErrMemoryUnknown = errors.New("memory available is unknown")
 )
@@ -57,7 +60,7 @@ func admit(ctx context.Context, meminfo func() ([]byte, error), avail func(path 
 		return fmt.Errorf("memory admission: %w", err)
 	}
 	if want := MemReserve + JobMemory; mem < want {
-		return fmt.Errorf("memory admission: %d bytes available, want %d", mem, want)
+		return fmt.Errorf("%w: memory %d bytes available, want %d", ErrNotAdmitted, mem, want)
 	}
 	if len(needs) == 0 {
 		return errors.New("disk admission: no paths to check")
@@ -78,7 +81,7 @@ func admit(ctx context.Context, meminfo func() ([]byte, error), avail func(path 
 			return fmt.Errorf("disk admission: %w", err)
 		}
 		if want := DiskReserve + total; free < want {
-			return fmt.Errorf("disk admission: %s has %d bytes available, want %d", n.Path, free, want)
+			return fmt.Errorf("%w: %s has %d bytes available, want %d", ErrNotAdmitted, n.Path, free, want)
 		}
 	}
 	return nil

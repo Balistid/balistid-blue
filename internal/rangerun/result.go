@@ -181,10 +181,10 @@ func WriteText(dir, name string, data []byte) error {
 	return nil
 }
 
-// Prune keeps the newest keep results in dir, and the result named pin whatever its age, so one
-// failed evidence run outlives retention (ADR 0011, point 7). Entries not named like a result are
+// Prune keeps the newest keep results in dir, and those named in pins whatever their age, so failed
+// evidence runs outlive retention (ADR 0011, point 7). Entries not named like a result are
 // left alone; they are not the runner's.
-func Prune(dir string, keep int, pin string) error {
+func Prune(dir string, keep int, pins ...string) error {
 	if keep < 1 {
 		return errors.New("retention must keep at least one result")
 	}
@@ -194,7 +194,7 @@ func Prune(dir string, keep int, pin string) error {
 	}
 	var names []string
 	for _, e := range entries {
-		if e.IsDir() && resultName.MatchString(e.Name()) && e.Name() != pin {
+		if e.IsDir() && resultName.MatchString(e.Name()) && !slices.Contains(pins, e.Name()) {
 			names = append(names, e.Name())
 		}
 	}
