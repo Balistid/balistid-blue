@@ -59,7 +59,7 @@ func SaveLedger(path string, l Ledger) error {
 	if err != nil {
 		return fmt.Errorf("save ledger %s: %w", path, err)
 	}
-	if err := rangevm.WriteFileAtomic(path, data); err != nil {
+	if err := rangevm.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("save ledger: %w", err)
 	}
 	return nil

@@ -30,14 +30,14 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 4. Jobs: `run` (self-test, N trials), `exec` (the job-disk program); output capped on results disk.
 5. Agents, at the maintainer's uid, write only the inbox and read their results: a maintainer-owned
    directory of the runner's group, mode 2750, in a root-owned parent outside `/home`, `/root` and
-   `/run/user`, opened without following links. The runner
-   never changes it: it reads jobs into its state, keeps quota and expiry there and skips the rest
-   (R5); the maintainer clears the inbox. Every inbox job is an agent job, whatever it claims.
-   Evidence runs come only from the timer and the install, never from a request; they go first.
+   `/run/user`, opened without following links. The runner never changes it: it reads jobs into its
+   state, keeps quota and expiry there and skips the rest (R5); the maintainer clears the inbox.
+   Every inbox job is an agent job, whatever it claims. Results: the runner's 2750 setgid `agent/`,
+   `evidence/` (checked). Evidence: only from the timer or install, never a request; it goes first.
 6. Jobs run in that unit (`MemoryHigh` below `MemoryMax`, no swap, `TasksMax`, idle CPU, a wall
-   clock). A job starts only above a memory reserve and, on each filesystem it writes, a disk
-   reserve plus the sum of its caps (3x per-file `--fsize`: overlay, results, vars; job disk; kept
-   output); below the memory reserve it is stopped, and INVALID.
+   clock). A job starts only above a memory reserve and, on each filesystem it writes, a disk reserve
+   plus the sum of its caps (3x per-file `--fsize`: overlay, results, vars; job disk; kept output);
+   below the memory reserve it is stopped, and INVALID.
 7. The runner reads a job directory only through an `os.Root`, without blocking: Lstat before
    open, regular files with one link, capped. Results name job, source, image and job disk sha256,
    runner commit, limits and exit; guest output is untrusted, printable text only. Evidence is only
