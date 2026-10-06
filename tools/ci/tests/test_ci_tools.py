@@ -376,6 +376,11 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/sysctl/balistid.conf": "kernel.io_uring_disabled = 2\n",
             "deploy/systemd/balistid-collector.service": "[Service]\n",
             "deploy/systemd/balistid-verify.timer": "[Timer]\n",
+            "deploy/runner/sysusers.conf": "g x -\n",
+            "deploy/runner/tmpfiles.conf": "d /x 0755 root root -\n",
+            "deploy/runner/balistid-runner-build.service": "[Service]\n",
+            "deploy/runner/balistid-runner-tick.service": "[Service]\n",
+            "deploy/runner/balistid-runner-tick.timer": "[Timer]\n",
             "range/mkosi.conf": "[Distribution]\n",
             "range/balistid-range-guest.service": "[Unit]\n",
         }, 0)
@@ -389,7 +394,9 @@ class GoLayoutTest(unittest.TestCase):
                      "deploy/auditd/other.conf", "src/main.go", "range/mkosi.postinst",
                      "range/mkosi.extra/etc/x.conf", "range/other.conf", "range/sub/x.service",
                      "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service",
-                     "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf"):
+                     "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf",
+                     "deploy/runner/other.conf", "deploy/runner/balistid-runner.service",
+                     "deploy/runner/balistid-runner-tick.socket", "deploy/runner/sub/tmpfiles.conf"):
             with self.subTest(name=name):
                 self.assert_budget({name: "x\n"}, 1)
 

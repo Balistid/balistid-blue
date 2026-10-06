@@ -13,10 +13,10 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 
 ## Decision
 
-1. `balistid-runner` runs as its own system user and group, never as the maintainer: one system
-   unit (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `StateDirectory=`,
-   `NoNewPrivileges`, no capabilities, user namespaces allowed) and its timer, one job at a time
-   under a lock. Everything root installs (binary of `cmd/balistid-runner`; unit, timer, sysusers,
+1. `balistid-runner` runs as its own system user and group, never as the maintainer: a build unit,
+   a tick unit and its timer (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
+   `StateDirectory=`, `NoNewPrivileges`, no capabilities, user namespaces allowed), one job at a
+   time under a lock. Everything root installs (binary of `cmd/balistid-runner`; units, timer, sysusers,
    tmpfiles under `/deploy/`) is one manifest a code-owned CI step hashes with `sha256sum` on a push
    to `main`; the maintainer reads that sha256 in the CI log and types it into a root shell, which
    copies the files without following links into a root-only directory, checks and installs them.

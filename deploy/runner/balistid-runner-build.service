@@ -1,0 +1,39 @@
+# Builds the image of the runner's own commit (ADR 0011, point 2). The install starts it; no timer.
+[Unit]
+Description=Balistid Blue range runner: build its image
+
+[Service]
+Type=oneshot
+User=balistid-runner
+Group=balistid-runner
+ExecStart=/usr/local/lib/balistid/balistid-runner build --state /var/lib/balistid-runner --objects /var/lib/balistid/objects
+# checkState refuses a state directory anyone but the runner could write.
+StateDirectory=balistid-runner
+StateDirectoryMode=0700
+UMask=0027
+# The runner's own heap only: git, go and mkosi get a fixed environment without it.
+Environment=GOMEMLIMIT=128MiB
+# acceptance runner_build_memory_gib (peak 2 GiB measured 2026-10-04).
+MemoryMax=3G
+MemorySwapMax=0
+# Oneshot units have no start timeout by default; makepkg and mkosi are otherwise unbounded.
+TimeoutStartSec=30min
+# Network stays: mkosi fetches the pinned snapshot. /dev/kvm is often 0666, so the policy keeps it out.
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+# No RestrictSUIDSGID: the image needs util-linux's setuid files; the 0700 state dir keeps them from others.
+LockPersonality=yes
+# mkosi binds the host /proc recursively and mounts no new one, so these masks do not stop it.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# No RestrictNamespaces or PrivateUsers: mkosi builds in a user namespace. No MemoryDenyWriteExecute:
+# python ctypes, pacman and the go toolchain run under it and were not tried with it.
