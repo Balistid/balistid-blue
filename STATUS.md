@@ -18,19 +18,18 @@ trust. No recorder code yet.
   `BuildCommit`/`OpenImage`; results the maintainer's group reads; `cmd/balistid-runner` (`build`, `tick`).
 - Accepted residuals (#44): a FAIL is lost only if both its result write and the ledger save fail; small clock
   set-backs before evidence falls due postpone it (needs clock control, T22); `Next` does not log rejections.
-- `THREAT_MODEL.md` (9596/9600 bytes) and ADR 0011 (60/60 lines) are at their caps.
-- Step C: `go list -deps` gate and release with sha256 for the runner (64fb238); `deploy/runner/` build and
-  tick units, timer, sysusers, tmpfiles, pinned by a test. Checked with `systemd-analyze verify`, not yet run
-  under systemd. The tick unit has no ProtectKernelTunables/Logs: they make bwrap's `--proc` fail (EPERM).
+- `THREAT_MODEL.md` (9593/9600 bytes) and ADR 0011 (60/60 lines) are at their caps.
+- mkosi's workspace, package cache and TMPDIR in the stage, one uid mapped (read from mkosi 27.1, not run);
+  stage removal opens mode 000 directories through their own O_PATH descriptor, never a swapped name.
+- Step C: `go list -deps` gate, runner sha256 in the release (64fb238); `deploy/runner/` units, timer, sysusers,
+  tmpfiles pinned by a test, `systemd-analyze verify` only; no ProtectKernelTunables/Logs (bwrap `--proc` EPERM).
 
 ## Next step
 
-1. Go fix: at a system uid mkosi 27 likely puts its package cache in `/var/cache` (read from its code, not
-   run); set the cache in `toolEnv`.
-2. Install manifest and procedure, then a first real build and tick under these units: setuid files in the
-   image; hardening to test there (SystemCallFilter, RestrictAddressFamilies, PrivateIPC, ProtectProc,
-   ProtectHostname, RemoveIPC, ReadOnlyPaths on images). Then acceptance (PR 13).
-3. Step 9.3: `balistid-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
+1. Install manifest and procedure; a first real build (and one killed in mkosi: no new mkosi-* in /var/tmp,
+   /var/cache/mkosi, ~/.cache/mkosi, next Lock passes) and tick: setuid files in the image; hardening there
+   (SystemCallFilter, RestrictAddressFamilies, PrivateIPC, ProtectProc, ProtectHostname, RemoveIPC). PR 13.
+2. Step 9.3: `balistid-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)
 

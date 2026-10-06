@@ -51,8 +51,8 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
 - Building a commit runs its PKGBUILD and mkosi configuration with the maintainer's rights. The
   launcher is only as clean as the checkout it was built from and the place it is stored (T34).
 - An agent's branch is built by the maintainer only after review, until the runner confines builds.
-- mkosi downloads the package snapshot on every build (no shared cache to poison); its workspace in
-  `/var/tmp` stays a known gap, and a small pack can still inflate to large objects (DoS, T34).
+- mkosi downloads the package snapshot on every build (no shared cache to poison); workspace, package
+  cache and TMPDIR are in the build directory (mkosi 27.1 code, not run); a small pack can still inflate (DoS, T34).
 - Tests: the source's configuration, attributes, replace refs, index, work tree and store links are
   not read; the copy has a time limit and ends on failure; forged objects and sizes, malformed
   trees, symlinks, submodules,
