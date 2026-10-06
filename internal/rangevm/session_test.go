@@ -226,7 +226,7 @@ func TestHashStopsWhenCancelled(t *testing.T) {
 
 func TestWriteFileAtomicIsPrivate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "result.json")
-	if err := writeFileAtomic(path, []byte("{}")); err != nil {
+	if err := WriteFileAtomic(path, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	st, err := os.Stat(path)
