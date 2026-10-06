@@ -77,6 +77,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
+| `deploy/runner/` | Range runner's build and tick units, timer, users and directories that root installs (ADR 0011) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
 | `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go) and their tests |

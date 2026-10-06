@@ -1,0 +1,10 @@
+# A tick 10 min after boot, then 15 min after each tick ends: ticks never overlap and never catch up.
+[Unit]
+Description=Balistid Blue range runner: tick every 15 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=15min
+
+[Install]
+WantedBy=timers.target

@@ -72,6 +72,12 @@ LAYOUT: tuple[str, ...] = (
     "deploy/sysctl/balistid.conf",
     "deploy/systemd/*.service",
     "deploy/systemd/*.timer",
+    # Range runner, by exact name (ADR 0011).
+    "deploy/runner/sysusers.conf",
+    "deploy/runner/tmpfiles.conf",
+    "deploy/runner/balistid-runner-build.service",
+    "deploy/runner/balistid-runner-tick.service",
+    "deploy/runner/balistid-runner-tick.timer",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
     "range/balistid-range-guest.service",
