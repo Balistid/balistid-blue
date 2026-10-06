@@ -253,17 +253,24 @@ func chunks(values []string, limit int) ([]byte, error) {
 // carry terminal escapes, line breaks or look-alike characters into a log line or a result someone
 // reads, nor end the quotes it is put in.
 func Printable(s string, limit int) string {
+	const hexDigits = "0123456789abcdef"
 	var b strings.Builder
+	b.Grow(min(4*len(s), max(limit, 0)))
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		next := string(c)
-		if c < 0x20 || c > 0x7e || c == '\\' || c == '"' {
-			next = fmt.Sprintf("\\x%02x", c)
+		if c >= 0x20 && c <= 0x7e && c != '\\' && c != '"' {
+			if b.Len()+1 > limit {
+				break
+			}
+			b.WriteByte(c)
+			continue
 		}
-		if b.Len()+len(next) > limit {
+		if b.Len()+4 > limit {
 			break
 		}
-		b.WriteString(next)
+		b.WriteString(`\x`)
+		b.WriteByte(hexDigits[c>>4])
+		b.WriteByte(hexDigits[c&0xf])
 	}
 	return b.String()
 }
