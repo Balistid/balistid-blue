@@ -50,8 +50,8 @@ type Entry struct {
 // the directory, which is no more than resubmitting it. Agents build a job outside the inbox and
 // rename it in, since a half-written job is rejected.
 type Ledger struct {
-	Entries []Entry              `json:"entries"`
-	Clock   map[string]time.Time `json:"clock"`
+	Entries []Entry
+	Clock   map[string]time.Time
 }
 
 // OpenInbox opens path as the inbox only if it is a directory and not a link to one.
@@ -71,14 +71,15 @@ func OpenInbox(path string) (*os.Root, error) {
 	return inbox, nil
 }
 
-// Next returns the first job, in name order, that has not expired and whose name and content the
-// ledger has not taken, and records it; or false when none is left or the quota is used up. A job
-// that fails to read is rejected once and counts against the quota like a taken one.
-func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
+// Next returns and records the first job, in name order, not expired and not taken by name and
+// content; false when none is left or the quota is used up, an error when the inbox cannot be
+// listed. A job that fails to read is rejected once and counts against the quota. Next changes l
+// whatever it returns, so the caller saves l after every call and before it runs the job.
+func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool, error) {
 	l.prune(now)
 	names, err := readNames(inbox)
 	if err != nil {
-		return rangejob.Job{}, false // keep the clock: a failed listing must not restart expiry
+		return rangejob.Job{}, false, err // keep the clock: a failed listing must not restart expiry
 	}
 	slices.Sort(names)
 	clock := map[string]time.Time{}
@@ -92,7 +93,7 @@ func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
 		if !ok {
 			continue
 		}
-		id := fmt.Sprintf("%s:%d:%d", name, st.Dev, st.Ino)
+		id := fmt.Sprintf("%s:%d:%d", nameKey(name), st.Dev, st.Ino)
 		first, seen := l.Clock[id]
 		if !seen {
 			first = now
@@ -105,21 +106,28 @@ func Next(inbox *os.Root, l *Ledger, now time.Time) (rangejob.Job, bool) {
 	l.Clock = clock
 	for _, name := range live {
 		if l.used(now) >= Quota {
-			return rangejob.Job{}, false
+			return rangejob.Job{}, false, nil
 		}
 		job, err := rangejob.ReadJob(inbox, name)
 		if err != nil {
-			if key := "rejected:" + name; !l.has(key) {
+			if key := "rejected:" + nameKey(name); !l.has(key) {
 				l.add(key, now, Rejected)
 			}
 			continue
 		}
-		if key := "taken:" + name + ":" + ContentKey(job); !l.has(key) {
+		if key := "taken:" + nameKey(name) + ":" + ContentKey(job); !l.has(key) {
 			l.add(key, now, Taken)
-			return job, true
+			return job, true, nil
 		}
 	}
-	return rangejob.Job{}, false
+	return rangejob.Job{}, false, nil
+}
+
+// nameKey is the sha256 of an inbox name: any name the file system allows becomes a key that
+// JSON keeps byte for byte and that has a fixed length.
+func nameKey(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:])
 }
 
 // ContentKey is the sha256 of a job's request and program, each length-prefixed so no split of
@@ -137,12 +145,12 @@ func ContentKey(job rangejob.Job) string {
 func readNames(inbox *os.Root) ([]string, error) {
 	f, err := inbox.Open(".")
 	if err != nil {
-		return nil, errors.New("cannot list the inbox")
+		return nil, fmt.Errorf("cannot list the inbox: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
 	names, err := f.Readdirnames(MaxInboxEntries)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, errors.New("cannot list the inbox")
+		return nil, fmt.Errorf("cannot list the inbox: %w", err)
 	}
 	return names, nil
 }

@@ -156,7 +156,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if err := mkosi.Run(); err != nil {
 		return "", fmt.Errorf("mkosi: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(built, "commit"), []byte(commit+"\n")); err != nil {
+	if err := WriteFileAtomic(filepath.Join(built, "commit"), []byte(commit+"\n")); err != nil {
 		return "", err
 	}
 	sum, err := fileSHA256(ctx, filepath.Join(built, "image.raw"))
@@ -701,7 +701,7 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(out, "result.json"), data); err != nil {
+	if err := WriteFileAtomic(filepath.Join(out, "result.json"), data); err != nil {
 		return Result{}, err
 	}
 	return res, nil
@@ -920,8 +920,10 @@ func (c ctxReader) Read(p []byte) (int, error) {
 	return n, err //nolint:wrapcheck // io.EOF must stay unwrapped for io.Copy
 }
 
-// writeFileAtomic follows ENGINEERING.md 7 for whole files: temp file, fsync, rename, fsync dir.
-func writeFileAtomic(path string, data []byte) error {
+// WriteFileAtomic writes data to path as ENGINEERING.md 7 asks for whole files: a 0600 temp file in
+// the same directory, fsynced, renamed over path, then the directory fsynced. A crash leaves either
+// the old file or the new one. The rename replaces a symlink at path rather than following it.
+func WriteFileAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-")
 	if err != nil {
