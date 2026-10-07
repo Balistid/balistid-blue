@@ -50,6 +50,9 @@ func newTestRunner(t *testing.T, now time.Time, l Ledger) testRunner {
 	if err := os.Chmod(state, 0o700); err != nil { //nolint:gosec // a directory needs its x bit
 		t.Fatal(err)
 	}
+	if err := os.Chmod(inbox, inboxMode); err != nil {
+		t.Fatal(err)
+	}
 	files := map[string]string{
 		filepath.Join(images, "image.raw"):      "image",
 		filepath.Join(images, "image.manifest"): `{"manifest_version":1,"packages":[{"name":"linux","version":"7.2.8"}]}`,
