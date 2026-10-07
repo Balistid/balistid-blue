@@ -76,11 +76,23 @@ type FailedRun struct {
 // MaxFailed caps the failed evidence runs the ledger keeps (R5).
 const MaxFailed = 16
 
-// OpenInbox opens path as the inbox only if it is a directory and not a link to one.
+// inboxMode is the inbox of ADR 0011 point 5: the maintainer writes it, the runner's group only reads
+// it (setgid keeps new job directories in that group), nobody else gets in.
+const inboxMode = os.ModeDir | os.ModeSetgid | 0o750
+
+// OpenInbox opens path as the inbox only if it is a directory, not a link to one, with mode 2750 and
+// the runner's group: a looser inbox would take jobs from users other than the maintainer.
 func OpenInbox(path string) (*os.Root, error) {
 	want, err := os.Lstat(path)
 	if err != nil || !want.IsDir() {
 		return nil, errors.New("inbox is not a plain directory")
+	}
+	gid := -1
+	if st, ok := want.Sys().(*syscall.Stat_t); ok {
+		gid = int(st.Gid)
+	}
+	if want.Mode() != inboxMode || gid != os.Getegid() {
+		return nil, fmt.Errorf("inbox is %v group %d, not %v group %d", want.Mode(), gid, inboxMode, os.Getegid())
 	}
 	inbox, err := os.OpenRoot(path + "/.")
 	if err != nil {

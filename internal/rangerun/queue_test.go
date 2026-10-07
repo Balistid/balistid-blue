@@ -13,7 +13,7 @@ const runJSON = `{"schema_version":1,"kind":"run","trials":1}`
 
 func newInbox(t *testing.T) (string, *os.Root) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := inboxDir(t)
 	root, err := OpenInbox(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -182,8 +182,36 @@ func TestNextReportsAnInboxItCannotList(t *testing.T) {
 	}
 }
 
+// inboxDir makes a directory as the install does: mode 2750 in this process's group.
+func inboxDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "inbox")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, inboxMode); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// T35: an inbox others could write, or outside the runner's group, gives no jobs.
+func TestOpenInboxRefusesALooseInbox(t *testing.T) {
+	g := os.ModeSetgid
+	for _, mode := range []os.FileMode{0o750, g | 0o770, g | 0o757, g | 0o755, g | os.ModeSticky | 0o750, g | 0o700} {
+		dir := inboxDir(t)
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if root, err := OpenInbox(dir); err == nil {
+			_ = root.Close()
+			t.Errorf("inbox with mode %o was opened", mode)
+		}
+	}
+}
+
 func TestOpenInboxRefusesALink(t *testing.T) {
-	real := t.TempDir()
+	real := inboxDir(t)
 	link := filepath.Join(t.TempDir(), "inbox")
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
