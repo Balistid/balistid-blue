@@ -214,10 +214,9 @@ func aclGranting(uid int) []byte {
 	return b
 }
 
-// T35: an ACL lets a named user past mode 2750 (the group bits are then only the mask), so an inbox
-// with either ACL gives no jobs.
+// T35: an inbox with an ACL naming uid (effective r-x under mask r-x), access or default, gives no jobs.
 func TestOpenInboxRefusesAnACL(t *testing.T) {
-	for _, name := range inboxACLs {
+	for _, name := range []string{"system.posix_acl_access", "system.posix_acl_default"} {
 		dir := inboxDir(t)
 		if err := syscall.Setxattr(dir, name, aclGranting(os.Getuid()), 0); errors.Is(err, syscall.ENOTSUP) {
 			t.Skip("this file system has no ACLs")
@@ -228,6 +227,36 @@ func TestOpenInboxRefusesAnACL(t *testing.T) {
 			_ = root.Close()
 			t.Errorf("inbox with %s was opened", name)
 		}
+	}
+}
+
+// T35: an inbox in another of the runner's groups (the tick unit adds kvm) gives no jobs.
+func TestOpenInboxRefusesAnotherGroup(t *testing.T) {
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := -1
+	for _, g := range groups {
+		if g != os.Getegid() {
+			other = g
+		}
+	}
+	if other < 0 {
+		t.Skip("this process has no group besides its own")
+	}
+	dir := inboxDir(t)
+	if err := os.Chown(dir, -1, other); errors.Is(err, syscall.EINVAL) {
+		t.Skip("that group is not mapped in this user namespace")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, inboxMode); err != nil { // chown clears setgid
+		t.Fatal(err)
+	}
+	if root, err := OpenInbox(dir); err == nil {
+		_ = root.Close()
+		t.Error("inbox in another group was opened")
 	}
 }
 
