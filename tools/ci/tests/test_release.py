@@ -441,6 +441,7 @@ class InstallTest(unittest.TestCase):
             f"install -m 0644 {c}/balistid-runner-build.service /etc/systemd/system/balistid-runner-build.service",
             f"install -m 0644 {c}/balistid-runner-tick.service /etc/systemd/system/balistid-runner-tick.service",
             f"install -m 0644 {c}/balistid-runner-tick.timer /etc/systemd/system/balistid-runner-tick.timer",
+            "install -d -m 0755 /etc/sysusers.d /etc/tmpfiles.d",
             f"install -m 0644 {c}/sysusers.conf /etc/sysusers.d/balistid-runner.conf",
             f"install -m 0644 {c}/tmpfiles.conf /etc/tmpfiles.d/balistid-runner.conf",
             "systemd-sysusers /etc/sysusers.d/balistid-runner.conf",

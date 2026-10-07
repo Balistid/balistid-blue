@@ -52,7 +52,8 @@ SERVICES = {
         "ProtectKernelTunables": "yes",
         "ProtectKernelLogs": "yes",
     },
-    # No RestrictSUIDSGID on the build: the image needs its setuid files; checked at the first build.
+    # No RestrictSUIDSGID on either unit: the image needs its setuid files, and on the tick its seccomp
+    # filter turns bwrap's open_tree into ENOSYS (first install, 2026-10-07).
     # No ProtectKernelTunables or ProtectKernelLogs: their mounts over /proc make bwrap's new /proc
     # fail with EPERM in its user namespace.
     "balistid-runner-tick.service": {
@@ -69,7 +70,6 @@ SERVICES = {
         "TimeoutStartSec": "40min",
         "PrivateNetwork": "yes",
         "DeviceAllow": "/dev/kvm rw",
-        "RestrictSUIDSGID": "yes",
     },
 }
 TIMER = {"OnBootSec": "10min", "OnUnitInactiveSec": "15min"}

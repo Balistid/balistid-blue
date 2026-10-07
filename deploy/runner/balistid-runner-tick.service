@@ -35,7 +35,7 @@ ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes
 CapabilityBoundingSet=
-RestrictSUIDSGID=yes
+# No RestrictSUIDSGID: its seccomp filter turns bwrap 0.13's open_tree into ENOSYS (first install, 2026-10-07).
 LockPersonality=yes
 # No ProtectKernelTunables or ProtectKernelLogs: their mounts over /proc make bwrap --proc fail (EPERM).
 ProtectKernelModules=yes
