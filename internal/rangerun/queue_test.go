@@ -1,10 +1,13 @@
 package rangerun
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -195,7 +198,40 @@ func inboxDir(t *testing.T) string {
 	return dir
 }
 
-// T35: an inbox others could write, or outside the runner's group, gives no jobs.
+// aclGranting is a POSIX ACL in the kernel's xattr form that gives uid rwx past a group mask of r-x.
+func aclGranting(uid int) []byte {
+	type entry struct {
+		tag, perm uint16
+		id        uint32
+	}
+	none := ^uint32(0)
+	b := binary.LittleEndian.AppendUint32(nil, 2)
+	for _, e := range []entry{{0x01, 7, none}, {0x02, 7, uint32(uid)}, {0x04, 5, none}, {0x10, 5, none}, {0x20, 0, none}} { //nolint:gosec // a Linux uid is 32 bits
+		b = binary.LittleEndian.AppendUint16(b, e.tag)
+		b = binary.LittleEndian.AppendUint16(b, e.perm)
+		b = binary.LittleEndian.AppendUint32(b, e.id)
+	}
+	return b
+}
+
+// T35: an ACL lets a named user past mode 2750 (the group bits are then only the mask), so an inbox
+// with either ACL gives no jobs.
+func TestOpenInboxRefusesAnACL(t *testing.T) {
+	for _, name := range inboxACLs {
+		dir := inboxDir(t)
+		if err := syscall.Setxattr(dir, name, aclGranting(os.Getuid()), 0); errors.Is(err, syscall.ENOTSUP) {
+			t.Skip("this file system has no ACLs")
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		if root, err := OpenInbox(dir); err == nil {
+			_ = root.Close()
+			t.Errorf("inbox with %s was opened", name)
+		}
+	}
+}
+
+// T35: an inbox others could write gives no jobs.
 func TestOpenInboxRefusesALooseInbox(t *testing.T) {
 	g := os.ModeSetgid
 	for _, mode := range []os.FileMode{0o750, g | 0o770, g | 0o757, g | 0o755, g | os.ModeSticky | 0o750, g | 0o700} {
