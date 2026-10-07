@@ -1,0 +1,60 @@
+#!/bin/sh
+# Installs the range runner (ADR 0011, point 1). Run only by the bootstrap command CI prints: $1 is the
+# root-only copy it checked, $2 the maintainer, who owns inbox and objects, $3 the bundle sha256 typed.
+# Every check runs before the first write, so a refusal leaves the host as it was. Every command whose
+# output decides is run on its own line with its status checked: $(...) inside a test hides a failure.
+set -eu
+d=$1 m=$2 sum=$3
+lib=/usr/local/lib/balistid state=/var/lib/balistid why="a command failed" rc=0
+# Every stop, a refusal or a failed command, is logged with its reason (ENGINEERING.md 3).
+# -s also prints it, so a stop is seen even when the journal cannot take it.
+trap 'rc=$?; [ "$rc" = 0 ] || logger -s -t balistid-install "install stopped (ADR 0011): $why, status $rc"' EXIT
+refuse() { why=$*; exit 1; }
+# owner:group mode type, without following a link; "absent" only for ENOENT, any other error fails.
+state_of() {
+    if out=$(stat -c '%U:%G %a %F' -- "$1" 2>&1); then echo "$out"; return 0; fi
+    case $out in *": No such file or directory") echo absent ;; *) return 1 ;; esac
+}
+# Absent, or exactly as an earlier install left it; never repaired, since others may have prepared it.
+absent_or() {
+    s=$(state_of "$1") || refuse "cannot stat $1"
+    [ "$s" = absent ] || [ "$s" = "$2" ] || refuse "$1 is $s, not $2"
+}
+uid=$(id -u) || refuse "id failed"
+[ "$uid" = 0 ] || refuse "not root"
+# Only the bootstrap's root-only copy, never a directory someone else could still change.
+s=$(state_of "$d") || refuse "cannot stat $d"
+[ "$s" = "root:root 700 directory" ] || refuse "$d is not a root-only copy"
+case $m in root | "" | *[!a-z0-9_-]* | [!a-z_]*) refuse "bad maintainer name" ;; esac
+muid=$(id -u "$m") || refuse "no user $m"
+[ "$muid" -ge 1000 ] 2>/dev/null && [ "$muid" -le 60000 ] || refuse "$m is not a regular user"
+# A oneshot unit is "activating" while it runs; only these two states are stopped.
+for u in balistid-runner-tick.timer balistid-runner-tick.service balistid-runner-build.service; do
+    a=$(systemctl show -P ActiveState "$u") || refuse "cannot query $u"
+    case $a in inactive | failed) ;; *) refuse "$u is $a, not stopped" ;; esac
+done
+absent_or "$lib" "root:root 755 directory"
+absent_or "$state" "root:root 755 directory"
+absent_or "$state/inbox" "$m:balistid-runner 2750 directory"
+inbox=$s
+absent_or "$state/objects" "$m:balistid-runner 2750 directory"
+objects=$s
+
+# Each write names itself first, so a failure is logged with the step that failed.
+step() { why="failed: $*"; "$@"; }
+step install -d -o root -g root -m 0755 "$lib"
+step install -m 0755 "$d/balistid-runner" "$lib/balistid-runner"
+for u in balistid-runner-build.service balistid-runner-tick.service balistid-runner-tick.timer; do
+    step install -m 0644 "$d/$u" "/etc/systemd/system/$u"
+done
+step install -m 0644 "$d/sysusers.conf" /etc/sysusers.d/balistid-runner.conf
+step install -m 0644 "$d/tmpfiles.conf" /etc/tmpfiles.d/balistid-runner.conf
+step systemd-sysusers /etc/sysusers.d/balistid-runner.conf
+step systemd-tmpfiles --create /etc/tmpfiles.d/balistid-runner.conf
+[ "$inbox" != absent ] || step install -d -o "$m" -g balistid-runner -m 2750 "$state/inbox"
+[ "$objects" != absent ] || step install -d -o "$m" -g balistid-runner -m 2750 "$state/objects"
+step usermod -aG balistid-agents "$m"
+step systemctl daemon-reload
+step logger -s -t balistid-install "installed (ADR 0011) runner bundle sha256 $sum for $m"
+echo "installed. As $m: copy the commit's .git/objects into $state/objects/.git/objects;"
+echo "then as root: systemctl start balistid-runner-build && systemctl enable --now balistid-runner-tick.timer"

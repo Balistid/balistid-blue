@@ -150,7 +150,7 @@ jobs:
           "$RUNNER_TEMP/go/bin/go" version
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
-      - name: Reproducible release build (no project code runs before it)
+      - name: Reproducible release build (no built binary runs in this job)
         run: |
           flags="-X github.com/Balistid/balistid-blue/internal/buildinfo.Version=${GITHUB_SHA}"
           a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/other/build-b"
@@ -163,14 +163,23 @@ jobs:
               GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \
               go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
           done
-          # Only now does project code run (version); a hash is printed only for a build that passed.
-          # The runner's is the binary's part of the install manifest of ADR 0011.
+          # No built binary runs in this job: one run here could change what is bundled before it is
+          # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
           for cmd in balistid balistid-runner; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
-            # -X with a stale package path is silently ignored and both builds still match.
-            test "$("$a/$cmd" version)" = "balistid ${GITHUB_SHA}"
             sha256sum "$a/$cmd"
           done
+          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --deploy "$a/deploy/runner" \
+            --out "$RUNNER_TEMP/release"
+          python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/balistid-runner-bundle.tar"
+      # Root types the hash of this step on a push to main (ADR 0011, point 1). A pull request runs its
+      # own workflow and can print anything, so the main workflow prints no hash there.
+      - name: Install bundle of the range runner
+        if: github.event_name == 'push'
+        run: |
+          sha=$(sha256sum "$RUNNER_TEMP/balistid-runner-bundle.tar" | cut -d' ' -f1)
+          echo "Bundle sha256 of the runner at $GITHUB_SHA: $sha"
+          python3 tools/ci/release.py bootstrap "$sha"
 
   selftest:
     runs-on: ubuntu-24.04

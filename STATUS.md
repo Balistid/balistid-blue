@@ -18,17 +18,18 @@ trust. No recorder code yet.
   `BuildCommit`/`OpenImage`; results the maintainer's group reads; `cmd/balistid-runner` (`build`, `tick`).
 - Accepted residuals (#44): a FAIL is lost only if both its result write and the ledger save fail; small clock
   set-backs before evidence falls due postpone it (needs clock control, T22); `Next` does not log rejections.
-- `THREAT_MODEL.md` (9593/9600 bytes) and ADR 0011 (60/60 lines) are at their caps.
-- mkosi's workspace, package cache and TMPDIR in the stage, one uid mapped (read from mkosi 27.1, not run);
-  stage removal opens mode 000 directories through their own O_PATH descriptor, never a swapped name.
+- `THREAT_MODEL.md` (9594/9600 bytes) and ADR 0011 (60/60 lines) are at their caps.
+- mkosi's workspace, package cache and TMPDIR in the stage, one uid mapped; stage removal opens mode 000
+  directories through their own O_PATH descriptor. Real build and a build killed in mkosi checked (#49).
 - Step C: `go list -deps` gate, runner sha256 in the release (64fb238); `deploy/runner/` units, timer, sysusers,
   tmpfiles pinned by a test, `systemd-analyze verify` only; no ProtectKernelTunables/Logs (bwrap `--proc` EPERM).
+- Install bundle: CI uploads one tar and prints its sha256 and the root command on a push to main only.
 
 ## Next step
 
-1. Install manifest and procedure; a first real build (and one killed in mkosi: no new mkosi-* in /var/tmp,
-   /var/cache/mkosi, ~/.cache/mkosi, next Lock passes) and tick: setuid files in the image; hardening there
-   (SystemCallFilter, RestrictAddressFamilies, PrivateIPC, ProtectProc, ProtectHostname, RemoveIPC). PR 13.
+1. First install from the bundle (root at a console, the printed command), then build and tick under these
+   units: setuid files in the image; hardening there (SystemCallFilter, RestrictAddressFamilies, PrivateIPC,
+   ProtectProc, ProtectHostname, RemoveIPC). Then acceptance (PR 13).
 2. Step 9.3: `balistid-collector` and raw SQLite shards (ADR 0005), against `acceptance/0.toml`.
 
 ## Open decisions (maintainer)
