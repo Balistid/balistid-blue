@@ -77,15 +77,15 @@ type FailedRun struct {
 const MaxFailed = 16
 
 // inboxMode is the inbox of ADR 0011 point 5: the maintainer writes it, the runner's group only reads
-// it (setgid keeps new job directories in that group). A group the runner is not in fails the open.
+// it (setgid keeps new job directories in that group), nobody else gets in.
 const inboxMode = os.ModeDir | os.ModeSetgid | 0o750
 
-// inboxACLs are the ACLs that would let a named user past the mode bits (the group bits are then
-// only the ACL mask); the inbox must have neither.
+// inboxACLs: an access ACL would let named users read past 2750; a default ACL would hand new job
+// directories to them. The inbox must have neither.
 var inboxACLs = []string{"system.posix_acl_access", "system.posix_acl_default"}
 
-// OpenInbox opens path as the inbox only if it is a directory, not a link to one, with mode 2750 and
-// no ACL: a looser inbox would take jobs from users other than the maintainer (T35).
+// OpenInbox opens path as the inbox only if it is a directory, not a link to one, with mode 2750, the
+// runner's group and no ACL: a looser inbox would take jobs from users other than the maintainer (T35).
 func OpenInbox(path string) (*os.Root, error) {
 	want, err := os.Lstat(path)
 	if err != nil || !want.IsDir() {
@@ -103,6 +103,11 @@ func OpenInbox(path string) (*os.Root, error) {
 	if got.Mode() != inboxMode {
 		_ = inbox.Close()
 		return nil, fmt.Errorf("inbox is %v, not %v", got.Mode(), inboxMode)
+	}
+	// The tick unit has supplementary groups (kvm): an inbox of one of them would open but leak jobs.
+	if st, ok := got.Sys().(*syscall.Stat_t); !ok || int(st.Gid) != os.Getegid() {
+		_ = inbox.Close()
+		return nil, fmt.Errorf("inbox is not in the runner's group %d", os.Getegid())
 	}
 	for _, name := range inboxACLs {
 		// ENODATA: no such ACL; ENOTSUP: the file system has none. Anything else is refused.
