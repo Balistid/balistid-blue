@@ -12,6 +12,7 @@
 - [ ] No host-specific data (usernames, home paths, hostnames, tokens)
 - [ ] `STATUS.md` updated
 - [ ] Review level per ENGINEERING.md §5 done; findings inside the change closed
+- [ ] Under 100 added lines outside tests and testdata, or the reason it cannot be simpler is above
 
 ## Unchecked boxes
 
