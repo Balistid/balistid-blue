@@ -78,6 +78,7 @@ LAYOUT: tuple[str, ...] = (
     "deploy/runner/balistid-runner-build.service",
     "deploy/runner/balistid-runner-tick.service",
     "deploy/runner/balistid-runner-tick.timer",
+    "deploy/runner/install",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
     "range/balistid-range-guest.service",

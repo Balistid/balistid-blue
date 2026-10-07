@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[3]
 RUNNER = REPO / "deploy" / "runner"
 BINARY = "/usr/local/lib/balistid/balistid-runner"
 STATE = "/var/lib/balistid-runner"
-FILES = {"sysusers.conf", "tmpfiles.conf", "balistid-runner-build.service",
+FILES = {"install", "sysusers.conf", "tmpfiles.conf", "balistid-runner-build.service",
          "balistid-runner-tick.service", "balistid-runner-tick.timer"}
 
 # Both services (ADR 0011, point 1; ENGINEERING.md 7 for GOMEMLIMIT and the umask).
