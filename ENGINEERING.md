@@ -46,6 +46,16 @@ A change is done when all of these hold, verified now and not from memory:
 - No host-specific data in the repo: no usernames, home paths, hostnames or real tokens. Test
   fixtures that need them are generated at runtime. `gitleaks` enforces the obvious cases.
 - Comments explain why, not what. No commented-out code, no TODO without an issue or a date.
+  Comments other than doc comments on a declaration stay within three lines. None of them, nor test
+  names or messages, tell how a bug was found, the review rounds or who wrote the code (ADR 0012).
+- Before adding code, search the repository for a mechanism or idiom that already does it and extend
+  that instead.
+- No wrapper that only forwards its arguments, no abstraction kept for a hypothetical second caller
+  (a test seam or the `main`/`internal` split is a real use), no catch-all names (`util`, `helpers`).
+  Fail-closed handling of errors and untrusted input (R6) is never speculative.
+- An assertion is never deleted or weakened to make a test pass; it changes only together with the
+  behaviour it pins, and the pull request says so.
+- A pull request that adds more than 100 lines outside tests and testdata says why it cannot be simpler.
 - Language-specific rules (formatter, linter, test runner) are added by the ADR that picks the language.
 
 ## 4. Commits and pull requests
@@ -58,6 +68,9 @@ A change is done when all of these hold, verified now and not from memory:
   `.github/CODEOWNERS` (gates, rules, ADRs, acceptance numbers) need the maintainer's approval.
 - One logical change per pull request. The pull request template checklist is filled in honestly;
   an unchecked box needs a reason.
+- Where the bot helper, the critic agent, the Codex queue or the VM range is missing (a cloud
+  session, another host), work is not pushed and not called done. It ends with the list of review
+  and range steps that did not run; a session on the maintainer's machine runs them before pushing.
 
 ## 5. Review
 
@@ -67,7 +80,7 @@ Independent review scales with the impact of a mistake, not with the file type:
 |---|---|
 | Small, reversible, with tests (about 50 lines, one file) | Tests and self-check |
 | Security-relevant gate, several files, weak tests | One Claude critic (Opus) |
-| Security boundary with root impact, signing, install path, architecture | Claude critic and Codex `cross-review --level full` |
+| Security boundary with root impact, signing, install path, architecture | Claude critic and Codex review (queue, level full) |
 
 A further round runs only when the last review found a defect inside the change. If the third and
 any later round again finds one, stop and redesign (R7); the maintainer decides. Review findings are
