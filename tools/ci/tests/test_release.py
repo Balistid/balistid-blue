@@ -82,6 +82,15 @@ RELEASE_JOB = """
           sha=$(sha256sum "$RUNNER_TEMP/balistid-runner-bundle.tar" | cut -d' ' -f1)
           echo "Bundle sha256 of the runner at $GITHUB_SHA: $sha"
           python3 tools/ci/release.py bootstrap "$sha"
+      # The maintainer downloads this file and root checks it against the hash above (ADR 0011, point 1).
+      - name: Upload the bundle
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: balistid-runner-bundle
+          path: ${{ runner.temp }}/balistid-runner-bundle.tar
+          if-no-files-found: error
+          retention-days: 30
 """
 
 
