@@ -77,30 +77,44 @@ type FailedRun struct {
 const MaxFailed = 16
 
 // inboxMode is the inbox of ADR 0011 point 5: the maintainer writes it, the runner's group only reads
-// it (setgid keeps new job directories in that group), nobody else gets in.
+// it (setgid keeps new job directories in that group). A group the runner is not in fails the open.
 const inboxMode = os.ModeDir | os.ModeSetgid | 0o750
 
+// inboxACLs are the ACLs that would let a named user past the mode bits (the group bits are then
+// only the ACL mask); the inbox must have neither.
+var inboxACLs = []string{"system.posix_acl_access", "system.posix_acl_default"}
+
 // OpenInbox opens path as the inbox only if it is a directory, not a link to one, with mode 2750 and
-// the runner's group: a looser inbox would take jobs from users other than the maintainer.
+// no ACL: a looser inbox would take jobs from users other than the maintainer (T35).
 func OpenInbox(path string) (*os.Root, error) {
 	want, err := os.Lstat(path)
 	if err != nil || !want.IsDir() {
 		return nil, errors.New("inbox is not a plain directory")
 	}
-	gid := -1
-	if st, ok := want.Sys().(*syscall.Stat_t); ok {
-		gid = int(st.Gid)
-	}
-	if want.Mode() != inboxMode || gid != os.Getegid() {
-		return nil, fmt.Errorf("inbox is %v group %d, not %v group %d", want.Mode(), gid, inboxMode, os.Getegid())
-	}
 	inbox, err := os.OpenRoot(path + "/.")
 	if err != nil {
 		return nil, errors.New("cannot open the inbox")
 	}
-	if got, err := inbox.Stat("."); err != nil || !os.SameFile(want, got) {
+	got, err := inbox.Stat(".")
+	if err != nil || !os.SameFile(want, got) {
 		_ = inbox.Close()
 		return nil, errors.New("inbox changed while it was opened")
+	}
+	if got.Mode() != inboxMode {
+		_ = inbox.Close()
+		return nil, fmt.Errorf("inbox is %v, not %v", got.Mode(), inboxMode)
+	}
+	for _, name := range inboxACLs {
+		// ENODATA: no such ACL; ENOTSUP: the file system has none. Anything else is refused.
+		_, err := syscall.Getxattr(path, name, nil)
+		if errors.Is(err, syscall.ENODATA) || errors.Is(err, syscall.ENOTSUP) {
+			continue
+		}
+		_ = inbox.Close()
+		if err == nil {
+			return nil, fmt.Errorf("inbox has an ACL (%s)", name)
+		}
+		return nil, fmt.Errorf("cannot read the inbox's %s: %w", name, err)
 	}
 	return inbox, nil
 }
