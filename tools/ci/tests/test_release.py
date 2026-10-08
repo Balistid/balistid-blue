@@ -31,7 +31,7 @@ def go_code(src: str) -> str:
 # ci.yml go-release, the whole job: the build, the bundle, the printed hash and root command, the upload.
 RELEASE_JOB = """
   go-release:
-    needs: go-static
+    needs: [go-static, go-test, go-race, selftest, docs-budget, pin-check, commit-lint, secrets, workflow-lint]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -151,6 +151,14 @@ class ManifestTest(unittest.TestCase):
             self.assertTrue(line.endswith("go " + " ".join(release.GO_BUILD) + ' "$flags" -o "$cmd" "./cmd/$cmd")'))
         for setting in ("GOFLAGS: -mod=readonly", 'GOWORK: "off"', 'CGO_ENABLED: "0"', "GOTOOLCHAIN: local"):
             self.assertIn(setting, job)
+
+    # The bundle is uploaded only after every other check of the same run passed, a job added later included.
+    def test_release_needs_every_other_job(self):
+        ci = (REPO / ".github/workflows/ci.yml").read_text()
+        jobs = set(re.findall(r"(?m)^  ([a-z0-9-]+):$", ci[ci.index("\njobs:"):]))
+        needs = re.findall(r"(?m)^    needs: \[(.*)\]$", RELEASE_JOB)
+        self.assertEqual(len(needs), 1)
+        self.assertEqual(set(needs[0].split(", ")), jobs - {"go-release"})
 
     # -X with a path that names no variable is ignored silently; CI runs no built binary to see it.
     def test_version_flag_names_the_real_variable(self):
