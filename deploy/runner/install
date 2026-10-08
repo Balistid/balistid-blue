@@ -28,17 +28,24 @@ s=$(state_of "$d") || refuse "cannot stat $d"
 case $m in root | "" | *[!a-z0-9_-]* | [!a-z_]*) refuse "bad maintainer name" ;; esac
 muid=$(id -u "$m") || refuse "no user $m"
 [ "$muid" -ge 1000 ] 2>/dev/null && [ "$muid" -le 60000 ] || refuse "$m is not a regular user"
+units="balistid-runner-tick.timer balistid-runner-tick.service balistid-runner-build.service"
+# A drop-in (set-property leaves one too) or a copy under /run would outlive this install and change
+# the unit. systemd answers only for what it has loaded, so this runs again after the reload, when
+# an empty FragmentPath (not installed yet, allowed before) no longer passes.
+as_written() {
+    for u in $units; do
+        p=$(systemctl show -P DropInPaths "$u") || refuse "cannot query DropInPaths of $u"
+        [ -z "$p" ] || refuse "$u has drop-ins: $p"
+        f=$(systemctl show -P FragmentPath "$u") || refuse "cannot query FragmentPath of $u"
+        case $1:$f in "before:" | *":/etc/systemd/system/$u") ;; *) refuse "$u is loaded from $f, not /etc/systemd/system/$u" ;; esac
+    done
+}
 # A oneshot unit is "activating" while it runs; only these two states are stopped.
-# A drop-in (set-property leaves one too) or a copy under /run would outlive this install and
-# change the unit; an empty FragmentPath means not installed yet.
-for u in balistid-runner-tick.timer balistid-runner-tick.service balistid-runner-build.service; do
+for u in $units; do
     a=$(systemctl show -P ActiveState "$u") || refuse "cannot query $u"
     case $a in inactive | failed) ;; *) refuse "$u is $a, not stopped" ;; esac
-    p=$(systemctl show -P DropInPaths "$u") || refuse "cannot query DropInPaths of $u"
-    [ -z "$p" ] || refuse "$u has drop-ins: $p"
-    f=$(systemctl show -P FragmentPath "$u") || refuse "cannot query FragmentPath of $u"
-    case $f in "" | "/etc/systemd/system/$u") ;; *) refuse "$u is loaded from $f, not /etc/systemd/system/$u" ;; esac
 done
+as_written before
 absent_or "$lib" "root:root 755 directory"
 absent_or "$state" "root:root 755 directory"
 absent_or "$state/inbox" "$m:balistid-runner 2750 directory"
@@ -55,9 +62,9 @@ step install -m 0755 "$d/balistid-runner" "$lib/balistid-runner"
 for u in balistid-runner-build.service balistid-runner-tick.service balistid-runner-tick.timer; do
     step install -m 0644 "$d/$u" "/etc/systemd/system/$u"
 done
-# Arch ships neither directory under /etc; both are checked above (absent or root:root 755).
-step install -d -o root -g root -m 0755 /etc/sysusers.d
-step install -d -o root -g root -m 0755 /etc/tmpfiles.d
+# Arch ships no /etc/sysusers.d; both directories are checked above (absent or root:root 755).
+step install -d -m 0755 /etc/sysusers.d
+step install -d -m 0755 /etc/tmpfiles.d
 step install -m 0644 "$d/sysusers.conf" /etc/sysusers.d/balistid-runner.conf
 step install -m 0644 "$d/tmpfiles.conf" /etc/tmpfiles.d/balistid-runner.conf
 step systemd-sysusers /etc/sysusers.d/balistid-runner.conf
@@ -66,6 +73,7 @@ step systemd-tmpfiles --create /etc/tmpfiles.d/balistid-runner.conf
 [ "$objects" != absent ] || step install -d -o "$m" -g balistid-runner -m 2750 "$state/objects"
 step usermod -aG balistid-agents "$m"
 step systemctl daemon-reload
+as_written after
 step logger -s -t balistid-install "installed (ADR 0011) runner bundle sha256 $sum for $m"
 echo "installed. As $m: copy the commit's .git/objects into $state/objects/.git/objects;"
 echo "then as root: systemctl start balistid-runner-build && systemctl enable --now balistid-runner-tick.timer"
