@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
-TRIGGER = "name: ci\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n"
+TRIGGER = ("name: ci\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n"
+           "  # Weekly on main, so govulncheck sees advisories published without a new commit.\n"
+           "  schedule:\n    - cron: \"17 5 * * 1\"\n")
 
 
 def go_code(src: str) -> str:
@@ -151,6 +153,15 @@ class ManifestTest(unittest.TestCase):
             self.assertTrue(line.endswith("go " + " ".join(release.GO_BUILD) + ' "$flags" -o "$cmd" "./cmd/$cmd")'))
         for setting in ("GOFLAGS: -mod=readonly", 'GOWORK: "off"', 'CGO_ENABLED: "0"', "GOTOOLCHAIN: local"):
             self.assertIn(setting, job)
+
+    # The weekly run has no commit range, so the two range checks skip it, and with them the release.
+    def test_scheduled_run_skips_range_checks_and_release(self):
+        ci = (REPO / ".github/workflows/ci.yml").read_text()
+        for job in ("docs-budget", "commit-lint"):
+            self.assertIn(f"\n  {job}:\n    # A scheduled run has no commit range to check.\n"
+                          "    if: github.event_name != 'schedule'\n", ci)
+        self.assertEqual(ci.count("github.event_name != 'schedule'"), 2)
+        self.assertIn("docs-budget", RELEASE_JOB.split("needs:")[1].splitlines()[0])
 
     # The bundle is uploaded only after every other check of the same run passed, a job added later included.
     def test_release_needs_every_other_job(self):
