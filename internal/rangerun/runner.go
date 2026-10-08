@@ -213,8 +213,12 @@ func (e *Evidence) fail(commit, id string) {
 }
 
 // evidence runs the runner's own image with no job disk. The ledger names the run as pending
-// before the VM starts and takes its verdict after the result is written, so a crash or a failed
-// save at any point leaves a FAIL that settle still finds.
+// before the VM starts. A FAIL is saved to the ledger before its result is written, so the ledger
+// record goes before serial.txt can use up the disk; if that save fails, a FAIL result.json lets
+// settle record it. A FAIL is lost if the save and result.json both fail, or if the runner dies
+// between the VM's end and the save: settle finds the INVALID that begin left, and as evidence is
+// still due a later Tick runs it again. If result.json fails after the save, or the runner dies
+// before it, the recorded FAIL's result still says INVALID.
 func (r *Runner) evidence(ctx context.Context, l *Ledger, img image, now time.Time) error {
 	dir, id, err := r.begin(LabelEvidence, "", img, nil)
 	if err != nil {
@@ -228,19 +232,26 @@ func (r *Runner) evidence(ctx context.Context, l *Ledger, img image, now time.Ti
 		v, why := r.selftest(o, r.Commit, img.Commit)
 		return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
 	})
+	var saveErr error
+	if run.Verdict == rangevm.Fail {
+		l.Evidence.fail(r.Commit, id)
+		l.Evidence.Pending = ""
+		saveErr = SaveLedger(r.ledgerPath(), *l)
+	}
 	finishErr := r.finish(dir, r.result(id, LabelEvidence, img, nil, []Run{run}), map[string][]byte{"serial.txt": serial})
 	// Only a PASS with its result on disk counts; INVALID or UNKNOWN, which agents can cause, leave
 	// evidence due. A FAIL counts even without its final result, and stays pinned by its id.
 	switch {
 	case run.Verdict == rangevm.Pass && finishErr == nil:
 		l.Evidence.Commit, l.Evidence.LastPass, l.Evidence.Due = r.Commit, now, false
-	case run.Verdict == rangevm.Fail:
-		l.Evidence.fail(r.Commit, id)
 	case run.Verdict == rangevm.Pass:
 		return errors.Join(err, finishErr) // still pending: settle finds the INVALID it left
 	}
-	l.Evidence.Pending = ""
-	if saveErr := SaveLedger(r.ledgerPath(), *l); saveErr != nil {
+	if run.Verdict != rangevm.Fail {
+		l.Evidence.Pending = ""
+		saveErr = SaveLedger(r.ledgerPath(), *l)
+	}
+	if saveErr != nil {
 		return errors.Join(err, finishErr, saveErr)
 	}
 	r.Log.Info("evidence recorded", "id", id, "verdict", run.Verdict, "due", l.Evidence.Due, "rule", RuleVersion)

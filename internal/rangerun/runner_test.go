@@ -992,3 +992,58 @@ func TestAnUnwrittenPassIsNotLoggedAsAResult(t *testing.T) {
 		t.Fatalf("log: %q", line)
 	}
 }
+
+// onFinish is a log handler that calls do when finish reports a result, written or not: the moment
+// right after the runner tried to write it.
+type onFinish struct{ do func() }
+
+func (h onFinish) Enabled(context.Context, slog.Level) bool { return true }
+func (h onFinish) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Message == "result" || rec.Message == "result not written" {
+		h.do()
+	}
+	return nil
+}
+func (h onFinish) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h onFinish) WithGroup(string) slog.Handler      { return h }
+
+// A FAIL reaches the ledger before its result is written. Results and state share a disk the
+// result writes can fill: here the result cannot be written, and the state is read-only from the
+// moment the runner tried. The FAIL still stops the runner, and a later PASS gives no evidence.
+func TestAFailIsInTheLedgerBeforeItsResult(t *testing.T) {
+	tr := newTestRunner(t, time.Now(), Ledger{})
+	tr.vm.verdict = rangevm.Fail
+	run := tr.run
+	var dir string
+	tr.run = func(ctx context.Context, base, parent string, serial io.Writer, disk []byte) (rangevm.Outcome, error) {
+		dir = filepath.Join(tr.Results, LabelEvidence, tr.results(t, LabelEvidence)[0].ID)
+		if err := os.Chmod(dir, 0o550|os.ModeSetgid); err != nil {
+			t.Fatal(err)
+		}
+		return run(ctx, base, parent, serial, disk)
+	}
+	fired := 0
+	tr.Log = slog.New(onFinish{func() {
+		fired++
+		if err := os.Chmod(tr.State, 0o500); err != nil { //nolint:gosec // a full disk, for the test
+			t.Error(err)
+		}
+	}})
+	restore := func() {
+		_ = os.Chmod(tr.State, 0o700) //nolint:gosec // a directory needs its x bit
+		_ = os.Chmod(dir, 0o750|os.ModeSetgid)
+	}
+	t.Cleanup(restore)
+	if err := tr.Tick(t.Context()); err == nil {
+		t.Fatal("a lost result went unreported")
+	}
+	if fired != 1 { // a renamed log message would leave the state writable and the test vacuous
+		t.Fatalf("the hook fired %d times", fired)
+	}
+	restore()
+	tr.run, tr.vm.verdict = run, rangevm.Pass
+	tr.Log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := tr.Tick(t.Context()); err == nil || len(tr.vm.disks) != 1 || len(tr.ledger(t).Evidence.Failed) != 1 {
+		t.Fatalf("FAIL lost: tick %v, %d runs, evidence %+v", err, len(tr.vm.disks), tr.ledger(t).Evidence)
+	}
+}
