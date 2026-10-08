@@ -100,3 +100,16 @@ func TestPlantedQcow2HeaderIsData(t *testing.T) {
 		t.Fatalf("format=raw followed the planted header: %v", pinned)
 	}
 }
+
+// A failed overlay step carries what the tool printed, not only its exit status.
+func TestOverlayFailureNamesTheToolOutput(t *testing.T) {
+	base := t.TempDir() // a directory, which no tool accepts as the base image
+	out, err := Run(context.Background(), base, t.TempDir(), io.Discard, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, ok := strings.CutPrefix(out.Invalid, "overlay: exit: exit status ")
+	if _, detail, found := strings.Cut(rest, ": "); !ok || !found || detail == "" {
+		t.Fatalf("Invalid = %q, want the exit status and the output of the overlay step", out.Invalid)
+	}
+}
