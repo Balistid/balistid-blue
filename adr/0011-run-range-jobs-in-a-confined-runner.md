@@ -54,7 +54,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 - ADR 0009 point 6 and ADR 0010 point 1 amended; ADR 0010's confined branch builds are withdrawn.
 - Until `balistid-install` exists this manual root install is an exception to R1 and R8, checked
   by a written procedure. `cmd/balistid`, `cmd/balistid-runner` and `internal/buildinfo` are
-  code-owned and in the `go list -deps` gate; the inbox needs a sandbox allowWrite. Agents can delay
-  or invalidate evidence via memory and disk (T36), not forge it; a newer `main` is a reinstall.
+  code-owned and in the `go list -deps` gate; the inbox needs a sandbox allowWrite. Agents can delay, invalidate or
+  (disk full) lose a FAIL of evidence (T36); forging a PASS takes a runner bug or a guest escape past QEMU and bwrap, or past KVM (T31, T37). A newer `main` is a reinstall.
 - Tests: job-dir links, hard links, FIFOs refused unopened; an inbox job builds nothing, is never
   evidence; the procedure refuses a sha256 CI did not log. T31, T33, T34 change, T35-T37 added.
