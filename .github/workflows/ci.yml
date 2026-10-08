@@ -129,7 +129,7 @@ jobs:
         run: CGO_ENABLED=1 go test -race ./...
 
   go-release:
-    needs: go-static
+    needs: [go-static, go-test, go-race, selftest, docs-budget, pin-check, commit-lint, secrets, workflow-lint]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
