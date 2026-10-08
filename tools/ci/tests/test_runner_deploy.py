@@ -63,7 +63,6 @@ SERVICES = {
         "SupplementaryGroups": "kvm",
         "ReadWritePaths": "/var/lib/balistid/results",
         "Environment": "GOMEMLIMIT=192MiB",
-        "MemoryHigh": "2304M",
         "MemoryMax": "2560M",  # acceptance runner_job_memory_gib
         "TasksMax": "256",
         "CPUSchedulingPolicy": "idle",
