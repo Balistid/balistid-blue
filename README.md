@@ -73,6 +73,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
 | `internal/rangejob/` | Contract between agents and the range runner, starting with the inbox request |
 | `internal/rangerun/` | The range runner: its record of the inbox (one run per job name and content in 30 days) and quota; it never changes the inbox |
+| `internal/rawrecord/` | The stored evidence record: its byte encoding, leaf hash and truncation (ADR 0005) |
 | `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
