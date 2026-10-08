@@ -395,11 +395,13 @@ STUBS = {
     # systemctl show -P PROPERTY UNIT: the value the test gives "PROPERTY UNIT"; nothing given is a unit not
     # installed yet (ActiveState inactive, every other property empty). STUB_FAIL: "1" no answer, "7" the
     # answer with a failed status; for every property, or only STUB_FAIL_PROP when that is set.
+    # daemon-reload loads what is on disk: the answers become those of STUB_UNITS_AFTER.
     "systemctl": 'if [ "$1" = show ]; then [ "$2" = -P ] && [ $# -eq 4 ] || exit 2; f=; '
                  '[ -z "$STUB_FAIL_PROP" ] || [ "$STUB_FAIL_PROP" = "$3" ] && f=$STUB_FAIL; [ "$f" = 1 ] && exit 1; '
                  'v=$(/usr/bin/grep -F "$3 $4	" "$STUB_UNITS" | /usr/bin/cut -f2); '
                  '[ -n "$v" ] || [ "$3" != ActiveState ] || v=inactive; echo "$v"; '
-                 '[ "$f" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; fi',
+                 '[ "$f" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; '
+                 '[ "$1" != daemon-reload ] || /usr/bin/cp "$STUB_UNITS_AFTER" "$STUB_UNITS"; fi',
 }
 WRITERS = ("install", "systemd-sysusers", "systemd-tmpfiles", "usermod", "logger")
 LIB, STATE = "/usr/local/lib/balistid", "/var/lib/balistid"
@@ -426,15 +428,19 @@ class InstallTest(unittest.TestCase):
         self.log.write_text("")
         self.state = {str(self.copy): "root:root 700 directory"}
         self.units: dict[tuple[str, str], str] = {}  # (property, unit): value
+        # After the reload: every unit from the file this install wrote, nothing else.
+        self.after = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
         self.env = {"PATH": str(bin_), "STUB_LOG": str(self.log), "STUB_UID": "0", "STUB_FAIL": "", "STUB_ID_FAIL": "", "STUB_FAIL_WRITER": "",
                     "STUB_FAIL_PROP": "",
-                    "STUB_STATE": str(self.tmp / "state"), "STUB_UNITS": str(self.tmp / "units")}
+                    "STUB_STATE": str(self.tmp / "state"), "STUB_UNITS": str(self.tmp / "units"),
+                    "STUB_UNITS_AFTER": str(self.tmp / "units-after")}
 
     hash = "ab" * 32
 
     def run_install(self, maintainer: str = "maint") -> subprocess.CompletedProcess:
         (self.tmp / "state").write_text("".join(f"{k}\t{v}\n" for k, v in self.state.items()))
         (self.tmp / "units").write_text("".join(f"{p} {u}\t{v}\n" for (p, u), v in self.units.items()))
+        (self.tmp / "units-after").write_text("".join(f"{p} {u}\t{v}\n" for (p, u), v in self.after.items()))
         r = subprocess.run(["/bin/sh", str(REPO / "deploy/runner/install"), str(self.copy), maintainer, self.hash],
                            env=self.env, capture_output=True, text=True, timeout=10)
         self.assertNotIn("not found", r.stderr, "install ran a command that has no stand-in")
@@ -466,8 +472,8 @@ class InstallTest(unittest.TestCase):
             f"install -m 0644 {c}/balistid-runner-build.service /etc/systemd/system/balistid-runner-build.service",
             f"install -m 0644 {c}/balistid-runner-tick.service /etc/systemd/system/balistid-runner-tick.service",
             f"install -m 0644 {c}/balistid-runner-tick.timer /etc/systemd/system/balistid-runner-tick.timer",
-            "install -d -o root -g root -m 0755 /etc/sysusers.d",
-            "install -d -o root -g root -m 0755 /etc/tmpfiles.d",
+            "install -d -m 0755 /etc/sysusers.d",
+            "install -d -m 0755 /etc/tmpfiles.d",
             f"install -m 0644 {c}/sysusers.conf /etc/sysusers.d/balistid-runner.conf",
             f"install -m 0644 {c}/tmpfiles.conf /etc/tmpfiles.d/balistid-runner.conf",
             "systemd-sysusers /etc/sysusers.d/balistid-runner.conf",
@@ -524,10 +530,30 @@ class InstallTest(unittest.TestCase):
                     self.units = {("DropInPaths", unit): paths}
                     self.refused(self.run_install(), f"{unit} has drop-ins: {paths}")
             for path in (f"/run/systemd/system/{unit}", f"/run/systemd/transient/{unit}",
-                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak", "/dev/null"):
+                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak"):
                 with self.subTest(unit=unit, fragment=path):
                     self.units = {("FragmentPath", unit): path}
                     self.refused(self.run_install(), f"{unit} is loaded from {path}, not /etc/systemd/system/{unit}")
+
+    # systemd answers only for what it has loaded, so a drop-in for a unit with no file yet shows only
+    # after the install's own reload; the install must stop there and not report itself installed.
+    def test_a_drop_in_seen_only_after_the_reload_refuses(self):
+        for unit in UNITS:
+            for prop, value, reason in (
+                    ("DropInPaths", f"/etc/systemd/system/{unit}.d/old.conf", f"{unit} has drop-ins"),
+                    ("FragmentPath", f"/run/systemd/system/{unit}", f"{unit} is loaded from /run/systemd/system/{unit}"),
+                    ("FragmentPath", "", f"{unit} is loaded from , not /etc/systemd/system/{unit}")):
+                with self.subTest(unit=unit, prop=prop, value=value):
+                    self.after = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
+                    self.after[(prop, unit)] = value
+                    r = self.run_install()
+                    self.assertNotEqual(r.returncode, 0)
+                    logged = self.lines("log")
+                    self.assertEqual(len(logged), 1, logged)
+                    self.assertIn("install stopped (ADR 0011): ", logged[0])
+                    self.assertIn(reason, logged[0])
+                    self.assertIn("systemctl daemon-reload", self.lines("write"))
+                    self.log.write_text("")
 
     def test_a_unit_from_this_install_or_none_passes(self):
         for installed in (UNITS, UNITS[:1], ()):
