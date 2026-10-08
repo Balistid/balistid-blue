@@ -373,13 +373,19 @@ STUBS = {
     # STUB_ID_FAIL: right answer, failed status.
     "id": '[ $# -eq 1 ] && { echo "$STUB_UID"; [ -z "$STUB_ID_FAIL" ] || exit 7; exit 0; }; '
           '[ "$2" = ghost ] && exit 1; [ "$2" = daemon ] && { echo 2; exit 0; }; [ "$2" = nobody ] && { echo 65534; exit 0; }; echo 1000',
-    # STUB_FAIL: "1" no answer, "7" the right answer with a failed status.
-    "systemctl": 'if [ "$1" = show ]; then [ "$STUB_FAIL" = 1 ] && exit 1; '
-                 'v=$(/usr/bin/grep -F "$4	" "$STUB_UNITS" | /usr/bin/cut -f2); echo "${v:-inactive}"; '
-                 '[ "$STUB_FAIL" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; fi',
+    # systemctl show -P PROPERTY UNIT: the value the test gives "PROPERTY UNIT"; nothing given is a unit not
+    # installed yet (ActiveState inactive, every other property empty). STUB_FAIL: "1" no answer, "7" the
+    # answer with a failed status; for every property, or only STUB_FAIL_PROP when that is set.
+    "systemctl": 'if [ "$1" = show ]; then [ "$2" = -P ] && [ $# -eq 4 ] || exit 2; f=; '
+                 '[ -z "$STUB_FAIL_PROP" ] || [ "$STUB_FAIL_PROP" = "$3" ] && f=$STUB_FAIL; [ "$f" = 1 ] && exit 1; '
+                 'v=$(/usr/bin/grep -F "$3 $4	" "$STUB_UNITS" | /usr/bin/cut -f2); '
+                 '[ -n "$v" ] || [ "$3" != ActiveState ] || v=inactive; echo "$v"; '
+                 '[ "$f" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; fi',
 }
 WRITERS = ("install", "systemd-sysusers", "systemd-tmpfiles", "usermod", "logger")
 LIB, STATE = "/usr/local/lib/balistid", "/var/lib/balistid"
+UNITS = ("balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service")
+ETC_DIRS = ("/etc/sysusers.d", "/etc/tmpfiles.d")
 
 
 class InstallTest(unittest.TestCase):
@@ -400,15 +406,16 @@ class InstallTest(unittest.TestCase):
         self.log = self.tmp / "log"
         self.log.write_text("")
         self.state = {str(self.copy): "root:root 700 directory"}
-        self.units: dict[str, str] = {}
+        self.units: dict[tuple[str, str], str] = {}  # (property, unit): value
         self.env = {"PATH": str(bin_), "STUB_LOG": str(self.log), "STUB_UID": "0", "STUB_FAIL": "", "STUB_ID_FAIL": "", "STUB_FAIL_WRITER": "",
+                    "STUB_FAIL_PROP": "",
                     "STUB_STATE": str(self.tmp / "state"), "STUB_UNITS": str(self.tmp / "units")}
 
     hash = "ab" * 32
 
     def run_install(self, maintainer: str = "maint") -> subprocess.CompletedProcess:
         (self.tmp / "state").write_text("".join(f"{k}\t{v}\n" for k, v in self.state.items()))
-        (self.tmp / "units").write_text("".join(f"{k}\t{v}\n" for k, v in self.units.items()))
+        (self.tmp / "units").write_text("".join(f"{p} {u}\t{v}\n" for (p, u), v in self.units.items()))
         r = subprocess.run(["/bin/sh", str(REPO / "deploy/runner/install"), str(self.copy), maintainer, self.hash],
                            env=self.env, capture_output=True, text=True, timeout=10)
         self.assertNotIn("not found", r.stderr, "install ran a command that has no stand-in")
@@ -431,8 +438,7 @@ class InstallTest(unittest.TestCase):
         self.assertIn(reason, logged[0])
         self.log.write_text("")
 
-    def test_first_install_writes_exactly_this_after_the_checks(self):
-        r = self.run_install()
+    def assert_first_install(self, r: subprocess.CompletedProcess):
         self.assertEqual(r.returncode, 0, r.stderr)
         c = self.copy
         self.assertEqual(self.lines("write"), [
@@ -441,7 +447,8 @@ class InstallTest(unittest.TestCase):
             f"install -m 0644 {c}/balistid-runner-build.service /etc/systemd/system/balistid-runner-build.service",
             f"install -m 0644 {c}/balistid-runner-tick.service /etc/systemd/system/balistid-runner-tick.service",
             f"install -m 0644 {c}/balistid-runner-tick.timer /etc/systemd/system/balistid-runner-tick.timer",
-            "install -d -m 0755 /etc/sysusers.d /etc/tmpfiles.d",
+            "install -d -o root -g root -m 0755 /etc/sysusers.d",
+            "install -d -o root -g root -m 0755 /etc/tmpfiles.d",
             f"install -m 0644 {c}/sysusers.conf /etc/sysusers.d/balistid-runner.conf",
             f"install -m 0644 {c}/tmpfiles.conf /etc/tmpfiles.d/balistid-runner.conf",
             "systemd-sysusers /etc/sysusers.d/balistid-runner.conf",
@@ -452,6 +459,10 @@ class InstallTest(unittest.TestCase):
             "systemctl daemon-reload"])
         self.assertEqual(self.lines("log"),
                          [f"logger -s -t balistid-install installed (ADR 0011) runner bundle sha256 {self.hash} for maint"])
+        self.log.write_text("")
+
+    def test_first_install_writes_exactly_this_after_the_checks(self):
+        self.assert_first_install(self.run_install())
 
     def test_a_failed_write_is_logged_with_its_step(self):
         self.env["STUB_FAIL_WRITER"] = "systemd-sysusers"
@@ -467,16 +478,17 @@ class InstallTest(unittest.TestCase):
     def test_reinstall_keeps_inbox_and_objects(self):
         self.state |= {LIB: "root:root 755 directory", STATE: "root:root 755 directory",
                        f"{STATE}/inbox": "maint:balistid-runner 2750 directory",
-                       f"{STATE}/objects": "maint:balistid-runner 2750 directory"}
+                       f"{STATE}/objects": "maint:balistid-runner 2750 directory",
+                       **{path: "root:root 755 directory" for path in ETC_DIRS}}
         r = self.run_install()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse([w for w in self.lines("write") if "/inbox" in w or "/objects" in w])
 
     def test_a_running_or_unknown_unit_refuses(self):
-        for unit in ("balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service"):
+        for unit in UNITS:
             for active in ("active", "activating", "deactivating", "reloading", "x"):
                 with self.subTest(unit=unit, active=active):
-                    self.units = {unit: active}
+                    self.units = {("ActiveState", unit): active}
                     self.refused(self.run_install(), f"{unit} is {active}, not stopped")
         self.units = {}
         for fail in ("1", "7"):
@@ -484,12 +496,41 @@ class InstallTest(unittest.TestCase):
                 self.env["STUB_FAIL"] = fail
                 self.refused(self.run_install(), "cannot query balistid-runner-tick.timer")
 
+    def test_a_drop_in_or_another_fragment_refuses(self):
+        for unit in UNITS:
+            for paths in (f"/etc/systemd/system/{unit}.d/override.conf",
+                          f"/etc/systemd/system.control/{unit}.d/50-RestrictSUIDSGID.conf",
+                          f"/run/systemd/system/{unit}.d/a.conf /usr/lib/systemd/system/{unit}.d/b.conf"):
+                with self.subTest(unit=unit, drop_ins=paths):
+                    self.units = {("DropInPaths", unit): paths}
+                    self.refused(self.run_install(), f"{unit} has drop-ins: {paths}")
+            for path in (f"/run/systemd/system/{unit}", f"/run/systemd/transient/{unit}",
+                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak", "/dev/null"):
+                with self.subTest(unit=unit, fragment=path):
+                    self.units = {("FragmentPath", unit): path}
+                    self.refused(self.run_install(), f"{unit} is loaded from {path}, not /etc/systemd/system/{unit}")
+
+    def test_a_unit_from_this_install_or_none_passes(self):
+        for installed in (UNITS, UNITS[:1], ()):
+            with self.subTest(installed=installed):
+                self.units = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in installed}
+                self.assert_first_install(self.run_install())
+
+    def test_a_failed_unit_query_refuses(self):
+        # "7" answers what passes (empty, or the expected path) and fails; the failure alone must refuse.
+        self.units = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
+        for prop in ("DropInPaths", "FragmentPath"):
+            for fail in ("1", "7"):
+                with self.subTest(prop=prop, fail=fail):
+                    self.env |= {"STUB_FAIL": fail, "STUB_FAIL_PROP": prop}
+                    self.refused(self.run_install(), f"cannot query {prop} of balistid-runner-tick.timer")
+
     def test_a_command_that_answers_right_but_fails_refuses(self):
         self.env["STUB_ID_FAIL"] = "1"
         self.refused(self.run_install(), "id failed")
 
     def test_a_stat_error_is_not_absent(self):
-        for path in (LIB, STATE, f"{STATE}/inbox", f"{STATE}/objects"):
+        for path in (LIB, STATE, f"{STATE}/inbox", f"{STATE}/objects", *ETC_DIRS):
             with self.subTest(path=path):
                 self.state = {str(self.copy): "root:root 700 directory", path: "ERROR"}
                 self.refused(self.run_install(), f"cannot stat {path}")
@@ -499,7 +540,10 @@ class InstallTest(unittest.TestCase):
                             (LIB, "root:root 777 symbolic link"), (STATE, "maint:root 755 directory"),
                             (f"{STATE}/inbox", "maint:balistid-runner 777 directory"),
                             (f"{STATE}/inbox", "maint:balistid-runner 777 symbolic link"),
-                            (f"{STATE}/objects", "other:balistid-runner 2750 directory")):
+                            (f"{STATE}/objects", "other:balistid-runner 2750 directory"),
+                            *((path, value) for path in ETC_DIRS
+                              for value in ("root:root 750 directory", "root:root 644 regular file",
+                                            "root:root 777 symbolic link", "maint:root 755 directory"))):
             with self.subTest(path=path, value=value):
                 self.state = {str(self.copy): "root:root 700 directory", path: value}
                 self.refused(self.run_install(), f"{path} is {value}, not ")

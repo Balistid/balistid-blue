@@ -29,9 +29,15 @@ case $m in root | "" | *[!a-z0-9_-]* | [!a-z_]*) refuse "bad maintainer name" ;;
 muid=$(id -u "$m") || refuse "no user $m"
 [ "$muid" -ge 1000 ] 2>/dev/null && [ "$muid" -le 60000 ] || refuse "$m is not a regular user"
 # A oneshot unit is "activating" while it runs; only these two states are stopped.
+# A drop-in (set-property leaves one too) or a copy under /run would outlive this install and
+# change the unit; an empty FragmentPath means not installed yet.
 for u in balistid-runner-tick.timer balistid-runner-tick.service balistid-runner-build.service; do
     a=$(systemctl show -P ActiveState "$u") || refuse "cannot query $u"
     case $a in inactive | failed) ;; *) refuse "$u is $a, not stopped" ;; esac
+    p=$(systemctl show -P DropInPaths "$u") || refuse "cannot query DropInPaths of $u"
+    [ -z "$p" ] || refuse "$u has drop-ins: $p"
+    f=$(systemctl show -P FragmentPath "$u") || refuse "cannot query FragmentPath of $u"
+    case $f in "" | "/etc/systemd/system/$u") ;; *) refuse "$u is loaded from $f, not /etc/systemd/system/$u" ;; esac
 done
 absent_or "$lib" "root:root 755 directory"
 absent_or "$state" "root:root 755 directory"
@@ -39,6 +45,8 @@ absent_or "$state/inbox" "$m:balistid-runner 2750 directory"
 inbox=$s
 absent_or "$state/objects" "$m:balistid-runner 2750 directory"
 objects=$s
+absent_or /etc/sysusers.d "root:root 755 directory"
+absent_or /etc/tmpfiles.d "root:root 755 directory"
 
 # Each write names itself first, so a failure is logged with the step that failed.
 step() { why="failed: $*"; "$@"; }
@@ -47,8 +55,9 @@ step install -m 0755 "$d/balistid-runner" "$lib/balistid-runner"
 for u in balistid-runner-build.service balistid-runner-tick.service balistid-runner-tick.timer; do
     step install -m 0644 "$d/$u" "/etc/systemd/system/$u"
 done
-# Arch ships neither directory under /etc until an admin makes one.
-step install -d -m 0755 /etc/sysusers.d /etc/tmpfiles.d
+# Arch ships neither directory under /etc; both are checked above (absent or root:root 755).
+step install -d -o root -g root -m 0755 /etc/sysusers.d
+step install -d -o root -g root -m 0755 /etc/tmpfiles.d
 step install -m 0644 "$d/sysusers.conf" /etc/sysusers.d/balistid-runner.conf
 step install -m 0644 "$d/tmpfiles.conf" /etc/tmpfiles.d/balistid-runner.conf
 step systemd-sysusers /etc/sysusers.d/balistid-runner.conf
