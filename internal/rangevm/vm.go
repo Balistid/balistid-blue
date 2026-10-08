@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -42,6 +44,7 @@ const (
 	SerialBudget = 1 << 20
 	RunTimeout   = 10 * time.Minute
 	setupTimeout = time.Minute
+	setupShown   = 512 // bytes of the overlay step's output kept in its INVALID reason
 )
 
 // sandboxArgv wraps prog in prlimit and bwrap (ADR 0009, point 3): no network, no host $HOME,
@@ -140,8 +143,9 @@ func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte)
 	}
 	fsize := WriteCap(st.Size())
 
-	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, overlayArgv()...), setupTimeout, SerialBudget, io.Discard); why != "" {
-		return Outcome{Invalid: "overlay: " + why}, nil
+	var setup bytes.Buffer
+	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, overlayArgv()...), setupTimeout, SerialBudget, &setup); why != "" {
+		return Outcome{Invalid: "overlay: " + why + ": " + Printable(strings.TrimSpace(setup.String()), setupShown)}, nil
 	}
 	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, qemuArgv(job != nil)...), RunTimeout, SerialBudget, serial); why != "" {
 		return Outcome{Invalid: "vm: " + why}, nil
