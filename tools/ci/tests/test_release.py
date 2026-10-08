@@ -530,7 +530,8 @@ class InstallTest(unittest.TestCase):
                     self.units = {("DropInPaths", unit): paths}
                     self.refused(self.run_install(), f"{unit} has drop-ins: {paths}")
             for path in (f"/run/systemd/system/{unit}", f"/run/systemd/transient/{unit}",
-                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak"):
+                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak",
+                         f"/x:/etc/systemd/system/{unit}", f"/x/etc/systemd/system/{unit}"):
                 with self.subTest(unit=unit, fragment=path):
                     self.units = {("FragmentPath", unit): path}
                     self.refused(self.run_install(), f"{unit} is loaded from {path}, not /etc/systemd/system/{unit}")

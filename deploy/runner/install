@@ -1,7 +1,8 @@
 #!/bin/sh
 # Installs the range runner (ADR 0011, point 1). Run only by the bootstrap command CI prints: $1 is the
 # root-only copy it checked, $2 the maintainer, who owns inbox and objects, $3 the bundle sha256 typed.
-# Every check runs before the first write, so a refusal leaves the host as it was. Every command whose
+# Every check but the one after the reload runs before the first write, so a refusal leaves the host as
+# it was; that last one leaves the files written and loaded, the units stopped. Every command whose
 # output decides is run on its own line with its status checked: $(...) inside a test hides a failure.
 set -eu
 d=$1 m=$2 sum=$3
@@ -32,12 +33,13 @@ units="balistid-runner-tick.timer balistid-runner-tick.service balistid-runner-b
 # A drop-in (set-property leaves one too) or a copy under /run would outlive this install and change
 # the unit. systemd answers only for what it has loaded, so this runs again after the reload, when
 # an empty FragmentPath (not installed yet, allowed before) no longer passes.
+# Not checked: dependency directories (.wants/, .requires/) and manager-wide settings; only root writes them.
 as_written() {
     for u in $units; do
         p=$(systemctl show -P DropInPaths "$u") || refuse "cannot query DropInPaths of $u"
         [ -z "$p" ] || refuse "$u has drop-ins: $p"
         f=$(systemctl show -P FragmentPath "$u") || refuse "cannot query FragmentPath of $u"
-        case $1:$f in "before:" | *":/etc/systemd/system/$u") ;; *) refuse "$u is loaded from $f, not /etc/systemd/system/$u" ;; esac
+        case $1:$f in "before:" | "$1:/etc/systemd/system/$u") ;; *) refuse "$u is loaded from $f, not /etc/systemd/system/$u" ;; esac
     done
 }
 # A oneshot unit is "activating" while it runs; only these two states are stopped.
