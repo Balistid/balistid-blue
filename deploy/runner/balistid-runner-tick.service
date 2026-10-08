@@ -43,5 +43,13 @@ ProtectControlGroups=yes
 ProtectClock=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
+# A deny list: bwrap and QEMU inherit the filter and need mount, namespace and rlimit calls.
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+# AF_NETLINK: bwrap --unshare-all brings up loopback in the new network namespace over rtnetlink.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+ProtectHostname=yes
+PrivateIPC=yes
+RemoveIPC=yes
 # No RestrictNamespaces or PrivateUsers: bwrap needs user namespaces. No MemoryDenyWriteExecute:
 # QEMU links pcre2, which can JIT, and was not run under it.
