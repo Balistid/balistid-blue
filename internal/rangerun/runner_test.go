@@ -1047,3 +1047,97 @@ func TestAFailIsInTheLedgerBeforeItsResult(t *testing.T) {
 		t.Fatalf("FAIL lost: tick %v, %d runs, evidence %+v", err, len(tr.vm.disks), tr.ledger(t).Evidence)
 	}
 }
+
+// freshAndOld lists dir after a tick: whether a result named with the tick's stamp is there, and
+// how many other result names besides pinned are left.
+func freshAndOld(t *testing.T, dir string, now time.Time, pinned string) (fresh bool, others int) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		switch {
+		case strings.HasPrefix(e.Name(), now.UTC().Format("20060102T150405Z")+"-"):
+			fresh = true
+		case e.Name() != pinned:
+			others++
+		}
+	}
+	return fresh, others
+}
+
+// A PASS keeps its result after the clock is set back: the fresh result's name then sorts as the
+// oldest, and retention must not delete it in the tick that records the PASS (T22). With the
+// clock as it should be, retention still keeps exactly KeepEvidence and the failed run's pin.
+func TestAPassKeepsItsResultWhenTheClockIsSetBack(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	failed := "20200101T000000Z-0000000f"
+	for name, stamp := range map[string]string{"set back": "20261009T%06dZ-00000000", "normal": "20261007T%06dZ-00000000"} {
+		tr := newTestRunner(t, now, Ledger{Evidence: Evidence{Failed: []FailedRun{{strings.Repeat("b", 40), failed}}}})
+		dir := filepath.Join(tr.Results, LabelEvidence)
+		names := []string{failed}
+		for i := range KeepEvidence + 2 {
+			names = append(names, fmt.Sprintf(stamp, i))
+		}
+		for _, n := range names {
+			if err := os.Mkdir(filepath.Join(dir, n), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tr.Tick(t.Context()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if l := tr.ledger(t); !l.Evidence.LastPass.Equal(now) || l.Evidence.Due {
+			t.Fatalf("%s: no PASS recorded, the premise is broken: %+v", name, l.Evidence)
+		}
+		fresh, others := freshAndOld(t, dir, now, failed)
+		if !fresh {
+			t.Errorf("%s: the ledger holds a PASS but its result directory was pruned", name)
+		}
+		if _, err := os.Stat(filepath.Join(dir, failed)); err != nil {
+			t.Errorf("%s: the failed run's result was pruned: %v", name, err)
+		}
+		if others != KeepEvidence-1 {
+			t.Errorf("%s: %d older results kept besides the fresh one and the pin, want %d", name, others, KeepEvidence-1)
+		}
+		if _, err := os.Stat(filepath.Join(dir, names[1])); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: retention kept the oldest plain result: %v", name, err)
+		}
+	}
+}
+
+// An agent's fresh result is not deleted in the tick that writes it when the clock is set back,
+// on each path that prunes agent results; retention still keeps exactly KeepAgent.
+func TestAnAgentResultSurvivesItsTickWhenTheClockIsSetBack(t *testing.T) {
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	jobs := map[string]struct {
+		request string
+		program []byte
+	}{
+		"run":          {`{"schema_version":1,"kind":"run","trials":1}`, nil},
+		"exec":         {execRequest, program},
+		"exec no disk": {execRequest, []byte{}},
+	}
+	for name, job := range jobs {
+		tr := newTestRunner(t, now, evidenceDone(now))
+		tr.vm.facts = execFacts(sha256.Sum256(program))
+		dir := filepath.Join(tr.Results, LabelAgent)
+		for i := range KeepAgent + 2 {
+			if err := os.Mkdir(filepath.Join(dir, fmt.Sprintf("20261009T%06dZ-00000000", i)), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tr.addJob(t, "job-1", job.request, job.program)
+		if err := tr.Tick(t.Context()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		fresh, others := freshAndOld(t, dir, now, "")
+		if !fresh {
+			t.Errorf("%s: the job's result was pruned in the tick that wrote it", name)
+		}
+		if others != KeepAgent-1 {
+			t.Errorf("%s: %d older results kept besides the fresh one, want %d", name, others, KeepAgent-1)
+		}
+	}
+}

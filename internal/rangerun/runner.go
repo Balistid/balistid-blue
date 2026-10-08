@@ -215,10 +215,11 @@ func (e *Evidence) fail(commit, id string) {
 // evidence runs the runner's own image with no job disk. The ledger names the run as pending
 // before the VM starts. A FAIL is saved to the ledger before its result is written, so the ledger
 // record goes before serial.txt can use up the disk; if that save fails, a FAIL result.json lets
-// settle record it. A FAIL is lost if the save and result.json both fail, or if the runner dies
-// between the VM's end and the save: settle finds the INVALID that begin left, and as evidence is
-// still due a later Tick runs it again. If result.json fails after the save, or the runner dies
-// before it, the recorded FAIL's result still says INVALID.
+// settle record it. A FAIL is lost when neither reaches the disk: both writes fail before their
+// rename (WriteFileAtomic can also fail after it), or the runner dies after the VM's end and before
+// the save, or after a failed save and before result.json. settle then finds the INVALID that begin
+// left, and as evidence is still due a later Tick runs it again. After the save, the recorded
+// FAIL's result may still say INVALID: result.json failed before its rename, or the runner died first.
 func (r *Runner) evidence(ctx context.Context, l *Ledger, img image, now time.Time) error {
 	dir, id, err := r.begin(LabelEvidence, "", img, nil)
 	if err != nil {
@@ -259,7 +260,14 @@ func (r *Runner) evidence(ctx context.Context, l *Ledger, img image, now time.Ti
 	for _, f := range l.Evidence.Failed {
 		pins = append(pins, f.ID)
 	}
-	return errors.Join(err, finishErr, Prune(filepath.Join(r.Results, LabelEvidence), KeepEvidence, pins...))
+	return errors.Join(err, finishErr, prune(filepath.Join(r.Results, LabelEvidence), KeepEvidence, id, pins...))
+}
+
+// prune keeps the newest keep results in dir counting fresh, the result this tick wrote, which it
+// keeps whatever its name says: the name's stamp is the wall clock, and once the clock is set back
+// it sorts as the oldest (T22), so its PASS would be in the ledger with its result deleted.
+func prune(dir string, keep int, fresh string, pins ...string) error {
+	return Prune(dir, keep-1, append(pins, fresh)...)
 }
 
 func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Time) error {
@@ -316,7 +324,7 @@ func (r *Runner) runJob(ctx context.Context, img image, info *JobInfo, trials in
 		files[fmt.Sprintf("serial-%d.txt", i+1)] = serial
 	}
 	res := r.result(id, LabelAgent, img, info, runs)
-	return errors.Join(errors.Join(errs...), r.finish(dir, res, files), Prune(filepath.Join(r.Results, LabelAgent), KeepAgent))
+	return errors.Join(errors.Join(errs...), r.finish(dir, res, files), prune(filepath.Join(r.Results, LabelAgent), KeepAgent, id))
 }
 
 func (r *Runner) execJob(ctx context.Context, img image, info *JobInfo, job rangejob.Job) error {
@@ -333,7 +341,7 @@ func (r *Runner) execJob(ctx context.Context, img image, info *JobInfo, job rang
 	}
 	if diskErr != nil {
 		res := r.result(id, LabelAgent, img, info, []Run{{Verdict: rangevm.Invalid, Reason: "job disk: " + diskErr.Error()}})
-		return errors.Join(r.finish(dir, res, nil), Prune(filepath.Join(r.Results, LabelAgent), KeepAgent))
+		return errors.Join(r.finish(dir, res, nil), prune(filepath.Join(r.Results, LabelAgent), KeepAgent, id))
 	}
 	var x rangevm.ExecResult
 	run, serial, err := r.vm(ctx, img, disk, func(o rangevm.Outcome) Run {
@@ -351,7 +359,7 @@ func (r *Runner) execJob(ctx context.Context, img image, info *JobInfo, job rang
 		files["job-out.txt"], files["job-laurel.txt"] = x.Out, x.Laurel
 	}
 	res := r.result(id, LabelAgent, img, info, []Run{run})
-	return errors.Join(err, r.finish(dir, res, files), Prune(filepath.Join(r.Results, LabelAgent), KeepAgent))
+	return errors.Join(err, r.finish(dir, res, files), prune(filepath.Join(r.Results, LabelAgent), KeepAgent, id))
 }
 
 // vm runs img once under the memory watch and judges the outcome with judge. A run the watch
