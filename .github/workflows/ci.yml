@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # Weekly on main, so govulncheck sees advisories published without a new commit.
+  schedule:
+    - cron: "17 5 * * 1"
 
 permissions:
   contents: read
@@ -216,6 +219,8 @@ jobs:
           python3 -m unittest discover -s tools/ci/tests -v
 
   docs-budget:
+    # A scheduled run has no commit range to check.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -260,6 +265,8 @@ jobs:
         run: '"$RUNNER_TEMP/zizmor" --offline --config zizmor.yml .github/workflows/'
 
   commit-lint:
+    # A scheduled run has no commit range to check.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
