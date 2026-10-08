@@ -15,9 +15,9 @@ secretGroup = 1
 description = "Generic placeholders and CI runner paths"
 regexes = ['''^(?:runner|user|example)$''']
 
-# The rescan job copies go.sum to files named n.txt, so a path allowlist cannot reach it. A match of
-# the form "<word> v<version> h1:<hash>" is a module checksum whose path holds a keyword like "token".
+# The secrets job rescans go.sum as n.txt, where generic-api-key reads "token v1.1.0 h1:<hash>" of a
+# module path as a key. Only a whole go.sum line with a dotted module path is let through, for that rule.
 [[allowlists]]
-description = "go.sum module checksums"
-regexTarget = "match"
-regexes = ['''^\S+ v\S+ h1:[A-Za-z0-9+/]{43}=$''']
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''(?m)^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[\w.~+-]+)* v[0-9][\w.+-]*(?:/go\.mod)? h1:[A-Za-z0-9+/]{43}=$''']
