@@ -17,8 +17,8 @@ ReadWritePaths=/var/lib/balistid/results
 UMask=0027
 # The runner's heap holds kept output (under 100 MiB); the guest's 2048 MiB is QEMU's, not Go's.
 Environment=GOMEMLIMIT=192MiB
-# acceptance runner_job_memory_gib: 2.5 GiB cap, reclaim pressure from 2.25 GiB, no swap.
-MemoryHigh=2304M
+# acceptance runner_job_memory_gib: 2.5 GiB cap, no swap. No MemoryHigh: without swap it stalls a
+# job over it instead of killing it (probe 2026-10-08: 5 min at 2.4G, no oom-kill).
 MemoryMax=2560M
 MemorySwapMax=0
 # Go (about one thread per CPU) plus QEMU (2 vCPUs, main loop, up to 64 block workers), with room.

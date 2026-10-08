@@ -34,7 +34,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    state, keeps quota and expiry there and skips the rest (R5); the maintainer clears the inbox.
    Every inbox job is an agent job, whatever it claims. Results: the runner's 2750 setgid `agent/`,
    `evidence/` (checked). Evidence: only from the timer or install, never a request; it goes first.
-6. Jobs run in that unit (`MemoryHigh` below `MemoryMax`, no swap, `TasksMax`, idle CPU, a wall
+6. Jobs run in that unit (`MemoryMax` without `MemoryHigh`, no swap, `TasksMax`, idle CPU, a wall
    clock). A job starts only above a memory reserve and, on each filesystem it writes, a disk reserve
    plus the sum of its caps (3x per-file `--fsize`: overlay, results, vars; job disk; kept output);
    below the memory reserve it is stopped, and INVALID.
