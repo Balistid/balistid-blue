@@ -542,8 +542,10 @@ func TestNoteHealthIsStoredByFlush(t *testing.T) {
 	if err := s.NoteHealth([]byte(`{"schema_version":1,"sensor":"UNKNOWN"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NoteHealth(make([]byte, maxHealthBytes+1)); err == nil {
-		t.Fatal("an oversized health record was queued")
+	for _, bad := range [][]byte{make([]byte, maxHealthBytes+1), []byte("not json"), []byte(`{"sensor":"OK"}`)} {
+		if err := s.NoteHealth(bad); err == nil {
+			t.Fatalf("health record %.20q was queued", bad)
+		}
 	}
 	closeStore(t, s)
 	if got := readAll(t, dir); len(got) != 2 || got[1].Provider != HealthProvider {
@@ -631,5 +633,24 @@ func TestAnUnknownOpenLeavesTheRecoveryForTheNextOpen(t *testing.T) {
 	got := readAll(t, dir)
 	if len(got) != 2 || got[1].Provider != HealthProvider {
 		t.Fatalf("records %+v", got)
+	}
+}
+
+func TestOpenRefusesADirectoryOthersCanWrite(t *testing.T) {
+	for _, mode := range []os.FileMode{0o770, 0o707} {
+		dir := t.TempDir()
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(t.Context(), dir, small); err == nil {
+			t.Fatalf("Open accepted a directory of mode %o", mode)
+		}
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), link, small); err == nil {
+		t.Fatal("Open followed a symlink to its directory")
 	}
 }
