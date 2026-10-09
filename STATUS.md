@@ -11,7 +11,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
 | Range, runner (0009-0011) | VM where agents test the recorder | runner installed at 511a02f; PR 13 runs 10.10. |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
-| Store (0005, 0013) | cap, reserve, loss records, seal index | `shard.Recover` on `main` (#71); store PR open |
+| Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
 | Collector (0007) | takes Laurel's records over a socket | not started |
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
@@ -29,9 +29,9 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 
 ## Next step
 
-1. PR 13: 7 run jobs (21 runs) on 511a02f once the agent quota frees on 10.10.; then accept ADR 0011
-   if `runner_job_memory_gib` is met.
-2. 9.3: the collector (Laurel socket, 250 ms Flush ticker, seals to the ledger), then ledger and Pi witness.
+1. Runner security review (Codex, 9.10.): syscall allowlist instead of the deny-list, units written via
+   temp file and rename, a real rollback, a test of the real unit; then PR 13's 21 runs and ADR 0011.
+2. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness.
 ## Open decisions (maintainer)
 
 - Does `systemd_exposure` (2.5) cover the runner? Install skips .wants/.requires (root-only).
