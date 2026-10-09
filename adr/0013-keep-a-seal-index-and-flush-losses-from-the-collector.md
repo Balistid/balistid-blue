@@ -28,19 +28,19 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
    refuses a known name with another hash.
 4. Open trusts a `.db` that has an index line. `Read` refuses an indexed shard whose hash does not
    match and the reader reports UNKNOWN health; that shard is never sealed again.
-5. Any other `.db` is recovered: opened read-write first, so SQLite applies its WAL (rows commit to the
-   WAL long before the main file). One that then has no rows is not evidence and is removed with its
-   `-wal` and `-shm`. The rest have every row's leaf and the seq order checked, then are sealed, indexed
-   and a recovery health record stored. A shard that fails the check stays where it is and Open fails,
-   so no seq is issued past an unknown range; the maintainer decides, and that decision records its
-   seq range as a loss.
+5. Any other `.db` is recovered. A `.db` of zero bytes whose `-wal` is not empty fails recovery before
+   any open (SQLite would delete that WAL). The rest are opened read-write first, so SQLite applies
+   their WAL; one that then has no `records` table or no rows is not evidence and is removed with its
+   `-wal` and `-shm`. Every other has each row's leaf and the seq order checked, then is sealed,
+   indexed and a recovery health record stored. A shard that fails the check stays where it is and
+   Open fails, so no seq is issued past an unknown range; the maintainer decides, and that decision
+   records its seq range as a loss.
 6. The last index line without its newline is a torn append: it is ignored and its shard recovered.
    Any other malformed line, lines out of order or another major version make Open fail; a missing
    index with shards present means recovering every shard, never trusting one.
 7. The next seq on Open is one past the highest seq in the index and the recovered shards. A `.db`
    name other than 20 digits at most 2^63-1 makes Open fail.
-8. The reserved headroom also covers index lines; recovery that cannot write for lack of space leaves
-   the store UNKNOWN.
+8. The reserved headroom also covers index lines; recovery short of space makes Open fail (point 5).
 
 ## Alternatives considered
 
