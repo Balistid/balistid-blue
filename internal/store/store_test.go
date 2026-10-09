@@ -690,3 +690,27 @@ func TestOwnRecordsPastTheCapStayWithinCapAndHeadroom(t *testing.T) {
 	}
 	closeStore(t, s)
 }
+
+func TestOneRecoveryRecordCoversEveryRecoveredShard(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	for d := range 4 { // four shards: three sealed without index lines below, one left open
+		onDay(s, d)
+		add(t, s, noon+int64(d)*day, "a")
+	}
+	dir := crashed(t, s)
+	if err := os.Remove(filepath.Join(dir, indexName)); err != nil {
+		t.Fatal(err)
+	}
+	notes := 0
+	for _, r := range readAll(t, dir) {
+		if r.Provider == HealthProvider {
+			notes++
+			if !strings.Contains(string(r.Data), `"shards":4`) {
+				t.Fatalf("recovery record %s", r.Data)
+			}
+		}
+	}
+	if notes != 1 {
+		t.Fatalf("%d recovery records for one Open", notes)
+	}
+}

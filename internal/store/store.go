@@ -272,8 +272,10 @@ func sidecarOf(name string) string {
 // then rewrites the index. A shard that cannot be recovered stops Open: no seq is issued past an
 // unknown range.
 func (s *Store) recover(ctx context.Context, pending []string) error {
+	var shards int
+	var first, last uint64
 	for _, name := range pending {
-		if first, _ := strconv.ParseUint(strings.TrimSuffix(name, ".db"), 10, 63); first != s.next {
+		if n, _ := strconv.ParseUint(strings.TrimSuffix(name, ".db"), 10, 63); n != s.next {
 			return fmt.Errorf("store: unsealed shard %s does not start at seq %d", name, s.next)
 		}
 		path := filepath.Join(s.dir, name)
@@ -297,18 +299,26 @@ func (s *Store) recover(ctx context.Context, pending []string) error {
 			return err
 		}
 		s.sealedBytes += n
-		note, err := json.Marshal(struct {
-			SchemaVersion int    `json:"schema_version"`
-			Event         string `json:"event"`
-			Shard         string `json:"shard"`
-			First         uint64 `json:"first"`
-			Last          uint64 `json:"last"`
-		}{1, "recovered", name, r.First, r.Last})
-		if err != nil {
-			return fmt.Errorf("store: %w", err)
+		if shards++; shards == 1 {
+			first = r.First
 		}
-		s.health = append(s.health, note)
+		last = r.Last
 	}
+	if shards == 0 {
+		return nil
+	}
+	// One record for the whole recovery, however many crashes left shards: the queue stays bounded.
+	note, err := json.Marshal(struct {
+		SchemaVersion int    `json:"schema_version"`
+		Event         string `json:"event"`
+		Shards        int    `json:"shards"`
+		First         uint64 `json:"first"`
+		Last          uint64 `json:"last"`
+	}{1, "recovered", shards, first, last})
+	if err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	s.health = append(s.health, note)
 	return nil
 }
 
