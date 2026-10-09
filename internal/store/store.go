@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -41,8 +42,9 @@ const (
 
 var shardName = regexp.MustCompile(`^[0-9]{20}\.db$`)
 
-// crashAt is a test seam: crash tests kill the process at these named points.
-var crashAt = func(string) {}
+// admitSlack is what SQLite needs beyond a record's two copies (main file and WAL) at most: b-tree
+// pages split by the insert. A record is admitted only if that much still fits under the cap.
+const admitSlack = 64 << 10
 
 // Limits are the byte sizes of acceptance metrics raw_cap_gib, shard_max_gib and headroom_gib.
 type Limits struct{ Cap, ShardMax, Headroom int64 }
@@ -67,7 +69,6 @@ type Store struct {
 	seals       []Seal
 	next        uint64
 	sealedBytes int64
-	credit      int64 // bytes past the cap paid out of the reserve
 	cur         *shard.Writer
 	curName     string
 	curFirst    uint64
@@ -77,8 +78,10 @@ type Store struct {
 	lastDrop    int64
 	health      [][]byte // health records waiting for Flush
 	torn        bool     // the index ends in a torn line
+	lastRecv    int64    // receive time of the last record stored, for the store's own records
 	unknown     string
 	now         func() time.Time
+	crashAt     func(string) // a test seam: crash tests kill the process at these named points
 }
 
 // Open uses dir, owned by the collector. It trusts a shard only through its index line, recovers any
@@ -86,13 +89,17 @@ type Store struct {
 // for: a malformed index, a foreign file, a gap in seq, a shard that cannot be recovered or no space
 // to do it. A missing or unallocated reserve opens the store UNKNOWN.
 func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
+	return openWith(ctx, dir, lim, func(string) {})
+}
+
+func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string)) (*Store, error) {
 	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk || lim.Cap < lim.ShardMax {
 		return nil, fmt.Errorf("store: limits %+v cannot hold a shard and a loss record", lim)
 	}
 	if st, err := os.Lstat(dir); err != nil || !st.IsDir() { //nolint:gosec // the collector names its own directory
 		return nil, fmt.Errorf("store: %s is not a directory (%w)", dir, err)
 	}
-	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now}
+	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt}
 	if err := s.readIndex(); err != nil {
 		return nil, err
 	}
@@ -103,13 +110,23 @@ func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
 	if len(s.seals) > 0 {
 		s.next = s.seals[len(s.seals)-1].Last + 1
 	}
-	if len(pending) > 0 || s.torn { // a torn index line's shard is among the pending
-		if err := s.recover(ctx, pending); err != nil {
-			return nil, err
-		}
+	if err := s.recover(ctx, pending); err != nil {
+		return nil, err
 	}
 	if err := s.reserve(); err != nil {
 		s.unknown = err.Error()
+	}
+	if len(pending) > 0 || s.torn { // a torn index line's shard is among the pending
+		// The recovery health records are stored before the index makes the recovery final, so a
+		// second crash cannot erase the trace of the first.
+		if s.unknown == "" {
+			if err := s.Flush(ctx); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.room(func() error { return s.writeIndex(s.seals) }); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -117,10 +134,15 @@ func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
 // readIndex loads the index. A last line without its newline is a torn append: it is left out, so its
 // shard is recovered and the index rewritten (ADR 0013, point 6).
 func (s *Store) readIndex() error {
-	data, err := os.ReadFile(filepath.Join(s.dir, indexName))
+	f, err := os.OpenFile(filepath.Join(s.dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("store: index: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return fmt.Errorf("store: index: %w", err)
 	}
@@ -164,8 +186,9 @@ func (s *Store) nextAfter() uint64 {
 	return s.seals[len(s.seals)-1].Last + 1
 }
 
-// scan checks every file in dir: indexed shards must exist without sidecars; other shards are returned
-// for recovery, in seq order; anything else is refused.
+// scan checks every entry of dir: the index and reserve are regular files, indexed shards exist without
+// sidecars, other shards are returned for recovery in seq order with at most one sidecar suffix each,
+// and anything else is refused. lost+found, which a filesystem root has, is the one directory allowed.
 func (s *Store) scan() ([]string, error) {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -177,11 +200,13 @@ func (s *Store) scan() ([]string, error) {
 	}
 	var pending, sidecars []string
 	for _, e := range entries {
-		name := e.Name()
-		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, "-wal"), "-shm"), "-journal")
+		name, base := e.Name(), sidecarOf(e.Name())
 		switch {
+		case name == "lost+found" && e.IsDir():
+		case !e.Type().IsRegular():
+			return nil, fmt.Errorf("store: %s is not a regular file", name)
 		case name == indexName || name == indexName+".tmp" || name == reserveName || name == reserveName+".tmp":
-		case !shardName.MatchString(base) || !e.Type().IsRegular():
+		case !shardName.MatchString(base):
 			return nil, fmt.Errorf("store: %s does not belong in the store", name)
 		case indexed[base] && base != name:
 			return nil, fmt.Errorf("store: %s beside a sealed shard", name)
@@ -193,8 +218,7 @@ func (s *Store) scan() ([]string, error) {
 		}
 	}
 	for _, name := range sidecars { // a WAL without its shard may hold committed records
-		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(name, "-wal"), "-shm"), "-journal")
-		if !slices.Contains(pending, base) {
+		if !slices.Contains(pending, sidecarOf(name)) {
 			return nil, fmt.Errorf("store: %s without its shard", name)
 		}
 	}
@@ -208,8 +232,19 @@ func (s *Store) scan() ([]string, error) {
 	return pending, nil // ReadDir sorts by name, and names are zero-padded seq
 }
 
-// recover seals and indexes the shards a crash left (ADR 0013, point 5) and rewrites the index without
-// a torn line. A shard that cannot be recovered stops Open: no seq is issued past an unknown range.
+// sidecarOf is the shard a SQLite sidecar belongs to, or name itself: one suffix only.
+func sidecarOf(name string) string {
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if base, ok := strings.CutSuffix(name, suffix); ok {
+			return base
+		}
+	}
+	return name
+}
+
+// recover seals the shards a crash left (ADR 0013, point 5) and queues a health record for each; Open
+// then rewrites the index. A shard that cannot be recovered stops Open: no seq is issued past an
+// unknown range.
 func (s *Store) recover(ctx context.Context, pending []string) error {
 	for _, name := range pending {
 		if first, _ := strconv.ParseUint(strings.TrimSuffix(name, ".db"), 10, 63); first != s.next {
@@ -248,7 +283,7 @@ func (s *Store) recover(ctx context.Context, pending []string) error {
 		}
 		s.health = append(s.health, note)
 	}
-	return s.writeIndex()
+	return nil
 }
 
 func (s *Store) remove(path string) error {
@@ -260,11 +295,12 @@ func (s *Store) remove(path string) error {
 	return syncDir(s.dir)
 }
 
-// writeIndex replaces the index with s.seals: a temporary file, fsynced, renamed, the directory fsynced.
-func (s *Store) writeIndex() error {
+// writeIndex replaces the index with seals: a temporary file, fsynced, renamed only once it is whole,
+// then the directory fsynced.
+func (s *Store) writeIndex(seals []Seal) error {
 	var b strings.Builder
 	b.WriteString(indexHeader)
-	for _, l := range s.seals {
+	for _, l := range seals {
 		b.WriteString(l.line())
 	}
 	tmp := filepath.Join(s.dir, indexName+".tmp")
@@ -273,36 +309,76 @@ func (s *Store) writeIndex() error {
 		return fmt.Errorf("store: index: %w", err)
 	}
 	_, err = f.WriteString(b.String())
-	if err := errors.Join(err, f.Sync(), f.Close(), os.Rename(tmp, filepath.Join(s.dir, indexName)), syncDir(s.dir)); err != nil { //nolint:gosec // fixed names in the collector's own directory
+	if err := errors.Join(err, f.Sync(), f.Close()); err != nil {
+		return fmt.Errorf("store: index: %w", err)
+	}
+	if err := errors.Join(os.Rename(tmp, filepath.Join(s.dir, indexName)), syncDir(s.dir)); err != nil { //nolint:gosec // fixed names in the collector's own directory
 		return fmt.Errorf("store: index: %w", err)
 	}
 	return nil
 }
 
-// appendIndex adds one line and fsyncs it: from then on the seal counts (ADR 0013, point 2).
+// appendIndex adds one line and fsyncs it: from then on the seal counts (ADR 0013, point 2). When the
+// filesystem is full it frees a chunk of the reserve (point 8) and writes the index whole instead, so a
+// short append never stays in it.
 func (s *Store) appendIndex(l Seal) error {
+	err := s.appendLine(l)
+	if errors.Is(err, syscall.ENOSPC) {
+		err = s.room(func() error { return s.writeIndex(append(slices.Clone(s.seals), l)) })
+	}
+	return err
+}
+
+func (s *Store) appendLine(l Seal) error {
 	path := filepath.Join(s.dir, indexName)
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) { //nolint:gosec // a fixed name in the collector's own directory
-		if err := s.writeIndex(); err != nil {
-			return err
-		}
+		return s.writeIndex(append(slices.Clone(s.seals), l))
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the collector's own directory
 	if err != nil {
 		return fmt.Errorf("store: index: %w", err)
 	}
-	line := l.line()
-	_, err = f.WriteString(line[:len(line)/2])
-	crashAt("mid-index")
-	_, err2 := f.WriteString(line[len(line)/2:])
-	if err := errors.Join(err, err2, f.Sync(), f.Close()); err != nil {
+	_, err = f.WriteString(l.line())
+	if err := errors.Join(err, f.Sync(), f.Close()); err != nil {
 		return fmt.Errorf("store: index: %w", err)
+	}
+	return nil
+}
+
+// room runs write, and once more after freeing a chunk of the reserve if the filesystem was full.
+func (s *Store) room(write func() error) error {
+	err := write()
+	if !errors.Is(err, syscall.ENOSPC) {
+		return err
+	}
+	if ferr := s.free(); ferr != nil {
+		return errors.Join(err, ferr)
+	}
+	return write()
+}
+
+// free gives one chunk of the reserve back to the filesystem; a reserve too small for that is UNKNOWN.
+func (s *Store) free() error {
+	path := filepath.Join(s.dir, reserveName)
+	st, err := os.Lstat(path) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+	if err != nil {
+		return s.fail(err)
+	}
+	if st.Size() < LossChunk {
+		return s.fail(errors.New("the reserve for loss, health and index records is used up"))
+	}
+	if err := os.Truncate(path, st.Size()-LossChunk); err != nil {
+		return s.fail(err)
 	}
 	return nil
 }
 
 // Health is "" while the store can keep and count records, otherwise why not (UNKNOWN, ADR 0005).
 func (s *Store) Health() string { return s.unknown }
+
+// NoteHealth queues a health record (JSON with a schema_version) for the next Flush; the collector
+// calls it when the state it reports changes (ADR 0013, point 1).
+func (s *Store) NoteHealth(data []byte) { s.health = append(s.health, slices.Clone(data)) }
 
 // Seals returns the index, oldest first, for the collector to hand to the ledger after a restart.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
@@ -315,22 +391,22 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 		return false, nil, errors.New("store: " + s.unknown)
 	}
 	size := int64(len(rawrecord.New(0, provider, providerSeq, received, data).Encode()))
-	sealed, err := s.rotate(ctx, received, size)
-	if err != nil {
-		return false, sealed, err
-	}
 	used, err := s.used()
 	if err != nil {
-		return false, sealed, s.fail(err)
+		return false, nil, s.fail(err)
 	}
-	if used+size > s.lim.Cap {
+	if used+2*size+admitSlack > s.lim.Cap { // dropped before any rotation: no shard sealed for it
 		if s.dropped == 0 {
 			s.firstDrop = received
 		}
 		s.dropped++
 		s.lastDrop = received
-		crashAt("dropped")
-		return false, sealed, nil
+		s.crashAt("dropped")
+		return false, nil, nil
+	}
+	sealed, err := s.rotate(ctx, received, size)
+	if err != nil {
+		return false, sealed, err
 	}
 	if err := s.Flush(ctx); err != nil { // drops are recorded before the records after them
 		return false, sealed, err
@@ -338,6 +414,7 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 	if err := s.put(ctx, rawrecord.New(s.next, provider, providerSeq, received, data), received); err != nil {
 		return false, sealed, err
 	}
+	s.lastRecv = received
 	return true, sealed, nil
 }
 
@@ -366,7 +443,12 @@ func (s *Store) Flush(ctx context.Context) error {
 	if s.unknown != "" {
 		return errors.New("store: " + s.unknown)
 	}
-	now := s.now().UnixNano()
+	// The store's own records take the last stored record's receive time, so they keep to its shard's
+	// day; only before any record do they take the clock's.
+	now := s.lastRecv
+	if now == 0 {
+		now = s.now().UnixNano()
+	}
 	for len(s.health) > 0 {
 		if err := s.putOwn(ctx, HealthProvider, s.health[0], now); err != nil {
 			return err
@@ -392,26 +474,24 @@ func (s *Store) Flush(ctx context.Context) error {
 	return nil
 }
 
-// putOwn stores one of the store's own records; past the cap it first gives LossChunk of the reserve
-// back to the filesystem, and a reserve too small for that is UNKNOWN.
+// putOwn stores one of the store's own records. Past the cap it is paid for out of the reserve: what
+// the reserve file has already given back (Headroom less its size, so a restart forgets nothing) must
+// cover the overrun, or another chunk is freed first.
 func (s *Store) putOwn(ctx context.Context, provider string, data []byte, received int64) error {
 	used, err := s.used()
 	if err != nil {
 		return s.fail(err)
 	}
-	if used+LossChunk > s.lim.Cap+s.credit {
-		path := filepath.Join(s.dir, reserveName)
-		st, err := os.Lstat(path) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+	if over := used + LossChunk - s.lim.Cap; over > 0 {
+		st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
 		if err != nil {
 			return s.fail(err)
 		}
-		if st.Size() < LossChunk {
-			return s.fail(errors.New("the reserve for loss and health records is used up"))
+		if over > s.lim.Headroom-st.Size() {
+			if err := s.free(); err != nil {
+				return err
+			}
 		}
-		if err := os.Truncate(path, st.Size()-LossChunk); err != nil {
-			return s.fail(err)
-		}
-		s.credit += LossChunk
 	}
 	return s.put(ctx, rawrecord.New(s.next, provider, 0, received, data), received)
 }
@@ -426,14 +506,14 @@ func (s *Store) put(ctx context.Context, r rawrecord.Record, received int64) err
 		if err != nil {
 			return s.fail(err)
 		}
-		crashAt("created")
+		s.crashAt("created")
 		s.cur, s.curName, s.curFirst, s.curDay = cur, name, s.next, received/day
 	}
 	if err := s.cur.Append(ctx, r); err != nil {
 		return s.fail(err)
 	}
 	s.next++
-	crashAt("appended")
+	s.crashAt("appended")
 	return nil
 }
 
@@ -452,7 +532,7 @@ func (s *Store) seal(ctx context.Context) (Seal, error) {
 	if err != nil {
 		return Seal{}, s.fail(fmt.Errorf("seal %s: %w", s.curName, err))
 	}
-	crashAt("sealed")
+	s.crashAt("sealed")
 	l := Seal{Name: s.curName, First: s.curFirst, Last: s.next - 1, SHA256: sum}
 	if err := s.appendIndex(l); err != nil {
 		return Seal{}, s.fail(err)
@@ -470,8 +550,11 @@ func (s *Store) seal(ctx context.Context) (Seal, error) {
 // fails, since the records already in the shard are evidence.
 func (s *Store) Close(ctx context.Context) ([]Seal, error) {
 	var flushErr error
-	if s.unknown == "" {
+	switch {
+	case s.unknown == "":
 		flushErr = s.Flush(ctx)
+	case s.dropped > 0 || len(s.health) > 0: // what is waiting is lost: say so
+		flushErr = errors.New("store: " + s.unknown)
 	}
 	if s.cur == nil {
 		return nil, flushErr

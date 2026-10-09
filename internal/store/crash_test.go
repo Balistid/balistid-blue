@@ -28,14 +28,13 @@ func TestCrashChild(t *testing.T) {
 	parts := strings.SplitN(spec, ":", 3)
 	at, _ := strconv.Atoi(parts[1])
 	hits := 0
-	crashAt = func(point string) {
+	s, err := openWith(t.Context(), parts[2], crashLimits, func(point string) {
 		if point == parts[0] {
 			if hits++; hits == at {
 				syscall.Kill(os.Getpid(), syscall.SIGKILL) //nolint:errcheck,gosec // the crash under test
 			}
 		}
-	}
-	s, err := Open(t.Context(), parts[2], crashLimits)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +87,8 @@ func TestEveryAcknowledgedRecordSurvivesAKill(t *testing.T) {
 		point string
 		at    int
 	}{
-		{"created", 1}, {"created", 3}, {"appended", 40}, {"sealed", 1}, {"sealed", 2},
-		{"mid-index", 1}, {"mid-index", 3}, {"dropped", 30},
+		{"created", 1}, {"created", 3}, {"appended", 40}, {"sealed", 1}, {"sealed", 2}, {"sealed", 4},
+		{"dropped", 1}, {"dropped", 30},
 	} {
 		t.Run(fmt.Sprintf("%s#%d", c.point, c.at), func(t *testing.T) {
 			dir, acked, flushed := crash(t, c.point, c.at)
