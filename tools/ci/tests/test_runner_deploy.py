@@ -72,7 +72,6 @@ SERVICES = {
         "SystemCallFilter": "~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap",
         "RestrictAddressFamilies": "AF_UNIX AF_NETLINK",
         "IPAddressDeny": "any",
-        "ProtectHostname": "yes",
         "PrivateIPC": "yes",
         "RemoveIPC": "yes",
     },
