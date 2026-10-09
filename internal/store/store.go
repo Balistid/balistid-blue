@@ -42,9 +42,20 @@ const (
 
 var shardName = regexp.MustCompile(`^[0-9]{20}\.db$`)
 
-// admitSlack is what SQLite needs beyond a record's two copies (main file and WAL) at most: b-tree
-// pages split by the insert. A record is admitted only if that much still fits under the cap.
+// admitSlack is what SQLite needs beyond a record's two copies (main file and WAL): b-tree pages
+// split by the insert. A record is admitted only if, besides that, a whole WAL (shard.WALMaxBytes,
+// what one checkpoint can add to the main file) still fits under the cap, so the cap is never passed.
 const admitSlack = 64 << 10
+
+// ownSlack is a page and its WAL frame: what an own record adds besides its data.
+const ownSlack = 4096 + 24
+
+// Health records are small and their queue bounded, so a collector bug cannot fill memory or the
+// reserve with them.
+const (
+	maxHealthBytes  = 4 << 10
+	maxHealthQueued = 64
+)
 
 // Limits are the byte sizes of acceptance metrics raw_cap_gib, shard_max_gib and headroom_gib.
 type Limits struct{ Cap, ShardMax, Headroom int64 }
@@ -92,7 +103,7 @@ func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
 }
 
 func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string)) (*Store, error) {
-	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax {
+	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax+shard.WALMaxBytes {
 		return nil, fmt.Errorf("store: limits %+v cannot hold a shard and a loss record", lim)
 	}
 	if st, err := os.Lstat(dir); err != nil || !st.IsDir() { //nolint:gosec // the collector names its own directory
@@ -123,10 +134,15 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 			s.seals = s.seals[:indexed]
 			return s, nil
 		}
-		if err := s.flush(ctx); err != nil {
-			return nil, err
+		err := s.flush(ctx)
+		if err == nil {
+			err = s.room(indexBytes(s.seals), func() error { return s.writeIndex(s.seals) })
 		}
-		if err := s.room(func() error { return s.writeIndex(s.seals) }); err != nil {
+		if err != nil && s.cur != nil { // the health records' shard is sealed; the next Open recovers it
+			_, serr := s.cur.Seal(ctx)
+			err = errors.Join(err, serr)
+		}
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -136,7 +152,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 // readIndex loads the index. A last line without its newline is a torn append: it is left out, so its
 // shard is recovered and the index rewritten (ADR 0013, point 6).
 func (s *Store) readIndex() error {
-	f, err := os.OpenFile(filepath.Join(s.dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(filepath.Join(s.dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -144,6 +160,9 @@ func (s *Store) readIndex() error {
 		return fmt.Errorf("store: index: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
+	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
+		return fmt.Errorf("store: index: not a regular file (%w)", err)
+	}
 	data, err := io.ReadAll(f)
 	if err != nil {
 		return fmt.Errorf("store: index: %w", err)
@@ -326,7 +345,8 @@ func (s *Store) writeIndex(seals []Seal) error {
 func (s *Store) appendIndex(l Seal) error {
 	err := s.appendLine(l)
 	if errors.Is(err, syscall.ENOSPC) {
-		err = s.room(func() error { return s.writeIndex(append(slices.Clone(s.seals), l)) })
+		all := append(slices.Clone(s.seals), l)
+		err = s.room(indexBytes(all), func() error { return s.writeIndex(all) })
 	}
 	return err
 }
@@ -336,9 +356,12 @@ func (s *Store) appendLine(l Seal) error {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) { //nolint:gosec // a fixed name in the collector's own directory
 		return s.writeIndex(append(slices.Clone(s.seals), l))
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the collector's own directory
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the collector's own directory
 	if err != nil {
 		return fmt.Errorf("store: index: %w", err)
+	}
+	if st, serr := f.Stat(); serr != nil || !st.Mode().IsRegular() {
+		return errors.Join(fmt.Errorf("store: index: not a regular file (%w)", serr), f.Close())
 	}
 	_, err = f.WriteString(l.line())
 	if err := errors.Join(err, f.Sync(), f.Close()); err != nil {
@@ -347,16 +370,28 @@ func (s *Store) appendLine(l Seal) error {
 	return nil
 }
 
-// room runs write, and once more after freeing a chunk of the reserve if the filesystem was full.
-func (s *Store) room(write func() error) error {
+// room runs write, and once more if the filesystem was full, after freeing enough of the reserve for
+// need bytes (one chunk at least).
+func (s *Store) room(need int64, write func() error) error {
 	err := write()
 	if !errors.Is(err, syscall.ENOSPC) {
 		return err
 	}
-	if ferr := s.free(); ferr != nil {
-		return errors.Join(err, ferr)
+	for freed := int64(0); freed < max(need, 1); freed += LossChunk {
+		if ferr := s.free(); ferr != nil {
+			return errors.Join(err, ferr)
+		}
 	}
 	return write()
+}
+
+// indexBytes is the size of an index holding seals, which a whole rewrite needs free.
+func indexBytes(seals []Seal) int64 {
+	n := int64(len(indexHeader))
+	for _, l := range seals {
+		n += int64(len(l.line()))
+	}
+	return n
 }
 
 // free gives one chunk of the reserve back to the filesystem; a reserve too small for that is UNKNOWN.
@@ -378,9 +413,16 @@ func (s *Store) free() error {
 // Health is "" while the store can keep and count records, otherwise why not (UNKNOWN, ADR 0005).
 func (s *Store) Health() string { return s.unknown }
 
-// NoteHealth queues a health record (JSON with a schema_version) for the next Flush; the collector
-// calls it when the state it reports changes (ADR 0013, point 1).
-func (s *Store) NoteHealth(data []byte) { s.health = append(s.health, slices.Clone(data)) }
+// NoteHealth queues a health record (JSON with a schema_version, at most maxHealthBytes) for the next
+// Flush; the collector calls it when the state it reports changes (ADR 0013, point 1). It refuses a
+// larger record or a full queue, which only a collector that stopped flushing can cause.
+func (s *Store) NoteHealth(data []byte) error {
+	if len(data) > maxHealthBytes || len(s.health) >= maxHealthQueued {
+		return fmt.Errorf("store: health record of %d bytes with %d queued refused", len(data), len(s.health))
+	}
+	s.health = append(s.health, slices.Clone(data))
+	return nil
+}
 
 // Seals returns the index, oldest first, for the collector to hand to the ledger after a restart.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
@@ -397,7 +439,7 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 	if err != nil {
 		return false, nil, s.fail(err)
 	}
-	if used+2*size+admitSlack > s.lim.Cap { // dropped before any rotation: no shard sealed for it
+	if used+shard.WALMaxBytes+2*size+admitSlack > s.lim.Cap { // dropped before any rotation
 		if s.dropped == 0 {
 			s.firstDrop = received
 		}
@@ -500,12 +542,13 @@ func (s *Store) putOwn(ctx context.Context, provider string, data []byte, receiv
 	if err != nil {
 		return s.fail(err)
 	}
-	if over := used + LossChunk - s.lim.Cap; over > 0 {
+	// The record's two copies and a split page, past the cap, must be covered by what the reserve gave.
+	if over := used + 2*int64(len(data)) + 2*ownSlack - s.lim.Cap; over > 0 {
 		st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
 		if err != nil {
 			return s.fail(err)
 		}
-		if over > s.lim.Headroom-st.Size() {
+		for released := s.lim.Headroom - st.Size(); over > released; released += LossChunk {
 			if err := s.free(); err != nil {
 				return err
 			}

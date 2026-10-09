@@ -28,6 +28,15 @@ import (
 // SchemaVersion of the tables Create makes; Read refuses any other.
 const SchemaVersion = 1
 
+const (
+	pageSize        = 4096
+	checkpointPages = 512 // SQLite checkpoints the WAL into the main file past this many pages
+	// WALMaxBytes bounds a shard's WAL, and so what one checkpoint can add to its main file: the
+	// autocheckpoint plus one transaction of the largest record, each page with its 24-byte frame
+	// header, plus 1 MiB for the b-tree and overflow pages around it. The store's cap reserves it.
+	WALMaxBytes = (checkpointPages*pageSize+rawrecord.MaxBytes)/pageSize*(pageSize+24) + 1<<20
+)
+
 // Writer appends records with gap-free sequence numbers to one shard until Seal.
 type Writer struct {
 	db      *sql.DB
@@ -57,7 +66,9 @@ func Create(ctx context.Context, path string) (*Writer, error) {
 	if err := errors.Join(f.Sync(), f.Close(), syncDir(path)); err != nil {
 		return nil, fmt.Errorf("create shard: %w", err)
 	}
-	db, err := open(path, "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
+	db, err := open(path, fmt.Sprintf("_pragma=page_size(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"+
+		"&_pragma=busy_timeout(5000)&_pragma=wal_autocheckpoint(%d)&_pragma=journal_size_limit(%d)",
+		pageSize, checkpointPages, WALMaxBytes))
 	if err != nil {
 		return nil, err
 	}
