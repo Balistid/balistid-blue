@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -385,6 +386,13 @@ func TestAppendRefusesDataOverMaxBytes(t *testing.T) {
 // records committed to the WAL, the main file not yet checkpointed, no seal.
 func crashed(t *testing.T, records ...rawrecord.Record) string {
 	t.Helper()
+	return crashedAfter(t, nil, records...)
+}
+
+// crashedAfter is crashed with stmts run through the writer's own connection last, so their effect
+// sits in the WAL like the records' does.
+func crashedAfter(t *testing.T, stmts []string, records ...rawrecord.Record) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "shard.db")
 	w, err := Create(t.Context(), path)
 	if err != nil {
@@ -396,8 +404,16 @@ func crashed(t *testing.T, records ...rawrecord.Record) string {
 			t.Fatal(err)
 		}
 	}
+	for _, stmt := range stmts {
+		if _, err := w.db.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cp := filepath.Join(t.TempDir(), "shard.db")
 	for _, suffix := range []string{"", "-wal"} {
+		if _, err := os.Stat(path + suffix); errors.Is(err, fs.ErrNotExist) && suffix != "" {
+			continue
+		}
 		data, err := os.ReadFile(path + suffix) //nolint:gosec // test temp dir
 		if err != nil {
 			t.Fatal(err)
@@ -491,6 +507,17 @@ func TestRecoverFindsAShardWithoutRecordsEmpty(t *testing.T) {
 			return path
 		},
 		"tables, no records": func(t *testing.T) string { return crashed(t) },
+		"zero bytes, WAL header only": func(t *testing.T) string {
+			wal, err := os.ReadFile(crashed(t, record(1, "ab")) + "-wal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "shard.db")
+			if err := errors.Join(os.WriteFile(path, nil, 0o600), os.WriteFile(path+"-wal", wal[:32], 0o600)); err != nil { //nolint:gosec // test temp dir
+				t.Fatal(err)
+			}
+			return path
+		},
 		"meta only": func(t *testing.T) string {
 			path := filepath.Join(t.TempDir(), "shard.db")
 			exec(t, path, "CREATE TABLE meta (schema_version INTEGER NOT NULL, label TEXT NOT NULL) STRICT")
@@ -516,8 +543,10 @@ func TestRecoverLeavesABadShardUnsealed(t *testing.T) {
 		"bad leaf": "UPDATE records SET leaf = x'00' WHERE seq = 3",
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"))
-			exec(t, path, stmt)
+			path := crashedAfter(t, []string{stmt}, record(1, "ab"), record(2, "cd"), record(3, "ef"))
+			if st, err := os.Stat(path + "-wal"); err != nil || st.Size() == 0 {
+				t.Fatalf("the damage should sit in the WAL: %v", err)
+			}
 			if _, err := Recover(t.Context(), path); err == nil {
 				t.Fatal("Recover sealed a shard that fails Read's checks")
 			}
@@ -544,5 +573,130 @@ func TestRecoverTouchesOnlyARegularFileAtAnAbsolutePath(t *testing.T) {
 	}
 	if mode := journalMode(t, path); mode != 2 {
 		t.Fatalf("header byte 18 = %d; the shard behind the refused paths must stay unsealed", mode)
+	}
+}
+
+// flip changes one byte of the file at path, at off counted from its start (negative: from its end).
+func flip(t *testing.T, path string, off int) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off < 0 {
+		off += len(data)
+	}
+	data[off] ^= 0xff
+	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	return data
+}
+
+func walFrame(t *testing.T, path string, n int) int {
+	t.Helper()
+	data, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := 24 + int(binary.BigEndian.Uint32(data[8:]))
+	if frames := (len(data) - 32) / size; n < 0 {
+		n += frames
+	}
+	return 32 + n*size + 24 + 100 // a byte of the frame's page
+}
+
+func TestRecoverRefusesADamagedWALBeforeOpeningIt(t *testing.T) {
+	for name, off := range map[string]func(t *testing.T, path string) int{
+		"header salt":  func(*testing.T, string) int { return 17 },
+		"middle frame": func(t *testing.T, path string) int { return walFrame(t, path, 1) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"), record(4, "gh"))
+			wal := flip(t, path+"-wal", off(t, path))
+			main, err := os.ReadFile(path) //nolint:gosec // test temp dir
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Recover(t.Context(), path); err == nil || !strings.Contains(err.Error(), "WAL") {
+				t.Fatalf("Recover = %v; want a refusal of the WAL", err)
+			}
+			for file, want := range map[string][]byte{path: main, path + "-wal": wal} {
+				if got, err := os.ReadFile(file); err != nil || !bytes.Equal(got, want) { //nolint:gosec // test temp dir
+					t.Fatalf("%s changed: %v", file, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRecoverDropsOnlyATornLastFrame(t *testing.T) {
+	path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"), record(4, "gh"))
+	flip(t, path+"-wal", walFrame(t, path, -1))
+	got, err := Recover(t.Context(), path)
+	if err != nil || got.First != 1 || got.Last != 3 {
+		t.Fatalf("Recover = %+v, %v; want records 1..3, the last transaction torn", got, err)
+	}
+}
+
+func TestRecoverFinishesASealStoppedAfterTheJournalSwitch(t *testing.T) {
+	path := crashedAfter(t, []string{"PRAGMA journal_mode=DELETE"}, record(1, "ab"), record(2, "cd"))
+	got, err := Recover(t.Context(), path)
+	if err != nil || got.Last != 2 {
+		t.Fatalf("Recover = %+v, %v", got, err)
+	}
+	if read, err := readAll(t, path, got.SHA256); err != nil || len(read) != 2 {
+		t.Fatalf("read %d records, %v", len(read), err)
+	}
+}
+
+func TestRecoverRollsBackAHotJournal(t *testing.T) {
+	// A crash inside a transaction on a shard out of WAL mode leaves a hot rollback journal.
+	path, _ := sealed(t, record(1, "ab"), record(2, "cd"))
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=cache_size(2)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close() //nolint:errcheck // test
+	db.SetMaxOpenConns(1)
+	tx, err := db.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // test
+	for i := uint64(3); i < 200; i++ {
+		r := record(i, strings.Repeat("x", 3000))
+		leaf := r.Leaf()
+		if _, err := tx.ExecContext(t.Context(), "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)", int64(i), r.Provider,
+			int64(r.ProviderSeq), r.Received, r.Data, int64(r.OrigLen), r.OrigSHA256[:], leaf[:]); err != nil { //nolint:gosec // test seqs are small
+			t.Fatal(err)
+		}
+	}
+	cp := filepath.Join(t.TempDir(), "shard.db")
+	for _, suffix := range []string{"", "-journal"} {
+		data, err := os.ReadFile(path + suffix) //nolint:gosec // test temp dir
+		if err != nil || len(data) == 0 {
+			t.Fatalf("%s: %v", suffix, err)
+		}
+		if err := os.WriteFile(cp+suffix, data, 0o600); err != nil { //nolint:gosec // test temp dir
+			t.Fatal(err)
+		}
+	}
+	got, err := Recover(t.Context(), cp)
+	if err != nil || got.First != 1 || got.Last != 2 {
+		t.Fatalf("Recover = %+v, %v; want only the two committed records", got, err)
+	}
+}
+
+func TestRecoverSkipsFramesOfAnEarlierWALGeneration(t *testing.T) {
+	// After a checkpoint the WAL restarts at its start with new salts; the old frames behind are stale.
+	path := crashedAfter(t, []string{"PRAGMA wal_checkpoint(RESTART)", "PRAGMA user_version = 7"},
+		record(1, "ab"), record(2, "cd"), record(3, "ef"), record(4, "gh"))
+	got, err := Recover(t.Context(), path)
+	if err != nil || got.First != 1 || got.Last != 4 {
+		t.Fatalf("Recover = %+v, %v; want records 1..4", got, err)
 	}
 }
