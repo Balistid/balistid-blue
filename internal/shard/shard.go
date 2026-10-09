@@ -312,8 +312,10 @@ func Recover(ctx context.Context, path string) (Recovered, error) {
 // header's or whose checksum fails (sqlite.org/fileformat2.html, section 4). A transaction is written
 // only after the one before it is synced, so a crash can damage only the last one: damage followed by
 // a second commit frame (at or beyond where reading stops) is refused, and so is a bad header with
-// frames behind it. Damage inside the last transaction looks like a torn write and is accepted: that
-// transaction is lost and its seq numbers are issued again (ADR 0013, point 5).
+// frames behind it. Damage inside the last transaction looks like a torn write and is accepted, and
+// that transaction's seq numbers are issued again; a zeroed frame header can hide the one before it
+// too (ADR 0013, point 5). After a WAL restart a frame the crash left unwritten can still hold an
+// earlier generation's commit, so such a crash is refused: Open fails and the maintainer decides.
 func walIntact(path string) (bool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // the shard's own WAL, beside the shard path
 	if errors.Is(err, os.ErrNotExist) {

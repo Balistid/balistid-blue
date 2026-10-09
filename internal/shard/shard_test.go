@@ -720,3 +720,55 @@ func TestRecoverSkipsFramesOfAnEarlierWALGeneration(t *testing.T) {
 		t.Fatalf("Recover = %+v, %v; want records 1..4", got, err)
 	}
 }
+
+func TestRecoverRefusesAHoleAfterAWALRestartThatShowsAnOldCommit(t *testing.T) {
+	// A frame the crash left unwritten still holds the earlier generation's page; when that page is a
+	// commit frame it cannot be told from a committed transaction, so Recover refuses (fail closed).
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.db.Close() //nolint:errcheck // test
+	for i := uint64(1); i <= 120; i++ {
+		if err := w.Append(t.Context(), record(i, strings.Repeat("q", 1500))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(RESTART)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(t.Context(), record(121, strings.Repeat("z", 200000))); err != nil {
+		t.Fatal(err)
+	}
+	wal, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	size := 24 + int(binary.BigEndian.Uint32(wal[8:]))
+	hole := -1
+	for k := 5; 32+(k+3)*size <= len(wal) && hole < 0; k++ {
+		if binary.BigEndian.Uint32(old[32+k*size+4:]) != 0 && bytes.Equal(wal[32+k*size+8:32+k*size+16], wal[16:24]) {
+			hole = k
+		}
+	}
+	if hole < 0 {
+		t.Fatal("no old commit frame under the new generation")
+	}
+	copy(wal[32+hole*size:32+(hole+1)*size], old[32+hole*size:])
+	cp := filepath.Join(t.TempDir(), "shard.db")
+	main, err := os.ReadFile(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(os.WriteFile(cp, main, 0o600), os.WriteFile(cp+"-wal", wal, 0o600)); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	if _, err := Recover(t.Context(), cp); err == nil || !strings.Contains(err.Error(), "committed transaction after it") {
+		t.Fatalf("Recover = %v; want a refusal", err)
+	}
+}

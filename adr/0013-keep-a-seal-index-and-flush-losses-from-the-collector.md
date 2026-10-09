@@ -30,7 +30,7 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
    match and the reader reports UNKNOWN health; that shard is never sealed again.
 5. Any other `.db` is recovered. Before any open, a WAL whose damage would drop a committed transaction,
    or a zero-byte `.db` beside frames (SQLite would delete them), fails recovery; damage SQLite cannot
-   tell from a torn write loses only the last transaction. The rest are opened read-write, so SQLite
+   tell from a torn write loses at most the last two transactions. The rest are opened read-write, so SQLite
    applies their WAL; one with no `records` table or rows is removed with its `-wal` and `-shm`. Every
    other has each leaf and the seq order checked, then is sealed, indexed and a health record stored.
    A shard that fails stays where it is and Open fails, so no seq is issued past an unknown range; the
