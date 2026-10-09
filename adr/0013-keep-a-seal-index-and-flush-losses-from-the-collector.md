@@ -26,18 +26,19 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
 3. The collector sends each index line to the ledger as a `shard-seal` entry. On Open it re-sends every
    line after the last seal the ledger reports; the ledger accepts the same name and hash once and
    refuses a known name with another hash.
-4. Open trusts a `.db` that has an index line; `Read` checks its hash on every read. An indexed shard
-   whose hash does not match makes the store UNKNOWN and is never sealed again.
-5. Any other `.db` is recovered. One without records (a crash in Create or before the first record) is
-   not evidence and is removed. The rest are opened read-write so SQLite applies their WAL, every
-   row's leaf and the seq order are checked, then the shard is sealed, indexed and a recovery health
-   record stored. A shard that fails the check stays where it is and the store is UNKNOWN; the
-   maintainer decides, and that decision records its seq range as a loss.
+4. Open trusts a `.db` that has an index line. `Read` refuses an indexed shard whose hash does not
+   match and the reader reports UNKNOWN health; that shard is never sealed again.
+5. Any other `.db` is recovered: opened read-write first, so SQLite applies its WAL (rows commit to the
+   WAL long before the main file). One that then has no rows is not evidence and is removed with its
+   `-wal` and `-shm`. The rest have every row's leaf and the seq order checked, then are sealed, indexed
+   and a recovery health record stored. A shard that fails the check stays where it is and Open fails,
+   so no seq is issued past an unknown range; the maintainer decides, and that decision records its
+   seq range as a loss.
 6. The last index line without its newline is a torn append: it is ignored and its shard recovered.
    Any other malformed line, lines out of order or another major version make Open fail; a missing
    index with shards present means recovering every shard, never trusting one.
-7. The next seq on Open is one past the highest seq in the index, the recovered shards and the first
-   seq in any `.db` name, including shards that failed recovery, so no seq is ever issued twice.
+7. The next seq on Open is one past the highest seq in the index and the recovered shards. A `.db`
+   name other than 20 digits at most 2^63-1 makes Open fail.
 8. The reserved headroom also covers index lines; recovery that cannot write for lack of space leaves
    the store UNKNOWN.
 
