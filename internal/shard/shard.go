@@ -307,11 +307,13 @@ func Recover(ctx context.Context, path string) (Recovered, error) {
 	return r, nil
 }
 
-// walIntact reports whether the WAL at path holds frames, and fails when it is damaged in a way SQLite
-// would not report: a bad header checksum with frames behind it (SQLite would ignore every frame), or
-// a frame of the current salt that fails its checksum with another frame of that salt after it
-// (SQLite would stop at the first, dropping committed transactions after it). A bad last frame is a
-// torn write of a transaction that never committed. Format: sqlite.org/fileformat2.html, section 4.
+// walIntact reports whether the WAL at path holds frames, and fails when SQLite would silently drop a
+// committed transaction from it. SQLite reads frames until the first whose salt differs from the
+// header's or whose checksum fails (sqlite.org/fileformat2.html, section 4). A transaction is written
+// only after the one before it is synced, so a crash can damage only the last one: damage followed by
+// a second commit frame (at or beyond where reading stops) is refused, and so is a bad header with
+// frames behind it. Damage inside the last transaction looks like a torn write and is accepted: that
+// transaction is lost and its seq numbers are issued again (ADR 0013, point 5).
 func walIntact(path string) (bool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // the shard's own WAL, beside the shard path
 	if errors.Is(err, os.ErrNotExist) {
@@ -332,18 +334,27 @@ func walIntact(path string) (bool, error) {
 		return false, errors.New("the WAL header is damaged, and frames follow it")
 	}
 	s0, s1 := be.Uint32(data[24:]), be.Uint32(data[28:])
-	broken := false
+	end, commits := -1, 0
 	for off := headerSize; off+frameHeader+pageSize <= len(data); off += frameHeader + pageSize {
 		frame := data[off : off+frameHeader+pageSize]
-		if !bytes.Equal(frame[8:16], data[16:24]) {
+		current := bytes.Equal(frame[8:16], data[16:24])
+		if end < 0 && current {
+			s0, s1 = walSum(order, s0, s1, frame[:8])
+			s0, s1 = walSum(order, s0, s1, frame[frameHeader:])
+			if s0 == be.Uint32(frame[16:]) && s1 == be.Uint32(frame[20:]) {
+				continue
+			}
+		}
+		if end < 0 {
+			end = off // SQLite reads no further
+		} else if !current {
 			continue // a frame of an earlier checkpoint generation
 		}
-		if broken {
-			return false, fmt.Errorf("WAL frame at byte %d follows a damaged frame", off)
+		if be.Uint32(frame[4:]) != 0 {
+			if commits++; commits == 2 {
+				return false, fmt.Errorf("WAL damaged at byte %d with a committed transaction after it", end)
+			}
 		}
-		s0, s1 = walSum(order, s0, s1, frame[:8])
-		s0, s1 = walSum(order, s0, s1, frame[frameHeader:])
-		broken = s0 != be.Uint32(frame[16:]) || s1 != be.Uint32(frame[20:])
 	}
 	return true, nil
 }

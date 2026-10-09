@@ -28,13 +28,13 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
    refuses a known name with another hash.
 4. Open trusts a `.db` that has an index line. `Read` refuses an indexed shard whose hash does not
    match and the reader reports UNKNOWN health; that shard is never sealed again.
-5. Any other `.db` is recovered. A `.db` of zero bytes whose `-wal` is not empty fails recovery before
-   any open (SQLite would delete that WAL). The rest are opened read-write first, so SQLite applies
-   their WAL; one that then has no `records` table or no rows is not evidence and is removed with its
-   `-wal` and `-shm`. Every other has each row's leaf and the seq order checked, then is sealed,
-   indexed and a recovery health record stored. A shard that fails the check stays where it is and
-   Open fails, so no seq is issued past an unknown range; the maintainer decides, and that decision
-   records its seq range as a loss.
+5. Any other `.db` is recovered. Before any open, a WAL whose damage would drop a committed transaction,
+   or a zero-byte `.db` beside frames (SQLite would delete them), fails recovery; damage SQLite cannot
+   tell from a torn write loses only the last transaction. The rest are opened read-write, so SQLite
+   applies their WAL; one with no `records` table or rows is removed with its `-wal` and `-shm`. Every
+   other has each leaf and the seq order checked, then is sealed, indexed and a health record stored.
+   A shard that fails stays where it is and Open fails, so no seq is issued past an unknown range; the
+   maintainer decides, and that decision records its seq range as a loss.
 6. The last index line without its newline is a torn append: it is ignored and its shard recovered.
    Any other malformed line, lines out of order or another major version make Open fail; a missing
    index with shards present means recovering every shard, never trusting one.

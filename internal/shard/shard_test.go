@@ -630,12 +630,32 @@ func TestRecoverRefusesADamagedWALBeforeOpeningIt(t *testing.T) {
 	}
 }
 
-func TestRecoverDropsOnlyATornLastFrame(t *testing.T) {
+func TestRecoverTakesDamageInTheLastTransactionForATornWrite(t *testing.T) {
+	// SQLite cannot tell damage to the last committed transaction from a torn uncommitted one; the
+	// transaction is lost either way, whether its commit frame or a page inside it is hit.
 	path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"), record(4, "gh"))
 	flip(t, path+"-wal", walFrame(t, path, -1))
-	got, err := Recover(t.Context(), path)
-	if err != nil || got.First != 1 || got.Last != 3 {
-		t.Fatalf("Recover = %+v, %v; want records 1..3, the last transaction torn", got, err)
+	if got, err := Recover(t.Context(), path); err != nil || got.First != 1 || got.Last != 3 {
+		t.Fatalf("last frame damaged: Recover = %+v, %v; want records 1..3", got, err)
+	}
+	path = crashed(t, record(1, "ab"), record(2, "cd"), record(3, strings.Repeat("x", 200000)))
+	data := flip(t, path+"-wal", walFrame(t, path, -3))
+	for i := walFrame(t, path, -3) - 124; i < walFrame(t, path, -2)-124; i++ {
+		data[i] = 0 // the whole frame, as a power loss leaves an unwritten one
+	}
+	if err := os.WriteFile(path+"-wal", data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := Recover(t.Context(), path); err != nil || got.Last != 2 {
+		t.Fatalf("zeroed frame inside the last transaction: Recover = %+v, %v; want records 1..2", got, err)
+	}
+}
+
+func TestRecoverRefusesAWALWhoseSaltWasHitBeforeTheLastCommit(t *testing.T) {
+	path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"), record(4, "gh"))
+	flip(t, path+"-wal", walFrame(t, path, -2)-100-24+9) // a salt byte of the second-to-last frame
+	if _, err := Recover(t.Context(), path); err == nil || !strings.Contains(err.Error(), "committed transaction after it") {
+		t.Fatalf("Recover = %v; want a refusal", err)
 	}
 }
 
