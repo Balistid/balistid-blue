@@ -138,24 +138,45 @@ func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	return [32]byte(h.Sum(nil)), nil
 }
 
-// sealedFile fails unless path is a regular file, not a symlink, with the SQLite header of a database
-// out of WAL mode (bytes 18 and 19 are 1) and the SHA-256 want.
-func sealedFile(path string, want [32]byte) error {
+// Final fails unless path is a regular file, not a symlink, with the SQLite header of a database out
+// of WAL mode (bytes 18 and 19 are 1). Only the hash Seal returned proves the file is the sealed one.
+func Final(path string) error {
+	f, _, err := openFinal(path)
+	if err != nil {
+		return err
+	}
+	return f.Close() //nolint:wrapcheck // read-only descriptor
+}
+
+func openFinal(path string) (*os.File, []byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the caller names the shard; the hash check decides
 	if err != nil {
-		return fmt.Errorf("read shard: %w", err)
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("read shard: not a regular file (%w)", err)
+		return nil, nil, fmt.Errorf("read shard: %w", err)
 	}
 	header := make([]byte, 100)
-	if _, err := io.ReadFull(f, header); err != nil {
-		return fmt.Errorf("read shard header: %w", err)
+	st, err := f.Stat()
+	if err == nil && !st.Mode().IsRegular() {
+		err = errors.New("not a regular file")
 	}
-	if !bytes.HasPrefix(header, []byte("SQLite format 3\x00")) || header[18] != 1 || header[19] != 1 {
-		return errors.New("read shard: not a sealed SQLite database (WAL mode or no header)")
+	if err == nil {
+		_, err = io.ReadFull(f, header)
 	}
+	if err == nil && (!bytes.HasPrefix(header, []byte("SQLite format 3\x00")) || header[18] != 1 || header[19] != 1) {
+		err = errors.New("not a sealed SQLite database (WAL mode or no header)")
+	}
+	if err != nil {
+		return nil, nil, errors.Join(fmt.Errorf("read shard %s: %w", filepath.Base(path), err), f.Close())
+	}
+	return f, header, nil
+}
+
+// sealedFile fails unless Final holds for path and the file's SHA-256 is want.
+func sealedFile(path string, want [32]byte) error {
+	f, header, err := openFinal(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close() //nolint:errcheck // read-only
 	h := sha256.New()
 	h.Write(header)
 	if _, err := io.Copy(h, f); err != nil {
