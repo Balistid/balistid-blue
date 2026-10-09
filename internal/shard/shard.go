@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -247,10 +248,11 @@ type Recovered struct {
 	SHA256      [32]byte
 }
 
-// Recover seals a shard a crash left unsealed (ADR 0013, point 5). A zero-byte file whose -wal is not
-// empty is refused before any open, since SQLite would delete that WAL. Otherwise the shard is opened
-// read-write, so SQLite applies its WAL; one without a records table or rows is Empty, and any other
-// is checked as Read checks a sealed one, then sealed. A shard that fails a check is left unsealed.
+// Recover seals a shard a crash left unsealed (ADR 0013, point 5). Before any open it refuses a damaged
+// WAL (see walIntact) and a zero-byte file beside a WAL with frames, which SQLite would delete. Then
+// the shard is opened read-write, so SQLite applies its WAL; one without a records table or rows is
+// Empty, and any other is checked as Read checks a sealed one, then sealed. A shard that fails a
+// check after the open is left unsealed, with its WAL checkpointed into it.
 func Recover(ctx context.Context, path string) (Recovered, error) {
 	if !filepath.IsAbs(path) {
 		return Recovered{}, fmt.Errorf("shard path %q is not absolute", path)
@@ -262,14 +264,11 @@ func Recover(ctx context.Context, path string) (Recovered, error) {
 	if !st.Mode().IsRegular() {
 		return Recovered{}, fmt.Errorf("recover shard: %s is not a regular file", path)
 	}
-	if st.Size() == 0 {
-		wal, err := os.Lstat(path + "-wal")
-		switch {
-		case errors.Is(err, os.ErrNotExist) || (err == nil && wal.Size() == 0):
-			return Recovered{Empty: true}, nil
-		case err != nil:
-			return Recovered{}, fmt.Errorf("recover shard: %w", err)
-		}
+	wal, err := walIntact(path + "-wal")
+	if err != nil {
+		return Recovered{}, fmt.Errorf("recover shard: %w", err)
+	}
+	if st.Size() == 0 && wal {
 		return Recovered{}, errors.New("recover shard: an empty file beside a non-empty WAL")
 	}
 	db, err := open(path, "_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
@@ -306,4 +305,54 @@ func Recover(ctx context.Context, path string) (Recovered, error) {
 		return Recovered{}, fmt.Errorf("recover shard: %w", err)
 	}
 	return r, nil
+}
+
+// walIntact reports whether the WAL at path holds frames, and fails when it is damaged in a way SQLite
+// would not report: a bad header checksum with frames behind it (SQLite would ignore every frame), or
+// a frame of the current salt that fails its checksum with another frame of that salt after it
+// (SQLite would stop at the first, dropping committed transactions after it). A bad last frame is a
+// torn write of a transaction that never committed. Format: sqlite.org/fileformat2.html, section 4.
+func walIntact(path string) (bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // the shard's own WAL, beside the shard path
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read WAL: %w", err)
+	}
+	const headerSize, frameHeader = 32, 24
+	if len(data) <= headerSize {
+		return false, nil // no frame was ever written
+	}
+	// The checksum covers the magic and the page size. SQLite checksums in the host's byte order, and
+	// every supported host is little-endian, so a big-endian WAL fails here too.
+	be, order := binary.BigEndian, binary.LittleEndian
+	pageSize := int(be.Uint32(data[8:]))
+	if s0, s1 := walSum(order, 0, 0, data[:24]); s0 != be.Uint32(data[24:]) || s1 != be.Uint32(data[28:]) {
+		return false, errors.New("the WAL header is damaged, and frames follow it")
+	}
+	s0, s1 := be.Uint32(data[24:]), be.Uint32(data[28:])
+	broken := false
+	for off := headerSize; off+frameHeader+pageSize <= len(data); off += frameHeader + pageSize {
+		frame := data[off : off+frameHeader+pageSize]
+		if !bytes.Equal(frame[8:16], data[16:24]) {
+			continue // a frame of an earlier checkpoint generation
+		}
+		if broken {
+			return false, fmt.Errorf("WAL frame at byte %d follows a damaged frame", off)
+		}
+		s0, s1 = walSum(order, s0, s1, frame[:8])
+		s0, s1 = walSum(order, s0, s1, frame[frameHeader:])
+		broken = s0 != be.Uint32(frame[16:]) || s1 != be.Uint32(frame[20:])
+	}
+	return true, nil
+}
+
+// walSum continues SQLite's WAL checksum over b, whose length is a multiple of 8.
+func walSum(order binary.ByteOrder, s0, s1 uint32, b []byte) (uint32, uint32) {
+	for i := 0; i+8 <= len(b); i += 8 {
+		s0 += order.Uint32(b[i:]) + s1
+		s1 += order.Uint32(b[i+4:]) + s0
+	}
+	return s0, s1
 }
