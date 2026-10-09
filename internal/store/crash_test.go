@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/Balistid/balistid-blue/internal/shard"
 )
 
 // The crash tests run this test binary again as a child that works on a store and kills itself with
@@ -18,7 +20,7 @@ import (
 // "flushed D" after every Flush, D being the drops so far; the parent then opens the store.
 const childEnv = "BALISTID_STORE_CRASH"
 
-var crashLimits = Limits{Cap: 512 << 10, ShardMax: 160 << 10, Headroom: 8 * LossChunk}
+var crashLimits = Limits{Cap: shard.WALMaxBytes + 512<<10, ShardMax: 160 << 10, Headroom: 8 * LossChunk}
 
 func TestCrashChild(t *testing.T) {
 	spec := os.Getenv(childEnv)

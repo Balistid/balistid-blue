@@ -772,3 +772,39 @@ func TestRecoverRefusesAHoleAfterAWALRestartThatShowsAnOldCommit(t *testing.T) {
 		t.Fatalf("Recover = %v; want a refusal", err)
 	}
 }
+
+func TestTheWALStaysWithinItsBound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pages, size int
+	if err := w.db.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&pages); err != nil || pages != checkpointPages {
+		t.Fatalf("wal_autocheckpoint = %d, %v", pages, err)
+	}
+	if err := w.db.QueryRowContext(t.Context(), "PRAGMA page_size").Scan(&size); err != nil || size != pageSize {
+		t.Fatalf("page_size = %d, %v", size, err)
+	}
+	peak := int64(0)
+	for i := uint64(1); i <= 1500; i++ {
+		data := strings.Repeat("x", 3000)
+		if i%500 == 0 {
+			data = strings.Repeat("y", rawrecord.MaxBytes) // the largest record, in one transaction
+		}
+		if err := w.Append(t.Context(), record(i, data)); err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(path + "-wal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		peak = max(peak, st.Size())
+	}
+	if peak > WALMaxBytes || peak < checkpointPages*pageSize {
+		t.Fatalf("WAL peaked at %d bytes; bound %d, autocheckpoint at %d", peak, WALMaxBytes, checkpointPages*pageSize)
+	}
+	if _, err := w.Seal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
