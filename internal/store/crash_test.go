@@ -18,7 +18,7 @@ import (
 // "flushed D" after every Flush, D being the drops so far; the parent then opens the store.
 const childEnv = "BALISTID_STORE_CRASH"
 
-var crashLimits = Limits{Cap: 512 << 10, ShardMax: 96 << 10, Headroom: 8 * LossChunk}
+var crashLimits = Limits{Cap: 512 << 10, ShardMax: 160 << 10, Headroom: 8 * LossChunk}
 
 func TestCrashChild(t *testing.T) {
 	spec := os.Getenv(childEnv)
@@ -50,7 +50,7 @@ func TestCrashChild(t *testing.T) {
 			drops++
 		}
 		if i%7 == 0 {
-			if err := s.Flush(t.Context()); err != nil {
+			if _, err := s.Flush(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 			fmt.Printf("flushed %d\n", drops)
