@@ -80,7 +80,8 @@ Independent review scales with the impact of a mistake, not with the file type:
 |---|---|
 | Small, reversible, with tests (about 50 lines, one file) | Tests and self-check |
 | Security-relevant gate, several files, weak tests | One Claude critic (Opus) |
-| Security boundary with root impact, signing, install path, architecture | Claude critic and Codex review (queue, level full) |
+| Root or privilege impact, sandbox and unit confinement, signing, install path | Claude critic and Codex review (queue, level security) |
+| Architecture, stored evidence and its integrity | Claude critic and Codex review (queue, level full) |
 
 A further round runs only when the last review found a defect inside the change. If the third and
 any later round again finds one, stop and redesign (R7); the maintainer decides. Review findings are
