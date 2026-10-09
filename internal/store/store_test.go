@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -194,8 +195,8 @@ func TestAUsedUpReserveIsUnknownAndCloseStillSeals(t *testing.T) {
 	if _, _, err := s.Append(t.Context(), "laurel", 1, noon, []byte("late")); err == nil {
 		t.Fatal("an UNKNOWN store took a record")
 	}
-	if _, err := s.Close(t.Context()); err != nil {
-		t.Fatal(err)
+	if _, err := s.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "used up") {
+		t.Fatalf("Close of an UNKNOWN store = %v; want its reason, since waiting drops are lost", err)
 	}
 	if len(readAll(t, dir)) == 0 {
 		t.Fatal("the stored records were not sealed")
@@ -357,28 +358,31 @@ func TestOpenFailsOnWhatItCannotAccountFor(t *testing.T) {
 func TestFlushIsTheOnlyWriterOfWaitingDropsWhileTheCollectorIsIdle(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, Limits{Cap: 128 << 10, ShardMax: 128 << 10, Headroom: 4 * LossChunk})
-	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	i := 0
+	for ; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
 	if s.dropped != 1 {
 		t.Fatalf("dropped %d", s.dropped)
 	}
-	clock := time.Unix(0, noon+5)
+	clock := time.Unix(0, noon+3*day) // another day: the loss record still keeps to its shard's
 	s.now = func() time.Time { return clock }
 	if err := s.Flush(t.Context()); err != nil || s.dropped != 0 {
 		t.Fatalf("Flush: %v, %d drops still waiting", err, s.dropped)
 	}
 	closeStore(t, s)
 	got := readAll(t, dir)
-	if last := got[len(got)-1]; last.Provider != LossProvider || last.Received != noon+5 {
+	if last := got[len(got)-1]; last.Provider != LossProvider || last.Received != noon+int64(i-1) {
 		t.Fatalf("last record %+v", last)
 	}
 }
 
 func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
-	s := open(t, t.TempDir(), Limits{Cap: 128 << 10, ShardMax: 128 << 10, Headroom: 4 * LossChunk})
-	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	s := open(t, t.TempDir(), Limits{Cap: 256 << 10, ShardMax: 128 << 10, Headroom: 4 * LossChunk})
+	add(t, s, noon, "a")
+	if add(t, s, noon+1, strings.Repeat("x", 100<<10)) {
+		t.Fatal("a record whose two copies pass the cap was stored")
 	}
-	_, sealed, err := s.Append(t.Context(), "laurel", 1, noon+day, []byte("next day, also dropped"))
+	_, sealed, err := s.Append(t.Context(), "laurel", 1, noon+day, []byte("next day, small"))
 	if err != nil || len(sealed) != 1 {
 		t.Fatalf("Append sealed %d shards, %v", len(sealed), err)
 	}
@@ -408,5 +412,149 @@ func TestRecordsPastTheCapSpendTheReserveByTheChunk(t *testing.T) {
 	st, err := os.Stat(filepath.Join(dir, reserveName))
 	if err != nil || st.Size() < 2*LossChunk {
 		t.Fatalf("reserve at %d bytes after 20 loss records, %v", st.Size(), err)
+	}
+}
+
+func TestAReopenAtTheCapDoesNotPayForTheReserveTwice(t *testing.T) {
+	dir := t.TempDir()
+	lim := Limits{Cap: 128 << 10, ShardMax: 128 << 10, Headroom: 16 * LossChunk}
+	s := open(t, dir, lim)
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	}
+	reserve := func() int64 {
+		st, err := os.Stat(filepath.Join(dir, reserveName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	for range 3 {
+		closeStore(t, s)
+		before := reserve()
+		s = open(t, dir, lim)
+		for i := range 5 { // five small loss records fit in what the reserve already gave back
+			add(t, s, noon+int64(i), strings.Repeat("x", 4<<10))
+			if err := s.Flush(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if after := reserve(); before-after > LossChunk {
+			t.Fatalf("a reopen spent %d bytes of the reserve on five loss records", before-after)
+		}
+	}
+	closeStore(t, s)
+}
+
+func TestLossRecordsAtTheCapKeepToTheirShardWhateverTheClockSays(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, Limits{Cap: 128 << 10, ShardMax: 128 << 10, Headroom: 16 * LossChunk})
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	}
+	s.now = func() time.Time { return time.Unix(0, noon+5*day) }
+	for i := range 30 {
+		add(t, s, noon+int64(i), strings.Repeat("x", 4<<10))
+		if err := s.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeStore(t, s)
+	if n := len(readAll(t, dir)); n == 0 {
+		t.Fatal("nothing stored")
+	}
+	shards, err := filepath.Glob(filepath.Join(dir, "*.db"))
+	if err != nil || len(shards) > 3 {
+		t.Fatalf("%d shards for one day of records and its loss records, %v", len(shards), err)
+	}
+}
+
+func TestStoredRecordsStayUnderTheCap(t *testing.T) {
+	dir := t.TempDir()
+	lim := Limits{Cap: 512 << 10, ShardMax: 128 << 10, Headroom: 4 * LossChunk}
+	s := open(t, dir, lim)
+	for i := range 300 {
+		add(t, s, noon+int64(i), strings.Repeat("x", 3000+i*37%2000))
+	}
+	used, err := s.used()
+	if err != nil || used > lim.Cap {
+		t.Fatalf("records allocate %d bytes under a cap of %d, %v", used, lim.Cap, err)
+	}
+	closeStore(t, s)
+}
+
+func TestARecoveryRecordSurvivesASecondCrash(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	first := crashed(t, s)
+	r := open(t, first, small) // recovers, stores the health record, rewrites the index
+	second := crashed(t, r)    // and crashes before its first Flush
+	got := readAll(t, second)
+	found := false
+	for _, rec := range got {
+		found = found || rec.Provider == HealthProvider && strings.Contains(string(rec.Data), `"recovered"`)
+	}
+	if !found {
+		t.Fatalf("the trace of the first crash is gone: %+v", got)
+	}
+}
+
+func TestNoteHealthIsStoredByFlush(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	s.NoteHealth([]byte(`{"schema_version":1,"sensor":"UNKNOWN"}`))
+	closeStore(t, s)
+	if got := readAll(t, dir); len(got) != 2 || got[1].Provider != HealthProvider {
+		t.Fatalf("records %+v", got)
+	}
+}
+
+func TestOpenRefusesNamesAndTypesThatDoNotBelong(t *testing.T) {
+	cases := map[string]func(dir string) error{
+		"two sidecar suffixes": func(dir string) error {
+			return errors.Join(os.WriteFile(filepath.Join(dir, "00000000000000000001.db"), nil, 0o600),
+				os.WriteFile(filepath.Join(dir, "00000000000000000001.db-shm-wal"), nil, 0o600))
+		},
+		"index as a symlink": func(dir string) error {
+			return os.Symlink(filepath.Join(dir, reserveName), filepath.Join(dir, indexName))
+		},
+		"index temp as a directory": func(dir string) error { return os.Mkdir(filepath.Join(dir, indexName+".tmp"), 0o700) },
+		"shard as a directory":      func(dir string) error { return os.Mkdir(filepath.Join(dir, "00000000000000000001.db"), 0o700) },
+	}
+	for name, add := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := add(dir); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Open(t.Context(), dir, small); err == nil {
+				t.Fatal("Open accepted it")
+			}
+		})
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "lost+found"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), dir, small); err != nil {
+		t.Fatalf("lost+found of a filesystem root: %v", err)
+	}
+}
+
+func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	calls := 0
+	err := s.room(func() error {
+		if calls++; calls == 1 {
+			return syscall.ENOSPC
+		}
+		return nil
+	})
+	st, serr := os.Stat(filepath.Join(dir, reserveName))
+	if err != nil || calls != 2 || serr != nil || st.Size() != small.Headroom-LossChunk {
+		t.Fatalf("room: %v after %d writes, reserve %d bytes (%v)", err, calls, st.Size(), serr)
+	}
+	if err := s.room(func() error { return syscall.ENOSPC }); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("a write that stays full must fail: %v", err)
 	}
 }

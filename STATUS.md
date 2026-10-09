@@ -37,4 +37,4 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - Does `systemd_exposure` (2.5) cover the runner? Install skips .wants/.requires (root-only).
 - Renaming the repo and product; R2 signing keys; before floor 0's host install: x32 mitigation, io_uring.
 - Raise the caps of `THREAT_MODEL.md` and ADRs (needs an ADR).
-- `headroom_gib` in acceptance/0.toml should name the seal index lines it now also covers (ADR 0013).
+- Seal index: `headroom_gib` should name its lines; before retention, decide how it records a deleted shard.
