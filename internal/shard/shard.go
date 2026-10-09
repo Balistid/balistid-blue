@@ -1,7 +1,8 @@
 // Package shard stores raw records in one SQLite database per shard and seals it (ADR 0005, point 3):
 // the collector appends, Seal makes the file final and returns its hash, and Read gives back the
 // records of a file with that hash, each checked against its leaf. A shard counts as sealed only
-// once its hash is recorded (the ledger); the file's mode or journal state alone proves nothing.
+// once its hash is recorded (the seals index, ADR 0013); the file's mode or journal state alone
+// proves nothing.
 package shard
 
 import (
