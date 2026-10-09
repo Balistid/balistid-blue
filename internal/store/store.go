@@ -103,7 +103,7 @@ func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
 }
 
 func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string)) (*Store, error) {
-	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax+shard.WALMaxBytes {
+	if lim.Headroom < shard.WALMaxBytes+LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax+shard.WALMaxBytes {
 		return nil, fmt.Errorf("store: limits %+v cannot hold a shard and a loss record", lim)
 	}
 	var st syscall.Stat_t
@@ -494,9 +494,10 @@ func (s *Store) rotate(ctx context.Context, size int64) ([]Seal, error) {
 	return []Seal{l}, nil
 }
 
-// Flush writes the waiting health records and a loss record for the drops not yet counted, sealing the
-// current shard first when they would pass ShardMax or a new day began. The collector calls it every
-// FlushEvery, so a crash loses at most one interval of drop counts, and hands on what it sealed.
+// Flush writes the waiting health records and a loss record for the drops not yet counted. When they
+// would pass ShardMax or a new day began, it seals the current shard, with the waiting records written
+// into it first (ADR 0013, point 1). The collector calls it every FlushEvery, so a crash loses at most
+// one interval of drop counts, and hands on what it sealed.
 func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
 	if s.unknown != "" {
 		return nil, errors.New("store: " + s.unknown)
@@ -554,8 +555,9 @@ func (s *Store) putOwn(ctx context.Context, provider string, data []byte, receiv
 	if err != nil {
 		return s.fail(err)
 	}
-	// The record's two copies and a split page, past the cap, must be covered by what the reserve gave.
-	if over := used + 2*int64(len(data)) + 2*ownSlack - s.lim.Cap; over > 0 {
+	// The record's two copies, a split page and a checkpoint it may trigger, past the cap, must be
+	// covered by what the reserve gave.
+	if over := used + shard.WALMaxBytes + 2*int64(len(data)) + 2*ownSlack - s.lim.Cap; over > 0 {
 		st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
 		if err != nil {
 			return s.fail(err)

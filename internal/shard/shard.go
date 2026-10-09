@@ -67,8 +67,7 @@ func Create(ctx context.Context, path string) (*Writer, error) {
 		return nil, fmt.Errorf("create shard: %w", err)
 	}
 	db, err := open(path, fmt.Sprintf("_pragma=page_size(%d)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)"+
-		"&_pragma=busy_timeout(5000)&_pragma=wal_autocheckpoint(%d)&_pragma=journal_size_limit(%d)",
-		pageSize, checkpointPages, WALMaxBytes))
+		"&_pragma=busy_timeout(5000)&_pragma=wal_autocheckpoint(%d)", pageSize, checkpointPages))
 	if err != nil {
 		return nil, err
 	}
