@@ -53,7 +53,7 @@ func Create(ctx context.Context, path string) (*Writer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create shard: %w", err)
 	}
-	if err := f.Close(); err != nil {
+	if err := errors.Join(f.Sync(), f.Close(), syncDir(path)); err != nil {
 		return nil, fmt.Errorf("create shard: %w", err)
 	}
 	db, err := open(path, "_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
@@ -110,6 +110,11 @@ func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	}
 	db := w.db
 	w.db = nil
+	return seal(ctx, db, w.path)
+}
+
+// seal takes db, open on path, out of WAL mode, closes it and makes the file final (see Seal).
+func seal(ctx context.Context, db *sql.DB, path string) ([32]byte, error) {
 	var mode string
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode=DELETE").Scan(&mode); err != nil || mode != "delete" {
 		return [32]byte{}, errors.Join(fmt.Errorf("seal: journal mode %q: %w", mode, err), db.Close())
@@ -117,7 +122,7 @@ func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	if err := db.Close(); err != nil {
 		return [32]byte{}, fmt.Errorf("seal: close: %w", err)
 	}
-	f, err := os.OpenFile(w.path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the shard Create or Recover opened
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("seal: %w", err)
 	}
@@ -129,14 +134,21 @@ func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	if err := errors.Join(f.Chmod(0o440), f.Sync()); err != nil { // group-readable for balistid-normalize (ADR 0007)
 		return [32]byte{}, fmt.Errorf("seal: %w", err)
 	}
-	dir, err := os.Open(filepath.Dir(w.path))
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("seal: directory: %w", err)
-	}
-	if err := errors.Join(dir.Sync(), dir.Close()); err != nil {
-		return [32]byte{}, fmt.Errorf("seal: directory: %w", err)
+	if err := syncDir(path); err != nil {
+		return [32]byte{}, fmt.Errorf("seal: %w", err)
 	}
 	return [32]byte(h.Sum(nil)), nil
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("directory: %w", err)
+	}
+	if err := errors.Join(dir.Sync(), dir.Close()); err != nil {
+		return fmt.Errorf("directory: %w", err)
+	}
+	return nil
 }
 
 // sealedFile fails unless path is a regular file, not a symlink, with the SQLite header of a database
@@ -180,6 +192,11 @@ func Read(ctx context.Context, path string, want [32]byte, fn func(rawrecord.Rec
 		return err
 	}
 	defer db.Close() //nolint:errcheck // read-only
+	return records(ctx, db, fn)
+}
+
+// records checks the meta row and calls fn with every record of db in seq order, as Read describes.
+func records(ctx context.Context, db *sql.DB, fn func(rawrecord.Record) error) error {
 	var version, metaRows int
 	var label string
 	if err := db.QueryRowContext(ctx, "SELECT schema_version, label, (SELECT count(*) FROM meta) FROM meta").
@@ -218,4 +235,75 @@ func Read(ctx context.Context, path string, want [32]byte, fn func(rawrecord.Rec
 		return fmt.Errorf("read shard records: %w", err)
 	}
 	return nil
+}
+
+// Recovered is what Recover found in a shard that was never sealed.
+type Recovered struct {
+	// Empty: the shard holds no records (a crash in Create or before the first Append). It is not
+	// evidence; the caller removes it with its -wal and -shm files.
+	Empty bool
+	// First and Last are the seq range of a recovered shard, SHA256 its hash as Seal returns it.
+	First, Last uint64
+	SHA256      [32]byte
+}
+
+// Recover seals a shard a crash left unsealed (ADR 0013, point 5). A zero-byte file whose -wal is not
+// empty is refused before any open, since SQLite would delete that WAL. Otherwise the shard is opened
+// read-write, so SQLite applies its WAL; one without a records table or rows is Empty, and any other
+// is checked as Read checks a sealed one, then sealed. A shard that fails a check is left unsealed.
+func Recover(ctx context.Context, path string) (Recovered, error) {
+	if !filepath.IsAbs(path) {
+		return Recovered{}, fmt.Errorf("shard path %q is not absolute", path)
+	}
+	st, err := os.Lstat(path)
+	if err != nil {
+		return Recovered{}, fmt.Errorf("recover shard: %w", err)
+	}
+	if !st.Mode().IsRegular() {
+		return Recovered{}, fmt.Errorf("recover shard: %s is not a regular file", path)
+	}
+	if st.Size() == 0 {
+		wal, err := os.Lstat(path + "-wal")
+		switch {
+		case errors.Is(err, os.ErrNotExist) || (err == nil && wal.Size() == 0):
+			return Recovered{Empty: true}, nil
+		case err != nil:
+			return Recovered{}, fmt.Errorf("recover shard: %w", err)
+		}
+		return Recovered{}, errors.New("recover shard: an empty file beside a non-empty WAL")
+	}
+	db, err := open(path, "_pragma=synchronous(FULL)&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return Recovered{}, err
+	}
+	var tables, rows int
+	err = db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'records'").Scan(&tables)
+	if err == nil && tables == 1 {
+		err = db.QueryRowContext(ctx, "SELECT count(*) FROM records").Scan(&rows)
+	}
+	if err != nil {
+		return Recovered{}, errors.Join(fmt.Errorf("recover shard: %w", err), db.Close())
+	}
+	if rows == 0 {
+		if err := db.Close(); err != nil {
+			return Recovered{}, fmt.Errorf("recover shard: close: %w", err)
+		}
+		return Recovered{Empty: true}, nil
+	}
+	var r Recovered
+	seen := false
+	err = records(ctx, db, func(rec rawrecord.Record) error {
+		if !seen {
+			r.First, seen = rec.Seq, true
+		}
+		r.Last = rec.Seq
+		return nil
+	})
+	if err != nil {
+		return Recovered{}, errors.Join(fmt.Errorf("recover shard: %w", err), db.Close())
+	}
+	if r.SHA256, err = seal(ctx, db, path); err != nil {
+		return Recovered{}, fmt.Errorf("recover shard: %w", err)
+	}
+	return r, nil
 }

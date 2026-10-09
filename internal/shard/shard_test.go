@@ -380,3 +380,169 @@ func TestAppendRefusesDataOverMaxBytes(t *testing.T) {
 		t.Error("Append stored data over MaxBytes")
 	}
 }
+
+// crashed returns a copy of a shard's files as a crash after the last Append leaves them: the
+// records committed to the WAL, the main file not yet checkpointed, no seal.
+func crashed(t *testing.T, records ...rawrecord.Record) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { w.db.Close() }) //nolint:errcheck,gosec // test cleanup
+	for _, r := range records {
+		if err := w.Append(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cp := filepath.Join(t.TempDir(), "shard.db")
+	for _, suffix := range []string{"", "-wal"} {
+		data, err := os.ReadFile(path + suffix) //nolint:gosec // test temp dir
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cp+suffix, data, 0o600); err != nil { //nolint:gosec // test temp dir
+			t.Fatal(err)
+		}
+	}
+	return cp
+}
+
+func exec(t *testing.T, path, stmt string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(t.Context(), stmt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func journalMode(t *testing.T, path string) byte {
+	t.Helper()
+	header := make([]byte, 100)
+	f, err := os.Open(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // test
+	if _, err := f.Read(header); err != nil {
+		t.Fatal(err)
+	}
+	return header[18]
+}
+
+func TestRecoverSealsRecordsStillInTheWAL(t *testing.T) {
+	path := crashed(t, record(5, "ab"), record(6, "cd"), record(7, "ef"))
+	if st, err := os.Stat(path + "-wal"); err != nil || st.Size() == 0 {
+		t.Fatalf("the crash copy should hold its records in the WAL: %v", err)
+	}
+	got, err := Recover(t.Context(), path)
+	if err != nil || got.Empty || got.First != 5 || got.Last != 7 {
+		t.Fatalf("Recover = %+v, %v; want records 5..7", got, err)
+	}
+	read, err := readAll(t, path, got.SHA256)
+	if err != nil || len(read) != 3 || string(read[2].Data) != "ef" {
+		t.Fatalf("the recovered shard reads %d records, %v", len(read), err)
+	}
+	if _, err := os.Stat(path + "-wal"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a sealed shard keeps no WAL: %v", err)
+	}
+}
+
+func TestRecoverRefusesAnEmptyFileBesideAWAL(t *testing.T) {
+	path := crashed(t, record(1, "ab"))
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Recover(t.Context(), path); err == nil || !strings.Contains(err.Error(), "non-empty WAL") {
+		t.Fatalf("Recover = %v; want a refusal before opening", err)
+	}
+	if after, err := os.ReadFile(path + "-wal"); err != nil || !bytes.Equal(after, before) { //nolint:gosec // test temp dir
+		t.Fatalf("the WAL beside an empty file must survive untouched: %v", err)
+	}
+}
+
+func TestRecoverFindsAShardWithoutRecordsEmpty(t *testing.T) {
+	cases := map[string]func(t *testing.T) string{
+		"zero bytes, no WAL": func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "shard.db")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		},
+		"zero bytes, empty WAL": func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "shard.db")
+			for _, p := range []string{path, path + "-wal"} {
+				if err := os.WriteFile(p, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return path
+		},
+		"tables, no records": func(t *testing.T) string { return crashed(t) },
+		"meta only": func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), "shard.db")
+			exec(t, path, "CREATE TABLE meta (schema_version INTEGER NOT NULL, label TEXT NOT NULL) STRICT")
+			return path
+		},
+	}
+	for name, build := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got, err := Recover(t.Context(), build(t)); err != nil || !got.Empty {
+				t.Fatalf("Recover = %+v, %v; want Empty", got, err)
+			}
+		})
+	}
+}
+
+func TestRecoverLeavesABadShardUnsealed(t *testing.T) {
+	for name, stmt := range map[string]string{
+		"leaf":     "UPDATE records SET leaf = zeroblob(32) WHERE seq = 2",
+		"seq gap":  "DELETE FROM records WHERE seq = 2",
+		"data":     "UPDATE records SET data = x'0000' WHERE seq = 2",
+		"meta":     "UPDATE meta SET schema_version = 2",
+		"no meta":  "DELETE FROM meta",
+		"bad leaf": "UPDATE records SET leaf = x'00' WHERE seq = 3",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := crashed(t, record(1, "ab"), record(2, "cd"), record(3, "ef"))
+			exec(t, path, stmt)
+			if _, err := Recover(t.Context(), path); err == nil {
+				t.Fatal("Recover sealed a shard that fails Read's checks")
+			}
+			if mode := journalMode(t, path); mode != 2 {
+				t.Fatalf("header byte 18 = %d; a refused shard must stay in WAL mode, unsealed", mode)
+			}
+		})
+	}
+}
+
+func TestRecoverTouchesOnlyARegularFileAtAnAbsolutePath(t *testing.T) {
+	path := crashed(t, record(1, "ab"))
+	dir := t.TempDir()
+	link, fifo := filepath.Join(dir, "link.db"), filepath.Join(dir, "fifo.db")
+	if err := errors.Join(os.Symlink(path, link), syscall.Mkfifo(fifo, 0o600)); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Dir(path))
+	for p, want := range map[string]string{"shard.db": "not absolute", link: "not a regular file",
+		fifo: "not a regular file", filepath.Join(dir, "missing.db"): "no such file"} {
+		if got, err := Recover(t.Context(), p); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Recover(%q) = %+v, %v; want %q", p, got, err, want)
+		}
+	}
+	if mode := journalMode(t, path); mode != 2 {
+		t.Fatalf("header byte 18 = %d; the shard behind the refused paths must stay unsealed", mode)
+	}
+}
