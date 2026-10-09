@@ -78,7 +78,6 @@ type Store struct {
 	lastDrop    int64
 	health      [][]byte // health records waiting for Flush
 	torn        bool     // the index ends in a torn line
-	lastRecv    int64    // receive time of the last record stored, for the store's own records
 	unknown     string
 	now         func() time.Time
 	crashAt     func(string) // a test seam: crash tests kill the process at these named points
@@ -93,7 +92,7 @@ func Open(ctx context.Context, dir string, lim Limits) (*Store, error) {
 }
 
 func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string)) (*Store, error) {
-	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk || lim.Cap < lim.ShardMax {
+	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax {
 		return nil, fmt.Errorf("store: limits %+v cannot hold a shard and a loss record", lim)
 	}
 	if st, err := os.Lstat(dir); err != nil || !st.IsDir() { //nolint:gosec // the collector names its own directory
@@ -110,6 +109,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if len(s.seals) > 0 {
 		s.next = s.seals[len(s.seals)-1].Last + 1
 	}
+	indexed := len(s.seals)
 	if err := s.recover(ctx, pending); err != nil {
 		return nil, err
 	}
@@ -119,10 +119,12 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if len(pending) > 0 || s.torn { // a torn index line's shard is among the pending
 		// The recovery health records are stored before the index makes the recovery final, so a
 		// second crash cannot erase the trace of the first.
-		if s.unknown == "" {
-			if err := s.Flush(ctx); err != nil {
-				return nil, err
-			}
+		if s.unknown != "" { // the next Open recovers again, and then stores the health records
+			s.seals = s.seals[:indexed]
+			return s, nil
+		}
+		if err := s.flush(ctx); err != nil {
+			return nil, err
 		}
 		if err := s.room(func() error { return s.writeIndex(s.seals) }); err != nil {
 			return nil, err
@@ -404,22 +406,23 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 		s.crashAt("dropped")
 		return false, nil, nil
 	}
-	sealed, err := s.rotate(ctx, received, size)
+	sealed, err := s.rotate(ctx, size)
 	if err != nil {
 		return false, sealed, err
 	}
-	if err := s.Flush(ctx); err != nil { // drops are recorded before the records after them
+	if err := s.flush(ctx); err != nil { // drops are recorded before the records after them
 		return false, sealed, err
 	}
-	if err := s.put(ctx, rawrecord.New(s.next, provider, providerSeq, received, data), received); err != nil {
+	if err := s.put(ctx, rawrecord.New(s.next, provider, providerSeq, received, data)); err != nil {
 		return false, sealed, err
 	}
-	s.lastRecv = received
 	return true, sealed, nil
 }
 
-// rotate seals the current shard when a record of size would pass ShardMax or starts a new UTC day.
-func (s *Store) rotate(ctx context.Context, received, size int64) ([]Seal, error) {
+// rotate seals the current shard when size more bytes would pass ShardMax or the store's clock is on
+// another UTC day than the shard (one shard per day, ADR 0005; the store's clock, not the records'
+// receive times, so its own records and the sensor's agree).
+func (s *Store) rotate(ctx context.Context, size int64) ([]Seal, error) {
 	if s.cur == nil {
 		return nil, nil
 	}
@@ -427,7 +430,7 @@ func (s *Store) rotate(ctx context.Context, received, size int64) ([]Seal, error
 	if err != nil {
 		return nil, s.fail(err)
 	}
-	if curBytes+size <= s.lim.ShardMax && received/day == s.curDay {
+	if curBytes+size <= s.lim.ShardMax && s.now().UnixNano()/day == s.curDay {
 		return nil, nil
 	}
 	l, err := s.sealCurrent(ctx)
@@ -437,18 +440,33 @@ func (s *Store) rotate(ctx context.Context, received, size int64) ([]Seal, error
 	return []Seal{l}, nil
 }
 
-// Flush writes the waiting health records and a loss record for the drops not yet counted. The
-// collector calls it every FlushEvery, so a crash loses at most one interval of drop counts.
-func (s *Store) Flush(ctx context.Context) error {
+// Flush writes the waiting health records and a loss record for the drops not yet counted, sealing the
+// current shard first when they would pass ShardMax or a new day began. The collector calls it every
+// FlushEvery, so a crash loses at most one interval of drop counts, and hands on what it sealed.
+func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
+	if s.unknown != "" {
+		return nil, errors.New("store: " + s.unknown)
+	}
+	if len(s.health) == 0 && s.dropped == 0 {
+		return nil, nil
+	}
+	size := int64(512) // a loss record with its encoding
+	for _, h := range s.health {
+		size += int64(len(h)) + 512
+	}
+	sealed, err := s.rotate(ctx, size)
+	if err != nil {
+		return sealed, err
+	}
+	return sealed, s.flush(ctx)
+}
+
+// flush writes what Flush holds into the current shard, at the store's clock.
+func (s *Store) flush(ctx context.Context) error {
 	if s.unknown != "" {
 		return errors.New("store: " + s.unknown)
 	}
-	// The store's own records take the last stored record's receive time, so they keep to its shard's
-	// day; only before any record do they take the clock's.
-	now := s.lastRecv
-	if now == 0 {
-		now = s.now().UnixNano()
-	}
+	now := s.now().UnixNano()
 	for len(s.health) > 0 {
 		if err := s.putOwn(ctx, HealthProvider, s.health[0], now); err != nil {
 			return err
@@ -493,10 +511,10 @@ func (s *Store) putOwn(ctx context.Context, provider string, data []byte, receiv
 			}
 		}
 	}
-	return s.put(ctx, rawrecord.New(s.next, provider, 0, received, data), received)
+	return s.put(ctx, rawrecord.New(s.next, provider, 0, received, data))
 }
 
-func (s *Store) put(ctx context.Context, r rawrecord.Record, received int64) error {
+func (s *Store) put(ctx context.Context, r rawrecord.Record) error {
 	if s.cur == nil {
 		if s.next > math.MaxInt64 {
 			return s.fail(errors.New("seq exhausted"))
@@ -507,7 +525,7 @@ func (s *Store) put(ctx context.Context, r rawrecord.Record, received int64) err
 			return s.fail(err)
 		}
 		s.crashAt("created")
-		s.cur, s.curName, s.curFirst, s.curDay = cur, name, s.next, received/day
+		s.cur, s.curName, s.curFirst, s.curDay = cur, name, s.next, s.now().UnixNano()/day
 	}
 	if err := s.cur.Append(ctx, r); err != nil {
 		return s.fail(err)
@@ -519,7 +537,7 @@ func (s *Store) put(ctx context.Context, r rawrecord.Record, received int64) err
 
 // sealCurrent writes what Flush holds into the shard, then seals it (ADR 0013, point 1).
 func (s *Store) sealCurrent(ctx context.Context) (Seal, error) {
-	if err := s.Flush(ctx); err != nil {
+	if err := s.flush(ctx); err != nil {
 		return Seal{}, err
 	}
 	return s.seal(ctx)
@@ -552,7 +570,7 @@ func (s *Store) Close(ctx context.Context) ([]Seal, error) {
 	var flushErr error
 	switch {
 	case s.unknown == "":
-		flushErr = s.Flush(ctx)
+		flushErr = s.flush(ctx)
 	case s.dropped > 0 || len(s.health) > 0: // what is waiting is lost: say so
 		flushErr = errors.New("store: " + s.unknown)
 	}

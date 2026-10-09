@@ -25,6 +25,7 @@ func open(t *testing.T, dir string, lim Limits) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	onDay(s, 0)
 	return s
 }
 
@@ -35,6 +36,11 @@ func add(t *testing.T, s *Store, received int64, data string) bool {
 		t.Fatal(err)
 	}
 	return stored
+}
+
+// onDay sets the store's clock to noon of day d after the test's start; shards rotate by it.
+func onDay(s *Store, d int) {
+	s.now = func() time.Time { return time.Unix(0, noon+int64(d)*day) }
 }
 
 func closeStore(t *testing.T, s *Store) {
@@ -84,7 +90,8 @@ func copyDir(t *testing.T, from string) string {
 }
 
 func TestOpenRefusesLimitsThatCannotHoldARecord(t *testing.T) {
-	for _, lim := range []Limits{{Cap: 1 << 20, ShardMax: 1 << 20, Headroom: 1}, {Cap: 1 << 10, ShardMax: 1 << 20, Headroom: LossChunk}} {
+	for _, lim := range []Limits{{Cap: 1 << 20, ShardMax: 1 << 20, Headroom: 1}, {Cap: 1 << 10, ShardMax: 1 << 20, Headroom: LossChunk},
+		{Cap: 1 << 20, ShardMax: 100 << 10, Headroom: LossChunk}} { // a shard that could never admit a record
 		if _, err := Open(t.Context(), t.TempDir(), lim); err == nil {
 			t.Fatalf("Open accepted %+v", lim)
 		}
@@ -122,6 +129,7 @@ func TestShardsSealAtShardMaxAndDayIntoTheIndex(t *testing.T) {
 	if len(sealed) == 0 {
 		t.Fatal("no shard sealed at ShardMax")
 	}
+	onDay(s, 1)
 	_, got, err := s.Append(t.Context(), "laurel", 99, noon+day, []byte("next day"))
 	if err != nil || len(got) != 1 {
 		t.Fatalf("a new UTC day sealed %d shards, %v", len(got), err)
@@ -163,7 +171,7 @@ func TestTheCapDropsAndFlushCountsTheDropsWithoutAnotherAppend(t *testing.T) {
 	if drops == 0 {
 		t.Fatal("nothing dropped at the cap")
 	}
-	if err := s.Flush(t.Context()); err != nil {
+	if _, err := s.Flush(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	closeStore(t, s)
@@ -187,7 +195,7 @@ func TestAUsedUpReserveIsUnknownAndCloseStillSeals(t *testing.T) {
 	s := open(t, dir, Limits{Cap: 256 << 10, ShardMax: 128 << 10, Headroom: LossChunk})
 	for i := 0; i < 200 && s.Health() == ""; i++ {
 		_, _, _ = s.Append(t.Context(), "laurel", 1, noon+int64(i), []byte(strings.Repeat("x", 4<<10)))
-		_ = s.Flush(t.Context()) // fails once the reserve is gone
+		_, _ = s.Flush(t.Context()) // fails once the reserve is gone
 	}
 	if s.Health() == "" {
 		t.Fatal("a used-up reserve is not UNKNOWN")
@@ -243,6 +251,7 @@ func TestOpenRecoversATornIndexLineAndRewritesTheIndex(t *testing.T) {
 	src := t.TempDir()
 	s := open(t, src, small)
 	add(t, s, noon, "a")
+	onDay(s, 1)
 	add(t, s, noon+day, "b") // seals the first shard
 	closeStore(t, s)
 	index := filepath.Join(src, indexName)
@@ -268,6 +277,7 @@ func TestOpenRecoversATornIndexLineAndRewritesTheIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = open(t, src, small)
+	onDay(s, 2)
 	add(t, s, noon+2*day, "c")
 	closeStore(t, s)
 	if got := readAll(t, src); len(got) != 4 {
@@ -293,7 +303,9 @@ func TestOpenFailsOnWhatItCannotAccountFor(t *testing.T) {
 	src := t.TempDir()
 	s := open(t, src, small)
 	add(t, s, noon, "a")
+	onDay(s, 1)
 	add(t, s, noon+day, "b")
+	onDay(s, 2)
 	add(t, s, noon+2*day, "c")
 	closeStore(t, s)
 	sealed, err := os.ReadFile(filepath.Join(src, indexName)) //nolint:gosec // test temp dir
@@ -364,14 +376,13 @@ func TestFlushIsTheOnlyWriterOfWaitingDropsWhileTheCollectorIsIdle(t *testing.T)
 	if s.dropped != 1 {
 		t.Fatalf("dropped %d", s.dropped)
 	}
-	clock := time.Unix(0, noon+3*day) // another day: the loss record still keeps to its shard's
-	s.now = func() time.Time { return clock }
-	if err := s.Flush(t.Context()); err != nil || s.dropped != 0 {
+	onDay(s, 3) // the loss record carries the store's time
+	if _, err := s.Flush(t.Context()); err != nil || s.dropped != 0 {
 		t.Fatalf("Flush: %v, %d drops still waiting", err, s.dropped)
 	}
 	closeStore(t, s)
 	got := readAll(t, dir)
-	if last := got[len(got)-1]; last.Provider != LossProvider || last.Received != noon+int64(i-1) {
+	if last := got[len(got)-1]; last.Provider != LossProvider || last.Received != noon+3*day {
 		t.Fatalf("last record %+v", last)
 	}
 }
@@ -382,6 +393,7 @@ func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
 	if add(t, s, noon+1, strings.Repeat("x", 100<<10)) {
 		t.Fatal("a record whose two copies pass the cap was stored")
 	}
+	onDay(s, 1)
 	_, sealed, err := s.Append(t.Context(), "laurel", 1, noon+day, []byte("next day, small"))
 	if err != nil || len(sealed) != 1 {
 		t.Fatalf("Append sealed %d shards, %v", len(sealed), err)
@@ -405,7 +417,7 @@ func TestRecordsPastTheCapSpendTheReserveByTheChunk(t *testing.T) {
 	}
 	for i := range 20 { // twenty small loss records fit in one chunk of the reserve
 		add(t, s, noon+int64(i), strings.Repeat("x", 4<<10))
-		if err := s.Flush(t.Context()); err != nil {
+		if _, err := s.Flush(t.Context()); err != nil {
 			t.Fatalf("flush %d: %v", i, err)
 		}
 	}
@@ -434,7 +446,7 @@ func TestAReopenAtTheCapDoesNotPayForTheReserveTwice(t *testing.T) {
 		s = open(t, dir, lim)
 		for i := range 5 { // five small loss records fit in what the reserve already gave back
 			add(t, s, noon+int64(i), strings.Repeat("x", 4<<10))
-			if err := s.Flush(t.Context()); err != nil {
+			if _, err := s.Flush(t.Context()); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -453,7 +465,7 @@ func TestLossRecordsAtTheCapKeepToTheirShardWhateverTheClockSays(t *testing.T) {
 	s.now = func() time.Time { return time.Unix(0, noon+5*day) }
 	for i := range 30 {
 		add(t, s, noon+int64(i), strings.Repeat("x", 4<<10))
-		if err := s.Flush(t.Context()); err != nil {
+		if _, err := s.Flush(t.Context()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -556,5 +568,37 @@ func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
 	}
 	if err := s.room(func() error { return syscall.ENOSPC }); !errors.Is(err, syscall.ENOSPC) {
 		t.Fatalf("a write that stays full must fail: %v", err)
+	}
+}
+
+func TestFlushSealsTheShardOfAnEndedDayWhileDropping(t *testing.T) {
+	s := open(t, t.TempDir(), Limits{Cap: 256 << 10, ShardMax: 128 << 10, Headroom: 16 * LossChunk})
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	}
+	onDay(s, 1)
+	sealed, err := s.Flush(t.Context())
+	if err != nil || len(sealed) != 1 {
+		t.Fatalf("Flush on a new day sealed %d shards, %v; the dropping shard must not stay open", len(sealed), err)
+	}
+}
+
+func TestAnUnknownOpenLeavesTheRecoveryForTheNextOpen(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	dir := crashed(t, s)
+	reserve := filepath.Join(dir, reserveName)
+	if err := os.Truncate(reserve, 0); err != nil {
+		t.Fatal(err)
+	}
+	r := open(t, dir, small)
+	if r.Health() == "" || len(r.Seals()) != 0 {
+		t.Fatalf("health %q, seals %+v; an UNKNOWN Open must not make a recovery final", r.Health(), r.Seals())
+	}
+	if err := os.Remove(reserve); err != nil {
+		t.Fatal(err)
+	}
+	got := readAll(t, dir)
+	if len(got) != 2 || got[1].Provider != HealthProvider {
+		t.Fatalf("records %+v", got)
 	}
 }
