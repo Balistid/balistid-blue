@@ -20,7 +20,7 @@ import (
 // "flushed D" after every Flush, D being the drops so far; the parent then opens the store.
 const childEnv = "BALISTID_STORE_CRASH"
 
-var crashLimits = Limits{Cap: shard.WALMaxBytes + 512<<10, ShardMax: 160 << 10, Headroom: 8 * LossChunk}
+var crashLimits = Limits{Cap: shard.WALMaxBytes + 512<<10, ShardMax: 160 << 10, Headroom: shard.WALMaxBytes + 8*LossChunk}
 
 func TestCrashChild(t *testing.T) {
 	spec := os.Getenv(childEnv)
@@ -89,7 +89,7 @@ func TestEveryAcknowledgedRecordSurvivesAKill(t *testing.T) {
 		point string
 		at    int
 	}{
-		{"created", 1}, {"created", 3}, {"appended", 40}, {"sealed", 1}, {"sealed", 2}, {"sealed", 4},
+		{"created", 1}, {"created", 3}, {"appended", 40}, {"sealed", 1}, {"sealed", 2}, {"sealed", 4}, {"sealed", 9},
 		{"dropped", 1}, {"dropped", 30},
 	} {
 		t.Run(fmt.Sprintf("%s#%d", c.point, c.at), func(t *testing.T) {

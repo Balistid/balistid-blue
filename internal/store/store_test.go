@@ -17,7 +17,7 @@ import (
 
 const noon = int64(1791460800000000000)
 
-var small = Limits{Cap: shard.WALMaxBytes + 1<<20, ShardMax: 128 << 10, Headroom: 4 * LossChunk}
+var small = Limits{Cap: shard.WALMaxBytes + 1<<20, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 4*LossChunk}
 
 func open(t *testing.T, dir string, lim Limits) *Store {
 	t.Helper()
@@ -96,8 +96,9 @@ func copyDir(t *testing.T, from string) string {
 }
 
 func TestOpenRefusesLimitsThatCannotHoldARecord(t *testing.T) {
-	for _, lim := range []Limits{{Cap: 1 << 20, ShardMax: 1 << 20, Headroom: 1}, {Cap: 1 << 10, ShardMax: 1 << 20, Headroom: LossChunk},
-		{Cap: shard.WALMaxBytes + 1<<20, ShardMax: 100 << 10, Headroom: LossChunk}} { // a shard that could never admit a record
+	for _, lim := range []Limits{{Cap: 1 << 30, ShardMax: 1 << 20, Headroom: 1}, {Cap: 1 << 10, ShardMax: 1 << 20, Headroom: shard.WALMaxBytes + LossChunk},
+		{Cap: shard.WALMaxBytes + 1<<20, ShardMax: 100 << 10, Headroom: shard.WALMaxBytes + LossChunk}, // a shard that could never admit a record
+		{Cap: shard.WALMaxBytes + 1<<20, ShardMax: 128 << 10, Headroom: 16 * LossChunk}} {              // a reserve that cannot cover a checkpoint
 		if _, err := Open(t.Context(), t.TempDir(), lim); err == nil {
 			t.Fatalf("Open accepted %+v", lim)
 		}
@@ -198,10 +199,10 @@ func TestTheCapDropsAndFlushCountsTheDropsWithoutAnotherAppend(t *testing.T) {
 
 func TestAUsedUpReserveIsUnknownAndCloseStillSeals(t *testing.T) {
 	dir := t.TempDir()
-	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: LossChunk})
+	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + LossChunk})
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	} // one drop waits for its loss record
-	for i := 0; i < 3 && s.Health() == ""; i++ { // a full filesystem takes the reserve chunk by chunk
+	for i := 0; i < 200 && s.Health() == ""; i++ { // a full filesystem takes the reserve chunk by chunk
 		_ = s.room(0, func() error { return syscall.ENOSPC })
 	}
 	if s.Health() == "" {
@@ -376,7 +377,7 @@ func TestOpenFailsOnWhatItCannotAccountFor(t *testing.T) {
 
 func TestFlushIsTheOnlyWriterOfWaitingDropsWhileTheCollectorIsIdle(t *testing.T) {
 	dir := t.TempDir()
-	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: 4 * LossChunk})
+	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 4*LossChunk})
 	i := 0
 	for ; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
@@ -395,7 +396,7 @@ func TestFlushIsTheOnlyWriterOfWaitingDropsWhileTheCollectorIsIdle(t *testing.T)
 }
 
 func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
-	s := open(t, t.TempDir(), Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: 4 * LossChunk})
+	s := open(t, t.TempDir(), Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 4*LossChunk})
 	add(t, s, noon, "a")
 	if add(t, s, noon+1, strings.Repeat("x", 100<<10)) {
 		t.Fatal("a record whose two copies pass the cap was stored")
@@ -419,7 +420,7 @@ func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
 
 func TestRecordsPastTheCapSpendTheReserveByTheChunk(t *testing.T) {
 	dir := t.TempDir()
-	lim := Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: 64 * LossChunk}
+	lim := Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 64*LossChunk}
 	s := open(t, dir, lim)
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
@@ -439,14 +440,14 @@ func TestRecordsPastTheCapSpendTheReserveByTheChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The reserve gives back what the loss records allocate past the cap, a chunk at a time, no more.
-	if spent, past := lim.Headroom-st.Size(), used-lim.Cap; spent < past || spent > past+2*LossChunk {
+	if spent, past := lim.Headroom-st.Size(), used-lim.Cap; spent < past || spent > past+shard.WALMaxBytes+2*LossChunk {
 		t.Fatalf("reserve spent %d bytes for %d allocated past the cap", spent, past)
 	}
 }
 
 func TestAReopenAtTheCapDoesNotPayForTheReserveTwice(t *testing.T) {
 	dir := t.TempDir()
-	lim := Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: 16 * LossChunk}
+	lim := Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 16*LossChunk}
 	s := open(t, dir, lim)
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
@@ -478,7 +479,7 @@ func TestAReopenAtTheCapDoesNotPayForTheReserveTwice(t *testing.T) {
 
 func TestLossRecordsAtTheCapKeepToTheirShardWhateverTheClockSays(t *testing.T) {
 	dir := t.TempDir()
-	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: 16 * LossChunk})
+	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 16*LossChunk})
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
 	s.now = func() time.Time { return time.Unix(0, noon+5*day) }
@@ -501,7 +502,7 @@ func TestLossRecordsAtTheCapKeepToTheirShardWhateverTheClockSays(t *testing.T) {
 func TestStoredRecordsStayUnderTheCapThroughCheckpoints(t *testing.T) {
 	// A checkpoint can add a whole WAL to the main file at once; the cap must hold through every one.
 	dir := t.TempDir()
-	lim := Limits{Cap: shard.WALMaxBytes + 4<<20, ShardMax: 4 << 20, Headroom: 4 * LossChunk}
+	lim := Limits{Cap: shard.WALMaxBytes + 4<<20, ShardMax: 4 << 20, Headroom: shard.WALMaxBytes + 4*LossChunk}
 	s := open(t, dir, lim)
 	drops := 0
 	for i := range 3000 {
@@ -605,7 +606,7 @@ func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
 }
 
 func TestFlushSealsTheShardOfAnEndedDayWhileDropping(t *testing.T) {
-	s := open(t, t.TempDir(), Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: 16 * LossChunk})
+	s := open(t, t.TempDir(), Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 16*LossChunk})
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	}
 	onDay(s, 1)
@@ -653,4 +654,39 @@ func TestOpenRefusesADirectoryOthersCanWrite(t *testing.T) {
 	if _, err := Open(t.Context(), link, small); err == nil {
 		t.Fatal("Open followed a symlink to its directory")
 	}
+}
+
+func TestOwnRecordsPastTheCapStayWithinCapAndHeadroom(t *testing.T) {
+	// Loss records past the cap trigger checkpoints too; with the reserve they replace, everything the
+	// store holds must stay within Cap + Headroom. One large shard keeps its WAL, as in production.
+	dir := t.TempDir()
+	lim := Limits{Cap: shard.WALMaxBytes + 8<<20, ShardMax: 8 << 20, Headroom: shard.WALMaxBytes + 1024*LossChunk}
+	s := open(t, dir, lim)
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	}
+	for i := range 60000 {
+		add(t, s, noon+int64(i), "dropped")
+		if _, err := s.Flush(t.Context()); err != nil {
+			t.Fatalf("flush %d: %v", i, err)
+		}
+		if i%100 != 0 {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held := int64(0)
+		for _, e := range entries {
+			n, err := allocated(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			held += n
+		}
+		if held > lim.Cap+lim.Headroom {
+			t.Fatalf("after %d loss records the store holds %d bytes, over Cap + Headroom %d", i+1, held, lim.Cap+lim.Headroom)
+		}
+	}
+	closeStore(t, s)
 }
