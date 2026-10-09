@@ -106,8 +106,13 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if lim.Headroom < LossChunk || lim.ShardMax < LossChunk+admitSlack || lim.Cap < lim.ShardMax+shard.WALMaxBytes {
 		return nil, fmt.Errorf("store: limits %+v cannot hold a shard and a loss record", lim)
 	}
-	if st, err := os.Lstat(dir); err != nil || !st.IsDir() { //nolint:gosec // the collector names its own directory
-		return nil, fmt.Errorf("store: %s is not a directory (%w)", dir, err)
+	var st syscall.Stat_t
+	if err := syscall.Lstat(dir, &st); err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	// Only the collector may write here (ADR 0007): the code checks it rather than trust the install.
+	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR || int(st.Uid) != os.Getuid() || st.Mode&0o022 != 0 {
+		return nil, fmt.Errorf("store: %s is not a directory of this user that only it can write", dir)
 	}
 	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt}
 	if err := s.readIndex(); err != nil {
@@ -420,11 +425,18 @@ func (s *Store) NoteHealth(data []byte) error {
 	if len(data) > maxHealthBytes || len(s.health) >= maxHealthQueued {
 		return fmt.Errorf("store: health record of %d bytes with %d queued refused", len(data), len(s.health))
 	}
+	var v struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil || v.SchemaVersion < 1 {
+		return fmt.Errorf("store: a health record must be JSON with a schema_version (%w)", err)
+	}
 	s.health = append(s.health, slices.Clone(data))
 	return nil
 }
 
-// Seals returns the index, oldest first, for the collector to hand to the ledger after a restart.
+// Seals returns the index, oldest first. The seals Append, Flush and Close return are only the new
+// ones; the collector can always catch up from here, after the last seal the ledger reports.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 
 // Append stores data with the next seq, or drops it at the cap and counts it for a loss record, which
