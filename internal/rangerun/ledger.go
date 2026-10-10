@@ -15,7 +15,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
-// MaxLedgerBytes caps the ledger file; a ledger at every other cap is about 0.22 MiB.
+// MaxLedgerBytes caps the ledger file; a ledger at every other cap is about 0.32 MiB.
 const MaxLedgerBytes = 1 << 20
 
 // maxKeyBytes is the longest key Next makes: "taken:" + 64 hex + ":" + 64 hex = 135.
