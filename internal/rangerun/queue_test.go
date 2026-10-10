@@ -143,7 +143,7 @@ func TestBrokenJobsCountAgainstTheQuotaOnce(t *testing.T) {
 	now := time.Now()
 	dir, inbox := newInbox(t)
 	for i := range Quota + 2 {
-		addJob(t, dir, string(rune('a'+i)), `{}`, now)
+		addJob(t, dir, fmt.Sprintf("b%02d", i), `{}`, now)
 	}
 	var l Ledger
 	for range 3 {
@@ -301,5 +301,30 @@ func TestTheLedgerStaysBounded(t *testing.T) {
 	l.prune(now)
 	if len(l.Entries) != 0 {
 		t.Fatal("a taken job outlived keepTaken")
+	}
+}
+
+// A job an hour for a day fits the quota, and every entry of keepTaken fits the ledger, so a taken
+// name is still known when the same directory comes back within keepTaken.
+func TestADayOfHourlyJobsFitsTheQuotaAndTheLedger(t *testing.T) {
+	now := time.Now()
+	dir, inbox := newInbox(t)
+	for i := range 24 {
+		addJob(t, dir, fmt.Sprintf("h%02d", i), runJSON, now)
+	}
+	var l Ledger
+	taken := 0
+	for i := range 24 {
+		if _, ok, _, err := Next(inbox, &l, now.Add(time.Duration(i)*time.Hour/2)); err != nil {
+			t.Fatal(err)
+		} else if ok {
+			taken++
+		}
+	}
+	if taken != 24 {
+		t.Fatalf("took %d of 24 hourly jobs in a day", taken)
+	}
+	if days := int(keepTaken / QuotaWindow); Quota*days > MaxLedger {
+		t.Fatalf("%d days of quota (%d entries) do not fit MaxLedger %d", days, Quota*days, MaxLedger)
 	}
 }
