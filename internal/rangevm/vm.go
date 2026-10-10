@@ -117,6 +117,10 @@ type Outcome struct {
 	Invalid string
 }
 
+// ErrCleanup marks an error of Run after a run that ended: its Outcome stands, only the run
+// directory could not be removed. Run returns no other error with a non-zero Outcome.
+var ErrCleanup = errors.New("remove run directory")
+
 // Run boots base once in a fresh run directory under parent, copies at most SerialBudget bytes of
 // serial output to serial, and deletes the run directory afterwards (R5).
 //
@@ -133,11 +137,7 @@ func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("run directory: %w", err)
 	}
-	defer func() {
-		if rmErr := os.RemoveAll(runDir); rmErr != nil {
-			err = errors.Join(err, fmt.Errorf("remove run directory: %w", rmErr))
-		}
-	}()
+	defer func() { err = removeRunDir(runDir, err) }()
 	if err := prepare(runDir, job); err != nil {
 		return Outcome{}, err
 	}
@@ -151,6 +151,19 @@ func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte)
 		return Outcome{Invalid: "vm: " + why}, nil
 	}
 	return readResults(filepath.Join(runDir, results)), nil
+}
+
+// removeRunDir deletes runDir after Run. A failure after a run that ended wraps ErrCleanup, so the
+// caller keeps the Outcome; after a failed run it is only joined to runErr.
+func removeRunDir(runDir string, runErr error) error {
+	err := os.RemoveAll(runDir)
+	switch {
+	case err == nil:
+		return runErr
+	case runErr == nil:
+		return fmt.Errorf("%w: %w", ErrCleanup, err)
+	}
+	return errors.Join(runErr, fmt.Errorf("remove run directory: %w", err))
 }
 
 // WriteCap is the size limit of each of the three files QEMU can write (overlay, results, firmware

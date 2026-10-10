@@ -411,15 +411,20 @@ func (r *Runner) vm(ctx context.Context, img image, disk []byte, judge func(rang
 	o, err := r.run(watched, img.Path, filepath.Join(r.cache(), "runs"), &serial, disk)
 	stop()
 	cause := context.Cause(watched)
+	// A run directory left behind does not change what the run showed; it is still returned.
+	var cleanup error
+	if errors.Is(err, rangevm.ErrCleanup) {
+		cleanup, err = fmt.Errorf("run: %w", err), nil
+	}
 	switch {
 	case err != nil:
 		return Run{Verdict: rangevm.Invalid, Reason: "runner: " + err.Error()}, serial.Bytes(), fmt.Errorf("run: %w", err)
 	case errors.Is(cause, ErrMemoryReserve), errors.Is(cause, ErrMemoryUnknown):
-		return Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error()}, serial.Bytes(), nil
+		return Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error()}, serial.Bytes(), cleanup
 	case o.Invalid != "":
-		return Run{Verdict: rangevm.Invalid, Reason: o.Invalid}, serial.Bytes(), nil
+		return Run{Verdict: rangevm.Invalid, Reason: o.Invalid}, serial.Bytes(), cleanup
 	}
-	return judge(o), serial.Bytes(), nil
+	return judge(o), serial.Bytes(), cleanup
 }
 
 // begin creates the result directory and writes an INVALID result into it, which stands if the

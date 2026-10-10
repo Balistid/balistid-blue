@@ -17,15 +17,15 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 
+- Ultrareview (10.10.), one normal finding fixed: a run directory left behind no longer turns a verdict
+  (a FAIL too) into INVALID; the tick still fails. Installed runner is 506f775; reinstall with the next change.
 - Runner security review fixes (#75): the tick unit's syscall filter is an allowlist (`@system-service
   @mount` minus keyrings, AIO, `process_vm_*`, EPERM); a logging-only filter on the installed unit saw no
   call outside it. Each tick probes four denied calls as a tripwire for a missing or deny-list filter; the
-  whole filter rests on the pinned unit text and the hash-checked install. The install writes each file
-  beside its target and renames it. Codex's second NO-GO (no `process_vm_writev` probe) stays open: the
+  whole filter rests on the pinned unit text and the hash-checked install. Codex's second NO-GO (no `process_vm_writev` probe) stays open: the
   maintainer decided on 10.10., after a second explanation, that the probes are a tripwire, not a proof.
 - ADR 0011 accepted: 22 runs PASS on 506f775, exec memory job RAN, no OOM kill. Agent quota 24 a day,
   ledger 768, 24 results kept (#78; an older build refuses a ledger over 256). ADR 0014 (#76).
-- Store on `main` (#71, #72); ADR 0013 (#67, #69); Go 1.27.2 (#68); install refuses drop-ins (#64).
 
 ## Next step
 1. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness. Built

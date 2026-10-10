@@ -40,7 +40,7 @@ type ledgerFile struct {
 }
 
 // LoadLedger reads path, without following a link or blocking, if it is a regular file of at most
-// MaxLedgerBytes holding exactly one ledger object of schema version 1 within every cap. A missing
+// MaxLedgerBytes holding exactly one ledger object of schema version ledgerSchema within every cap. A missing
 // file is ErrNoLedger, anything else wrong ErrCorruptLedger, whose text never quotes the file.
 func LoadLedger(path string) (Ledger, error) {
 	data, err := readLedger(path)

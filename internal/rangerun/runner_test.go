@@ -366,6 +366,49 @@ func TestAStoppedRunIsInvalid(t *testing.T) {
 	}
 }
 
+// A run directory that cannot be removed keeps the run's verdict and fails the tick; any other
+// error of the run makes the run INVALID.
+func TestARunErrorAfterTheRun(t *testing.T) {
+	cleanup := fmt.Errorf("%w: permission denied", rangevm.ErrCleanup)
+	for _, c := range []struct {
+		err     error
+		invalid string // the Outcome's INVALID reason
+		stopped bool   // by the memory watch
+		verdict string
+	}{
+		{cleanup, "", false, rangevm.Fail},
+		{cleanup, "vm: exit: status 1", false, rangevm.Invalid},
+		{cleanup, "", true, rangevm.Invalid},
+		{errors.New("base image: no such file"), "", false, rangevm.Invalid},
+	} {
+		tr := newTestRunner(t, time.Now(), Ledger{})
+		tr.vm.verdict = rangevm.Fail
+		if c.stopped {
+			tr.watch = func(ctx context.Context) (context.Context, func()) {
+				w, cancel := context.WithCancelCause(ctx)
+				cancel(ErrMemoryReserve)
+				return w, func() {}
+			}
+		}
+		run := tr.run
+		tr.run = func(ctx context.Context, base, parent string, serial io.Writer, disk []byte) (rangevm.Outcome, error) {
+			o, _ := run(ctx, base, parent, serial, disk)
+			o.Invalid = c.invalid
+			return o, c.err
+		}
+		if err := tr.Tick(t.Context()); !errors.Is(err, c.err) {
+			t.Errorf("%v: tick %v", c.err, err)
+		}
+		ev := tr.results(t, LabelEvidence)
+		if len(ev) != 1 || ev[0].Verdict != c.verdict {
+			t.Errorf("%v: evidence results %+v", c.err, ev)
+		}
+		if failed := len(tr.ledger(t).Evidence.Failed); (c.verdict == rangevm.Fail) != (failed == 1) {
+			t.Errorf("%v: %d failed runs in the ledger", c.err, failed)
+		}
+	}
+}
+
 // One FAIL fails the commit: it is recorded, and the next tick refuses to run anything.
 func TestAFailedEvidenceRunStopsTheRunner(t *testing.T) {
 	now := time.Now()

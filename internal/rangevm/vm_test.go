@@ -3,6 +3,9 @@ package rangevm
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -56,6 +59,47 @@ func TestRunRefusesAJobDiskOfTheWrongSize(t *testing.T) {
 	for _, n := range []int{0, 1, rangejob.DiskBytes - 1, rangejob.DiskBytes + 1} {
 		if _, err := Run(t.Context(), "/nonexistent", t.TempDir(), &bytes.Buffer{}, make([]byte, n)); err == nil || !strings.Contains(err.Error(), "job disk") {
 			t.Errorf("job disk of %d bytes: %v", n, err)
+		}
+	}
+}
+
+// Only a run that ended reports a run directory left behind as ErrCleanup, which keeps its Outcome.
+func TestRemoveRunDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes a file from a read-only directory")
+	}
+	runErr := errors.New("vm failed")
+	for _, c := range []struct {
+		stuck   bool
+		runErr  error
+		cleanup bool
+	}{
+		{false, nil, false},
+		{false, runErr, false},
+		{true, nil, true},
+		{true, runErr, false},
+	} {
+		runDir := filepath.Join(t.TempDir(), "run-1")
+		if err := os.MkdirAll(filepath.Join(runDir, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "sub", "f"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if c.stuck {
+			sub := filepath.Join(runDir, "sub")
+			if err := os.Chmod(sub, 0o500); err != nil { //nolint:gosec // a directory made read-only for the test
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(sub, 0o700) }) //nolint:gosec // restored so TempDir can be removed
+		}
+		err := removeRunDir(runDir, c.runErr)
+		if errors.Is(err, ErrCleanup) != c.cleanup || (c.runErr != nil && !errors.Is(err, c.runErr)) || (err == nil) != (!c.stuck && c.runErr == nil) ||
+			c.stuck != errors.Is(err, os.ErrPermission) {
+			t.Errorf("stuck %v, run error %v: %v", c.stuck, c.runErr, err)
+		}
+		if _, statErr := os.Stat(runDir); c.stuck == errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("stuck %v: run directory %v", c.stuck, statErr)
 		}
 	}
 }
