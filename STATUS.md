@@ -17,7 +17,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 
-- Store commits in batches: per Flush (250 ms) or 2 MiB, not per record; 1 KiB records 157 → ~33000/s
+- Store commits in batches: per Flush (250 ms) or 2 MiB, not per record; 1 KiB records 157 → ~17500/s
   (btrfs/NVMe, maintainer's machine, not the range). A record is durable after Flush. `rss_mib` at burst
   with 64 KiB records is offered load: drops allowed and counted (maintainer, 10.10.). Benchmark #87.
 - #86: a run directory left behind no longer turns a verdict into INVALID. Runner installed at 506f775.

@@ -44,7 +44,7 @@ type Writer struct {
 	next    uint64
 	started bool
 	tx      *sql.Tx // the open transaction, nil between commits
-	pending int64   // encoded bytes of the records in tx
+	pending int64   // the most page bytes the records in tx can take
 	broken  error   // a failed write: what the file holds is for Recover to establish
 }
 
@@ -91,8 +91,8 @@ func Create(ctx context.Context, path string) (*Writer, error) {
 }
 
 // Append adds r, whose Seq must follow the previous record's, to the open transaction; it is durable
-// only after Commit or Seal. A transaction holds one record, or several of at most rawrecord.MaxBytes
-// encoded, so WALMaxBytes holds. After a failed write the Writer refuses everything, Seal included.
+// only after Commit or Seal. A transaction holds one record, or several that take at most
+// rawrecord.MaxBytes of pages, so WALMaxBytes holds. After a failed write the Writer refuses everything, Seal included.
 func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if w.db == nil {
 		return errors.New("shard is sealed")
@@ -109,7 +109,9 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if uint64(len(r.Data)) > r.OrigLen || (!r.Truncated() && sha256.Sum256(r.Data) != r.OrigSHA256) {
 		return fmt.Errorf("record seq %d: data does not match its original length and hash", r.Seq)
 	}
-	size := int64(r.EncodedLen())
+	// A row takes at most its bytes plus two pages: a leaf page it may have alone and the unused
+	// part of its last overflow page. Counting encoded bytes alone lets small rows pass the budget.
+	size := int64(r.EncodedLen()) + 2*pageSize
 	if w.pending > 0 && w.pending+size > rawrecord.MaxBytes {
 		if err := w.Commit(ctx); err != nil {
 			return err
@@ -153,7 +155,7 @@ func (w *Writer) Commit(ctx context.Context) error {
 	return nil
 }
 
-// Pending is the encoded size of the records appended since the last commit.
+// Pending is the most page bytes the records appended since the last commit can take.
 func (w *Writer) Pending() int64 { return w.pending }
 
 // fail rolls back the open transaction and breaks the Writer: after a failed write it cannot tell
