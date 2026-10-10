@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,26 +34,34 @@ func TestRunRefusesBadInvocations(t *testing.T) {
 	}
 }
 
-// A binary whose version is not a full commit id stops before it touches its state; one that is
-// goes on to the runner.
+// A binary whose version is not a full commit id is refused before the runner; one that is reaches
+// the runner, whose tick outside its unit refuses too. Neither touches its state.
 func TestRunRefusesADevelopmentBuildFirst(t *testing.T) {
-	old := buildinfo.Version
-	t.Cleanup(func() { buildinfo.Version = old })
+	old, oldStderr := buildinfo.Version, os.Stderr
+	t.Cleanup(func() { buildinfo.Version, os.Stderr = old, oldStderr })
 	for _, c := range []struct {
-		version string
-		touched bool
-	}{{"dev", false}, {"0123456789abcdef0123456789abcdef01234567", true}} {
+		version, logged string
+	}{{"dev", "msg=refused"}, {"0123456789abcdef0123456789abcdef01234567", "confinement missing"}} {
 		buildinfo.Version = c.version
 		state := t.TempDir()
 		if err := os.Chmod(state, 0o700); err != nil { //nolint:gosec // a directory needs its x bit
 			t.Fatal(err)
 		}
-		if got := run(t.Context(), []string{"tick", "--state", state, "--inbox", "/i", "--results", "/r"}); got != 1 {
+		stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stderr = stderr
+		got := run(t.Context(), []string{"tick", "--state", state, "--inbox", "/i", "--results", "/r"})
+		os.Stderr = oldStderr
+		if got != 1 {
 			t.Fatalf("version %q: exit %d", c.version, got)
 		}
-		_, err := os.Stat(filepath.Join(state, "cache"))
-		if touched := err == nil; touched != c.touched {
-			t.Errorf("version %q: state touched %v, want %v", c.version, touched, c.touched)
+		if _, err := os.Stat(filepath.Join(state, "cache")); err == nil {
+			t.Errorf("version %q: state touched", c.version)
+		}
+		if out, err := os.ReadFile(stderr.Name()); err != nil || !bytes.Contains(out, []byte(c.logged)) {
+			t.Errorf("version %q: log %q, want %q (%v)", c.version, out, c.logged, err)
 		}
 	}
 }
