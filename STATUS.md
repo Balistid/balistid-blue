@@ -20,9 +20,10 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - Runner security review fixes (#75): the tick unit's syscall filter is an allowlist (`@system-service
   @mount` minus keyrings, AIO, `process_vm_*`, EPERM); a logging-only filter on the installed unit saw no
   call outside it. Each tick probes four denied calls as a tripwire for a missing or deny-list filter; the
-  whole filter rests on the pinned unit text and the hash-checked install (maintainer, 10.10.). The
-  install writes each file beside its target and renames it. Opus critic, Codex two rounds.
-- ADR 0014 (#76): `THREAT_MODEL.md` cap 100 lines.
+  whole filter rests on the pinned unit text and the hash-checked install. The install writes each file
+  beside its target and renames it. Codex's second NO-GO (no `process_vm_writev` probe) stays open: the
+  maintainer decided on 10.10., after a second explanation, that the probes are a tripwire, not a proof.
+- ADR 0014 (#76): `THREAT_MODEL.md` cap 100 lines. Opus critic and two Codex rounds on #75.
 - Store on `main` (#71, #72); ADR 0013 (#67, #69); Go 1.27.2 (#68); install refuses drop-ins (#64).
 
 ## Next step
