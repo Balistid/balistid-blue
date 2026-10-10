@@ -29,7 +29,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 
 ## Next step
 
-1. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness.
+1. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness; the
+   normalizer redacts secrets before the derived DB, which agents can read (T6).
 ## Open decisions (maintainer)
 
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
