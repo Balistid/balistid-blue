@@ -28,7 +28,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T3 | A1 | Act through io_uring, unseen by exit rules | io_uring disabled, `kernel.io_uring_disabled=2` (0004) | range smoke test | partial: root can re-enable it at runtime |
 | T4 | A1 | Flood audit to cause loss or fill the store | Loss entries alarm; cap drops new; maintainer expiry | loss_alarm_s, raw_cap_gib | partial: blind until handled |
 | T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | range smoke test, test rules_locked | designed |
-| T6 | A1 | Read secrets in recorded command lines | Raw stream closed to A1; derived DB readable | — | gap: redaction, floor 3 |
+| T6 | A1 | Read secrets in recorded command lines | Raw stream closed to A1; derived DB readable | — | gap: redaction before the derived DB, designed with the normalizer (9.3), not floor 3 |
 | T7 | A1 | Read or delete alerts | Push to phone; no alert client on the host | — | assumption |
 | T8 | A1 | Evade recording: ptrace or `process_vm_writev` into own processes, memfd/execveat, interpreters | Rules for ptrace, execveat, memfd_create | drill | partial: interpreters, mmap exec, envp and the middle of truncated argv (floor 1); x32 ABI syscalls match no syscall rule or watch on kernels with `CONFIG_X86_X32_ABI` (Arch `linux`), mitigation decided before the host install |
 | T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet |
