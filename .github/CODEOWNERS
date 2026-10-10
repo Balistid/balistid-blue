@@ -1,5 +1,5 @@
-# Changes to the gates and the rules need the maintainer's approval (ADR 0001).
-# Everything else merges when CI is green.
+# Changes to the gates, the rules and the agents' cage need the maintainer's approval (ADR 0002, 0015).
+# Product code merges when CI is green and the independent reviews of ADR 0015 pass.
 /tools/ci/ @Jvc0n
 /.github/ @Jvc0n
 /githooks/ @Jvc0n
@@ -27,8 +27,5 @@
 /internal/rangeguest/ @Jvc0n
 /internal/rangejob/ @Jvc0n
 /internal/rangerun/ @Jvc0n
-/internal/rawrecord/ @Jvc0n
-/internal/shard/ @Jvc0n
-/internal/store/ @Jvc0n
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n

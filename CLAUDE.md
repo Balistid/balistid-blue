@@ -28,7 +28,8 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
   and follow `ENGINEERING.md` §4 for work done without the maintainer's machine.
 - Merge with `gh api -X PUT repos/Balistid/balistid-blue/pulls/<n>/merge -F merge_method=rebase` only
   after all required checks are green. A pull request that touches owned paths (`.github/CODEOWNERS`)
-  waits for the maintainer's approval; tell them what to review and why, in two sentences.
+  waits for the maintainer's approval; tell them what to review and why, in two sentences. Product
+  code merges without it only under ADR 0015: verdicts in the body, then report what merged.
 - Codex review runs only through the review queue on the maintainer's machine; never call Codex
   directly from the sandbox.
 - Never bypass hooks (`--no-verify`) or CI. If a gate is wrong, fix the gate in its own pull request
