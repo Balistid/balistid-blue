@@ -24,7 +24,7 @@ from pathlib import Path
 DOCS: tuple[tuple[str, int], ...] = (
     ("README.md", 120),
     ("SECURITY.md", 60),
-    ("THREAT_MODEL.md", 80),
+    ("THREAT_MODEL.md", 100),  # ADR 0014
     ("ENGINEERING.md", 160),
     ("CLAUDE.md", 80),
     ("AGENTS.md", 60),
