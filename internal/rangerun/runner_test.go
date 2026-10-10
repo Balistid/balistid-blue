@@ -308,10 +308,10 @@ func TestTickRunsNothingItCannotAccountFor(t *testing.T) {
 			tr.admit = func(context.Context, []DiskNeed) error { return errors.New("meminfo unreadable") }
 		}},
 		"syscall filter not in force, job": {evidenceDone(now), func(_ *testing.T, tr testRunner) {
-			tr.confined = func() error { return deniedByFilter(0) }
+			tr.confined = func() error { return deniedByFilter("keyctl", 0) }
 		}},
 		"syscall filter not in force, evidence": {Ledger{}, func(_ *testing.T, tr testRunner) {
-			tr.confined = func() error { return deniedByFilter(syscall.ENOKEY) }
+			tr.confined = func() error { return deniedByFilter("io_setup", syscall.EFAULT) }
 		}},
 	}
 	for name, c := range cases {
@@ -1150,20 +1150,20 @@ func TestAnAgentResultSurvivesItsTickWhenTheClockIsSetBack(t *testing.T) {
 	}
 }
 
-// Only EPERM, which the tick unit's filter answers for @keyring, proves the filter; whatever keyctl
-// answers on its own, success included, refuses the tick.
+// Only EPERM, which the tick unit's filter answers, passes a probe; whatever the kernel answers on its
+// own, success included, refuses the tick.
 func TestOnlyTheFiltersEPERMProvesConfinement(t *testing.T) {
-	if err := deniedByFilter(syscall.EPERM); err != nil {
+	if err := deniedByFilter("keyctl", syscall.EPERM); err != nil {
 		t.Fatalf("EPERM: %v", err)
 	}
-	for _, errno := range []syscall.Errno{0, syscall.ENOKEY, syscall.EACCES, syscall.ENOSYS, syscall.EINVAL} {
-		if err := deniedByFilter(errno); err == nil {
+	for _, errno := range []syscall.Errno{0, syscall.ENOKEY, syscall.EACCES, syscall.ENOSYS, syscall.EINVAL, syscall.EFAULT, syscall.ESRCH} {
+		if err := deniedByFilter("keyctl", errno); err == nil {
 			t.Errorf("errno %d passed", int(errno))
 		}
 	}
 }
 
-// The runner New builds probes for real: outside the tick unit keyctl is not denied, so a tick runs nothing.
+// The runner New builds probes for real: outside the tick unit nothing is denied, so a tick runs nothing.
 func TestATickOutsideTheUnitRunsNothing(t *testing.T) {
 	d := t.TempDir()
 	err := New(d, d, d, testCommit, slog.New(slog.DiscardHandler)).Tick(t.Context())

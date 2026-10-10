@@ -51,7 +51,7 @@ type Runner struct {
 func New(state, inbox, results, commit string, log *slog.Logger) *Runner {
 	return &Runner{State: state, Inbox: inbox, Results: results, Commit: commit, Log: log,
 		build: rangevm.BuildCommit, run: rangevm.Run, selftest: rangevm.JudgeSelftest, admit: Admit, watch: Watch, now: time.Now, owner: owner,
-		confined: keyringDenied}
+		confined: filterInForce}
 }
 
 func (r *Runner) cache() string      { return filepath.Join(r.State, "cache") }
@@ -157,20 +157,34 @@ func (r *Runner) checkState() error {
 	return nil
 }
 
-// keySpecSessionKeyring is KEY_SPEC_SESSION_KEYRING (-3); keyctl reads its argument as a 32-bit key serial.
-const keySpecSessionKeyring = 0xfffffffd
-
-// keyringDenied checks each tick that keyctl(KEYCTL_GET_KEYRING_ID) fails with EPERM, as the tick unit's
-// filter answers (ADR 0011, point 1); the unit's exact text is pinned by test_runner_deploy.py.
-func keyringDenied() error {
-	_, _, errno := syscall.Syscall(syscall.SYS_KEYCTL, 0, keySpecSessionKeyring, 0)
-	return deniedByFilter(errno)
+// filterInForce checks each tick that calls the tick unit's filter answers with EPERM (ADR 0011, point 1)
+// get it, so a unit without the filter, or with only part of it, runs nothing. One probe per clause the
+// unit takes out of its allowlist, and ptrace, which no allowed group holds; with these arguments the
+// kernel alone never answers EPERM. The unit's exact text is pinned by test_runner_deploy.py.
+func filterInForce() error {
+	probes := []struct {
+		name string
+		args [7]uintptr // trap number, then its arguments
+	}{
+		{"keyctl", [7]uintptr{syscall.SYS_KEYCTL, 0, 0xfffffffd}},                  // GET_KEYRING_ID of the session keyring (-3)
+		{"io_setup", [7]uintptr{syscall.SYS_IO_SETUP, 1, 0}},                       // EFAULT alone
+		{"process_vm_readv", [7]uintptr{310, uintptr(os.Getpid()), 0, 0, 0, 0, 1}}, //nolint:gosec // x86-64, own pid; EINVAL alone (flags)
+		{"ptrace", [7]uintptr{syscall.SYS_PTRACE, 2, 0x7fffffff}},                  // PEEKDATA of no process: ESRCH alone
+	}
+	for _, p := range probes {
+		a := p.args
+		_, _, errno := syscall.Syscall6(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
+		if err := deniedByFilter(p.name, errno); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// deniedByFilter accepts only EPERM: keyctl alone answers with a serial, ENOKEY, EACCES or ENOSYS.
-func deniedByFilter(errno syscall.Errno) error {
+// deniedByFilter accepts only EPERM, which none of the probes gets from the kernel alone.
+func deniedByFilter(name string, errno syscall.Errno) error {
 	if errno != syscall.EPERM {
-		return fmt.Errorf("keyctl answered errno %d, not EPERM: the unit's syscall filter is not in force", int(errno))
+		return fmt.Errorf("%s answered errno %d, not EPERM: the unit's syscall filter is not in force", name, int(errno))
 	}
 	return nil
 }
