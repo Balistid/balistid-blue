@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
@@ -43,12 +44,14 @@ type Runner struct {
 	watch    func(ctx context.Context) (context.Context, func())
 	now      func() time.Time
 	owner    func(os.FileInfo) int
+	confined func() error
 }
 
 // New returns a runner with the real VM, admission and memory watch.
 func New(state, inbox, results, commit string, log *slog.Logger) *Runner {
 	return &Runner{State: state, Inbox: inbox, Results: results, Commit: commit, Log: log,
-		build: rangevm.BuildCommit, run: rangevm.Run, selftest: rangevm.JudgeSelftest, admit: Admit, watch: Watch, now: time.Now, owner: owner}
+		build: rangevm.BuildCommit, run: rangevm.Run, selftest: rangevm.JudgeSelftest, admit: Admit, watch: Watch, now: time.Now, owner: owner,
+		confined: keyringDenied}
 }
 
 func (r *Runner) cache() string      { return filepath.Join(r.State, "cache") }
@@ -80,10 +83,14 @@ func (r *Runner) Build(ctx context.Context, objects string, log io.Writer) error
 }
 
 // Tick runs at most one VM: an evidence run of the runner's own image while evidence is due (until
-// one PASSes, and again a day later), else the next agent job. It returns nil when there is nothing to do or the reserves
-// are short (logged), and an error for anything that stops the runner: state others can write, no
-// image, an unreadable ledger, a failed commit, admission that cannot read the host.
+// one PASSes, and again a day later), else the next agent job. It returns nil when there is nothing
+// to do or the reserves are short (logged), and an error for anything that stops the runner: no
+// syscall filter, state others can write, no image, an unreadable ledger, a failed commit,
+// admission that cannot read the host.
 func (r *Runner) Tick(ctx context.Context) error {
+	if err := r.confined(); err != nil {
+		return fmt.Errorf("tick: confinement missing: %w", err)
+	}
 	if err := r.checkState(); err != nil {
 		return err
 	}
@@ -146,6 +153,24 @@ func (r *Runner) checkState() error {
 	st, err := os.Lstat(r.State)
 	if err != nil || !st.IsDir() || r.owner(st) != os.Geteuid() || st.Mode().Perm()&0o022 != 0 {
 		return fmt.Errorf("%s is not a state directory only the runner writes", r.State)
+	}
+	return nil
+}
+
+// keySpecSessionKeyring is KEY_SPEC_SESSION_KEYRING (-3); keyctl reads its argument as a 32-bit key serial.
+const keySpecSessionKeyring = 0xfffffffd
+
+// keyringDenied is each tick's proof that its unit's syscall filter is in force: the tick unit denies
+// @keyring with EPERM, so keyctl(KEYCTL_GET_KEYRING_ID) must fail with exactly that (ADR 0011, point 1).
+func keyringDenied() error {
+	_, _, errno := syscall.Syscall(syscall.SYS_KEYCTL, 0, keySpecSessionKeyring, 0)
+	return deniedByFilter(errno)
+}
+
+// deniedByFilter accepts only EPERM: keyctl alone answers with a serial, ENOKEY, EACCES or ENOSYS.
+func deniedByFilter(errno syscall.Errno) error {
+	if errno != syscall.EPERM {
+		return fmt.Errorf("keyctl answered errno %d, not EPERM: the unit's syscall filter is not in force", int(errno))
 	}
 	return nil
 }

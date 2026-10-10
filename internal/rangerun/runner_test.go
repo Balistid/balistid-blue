@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -91,6 +92,7 @@ func newTestRunner(t *testing.T, now time.Time, l Ledger) testRunner {
 		watch:    func(ctx context.Context) (context.Context, func()) { return context.WithCancel(ctx) },
 		now:      func() time.Time { return now },
 		owner:    owner,
+		confined: func() error { return nil },
 	}
 	return testRunner{Runner: r, vm: vm, root: root}
 }
@@ -265,7 +267,7 @@ func TestTickRunsARunJobPerTrial(t *testing.T) {
 }
 
 // Nothing runs when the ledger cannot be written first, is missing or is corrupt, when there is no
-// image of the runner's commit, or after a failed evidence run.
+// image of the runner's commit, after a failed evidence run, or without the unit's syscall filter.
 func TestTickRunsNothingItCannotAccountFor(t *testing.T) {
 	now := time.Now()
 	cases := map[string]struct {
@@ -304,6 +306,12 @@ func TestTickRunsNothingItCannotAccountFor(t *testing.T) {
 		}},
 		"admission cannot read the host": {evidenceDone(now), func(t *testing.T, tr testRunner) {
 			tr.admit = func(context.Context, []DiskNeed) error { return errors.New("meminfo unreadable") }
+		}},
+		"syscall filter not in force, job": {evidenceDone(now), func(_ *testing.T, tr testRunner) {
+			tr.confined = func() error { return deniedByFilter(0) }
+		}},
+		"syscall filter not in force, evidence": {Ledger{}, func(_ *testing.T, tr testRunner) {
+			tr.confined = func() error { return deniedByFilter(syscall.ENOKEY) }
 		}},
 	}
 	for name, c := range cases {
@@ -1138,6 +1146,19 @@ func TestAnAgentResultSurvivesItsTickWhenTheClockIsSetBack(t *testing.T) {
 		}
 		if others != KeepAgent-1 {
 			t.Errorf("%s: %d older results kept besides the fresh one, want %d", name, others, KeepAgent-1)
+		}
+	}
+}
+
+// Only EPERM, which the tick unit's filter answers for @keyring, proves the filter; whatever keyctl
+// answers on its own, success included, refuses the tick.
+func TestOnlyTheFiltersEPERMProvesConfinement(t *testing.T) {
+	if err := deniedByFilter(syscall.EPERM); err != nil {
+		t.Fatalf("EPERM: %v", err)
+	}
+	for _, errno := range []syscall.Errno{0, syscall.ENOKEY, syscall.EACCES, syscall.ENOSYS, syscall.EINVAL} {
+		if err := deniedByFilter(errno); err == nil {
+			t.Errorf("errno %d passed", int(errno))
 		}
 	}
 }
