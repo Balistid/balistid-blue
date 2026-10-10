@@ -1,7 +1,7 @@
 # 0007 — Split Balistid Blue into small processes with separate identities
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01
+- Date: 2026-10-01, amended 2026-10-10 (R13 already updated)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -47,6 +47,6 @@ are inside the threat model.
 - Tests: the maintainer's uid cannot impersonate Laurel, read the raw stream, or write shards, tiles,
   keys, units or the derived database; unknown requests are refused; only `balistid-auditstat` holds a
   capability (`/proc/self/status`); the relay holds no key.
-- `ENGINEERING.md` R13 is updated in the pull request that adds the first unit file.
+- `ENGINEERING.md` R13 already states this split.
 - Each unit scores at most the `systemd-analyze security` threshold in `acceptance/0.toml`; any
   missing health signal makes the state UNKNOWN (R6).
