@@ -1,7 +1,7 @@
 # 0002 — A GitHub App pushes and merges; the maintainer approves changes to gates
 
 - Status: accepted (supersedes decision 3 of ADR 0001)
-- Date: 2026-09-30
+- Date: 2026-09-30, amended 2026-10-10 (required checks, not a count)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -19,7 +19,7 @@ push, open and merge every change by hand, which blocked daily work. Tested on 2
 2. `.github/CODEOWNERS` assigns the gates and the rules to the maintainer: `tools/ci/`, `.github/`,
    `githooks/`, `.gitleaks.toml`, `.gitattributes`, `ENGINEERING.md`, `CLAUDE.md`, `AGENTS.md`,
    `adr/`, `acceptance/`.
-3. The `main` ruleset requires a pull request, the six CI checks on an up-to-date branch, code owner
+3. The `main` ruleset requires a pull request, the required CI checks on an up-to-date branch, code owner
    review, linear history and rebase merges; it blocks force-push and deletion. No approvals are
    required otherwise. Organisation admins may bypass only through a pull request.
 4. Result: a change that does not touch owned paths merges when CI is green, without the maintainer.

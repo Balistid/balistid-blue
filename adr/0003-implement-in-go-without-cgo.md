@@ -1,7 +1,7 @@
 # 0003 — Implement Balistid Blue in Go, without cgo
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01
+- Date: 2026-10-01, amended 2026-10-10 (toolchain named by go.mod)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -19,7 +19,7 @@ reports `go1.27.1-X:nodwarf5`, a different build from upstream's. The maintainer
    the host or the Pi.
 2. Dependency selection is `go.mod` plus `go.sum` (once there are dependencies), both committed.
    Builds run with `GOFLAGS=-mod=readonly`, `GOWORK=off`, `GOTOOLCHAIN=local` on the upstream
-   go1.27.1 tarball (checked against `toolchain go1.27.1` in go.mod), and `CGO_ENABLED=0
+   tarball of the version on go.mod's `toolchain` line (checked against it), and `CGO_ENABLED=0
    -trimpath -buildvcs=false`. Tests run without cgo, as released, and again with `-race`.
    go.mod admits no `replace` directive. A toolchain or dependency bump is its own commit (R14).
 3. Release binaries are built only in CI. CI runs `gofmt -l` (empty), `go vet`, golangci-lint
