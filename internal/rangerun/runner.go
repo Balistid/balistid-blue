@@ -168,7 +168,7 @@ func filterInForce() error {
 	}{
 		{"keyctl", [7]uintptr{syscall.SYS_KEYCTL, 0, 0xfffffffd}},                  // GET_KEYRING_ID of the session keyring (-3)
 		{"io_setup", [7]uintptr{syscall.SYS_IO_SETUP, 1, 0}},                       // EFAULT alone
-		{"process_vm_readv", [7]uintptr{310, uintptr(os.Getpid()), 0, 0, 0, 0, 1}}, //nolint:gosec // x86-64, own pid; EINVAL alone (flags)
+		{"process_vm_readv", [7]uintptr{310, uintptr(os.Getpid()), 0, 0, 0, 0, 1}}, // x86-64; EINVAL alone (flags)
 		{"ptrace", [7]uintptr{syscall.SYS_PTRACE, 2, 0x7fffffff}},                  // PEEKDATA of no process: ESRCH alone
 	}
 	for _, p := range probes {
