@@ -225,12 +225,21 @@ func crashed(t *testing.T, s *Store) string {
 	return copyDir(t, s.dir)
 }
 
+// flushedThenCrashed is crashed right after a Flush, which made the stored records durable.
+func flushedThenCrashed(t *testing.T, s *Store) string {
+	t.Helper()
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	return crashed(t, s)
+}
+
 func TestOpenRecoversAShardACrashLeftOpen(t *testing.T) {
 	s := open(t, t.TempDir(), small)
 	for i := range 5 {
 		add(t, s, noon, fmt.Sprint(i))
 	}
-	dir := crashed(t, s)
+	dir := flushedThenCrashed(t, s)
 	r := open(t, dir, small)
 	if len(r.Seals()) != 1 || r.Seals()[0].Last != 5 {
 		t.Fatalf("seals %+v", r.Seals())
@@ -249,7 +258,7 @@ func TestOpenRecoversAShardSealedBeforeItsIndexLine(t *testing.T) {
 	if _, err := s.cur.Seal(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	dir := crashed(t, s)
+	dir := flushedThenCrashed(t, s)
 	if got := readAll(t, dir); len(got) != 2 || string(got[0].Data) != "a" {
 		t.Fatalf("records %+v", got)
 	}
@@ -523,7 +532,7 @@ func TestStoredRecordsStayUnderTheCapThroughCheckpoints(t *testing.T) {
 func TestARecoveryRecordSurvivesASecondCrash(t *testing.T) {
 	s := open(t, t.TempDir(), small)
 	add(t, s, noon, "a")
-	first := crashed(t, s)
+	first := flushedThenCrashed(t, s)
 	r := open(t, first, small) // recovers, stores the health record, rewrites the index
 	second := crashed(t, r)    // and crashes before its first Flush
 	got := readAll(t, second)
@@ -619,7 +628,7 @@ func TestFlushSealsTheShardOfAnEndedDayWhileDropping(t *testing.T) {
 func TestAnUnknownOpenLeavesTheRecoveryForTheNextOpen(t *testing.T) {
 	s := open(t, t.TempDir(), small)
 	add(t, s, noon, "a")
-	dir := crashed(t, s)
+	dir := flushedThenCrashed(t, s)
 	reserve := filepath.Join(dir, reserveName)
 	if err := os.Truncate(reserve, 0); err != nil {
 		t.Fatal(err)
@@ -697,7 +706,7 @@ func TestOneRecoveryRecordCoversEveryRecoveredShard(t *testing.T) {
 		onDay(s, d)
 		add(t, s, noon+int64(d)*day, "a")
 	}
-	dir := crashed(t, s)
+	dir := flushedThenCrashed(t, s)
 	if err := os.Remove(filepath.Join(dir, indexName)); err != nil {
 		t.Fatal(err)
 	}

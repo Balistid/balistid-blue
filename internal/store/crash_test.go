@@ -16,8 +16,9 @@ import (
 )
 
 // The crash tests run this test binary again as a child that works on a store and kills itself with
-// SIGKILL at a named point (crashAt). The child prints "ack N" for every record Append stored and
-// "flushed D" after every Flush, D being the drops so far; the parent then opens the store.
+// SIGKILL at a named point (crashAt). After every Flush the child prints "ack N" for each record
+// Append stored since the last one, which the Flush made durable, and "flushed D", D being the drops
+// so far; the parent then opens the store.
 const childEnv = "BALISTID_STORE_CRASH"
 
 var crashLimits = Limits{Cap: shard.WALMaxBytes + 512<<10, ShardMax: 160 << 10, Headroom: shard.WALMaxBytes + 8*LossChunk}
@@ -40,14 +41,14 @@ func TestCrashChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drops := 0
+	drops, stored := 0, []int{}
 	for i := 1; i <= 2000; i++ {
-		stored, _, err := s.Append(t.Context(), "laurel", uint64(i), noon+int64(i/200)*day, []byte(fmt.Sprintf("rec-%d-%s", i, strings.Repeat("x", 900))))
+		ok, _, err := s.Append(t.Context(), "laurel", uint64(i), noon+int64(i/200)*day, []byte(fmt.Sprintf("rec-%d-%s", i, strings.Repeat("x", 900))))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if stored {
-			fmt.Printf("ack %d\n", i)
+		if ok {
+			stored = append(stored, i)
 		} else {
 			drops++
 		}
@@ -55,6 +56,10 @@ func TestCrashChild(t *testing.T) {
 			if _, err := s.Flush(t.Context()); err != nil {
 				t.Fatal(err)
 			}
+			for _, n := range stored {
+				fmt.Printf("ack %d\n", n)
+			}
+			stored = stored[:0]
 			fmt.Printf("flushed %d\n", drops)
 		}
 	}
@@ -89,7 +94,7 @@ func TestEveryAcknowledgedRecordSurvivesAKill(t *testing.T) {
 		point string
 		at    int
 	}{
-		{"created", 1}, {"created", 3}, {"appended", 40}, {"sealed", 1}, {"sealed", 2}, {"sealed", 4}, {"sealed", 9},
+		{"created", 1}, {"created", 3}, {"appended", 10}, {"appended", 40}, {"appended", 100}, {"sealed", 1}, {"sealed", 2}, {"sealed", 4}, {"sealed", 9},
 		{"dropped", 1}, {"dropped", 30},
 	} {
 		t.Run(fmt.Sprintf("%s#%d", c.point, c.at), func(t *testing.T) {

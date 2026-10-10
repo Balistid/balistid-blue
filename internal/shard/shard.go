@@ -43,6 +43,9 @@ type Writer struct {
 	path    string
 	next    uint64
 	started bool
+	tx      *sql.Tx // the open transaction, nil between commits
+	pending int64   // encoded bytes of the records in tx
+	broken  error   // a failed write: what the file holds is for Recover to establish
 }
 
 func open(path, query string) (*sql.DB, error) {
@@ -87,10 +90,15 @@ func Create(ctx context.Context, path string) (*Writer, error) {
 	return &Writer{db: db, path: path}, nil
 }
 
-// Append stores r, whose Seq must follow the previous record's. Each record is its own transaction.
+// Append adds r, whose Seq must follow the previous record's, to the open transaction; it is durable
+// only after Commit or Seal. A transaction holds one record, or several of at most rawrecord.MaxBytes
+// encoded, so WALMaxBytes holds. After a failed write the Writer refuses everything, Seal included.
 func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if w.db == nil {
 		return errors.New("shard is sealed")
+	}
+	if w.broken != nil {
+		return w.broken
 	}
 	if w.started && r.Seq != w.next {
 		return fmt.Errorf("record seq %d, want %d", r.Seq, w.next)
@@ -101,26 +109,77 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if uint64(len(r.Data)) > r.OrigLen || (!r.Truncated() && sha256.Sum256(r.Data) != r.OrigSHA256) {
 		return fmt.Errorf("record seq %d: data does not match its original length and hash", r.Seq)
 	}
+	size := int64(r.EncodedLen())
+	if w.pending > 0 && w.pending+size > rawrecord.MaxBytes {
+		if err := w.Commit(ctx); err != nil {
+			return err
+		}
+	}
+	if w.tx == nil {
+		// Not bound to ctx: database/sql would roll a cancelled transaction back unseen.
+		tx, err := w.db.BeginTx(context.WithoutCancel(ctx), nil)
+		if err != nil {
+			return w.fail(fmt.Errorf("append record %d: begin: %w", r.Seq, err))
+		}
+		w.tx = tx
+	}
 	leaf := r.Leaf()
-	_, err := w.db.ExecContext(ctx, "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := w.tx.ExecContext(ctx, "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		int64(r.Seq), r.Provider, int64(r.ProviderSeq), r.Received, append([]byte{}, r.Data...),
 		int64(r.OrigLen), r.OrigSHA256[:], leaf[:])
 	if err != nil {
-		return fmt.Errorf("append record %d: %w", r.Seq, err)
+		return w.fail(fmt.Errorf("append record %d: %w", r.Seq, err))
 	}
-	w.started, w.next = true, r.Seq+1
+	w.started, w.next, w.pending = true, r.Seq+1, w.pending+size
 	return nil
 }
 
-// Seal leaves WAL mode (which checkpoints), closes the database, fsyncs the file Create made and its
+// Commit makes the appended records durable; without any it does nothing.
+func (w *Writer) Commit(ctx context.Context) error {
+	if w.broken != nil {
+		return w.broken
+	}
+	if w.tx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return w.fail(fmt.Errorf("commit: %w", err))
+	}
+	tx := w.tx
+	w.tx, w.pending = nil, 0
+	if err := tx.Commit(); err != nil {
+		return w.fail(fmt.Errorf("commit: %w", err))
+	}
+	return nil
+}
+
+// Pending is the encoded size of the records appended since the last commit.
+func (w *Writer) Pending() int64 { return w.pending }
+
+// fail rolls back the open transaction and breaks the Writer: after a failed write it cannot tell
+// which records the file holds, so it seals nothing and leaves the shard to Recover.
+func (w *Writer) fail(err error) error {
+	if w.tx != nil {
+		err = errors.Join(err, w.tx.Rollback())
+		w.tx, w.pending = nil, 0
+	}
+	w.broken = fmt.Errorf("shard: an earlier write failed; recover the shard: %w", err)
+	return err
+}
+
+// Seal commits the open transaction, leaves WAL mode (which checkpoints), closes the database, fsyncs the file Create made and its
 // directory, makes it group-readable only and returns its SHA-256. The writer is unusable afterwards,
 // whatever the outcome; a shard whose seal failed has no hash to record and is never read.
 func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	if w.db == nil {
 		return [32]byte{}, errors.New("shard is sealed")
 	}
+	err := w.Commit(ctx)
 	db := w.db
 	w.db = nil
+	if err != nil {
+		return [32]byte{}, errors.Join(err, db.Close())
+	}
 	return seal(ctx, db, w.path)
 }
 
