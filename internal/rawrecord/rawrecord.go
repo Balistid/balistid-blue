@@ -48,7 +48,7 @@ func (r Record) Truncated() bool { return r.OrigLen != uint64(len(r.Data)) }
 // seq, receive time, original length, original SHA-256, data length and bytes. Every field has a
 // fixed width or a length prefix, so two different records never share an encoding.
 func (r Record) Encode() []byte {
-	b := make([]byte, 0, len(Label)+1+8*6+32+len(r.Provider)+len(r.Data))
+	b := make([]byte, 0, r.EncodedLen())
 	b = append(append(b, Label...), 0)
 	b = binary.BigEndian.AppendUint64(b, r.Seq)
 	b = binary.BigEndian.AppendUint64(b, uint64(len(r.Provider)))
@@ -60,6 +60,9 @@ func (r Record) Encode() []byte {
 	b = binary.BigEndian.AppendUint64(b, uint64(len(r.Data)))
 	return append(b, r.Data...)
 }
+
+// EncodedLen is len(r.Encode()), without encoding.
+func (r Record) EncodedLen() int { return len(Label) + 1 + 8*6 + 32 + len(r.Provider) + len(r.Data) }
 
 // Leaf is the SHA-256 of Encode; the log adds its own domain prefix (ADR 0006).
 func (r Record) Leaf() [32]byte { return sha256.Sum256(r.Encode()) }

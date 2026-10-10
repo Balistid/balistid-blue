@@ -124,6 +124,20 @@ func TestTruncation(t *testing.T) {
 }
 
 // The collector may reuse its read buffer; the record must not change with it.
+func TestEncodedLen(t *testing.T) {
+	for _, r := range []Record{
+		{},
+		New(1, "laurel", 1, noon, nil),
+		New(1<<63, strings.Repeat("p", 300), 7, -1, []byte("x")),
+		New(2, "laurel", 2, noon, bytes.Repeat([]byte("d"), MaxBytes)),
+		New(3, "laurel", 3, noon, bytes.Repeat([]byte("d"), MaxBytes+1)), // truncated
+	} {
+		if got, want := r.EncodedLen(), len(r.Encode()); got != want {
+			t.Errorf("EncodedLen = %d, len(Encode) = %d for a provider of %d and data of %d bytes", got, want, len(r.Provider), len(r.Data))
+		}
+	}
+}
+
 func TestNewKeepsACopy(t *testing.T) {
 	data := []byte("ab")
 	r := New(1, "laurel", 1, noon, data)

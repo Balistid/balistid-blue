@@ -141,6 +141,9 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 		}
 		err := s.flush(ctx)
 		if err == nil {
+			err = s.commit(ctx)
+		}
+		if err == nil {
 			err = s.room(indexBytes(s.seals), func() error { return s.writeIndex(s.seals) })
 		}
 		if err != nil && s.cur != nil { // the health records' shard is sealed; the next Open recovers it
@@ -451,12 +454,14 @@ func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 
 // Append stores data with the next seq, or drops it at the cap and counts it for a loss record, which
 // Flush or the next stored record writes. It returns whether the data was stored and any shard it
-// sealed on the way, already in the index.
+// sealed on the way, already in the index. A stored record is durable once the next Flush, Close or
+// seal returns; a crash before that loses it, as it does a record still on its way to Append.
 func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64, received int64, data []byte) (bool, []Seal, error) {
 	if s.unknown != "" {
 		return false, nil, errors.New("store: " + s.unknown)
 	}
-	size := int64(len(rawrecord.New(0, provider, providerSeq, received, data).Encode()))
+	r := rawrecord.New(s.next, provider, providerSeq, received, data) // its length does not depend on Seq
+	size := int64(r.EncodedLen())
 	used, err := s.used()
 	if err != nil {
 		return false, nil, s.fail(err)
@@ -477,7 +482,8 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 	if err := s.flush(ctx); err != nil { // drops are recorded before the records after them
 		return false, sealed, err
 	}
-	if err := s.put(ctx, rawrecord.New(s.next, provider, providerSeq, received, data)); err != nil {
+	r.Seq = s.next // a seal or loss record on the way took seq numbers
+	if err := s.put(ctx, r); err != nil {
 		return false, sealed, err
 	}
 	return true, sealed, nil
@@ -513,7 +519,7 @@ func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
 		return nil, errors.New("store: " + s.unknown)
 	}
 	if len(s.health) == 0 && s.dropped == 0 {
-		return nil, nil
+		return nil, s.commit(ctx)
 	}
 	size := int64(512) // a loss record with its encoding
 	for _, h := range s.health {
@@ -523,7 +529,21 @@ func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
 	if err != nil {
 		return sealed, err
 	}
-	return sealed, s.flush(ctx)
+	if err := s.flush(ctx); err != nil {
+		return sealed, err
+	}
+	return sealed, s.commit(ctx)
+}
+
+// commit makes the current shard's records durable.
+func (s *Store) commit(ctx context.Context) error {
+	if s.cur == nil {
+		return nil
+	}
+	if err := s.cur.Commit(ctx); err != nil {
+		return s.fail(err)
+	}
+	return nil
 }
 
 // flush writes what Flush holds into the current shard, at the store's clock.
@@ -697,7 +717,7 @@ func (s *Store) curBytes() (int64, error) {
 	if s.cur == nil {
 		return 0, nil
 	}
-	var n int64
+	n := s.cur.Pending() // records not yet committed need not be on disk yet
 	for _, p := range []string{s.curName, s.curName + "-wal"} {
 		b, err := allocated(filepath.Join(s.dir, p))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

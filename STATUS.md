@@ -17,13 +17,12 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 
-- Ultrareview (10.10.), one normal finding fixed: a run directory left behind no longer turns a verdict
-  (a FAIL too) into INVALID; the tick still fails. Installed runner is 506f775; reinstall with the next change.
-- Runner security review fixes (#75): the tick unit's syscall filter is an allowlist (`@system-service
-  @mount` minus keyrings, AIO, `process_vm_*`, EPERM); a logging-only filter on the installed unit saw no
-  call outside it. Each tick probes four denied calls as a tripwire for a missing or deny-list filter; the
-  whole filter rests on the pinned unit text and the hash-checked install. Codex's second NO-GO (no `process_vm_writev` probe) stays open: the
-  maintainer decided on 10.10., after a second explanation, that the probes are a tripwire, not a proof.
+- Store commits in batches: per Flush (250 ms) or 2 MiB, not per record; 1 KiB records 157 → ~33000/s
+  (btrfs/NVMe, maintainer's machine, not the range). A record is durable after Flush. `rss_mib` at burst
+  with 64 KiB records is offered load: drops allowed and counted (maintainer, 10.10.). Benchmark #87.
+- #86: a run directory left behind no longer turns a verdict into INVALID. Runner installed at 506f775.
+- #75: the tick's syscall filter is an allowlist, four denied calls probed each tick as a tripwire;
+  Codex's second NO-GO (no `process_vm_writev` probe) stays open by the maintainer's decision (10.10.).
 - ADR 0011 accepted: 22 runs PASS on 506f775, exec memory job RAN, no OOM kill. Agent quota 24 a day,
   ledger 768, 24 results kept (#78; an older build refuses a ledger over 256). ADR 0014 (#76).
 
@@ -31,6 +30,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 1. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness. Built
    in from the start: a versioned socket protocol, store and ledger migrations with a tested rollback, a
    throughput metric; the normalizer redacts secrets before the derived DB, which agents can read (T6).
+   It calls Flush every FlushEvery and Close with a live context; a bounded queue drops and counts.
 ## Open decisions (maintainer)
 
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.

@@ -2,6 +2,7 @@ package shard
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/binary"
@@ -122,9 +123,7 @@ func TestSealFailsWhileAReaderHoldsTheWAL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(t.Context(), record(1, "a")); err != nil {
-		t.Fatal(err)
-	}
+	appendCommitted(t, w, record(1, "a"))
 	reader, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -316,9 +315,7 @@ func TestReadRefusesAnotherHashAnUnsealedShardAndNonFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for seq := uint64(1); seq <= 60; seq++ {
-		if err := w.Append(t.Context(), record(seq, "x")); err != nil {
-			t.Fatal(err)
-		}
+		appendCommitted(t, w, record(seq, "x"))
 		if seq == 3 {
 			if _, err := w.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 				t.Fatal(err)
@@ -400,9 +397,7 @@ func crashedAfter(t *testing.T, stmts []string, records ...rawrecord.Record) str
 	}
 	t.Cleanup(func() { w.db.Close() }) //nolint:errcheck,gosec // test cleanup
 	for _, r := range records {
-		if err := w.Append(t.Context(), r); err != nil {
-			t.Fatal(err)
-		}
+		appendCommitted(t, w, r)
 	}
 	for _, stmt := range stmts {
 		if _, err := w.db.ExecContext(t.Context(), stmt); err != nil {
@@ -731,9 +726,7 @@ func TestRecoverRefusesAHoleAfterAWALRestartThatShowsAnOldCommit(t *testing.T) {
 	}
 	defer w.db.Close() //nolint:errcheck // test
 	for i := uint64(1); i <= 120; i++ {
-		if err := w.Append(t.Context(), record(i, strings.Repeat("q", 1500))); err != nil {
-			t.Fatal(err)
-		}
+		appendCommitted(t, w, record(i, strings.Repeat("q", 1500)))
 	}
 	old, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
 	if err != nil {
@@ -742,9 +735,7 @@ func TestRecoverRefusesAHoleAfterAWALRestartThatShowsAnOldCommit(t *testing.T) {
 	if _, err := w.db.ExecContext(t.Context(), "PRAGMA wal_checkpoint(RESTART)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(t.Context(), record(121, strings.Repeat("z", 200000))); err != nil {
-		t.Fatal(err)
-	}
+	appendCommitted(t, w, record(121, strings.Repeat("z", 200000)))
 	wal, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
 	if err != nil {
 		t.Fatal(err)
@@ -770,6 +761,85 @@ func TestRecoverRefusesAHoleAfterAWALRestartThatShowsAnOldCommit(t *testing.T) {
 	}
 	if _, err := Recover(t.Context(), cp); err == nil || !strings.Contains(err.Error(), "committed transaction after it") {
 		t.Fatalf("Recover = %v; want a refusal", err)
+	}
+}
+
+// Appended records reach the file only with a commit, and a transaction never passes MaxBytes
+// unless one record does, which WALMaxBytes assumes.
+func TestRecordsAreDurableOnlyAfterACommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := reader.QueryRowContext(t.Context(), "SELECT count(*) FROM records").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	data := strings.Repeat("r", 300<<10)
+	for seq := uint64(1); seq <= 20; seq++ {
+		if err := w.Append(t.Context(), record(seq, data)); err != nil {
+			t.Fatal(err)
+		}
+		if w.Pending() > rawrecord.MaxBytes {
+			t.Fatalf("after record %d the transaction holds %d bytes", seq, w.Pending())
+		}
+	}
+	committed := count()
+	if committed == 0 || committed == 20 {
+		t.Fatalf("a reader sees %d of 20 records before Commit; want the full transactions only", committed)
+	}
+	if err := w.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != 20 || w.Pending() != 0 {
+		t.Fatalf("after Commit a reader sees %d records, %d bytes pending", n, w.Pending())
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Seal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// After a failed write the Writer cannot tell what the file holds: it refuses to append or seal, and
+// Recover finds the committed records.
+func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendCommitted(t, w, record(1, "a"))
+	if err := w.Append(t.Context(), record(2, "b")); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := w.Commit(cancelled); err == nil {
+		t.Fatal("Commit succeeded with a cancelled context")
+	}
+	if err := w.Append(t.Context(), record(2, "b")); err == nil {
+		t.Fatal("Append succeeded after a failed commit")
+	}
+	if _, err := w.Seal(t.Context()); err == nil {
+		t.Fatal("Seal succeeded after a failed commit")
+	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() == 0o440 {
+		t.Fatalf("the shard was made final: %v, %v", st.Mode(), err)
+	}
+	got, err := Recover(t.Context(), path)
+	if err != nil || got.Empty || got.First != 1 || got.Last != 1 {
+		t.Fatalf("Recover = %+v, %v; want record 1 only", got, err)
 	}
 }
 
@@ -805,6 +875,17 @@ func TestTheWALStaysWithinItsBound(t *testing.T) {
 		t.Fatalf("WAL peaked at %d bytes; bound %d, autocheckpoint at %d", peak, WALMaxBytes, checkpointPages*pageSize)
 	}
 	if _, err := w.Seal(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendCommitted appends r in a transaction of its own, the layout the WAL tests build on.
+func appendCommitted(t *testing.T, w *Writer, r rawrecord.Record) {
+	t.Helper()
+	if err := w.Append(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
