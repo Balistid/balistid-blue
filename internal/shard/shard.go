@@ -28,6 +28,12 @@ import (
 // SchemaVersion of the tables Create makes; Read refuses any other.
 const SchemaVersion = 1
 
+// The WAL header's magic for little-endian checksums and its format version (sqlite.org/fileformat2.html).
+const (
+	walMagicLE = 0x377f0682
+	walVersion = 3007000
+)
+
 const (
 	pageSize        = 4096
 	checkpointPages = 512 // SQLite checkpoints the WAL into the main file past this many pages
@@ -402,9 +408,13 @@ func walIntact(path string) (bool, error) {
 	if len(data) <= headerSize {
 		return false, nil // no frame was ever written
 	}
-	// The checksum covers the magic and the page size. SQLite checksums in the host's byte order, and
-	// every supported host is little-endian, so a big-endian WAL fails here too.
+	// The checksum covers the magic and the page size. SQLite checksums in the byte order the magic
+	// names; every supported host and Create's shards are little-endian with pageSize pages, so a WAL
+	// that names anything else fails closed instead of being checked in an order SQLite does not use.
 	be, order := binary.BigEndian, binary.LittleEndian
+	if be.Uint32(data) != walMagicLE || be.Uint32(data[4:]) != walVersion || be.Uint32(data[8:]) != pageSize {
+		return false, errors.New("the WAL header names another byte order, format or page size, and frames follow it")
+	}
 	pageSize := int(be.Uint32(data[8:]))
 	if s0, s1 := walSum(order, 0, 0, data[:24]); s0 != be.Uint32(data[24:]) || s1 != be.Uint32(data[28:]) {
 		return false, errors.New("the WAL header is damaged, and frames follow it")

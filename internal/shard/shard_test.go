@@ -601,6 +601,41 @@ func walFrame(t *testing.T, path string, n int) int {
 	return 32 + n*size + 24 + 100 // a byte of the frame's page
 }
 
+// A WAL whose header names another checksum order or format is refused even when every checksum
+// matches in little-endian order: SQLite would check it in the order the header names.
+func TestRecoverRefusesAWALHeaderItDoesNotCheck(t *testing.T) {
+	for name, field := range map[string][2]uint32{
+		"big-endian magic": {0, 0x377f0683},
+		"format version":   {4, 3007001},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := crashed(t, record(1, "ab"), record(2, "cd"))
+			data, err := os.ReadFile(path + "-wal") //nolint:gosec // test temp dir
+			if err != nil {
+				t.Fatal(err)
+			}
+			binary.BigEndian.PutUint32(data[field[0]:], field[1])
+			le, be := binary.LittleEndian, binary.BigEndian
+			s0, s1 := walSum(le, 0, 0, data[:24])
+			be.PutUint32(data[24:], s0)
+			be.PutUint32(data[28:], s1)
+			size := 24 + int(be.Uint32(data[8:]))
+			for off := 32; off+size <= len(data); off += size {
+				s0, s1 = walSum(le, s0, s1, data[off:off+8])
+				s0, s1 = walSum(le, s0, s1, data[off+24:off+size])
+				be.PutUint32(data[off+16:], s0)
+				be.PutUint32(data[off+20:], s1)
+			}
+			if err := os.WriteFile(path+"-wal", data, 0o600); err != nil { //nolint:gosec // test temp dir
+				t.Fatal(err)
+			}
+			if got, err := Recover(t.Context(), path); err == nil || !strings.Contains(err.Error(), "WAL header") {
+				t.Fatalf("Recover = %+v, %v", got, err)
+			}
+		})
+	}
+}
+
 func TestRecoverRefusesADamagedWALBeforeOpeningIt(t *testing.T) {
 	for name, off := range map[string]func(t *testing.T, path string) int{
 		"header salt":  func(*testing.T, string) int { return 17 },
