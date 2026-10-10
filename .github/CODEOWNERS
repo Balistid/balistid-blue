@@ -27,5 +27,8 @@
 /internal/rangeguest/ @Jvc0n
 /internal/rangejob/ @Jvc0n
 /internal/rangerun/ @Jvc0n
+/internal/rawrecord/ @Jvc0n
+/internal/shard/ @Jvc0n
+/internal/store/ @Jvc0n
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n
