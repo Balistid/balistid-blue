@@ -1162,3 +1162,12 @@ func TestOnlyTheFiltersEPERMProvesConfinement(t *testing.T) {
 		}
 	}
 }
+
+// The runner New builds probes for real: outside the tick unit keyctl is not denied, so a tick runs nothing.
+func TestATickOutsideTheUnitRunsNothing(t *testing.T) {
+	d := t.TempDir()
+	err := New(d, d, d, testCommit, slog.New(slog.DiscardHandler)).Tick(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "confinement missing") {
+		t.Fatalf("Tick outside the unit: %v", err)
+	}
+}

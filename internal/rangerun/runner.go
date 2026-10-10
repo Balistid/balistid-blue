@@ -160,8 +160,8 @@ func (r *Runner) checkState() error {
 // keySpecSessionKeyring is KEY_SPEC_SESSION_KEYRING (-3); keyctl reads its argument as a 32-bit key serial.
 const keySpecSessionKeyring = 0xfffffffd
 
-// keyringDenied is each tick's proof that its unit's syscall filter is in force: the tick unit denies
-// @keyring with EPERM, so keyctl(KEYCTL_GET_KEYRING_ID) must fail with exactly that (ADR 0011, point 1).
+// keyringDenied checks each tick that keyctl(KEYCTL_GET_KEYRING_ID) fails with EPERM, as the tick unit's
+// filter answers (ADR 0011, point 1); the unit's exact text is pinned by test_runner_deploy.py.
 func keyringDenied() error {
 	_, _, errno := syscall.Syscall(syscall.SYS_KEYCTL, 0, keySpecSessionKeyring, 0)
 	return deniedByFilter(errno)
