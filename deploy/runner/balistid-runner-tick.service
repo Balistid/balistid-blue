@@ -44,8 +44,9 @@ ProtectControlGroups=yes
 ProtectClock=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
-# An allowlist (R7): bwrap, QEMU and the runner called nothing outside these groups under a logging
-# filter (2026-10-10). Keyrings, AIO and other processes' memory are taken out; each tick checks keyctl.
+# An allowlist (R7): under a filter that only logged (2026-10-10), bwrap, QEMU and the runner called nothing
+# outside these groups. Keyrings, AIO and other processes' memory are taken out and answer EPERM, which QEMU
+# runs without; each tick checks that keyctl gets it.
 SystemCallFilter=@system-service @mount
 SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev
 SystemCallErrorNumber=EPERM

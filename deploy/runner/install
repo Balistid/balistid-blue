@@ -3,8 +3,9 @@
 # root-only copy it checked, $2 the maintainer, who owns inbox and objects, $3 the bundle sha256 typed.
 # Every check but the one after the reload runs before the first write, so a refusal leaves the host as
 # it was. That last check, or a failed write, stops with what was written in place: there is no rollback,
-# but nothing is started or enabled, and the maintainer installs again or removes it by hand. Every command
-# whose output decides is run on its own line with its status checked: $(...) inside a test hides a failure.
+# and this script starts or enables nothing (a timer enabled earlier stays enabled); the maintainer
+# installs again or removes it by hand. Every command whose output decides is run on its own line with
+# its status checked: $(...) inside a test hides a failure.
 set -eu
 d=$1 m=$2 sum=$3
 lib=/usr/local/lib/balistid state=/var/lib/balistid why="a command failed" rc=0

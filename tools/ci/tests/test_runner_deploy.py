@@ -226,6 +226,8 @@ class ServiceCheckTest(unittest.TestCase):
             ("SystemCallFilter=@system-service @mount", "SystemCallFilter=@system-service @mount @privileged"),
             ("SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev\n", ""),
             ("SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev", "SystemCallFilter=~@aio"),
+            ("SystemCallFilter=@system-service @mount\nSystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev",
+             "SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev\nSystemCallFilter=@system-service @mount"),
             ("SystemCallErrorNumber=EPERM", "SystemCallErrorNumber=ENOSYS"),
             ("SystemCallErrorNumber=EPERM", "SystemCallErrorNumber=EPERM\nSystemCallLog=@keyring"),
         ):
