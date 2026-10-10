@@ -2,8 +2,9 @@
 # Installs the range runner (ADR 0011, point 1). Run only by the bootstrap command CI prints: $1 is the
 # root-only copy it checked, $2 the maintainer, who owns inbox and objects, $3 the bundle sha256 typed.
 # Every check but the one after the reload runs before the first write, so a refusal leaves the host as
-# it was; that last one leaves the files written and loaded, the units stopped. Every command whose
-# output decides is run on its own line with its status checked: $(...) inside a test hides a failure.
+# it was. That last check, or a failed write, stops with what was written in place: there is no rollback,
+# but nothing is started or enabled, and the maintainer installs again or removes it by hand. Every command
+# whose output decides is run on its own line with its status checked: $(...) inside a test hides a failure.
 set -eu
 d=$1 m=$2 sum=$3
 lib=/usr/local/lib/balistid state=/var/lib/balistid why="a command failed" rc=0
@@ -59,16 +60,19 @@ absent_or /etc/tmpfiles.d "root:root 755 directory"
 
 # Each write names itself first, so a failure is logged with the step that failed.
 step() { why="failed: $*"; "$@"; }
+# Each file goes to a new name beside its target, is flushed, renamed over it and its directory flushed:
+# a cut install leaves the old file or the new one whole, never a unit without its confinement.
+put() { step install -m "$1" "$2" "$3.new"; step sync "$3.new"; step mv -fT "$3.new" "$3"; step sync "${3%/*}"; }
 step install -d -o root -g root -m 0755 "$lib"
-step install -m 0755 "$d/balistid-runner" "$lib/balistid-runner"
+put 0755 "$d/balistid-runner" "$lib/balistid-runner"
 for u in balistid-runner-build.service balistid-runner-tick.service balistid-runner-tick.timer; do
-    step install -m 0644 "$d/$u" "/etc/systemd/system/$u"
+    put 0644 "$d/$u" "/etc/systemd/system/$u"
 done
 # Arch ships no /etc/sysusers.d; both directories are checked above (absent or root:root 755).
 step install -d -m 0755 /etc/sysusers.d
 step install -d -m 0755 /etc/tmpfiles.d
-step install -m 0644 "$d/sysusers.conf" /etc/sysusers.d/balistid-runner.conf
-step install -m 0644 "$d/tmpfiles.conf" /etc/tmpfiles.d/balistid-runner.conf
+put 0644 "$d/sysusers.conf" /etc/sysusers.d/balistid-runner.conf
+put 0644 "$d/tmpfiles.conf" /etc/tmpfiles.d/balistid-runner.conf
 step systemd-sysusers /etc/sysusers.d/balistid-runner.conf
 step systemd-tmpfiles --create /etc/tmpfiles.d/balistid-runner.conf
 [ "$inbox" != absent ] || step install -d -o "$m" -g balistid-runner -m 2750 "$state/inbox"

@@ -403,7 +403,7 @@ STUBS = {
                  '[ "$f" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; '
                  '[ "$1" != daemon-reload ] || /usr/bin/cp "$STUB_UNITS_AFTER" "$STUB_UNITS"; fi',
 }
-WRITERS = ("install", "systemd-sysusers", "systemd-tmpfiles", "usermod", "logger")
+WRITERS = ("install", "sync", "mv", "systemd-sysusers", "systemd-tmpfiles", "usermod", "logger")
 LIB, STATE = "/usr/local/lib/balistid", "/var/lib/balistid"
 UNITS = ("balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service")
 ETC_DIRS = ("/etc/sysusers.d", "/etc/tmpfiles.d")
@@ -466,16 +466,19 @@ class InstallTest(unittest.TestCase):
     def assert_first_install(self, r: subprocess.CompletedProcess):
         self.assertEqual(r.returncode, 0, r.stderr)
         c = self.copy
+
+        def put(mode: str, src: str, dst: str) -> list[str]:
+            return [f"install -m {mode} {c}/{src} {dst}.new", f"sync {dst}.new", f"mv -fT {dst}.new {dst}",
+                    f"sync {dst.rsplit('/', 1)[0]}"]
+
         self.assertEqual(self.lines("write"), [
             f"install -d -o root -g root -m 0755 {LIB}",
-            f"install -m 0755 {c}/balistid-runner {LIB}/balistid-runner",
-            f"install -m 0644 {c}/balistid-runner-build.service /etc/systemd/system/balistid-runner-build.service",
-            f"install -m 0644 {c}/balistid-runner-tick.service /etc/systemd/system/balistid-runner-tick.service",
-            f"install -m 0644 {c}/balistid-runner-tick.timer /etc/systemd/system/balistid-runner-tick.timer",
+            *put("0755", "balistid-runner", f"{LIB}/balistid-runner"),
+            *(line for u in UNITS[::-1] for line in put("0644", u, f"/etc/systemd/system/{u}")),
             "install -d -m 0755 /etc/sysusers.d",
             "install -d -m 0755 /etc/tmpfiles.d",
-            f"install -m 0644 {c}/sysusers.conf /etc/sysusers.d/balistid-runner.conf",
-            f"install -m 0644 {c}/tmpfiles.conf /etc/tmpfiles.d/balistid-runner.conf",
+            *put("0644", "sysusers.conf", "/etc/sysusers.d/balistid-runner.conf"),
+            *put("0644", "tmpfiles.conf", "/etc/tmpfiles.d/balistid-runner.conf"),
             "systemd-sysusers /etc/sysusers.d/balistid-runner.conf",
             "systemd-tmpfiles --create /etc/tmpfiles.d/balistid-runner.conf",
             f"install -d -o maint -g balistid-runner -m 2750 {STATE}/inbox",
@@ -488,6 +491,15 @@ class InstallTest(unittest.TestCase):
 
     def test_first_install_writes_exactly_this_after_the_checks(self):
         self.assert_first_install(self.run_install())
+
+    # A cut copy must never sit at a path systemd or the runner reads: only a rename reaches it.
+    def test_a_target_changes_only_by_rename(self):
+        self.assertEqual(self.run_install().returncode, 0)
+        for target in (f"{LIB}/balistid-runner", *(f"/etc/systemd/system/{u}" for u in UNITS),
+                       "/etc/sysusers.d/balistid-runner.conf", "/etc/tmpfiles.d/balistid-runner.conf"):
+            with self.subTest(target=target):
+                writes = [w for w in self.lines("write") if w.split()[0] in ("install", "mv") and w.split()[-1] == target]
+                self.assertEqual(writes, [f"mv -fT {target}.new {target}"])
 
     def test_a_failed_write_is_logged_with_its_step(self):
         self.env["STUB_FAIL_WRITER"] = "systemd-sysusers"
