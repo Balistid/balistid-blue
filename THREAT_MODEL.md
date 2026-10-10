@@ -31,7 +31,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T6 | A1 | Read secrets in recorded command lines | Raw stream closed to A1; derived DB readable | — | gap: redaction before the derived DB, designed with the normalizer (9.3), not floor 3 |
 | T7 | A1 | Read or delete alerts | Push to phone; no alert client on the host | — | assumption |
 | T8 | A1 | Evade recording: ptrace or `process_vm_writev` into own processes, memfd/execveat, interpreters | Rules for ptrace, execveat, memfd_create | drill | partial: interpreters, mmap exec, envp and the middle of truncated argv (floor 1); x32 ABI syscalls match no syscall rule or watch on kernels with `CONFIG_X86_X32_ABI` (Arch `linux`), mitigation decided before the host install |
-| T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet |
+| T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet; sha256 proves CI provenance, not review, of unowned source (0015) |
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom; auditd `disk_full_action` set, `-f 1` | test reserve | designed |
 | T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie |
 | T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006) | test fork_refused | designed |
