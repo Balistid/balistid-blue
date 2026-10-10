@@ -46,7 +46,7 @@ RestrictRealtime=yes
 SystemCallArchitectures=native
 # An allowlist (R7): under a filter that only logged (2026-10-10), bwrap, QEMU and the runner called nothing
 # outside these groups. Keyrings, AIO and other processes' memory are taken out and answer EPERM, which QEMU
-# runs without; each tick checks that keyctl gets it.
+# runs without; each tick probes for it as a tripwire.
 SystemCallFilter=@system-service @mount
 SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev
 SystemCallErrorNumber=EPERM

@@ -157,10 +157,12 @@ func (r *Runner) checkState() error {
 	return nil
 }
 
-// filterInForce checks each tick that calls the tick unit's filter answers with EPERM (ADR 0011, point 1)
-// get it, so a unit without the filter, or with only part of it, runs nothing. One probe per clause the
-// unit takes out of its allowlist, and ptrace, which no allowed group holds; with these arguments the
-// kernel alone never answers EPERM. The unit's exact text is pinned by test_runner_deploy.py.
+// filterInForce is a tripwire, not a proof (ADR 0011, point 1): each tick, calls the tick unit's filter
+// answers with EPERM must get it, so the runner under a unit with no filter or a deny-list, such as the
+// old unit after a cut install, runs nothing. Probes cannot show the whole filter; that comes from the
+// unit's text, pinned by test_runner_deploy.py and installed by hash. One probe per clause the unit
+// takes out of its allowlist, and ptrace, which no allowed group holds; with these arguments the
+// kernel alone never answers EPERM.
 func filterInForce() error {
 	probes := []struct {
 		name string

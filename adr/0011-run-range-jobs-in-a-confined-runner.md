@@ -13,13 +13,13 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 
 ## Decision
 
-1. `balistid-runner` runs as its own system user and group, never as the maintainer: a build unit, a tick unit
-   and its timer (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `StateDirectory=`,
-   `NoNewPrivileges`, no capabilities, user namespaces allowed; the tick's syscalls an allowlist each tick checks
-   with keyctl), one job at a time under a lock. Everything root installs (binary of `cmd/balistid-runner`;
-   units, timer, sysusers, tmpfiles under `/deploy/`) is one manifest a code-owned CI step hashes with
-   `sha256sum` on a push to `main`; the maintainer reads that sha256 in the CI log and types it into a root
-   shell, which copies the files without following links into a root-only directory, checks and installs them.
+1. `balistid-runner` runs as its own system user and group, never as the maintainer: a build unit, a tick unit and
+   its timer (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `StateDirectory=`, `NoNewPrivileges`, no
+   capabilities, user namespaces allowed; the tick's syscalls an allowlist whose text tests pin, each tick probing
+   for it as a tripwire), one job at a time under a lock. Everything root installs (binary of
+   `cmd/balistid-runner`; units, timer, sysusers, tmpfiles under `/deploy/`) is one manifest a code-owned CI step
+   hashes with `sha256sum` on a push to `main`; the maintainer reads that sha256 in the CI log and types it into a
+   root shell, which copies the files without following links into a root-only directory, checks and installs them.
 2. Its commit is `buildinfo.Version`, set by CI's `-X` (40 hex digits, else refused). At its own uid
    it builds its image: it copies the object files the maintainer drops beside the inbox with the
    ADR 0010 rules, exports its commit checked by hash, and builds there. It runs git only in that
