@@ -69,7 +69,9 @@ SERVICES = {
         "TimeoutStartSec": "40min",
         "PrivateNetwork": "yes",
         "DeviceAllow": "/dev/kvm rw",
-        "SystemCallFilter": "~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap",
+        # An allowlist, then what is taken out of it; the tick's keyctl check expects EPERM (R7).
+        "SystemCallFilter": ["@system-service @mount", "~@keyring @aio process_vm_readv process_vm_writev"],
+        "SystemCallErrorNumber": "EPERM",
         "RestrictAddressFamilies": "AF_UNIX AF_NETLINK",
         "IPAddressDeny": "any",
         "PrivateIPC": "yes",
@@ -127,7 +129,7 @@ def service_problems(name: str, text: str) -> list[str]:
     service = sections.get("Service", {})
     if service.get("User") == ["root"]:
         problems.append(f"{name}: User=root")
-    if service != {k: [v] for k, v in SERVICES[name].items()}:
+    if service != {k: v if isinstance(v, list) else [v] for k, v in SERVICES[name].items()}:
         problems.append(f"{name}: [Service] is not exactly the decided settings")
     if sections.get("Unit") != {"Description": [DESCRIPTIONS[name]]}:
         problems.append(f"{name}: [Unit] is not exactly its description")
@@ -220,6 +222,12 @@ class ServiceCheckTest(unittest.TestCase):
             ("UMask=0027", ""),
             ("[Service]", "JoinsNamespaceOf=balistid-collector.service\n[Service]"),
             ("[Service]", "OnSuccess=x.service\n[Service]"),
+            ("SystemCallFilter=@system-service @mount", "SystemCallFilter=~@clock @debug @module @raw-io"),
+            ("SystemCallFilter=@system-service @mount", "SystemCallFilter=@system-service @mount @privileged"),
+            ("SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev\n", ""),
+            ("SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev", "SystemCallFilter=~@aio"),
+            ("SystemCallErrorNumber=EPERM", "SystemCallErrorNumber=ENOSYS"),
+            ("SystemCallErrorNumber=EPERM", "SystemCallErrorNumber=EPERM\nSystemCallLog=@keyring"),
         ):
             with self.subTest(new=new):
                 self.assertIn(old, self.text())

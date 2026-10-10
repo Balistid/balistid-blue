@@ -44,8 +44,11 @@ ProtectControlGroups=yes
 ProtectClock=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native
-# A deny list: bwrap and QEMU inherit the filter and need mount, namespace and rlimit calls.
-SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+# An allowlist (R7): bwrap, QEMU and the runner called nothing outside these groups under a logging
+# filter (2026-10-10). Keyrings, AIO and other processes' memory are taken out; each tick checks keyctl.
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
 # AF_NETLINK: bwrap --unshare-all brings up loopback in the new network namespace over rtnetlink.
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
 IPAddressDeny=any
