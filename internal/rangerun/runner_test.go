@@ -726,7 +726,7 @@ func TestEveryRejectionIsLogged(t *testing.T) {
 	t.Run("up to the quota", func(t *testing.T) {
 		tr, log := setup(t)
 		for i := range Quota + 1 {
-			tr.addJob(t, fmt.Sprintf("job-%d", i), "{}", nil)
+			tr.addJob(t, fmt.Sprintf("job-%02d", i), "{}", nil)
 		}
 		if err := tr.Tick(t.Context()); err != nil {
 			t.Fatal(err)
@@ -736,7 +736,7 @@ func TestEveryRejectionIsLogged(t *testing.T) {
 			t.Fatalf("rejections logged: %q", lines)
 		}
 		for i, line := range lines {
-			if !strings.Contains(line, fmt.Sprintf("job=job-%d ", i)) {
+			if !strings.Contains(line, fmt.Sprintf("job=job-%02d ", i)) {
 				t.Fatalf("rejection %d: %q", i, line)
 			}
 		}
