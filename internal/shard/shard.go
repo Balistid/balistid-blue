@@ -100,6 +100,11 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if w.broken != nil {
 		return w.broken
 	}
+	// A cancelled ctx stops Append before it writes. A started insert is not interrupted: SQLite
+	// would roll back the whole transaction, records Append already took included.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("append record %d: %w", r.Seq, err)
+	}
 	if w.started && r.Seq != w.next {
 		return fmt.Errorf("record seq %d, want %d", r.Seq, w.next)
 	}
@@ -112,21 +117,21 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	// A row takes at most its bytes plus two pages: a leaf page it may have alone and the unused
 	// part of its last overflow page. Counting encoded bytes alone lets small rows pass the budget.
 	size := int64(r.EncodedLen()) + 2*pageSize
-	if w.pending > 0 && w.pending+size > rawrecord.MaxBytes {
-		if err := w.Commit(ctx); err != nil {
+	if w.pending+size > rawrecord.MaxBytes {
+		if err := w.Commit(); err != nil {
 			return err
 		}
 	}
+	uncancelled := context.WithoutCancel(ctx) // database/sql rolls back a cancelled transaction unseen
 	if w.tx == nil {
-		// Not bound to ctx: database/sql would roll a cancelled transaction back unseen.
-		tx, err := w.db.BeginTx(context.WithoutCancel(ctx), nil)
+		tx, err := w.db.BeginTx(uncancelled, nil)
 		if err != nil {
 			return w.fail(fmt.Errorf("append record %d: begin: %w", r.Seq, err))
 		}
 		w.tx = tx
 	}
 	leaf := r.Leaf()
-	_, err := w.tx.ExecContext(ctx, "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	_, err := w.tx.ExecContext(uncancelled, "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 		int64(r.Seq), r.Provider, int64(r.ProviderSeq), r.Received, append([]byte{}, r.Data...),
 		int64(r.OrigLen), r.OrigSHA256[:], leaf[:])
 	if err != nil {
@@ -136,16 +141,14 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	return nil
 }
 
-// Commit makes the appended records durable; without any it does nothing.
-func (w *Writer) Commit(ctx context.Context) error {
+// Commit makes the appended records durable; without any it does nothing. It takes no ctx: a
+// cancelled commit would roll back records Append already took.
+func (w *Writer) Commit() error {
 	if w.broken != nil {
 		return w.broken
 	}
 	if w.tx == nil {
 		return nil
-	}
-	if err := ctx.Err(); err != nil {
-		return w.fail(fmt.Errorf("commit: %w", err))
 	}
 	tx := w.tx
 	w.tx, w.pending = nil, 0
@@ -176,7 +179,7 @@ func (w *Writer) Seal(ctx context.Context) ([32]byte, error) {
 	if w.db == nil {
 		return [32]byte{}, errors.New("shard is sealed")
 	}
-	err := w.Commit(ctx)
+	err := w.Commit()
 	db := w.db
 	w.db = nil
 	if err != nil {
