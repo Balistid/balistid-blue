@@ -20,9 +20,10 @@ import (
 
 // Limits of the inbox (ADR 0011, point 5). Agents share one uid and own the inbox: each removes
 // its job once it has read the result, and one agent filling the inbox can delay the others' jobs,
-// which is accepted (agent jobs are never evidence) and only bounded here. The quota slows attempts
-// on the VM's confinement to about one an hour; memory, CPU and disk have their own caps. A day of
-// quota times keepTaken fits MaxLedger, so a name runs once within keepTaken.
+// which is accepted (agent jobs are never evidence) and only bounded here. The quota bounds attempts
+// on the VM's confinement to Quota per rolling QuotaWindow, in bursts at the tick rate; memory, CPU
+// and disk have their own caps. Quota times the days of keepTaken fits MaxLedger, so a name runs once
+// within keepTaken, and a day of quota fits KeepAgent, so its results outlive the window.
 const (
 	MaxInboxEntries = 1024                // names listed per scan, then taken in name order
 	Expiry          = 24 * time.Hour      // after the runner first saw the directory

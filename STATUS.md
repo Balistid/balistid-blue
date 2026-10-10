@@ -28,8 +28,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 
 ## Next step
 
-1. #75 and #76 installed (evidence PASS, no "confinement missing"). Agent quota 8 → 24 a day, ledger 768:
-   reinstall, then PR 13's 21 runs on that commit and ADR 0011.
+1. #75, #76 installed (evidence PASS). Quota 24 a day, ledger 768, 30 agent results kept (an older build
+   refuses a ledger over 256): reinstall, then PR 13's 21 runs on that commit and ADR 0011.
 2. 9.3: the collector (Laurel socket, Flush ticker, seals to the ledger), then ledger and Pi witness.
 ## Open decisions (maintainer)
 

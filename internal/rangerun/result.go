@@ -23,9 +23,10 @@ const (
 	LabelEvidence = "evidence"
 )
 
-// Retention (R5): escaping can make a result up to 4x its caps, about 36 MiB.
+// Retention (R5): escaping can make a result up to 4x its caps, about 36 MiB. KeepAgent holds more
+// than a day of quota, so a result outlives the window it was made in (about 1.1 GiB at most).
 const (
-	KeepAgent    = 20
+	KeepAgent    = 30
 	KeepEvidence = 50
 	resultSchema = 1
 	// Results are read by the maintainer's group, the group of the directories they are in.

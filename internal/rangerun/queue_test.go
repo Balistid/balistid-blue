@@ -304,9 +304,9 @@ func TestTheLedgerStaysBounded(t *testing.T) {
 	}
 }
 
-// A job an hour for a day fits the quota, and every entry of keepTaken fits the ledger, so a taken
-// name is still known when the same directory comes back within keepTaken.
-func TestADayOfHourlyJobsFitsTheQuotaAndTheLedger(t *testing.T) {
+// A job an hour for a day fits the quota; every entry of keepTaken fits the ledger, so a taken name
+// is still known when the same directory comes back within keepTaken; a day's results are all kept.
+func TestADayOfHourlyJobsFitsTheQuotaTheLedgerAndRetention(t *testing.T) {
 	now := time.Now()
 	dir, inbox := newInbox(t)
 	for i := range 24 {
@@ -315,7 +315,7 @@ func TestADayOfHourlyJobsFitsTheQuotaAndTheLedger(t *testing.T) {
 	var l Ledger
 	taken := 0
 	for i := range 24 {
-		if _, ok, _, err := Next(inbox, &l, now.Add(time.Duration(i)*time.Hour/2)); err != nil {
+		if _, ok, _, err := Next(inbox, &l, now.Add(time.Duration(i)*time.Hour)); err != nil {
 			t.Fatal(err)
 		} else if ok {
 			taken++
@@ -326,5 +326,8 @@ func TestADayOfHourlyJobsFitsTheQuotaAndTheLedger(t *testing.T) {
 	}
 	if days := int(keepTaken / QuotaWindow); Quota*days > MaxLedger {
 		t.Fatalf("%d days of quota (%d entries) do not fit MaxLedger %d", days, Quota*days, MaxLedger)
+	}
+	if Quota > KeepAgent {
+		t.Fatalf("a day of quota (%d) is more than the %d agent results kept", Quota, KeepAgent)
 	}
 }
