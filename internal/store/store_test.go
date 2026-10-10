@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -542,6 +543,59 @@ func TestARecoveryRecordSurvivesASecondCrash(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("the trace of the first crash is gone: %+v", got)
+	}
+}
+
+// A health record waiting when a record arrives is stored first and takes the next seq; the record
+// takes the one after it.
+func TestAWaitingHealthRecordGoesFirst(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	if err := s.NoteHealth([]byte(`{"schema_version":1,"sensor":"UNKNOWN"}`)); err != nil {
+		t.Fatal(err)
+	}
+	add(t, s, noon, "b")
+	closeStore(t, s)
+	got := readAll(t, dir)
+	if len(got) != 3 || got[1].Provider != HealthProvider || string(got[2].Data) != "b" {
+		t.Fatalf("records %+v", got)
+	}
+}
+
+// Records taken before the store became UNKNOWN, or before Close got a cancelled context, are still
+// committed, so a crash after that does not lose them.
+func TestTakenRecordsAreCommittedWhenTheStoreFails(t *testing.T) {
+	for name, fail := range map[string]func(t *testing.T, s *Store){
+		"unknown": func(t *testing.T, s *Store) {
+			t.Helper()
+			s.unknown = "the reserve is used up"
+			if _, err := s.Flush(t.Context()); err == nil {
+				t.Fatal("Flush of an UNKNOWN store succeeded")
+			}
+		},
+		"close with a cancelled context": func(t *testing.T, s *Store) {
+			t.Helper()
+			cancelled, cancel := context.WithCancel(t.Context())
+			cancel()
+			_, _ = s.Close(cancelled)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := open(t, t.TempDir(), small)
+			add(t, s, noon, "a")
+			add(t, s, noon, "b")
+			fail(t, s)
+			got, n := readAll(t, crashed(t, s)), 0
+			for _, r := range got {
+				if r.Provider == "laurel" {
+					n++
+				}
+			}
+			if n != 2 {
+				t.Fatalf("%d of 2 taken records after the crash: %+v", n, got)
+			}
+		})
 	}
 }
 

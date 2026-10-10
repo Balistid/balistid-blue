@@ -141,7 +141,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 		}
 		err := s.flush(ctx)
 		if err == nil {
-			err = s.commit(ctx)
+			err = s.commit()
 		}
 		if err == nil {
 			err = s.room(indexBytes(s.seals), func() error { return s.writeIndex(s.seals) })
@@ -515,11 +515,11 @@ func (s *Store) rotate(ctx context.Context, size int64) ([]Seal, error) {
 // into it first (ADR 0013, point 1). The collector calls it every FlushEvery, so a crash loses at most
 // one interval of drop counts, and hands on what it sealed.
 func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
-	if s.unknown != "" {
-		return nil, errors.New("store: " + s.unknown)
+	if s.unknown != "" { // the records taken before are still made durable
+		return nil, errors.Join(errors.New("store: "+s.unknown), s.commit())
 	}
 	if len(s.health) == 0 && s.dropped == 0 {
-		return nil, s.commit(ctx)
+		return nil, s.commit()
 	}
 	size := int64(512) // a loss record with its encoding
 	for _, h := range s.health {
@@ -532,15 +532,15 @@ func (s *Store) Flush(ctx context.Context) ([]Seal, error) {
 	if err := s.flush(ctx); err != nil {
 		return sealed, err
 	}
-	return sealed, s.commit(ctx)
+	return sealed, s.commit()
 }
 
 // commit makes the current shard's records durable.
-func (s *Store) commit(ctx context.Context) error {
+func (s *Store) commit() error {
 	if s.cur == nil {
 		return nil
 	}
-	if err := s.cur.Commit(ctx); err != nil {
+	if err := s.cur.Commit(); err != nil {
 		return s.fail(err)
 	}
 	return nil

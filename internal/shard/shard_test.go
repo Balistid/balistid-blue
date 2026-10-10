@@ -797,7 +797,7 @@ func TestRecordsAreDurableOnlyAfterACommit(t *testing.T) {
 	if committed == 0 || committed == 20 {
 		t.Fatalf("a reader sees %d of 20 records before Commit; want the full transactions only", committed)
 	}
-	if err := w.Commit(t.Context()); err != nil {
+	if err := w.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	if n := count(); n != 20 || w.Pending() != 0 {
@@ -823,16 +823,17 @@ func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
 	if err := w.Append(t.Context(), record(2, "b")); err != nil {
 		t.Fatal(err)
 	}
-	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := w.Commit(cancelled); err == nil {
-		t.Fatal("Commit succeeded with a cancelled context")
+	if err := w.tx.Rollback(); err != nil { // the transaction fails under the Writer
+		t.Fatal(err)
 	}
-	if err := w.Append(t.Context(), record(2, "b")); err == nil {
-		t.Fatal("Append succeeded after a failed commit")
+	if err := w.Append(t.Context(), record(3, "c")); err == nil {
+		t.Fatal("Append succeeded in a failed transaction")
+	}
+	if err := w.Append(t.Context(), record(3, "c")); err == nil || !strings.Contains(err.Error(), "recover the shard") {
+		t.Fatalf("Append after a failed write = %v; want the Writer broken", err)
 	}
 	if _, err := w.Seal(t.Context()); err == nil {
-		t.Fatal("Seal succeeded after a failed commit")
+		t.Fatal("Seal succeeded after a failed write")
 	}
 	if st, err := os.Stat(path); err != nil || st.Mode().Perm() == 0o440 {
 		t.Fatalf("the shard was made final: %v, %v", st.Mode(), err)
@@ -840,6 +841,42 @@ func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
 	got, err := Recover(t.Context(), path)
 	if err != nil || got.Empty || got.First != 1 || got.Last != 1 {
 		t.Fatalf("Recover = %+v, %v; want record 1 only", got, err)
+	}
+}
+
+// A cancelled ctx refuses the record it came with and costs no record taken before, whether it was
+// cancelled before Append or after the transaction began.
+func TestACancelledContextCostsNoTakenRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	began, cancelBegan := context.WithCancel(t.Context())
+	if err := w.Append(began, record(1, "a")); err != nil {
+		t.Fatal(err)
+	}
+	cancelBegan()
+	if err := w.Append(t.Context(), record(2, "b")); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := w.Append(cancelled, record(3, "c")); err == nil {
+		t.Fatal("Append took a record with a cancelled context")
+	}
+	if err := w.Append(t.Context(), record(3, "c")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := w.Seal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readAll(t, path, sum); err != nil || len(got) != 3 {
+		t.Fatalf("the sealed shard holds %d records, %v; want 3", len(got), err)
 	}
 }
 
@@ -919,7 +956,7 @@ func appendCommitted(t *testing.T, w *Writer, r rawrecord.Record) {
 	if err := w.Append(t.Context(), r); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Commit(t.Context()); err != nil {
+	if err := w.Commit(); err != nil {
 		t.Fatal(err)
 	}
 }
