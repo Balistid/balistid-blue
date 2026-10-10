@@ -843,6 +843,40 @@ func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
 	}
 }
 
+// A batch of rows that each fill most of a page, added when the WAL is just short of its checkpoint,
+// must stay within WALMaxBytes as the largest record does.
+func TestABatchKeepsTheWALWithinItsBound(t *testing.T) {
+	for _, n := range []int{900, 2000, 2100, 3000, 4100, 6000} {
+		path := filepath.Join(t.TempDir(), "shard.db")
+		w, err := Create(t.Context(), path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seq := uint64(1)
+		for ; seq <= checkpointPages-7; seq++ { // a page each, all short of the autocheckpoint
+			appendCommitted(t, w, record(seq, strings.Repeat("p", 2000)))
+		}
+		peak := int64(0)
+		for range 2000 {
+			if err := w.Append(t.Context(), record(seq, strings.Repeat("q", n))); err != nil {
+				t.Fatal(err)
+			}
+			seq++
+			st, err := os.Stat(path + "-wal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			peak = max(peak, st.Size())
+		}
+		if peak > WALMaxBytes {
+			t.Errorf("rows of %d bytes: the WAL peaked at %d bytes, over its bound %d", n, peak, WALMaxBytes)
+		}
+		if _, err := w.Seal(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestTheWALStaysWithinItsBound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shard.db")
 	w, err := Create(t.Context(), path)
