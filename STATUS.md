@@ -36,5 +36,5 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - `test_release.py` bootstrap cleanup removes every `/tmp/balistid-install.*`, also other runs'.
 - Does `systemd_exposure` (2.5) cover the runner? Install skips .wants/.requires (root-only).
-- Renaming the repo and product; R2 signing keys; before floor 0's host install: x32 mitigation, io_uring.
+- Moving the repo and Go module to the BALISTID name (chosen 4.10.); R2 signing keys; before floor 0's host install: x32 mitigation, io_uring.
 - Store: a full filesystem under the cap needs a range test (`headroom_gib`); index format for deleted shards.
