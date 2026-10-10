@@ -823,7 +823,7 @@ func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
 	if err := w.Append(t.Context(), record(2, "b")); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.tx.Rollback(); err != nil { // the transaction fails under the Writer
+	if _, err := w.tx.ExecContext(t.Context(), "DROP TABLE records"); err != nil { // the next insert fails in SQLite
 		t.Fatal(err)
 	}
 	if err := w.Append(t.Context(), record(3, "c")); err == nil {
@@ -835,8 +835,10 @@ func TestAFailedWriteLeavesTheShardToRecover(t *testing.T) {
 	if _, err := w.Seal(t.Context()); err == nil {
 		t.Fatal("Seal succeeded after a failed write")
 	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() == 0o440 {
-		t.Fatalf("the shard was made final: %v, %v", st.Mode(), err)
+	if st, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if st.Mode().Perm() == 0o440 {
+		t.Fatal("the shard was made final")
 	}
 	got, err := Recover(t.Context(), path)
 	if err != nil || got.Empty || got.First != 1 || got.Last != 1 {
@@ -877,6 +879,45 @@ func TestACancelledContextCostsNoTakenRecord(t *testing.T) {
 	}
 	if got, err := readAll(t, path, sum); err != nil || len(got) != 3 {
 		t.Fatalf("the sealed shard holds %d records, %v; want 3", len(got), err)
+	}
+}
+
+// lateCtx passes Append's ctx check and is cancelled from then on: a cancellation that lands between
+// the check and the insert.
+type lateCtx struct {
+	context.Context
+	calls int
+}
+
+func (c *lateCtx) Done() <-chan struct{} { ch := make(chan struct{}); close(ch); return ch }
+
+func (c *lateCtx) Err() error {
+	if c.calls++; c.calls == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+
+// A cancellation after Append's check does not interrupt the insert, which would roll back the
+// records taken before it.
+func TestACancellationDuringAnInsertCostsNoTakenRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shard.db")
+	w, err := Create(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(t.Context(), record(1, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(&lateCtx{Context: t.Context()}, record(2, "b")); err != nil {
+		t.Fatal(err)
+	}
+	sum, err := w.Seal(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readAll(t, path, sum); err != nil || len(got) != 2 {
+		t.Fatalf("the sealed shard holds %d records, %v; want 2", len(got), err)
 	}
 }
 
