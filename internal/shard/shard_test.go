@@ -607,6 +607,7 @@ func TestRecoverRefusesAWALHeaderItDoesNotCheck(t *testing.T) {
 	for name, field := range map[string][2]uint32{
 		"big-endian magic": {0, 0x377f0683},
 		"format version":   {4, 3007001},
+		"page size":        {8, 8192},
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := crashed(t, record(1, "ab"), record(2, "cd"))
