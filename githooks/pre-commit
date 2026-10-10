@@ -1,0 +1,14 @@
+#!/bin/sh
+# Early feedback only; CI is the authority. Fails closed when a required tool is missing (R6).
+set -eu
+for tool in gitleaks python3; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "pre-commit: required tool '$tool' is not installed" >&2
+        exit 1
+    fi
+done
+no_ignore=$(mktemp -d)
+trap 'rmdir "$no_ignore"' EXIT
+gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --no-banner \
+    --ignore-gitleaks-allow --gitleaks-ignore-path "$no_ignore" .
+python3 tools/ci/docs_budget.py

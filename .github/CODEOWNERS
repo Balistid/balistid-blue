@@ -1,0 +1,31 @@
+# Changes to the gates and the rules need the maintainer's approval (ADR 0001).
+# Everything else merges when CI is green.
+/tools/ci/ @Jvc0n
+/.github/ @Jvc0n
+/githooks/ @Jvc0n
+/.gitleaks.toml @Jvc0n
+/zizmor.yml @Jvc0n
+/.gitattributes @Jvc0n
+/ENGINEERING.md @Jvc0n
+/CLAUDE.md @Jvc0n
+/AGENTS.md @Jvc0n
+/adr/ @Jvc0n
+/acceptance/ @Jvc0n
+/THREAT_MODEL.md @Jvc0n
+/go.mod @Jvc0n
+/go.sum @Jvc0n
+/go.work @Jvc0n
+/go.work.sum @Jvc0n
+/.golangci.yml @Jvc0n
+/packaging/ @Jvc0n
+/deploy/ @Jvc0n
+/range/ @Jvc0n
+/cmd/balistid/ @Jvc0n
+/cmd/balistid-runner/ @Jvc0n
+/internal/buildinfo/ @Jvc0n
+/internal/rangevm/ @Jvc0n
+/internal/rangeguest/ @Jvc0n
+/internal/rangejob/ @Jvc0n
+/internal/rangerun/ @Jvc0n
+/cmd/balistid-range/ @Jvc0n
+/cmd/balistid-range-guest/ @Jvc0n

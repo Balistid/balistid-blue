@@ -1,0 +1,23 @@
+title = "balistid gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "host-home-path"
+description = "Absolute home directory path; host-specific data must not be committed"
+# Capture only the user name: the default global allowlist exempts secrets that look like a whole
+# path (^/(?:home|...)/...), which would silently disable this rule.
+regex = '''/(?:home|Users)/([A-Za-z0-9._-]+)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+description = "Generic placeholders and CI runner paths"
+regexes = ['''^(?:runner|user|example)$''']
+
+# The secrets job rescans go.sum as n.txt, where generic-api-key reads "token v1.1.0 h1:<hash>" of a
+# module path as a key. Only a whole go.sum line with a dotted module path is let through, for that rule.
+[[allowlists]]
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+regexes = ['''(?m)^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[\w.~+-]+)* v[0-9][\w.+-]*(?:/go\.mod)? h1:[A-Za-z0-9+/]{43}=$''']

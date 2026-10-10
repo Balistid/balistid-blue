@@ -1,0 +1,59 @@
+# Runs at most one evidence run or agent job (ADR 0011, points 5-7). Started by its timer only.
+[Unit]
+Description=Balistid Blue range runner: one evidence run or agent job
+
+[Service]
+Type=oneshot
+User=balistid-runner
+Group=balistid-runner
+# QEMU inside bwrap opens /dev/kvm, which is root:kvm 0660 on some hosts.
+SupplementaryGroups=kvm
+ExecStart=/usr/local/lib/balistid/balistid-runner tick --state /var/lib/balistid-runner --inbox /var/lib/balistid/inbox --results /var/lib/balistid/results
+# checkState refuses a state directory anyone but the runner could write.
+StateDirectory=balistid-runner
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/balistid/results
+# Result directories must come out 2750 in the setgid label directories (NewResultDir checks it).
+UMask=0027
+# The runner's heap holds kept output (under 100 MiB); the guest's 2048 MiB is QEMU's, not Go's.
+Environment=GOMEMLIMIT=192MiB
+# acceptance runner_job_memory_gib: 2.5 GiB cap, no swap. No MemoryHigh: without swap it stalls a
+# job over it instead of killing it (probe 2026-10-08: 5 min at 2.4G, no oom-kill).
+MemoryMax=2560M
+MemorySwapMax=0
+# Go (about one thread per CPU) plus QEMU (2 vCPUs, main loop, up to 64 block workers), with room.
+TasksMax=256
+CPUSchedulingPolicy=idle
+# RuntimeMaxSec does nothing for oneshot; 3 trials of 10 min plus setup (MaxTrials, RunTimeout).
+TimeoutStartSec=40min
+PrivateNetwork=yes
+# Pseudo devices and /dev/kvm only; bwrap --dev bind-mounts its nodes, which needs no open.
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+# No RestrictSUIDSGID: its seccomp filter turns bwrap 0.13's open_tree into ENOSYS (first install, 2026-10-07).
+LockPersonality=yes
+# No ProtectKernelTunables, ProtectKernelLogs or ProtectHostname: their mounts over /proc make bwrap
+# --proc fail (EPERM; ProtectHostname seen 2026-10-09, "Can't mount proc on /proc").
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# An allowlist (R7): under a filter that only logged (2026-10-10), bwrap, QEMU and the runner called nothing
+# outside these groups. Keyrings, AIO and other processes' memory are taken out and answer EPERM, which QEMU
+# runs without; each tick probes for it as a tripwire.
+SystemCallFilter=@system-service @mount
+SystemCallFilter=~@keyring @aio process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+# AF_NETLINK: bwrap --unshare-all brings up loopback in the new network namespace over rtnetlink.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+PrivateIPC=yes
+RemoveIPC=yes
+# No RestrictNamespaces or PrivateUsers: bwrap needs user namespaces. No MemoryDenyWriteExecute:
+# QEMU links pcre2, which can JIT, and was not run under it.

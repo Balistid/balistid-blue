@@ -1,0 +1,15 @@
+# Started by systemd.wants= on the kernel command line (range/mkosi.conf). The VM powers off when
+# the report is written or fails, so QEMU exits and the host reads the results disk (ADR 0009).
+[Unit]
+Description=Balistid Blue range guest report
+Requires=dev-disk-by\x2did-virtio\x2dbalistid\x2dresults.device
+After=dev-disk-by\x2did-virtio\x2dbalistid\x2dresults.device auditd.service audit-rules.service
+After=systemd-sysctl.service
+SuccessAction=poweroff-force
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/balistid-range/guest
+StandardOutput=journal+console
+StandardError=journal+console

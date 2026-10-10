@@ -1,0 +1,25 @@
+name: Idea
+description: A proposal. Big or irreversible ones become an ADR before any code.
+labels: [idea]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What hurts today, and for whom.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: For a new component, name the existing tool and why it is not enough (R9).
+    validations:
+      required: true
+  - type: dropdown
+    id: floor
+    attributes:
+      label: Floor
+      options: ["0 recorder", "1 drill", "2 package actor", "3 UX", "4 AI server", "5 AI agent actor", "setup"]
+    validations:
+      required: true

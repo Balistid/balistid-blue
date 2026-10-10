@@ -1,0 +1,336 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Weekly on main, so govulncheck sees advisories published without a new commit.
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  ACTIONLINT_VERSION: "1.7.12"
+  ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+  ZIZMOR_VERSION: "1.30.1"
+  ZIZMOR_SHA256: "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+  GO_VERSION: "1.27.2"
+  GO_SHA256: "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5"
+  GOLANGCI_VERSION: "2.14.0"
+  GOLANGCI_SHA256: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
+  GOVULNCHECK_VERSION: "v1.8.0"
+  GOVULNCHECK_SUM: "h1:clG4qBU6zH5VKjti8n5j8BBuYzoSha392xXMkXS351U="
+
+jobs:
+  go-static:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Install golangci-lint (pinned by sha256)
+        run: |
+          gl="golangci-lint-${GOLANGCI_VERSION}-linux-amd64"
+          curl -fsSLo "$RUNNER_TEMP/gl.tgz" \
+            "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/$gl.tar.gz"
+          echo "$GOLANGCI_SHA256  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$gl" >> "$GITHUB_PATH"
+      - name: Format, modules, vet, lint (no project code runs in this job)
+        run: |
+          unformatted="$(gofmt -l .)"
+          test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+          go mod tidy -diff
+          go mod verify
+          cgo_files="$(CGO_ENABLED=1 go list -buildvcs=false -f '{{join .CgoFiles " "}}' ./...)"
+          test -z "${cgo_files//[[:space:]]/}" || { echo "cgo is forbidden (ADR 0003): $cgo_files"; exit 1; }
+          go vet ./...
+          golangci-lint run ./...
+      - name: Every package of the range binaries, the runner and the client is code-owned (ADR 0011)
+        run: |
+          go list -deps -json ./cmd/balistid-range ./cmd/balistid-range-guest ./cmd/balistid-runner ./cmd/balistid > "$RUNNER_TEMP/deps.json"
+          python3 tools/ci/go_gate.py owned --deps "$RUNNER_TEMP/deps.json" \
+            --codeowners .github/CODEOWNERS --go-mod go.mod
+      - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)
+        run: |
+          (cd "$RUNNER_TEMP" && go mod download -json "golang.org/x/vuln@${GOVULNCHECK_VERSION}") > "$RUNNER_TEMP/vuln.json"
+          python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/vuln.json" --expect "$GOVULNCHECK_SUM"
+          go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  go-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Build and test as released (no cgo)
+        run: |
+          go build ./...
+          go test ./...
+
+  go-race:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Tests with the race detector (needs cgo)
+        run: CGO_ENABLED=1 go test -race ./...
+
+  go-release:
+    needs: [go-static, go-test, go-race, selftest, docs-budget, pin-check, commit-lint, secrets, workflow-lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Reproducible release build (no built binary runs in this job)
+        run: |
+          flags="-X github.com/Balistid/balistid-blue/internal/buildinfo.Version=${GITHUB_SHA}"
+          a="$RUNNER_TEMP/build-a" b="$RUNNER_TEMP/other/build-b"
+          mkdir -p "$a" "$b" "$RUNNER_TEMP/home-b" "$RUNNER_TEMP/tmp-b"
+          git archive HEAD | tar -x -C "$a"
+          git archive HEAD | tar -x -C "$b"
+          for cmd in balistid balistid-runner; do
+            (cd "$a" && go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
+            (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \
+              GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \
+              go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
+          done
+          # No built binary runs in this job: one run here could change what is bundled before it is
+          # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
+          for cmd in balistid balistid-runner; do
+            python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
+            sha256sum "$a/$cmd"
+          done
+          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --deploy "$a/deploy/runner" \
+            --out "$RUNNER_TEMP/release"
+          python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/balistid-runner-bundle.tar"
+      # Root types the hash of this step on a push to main (ADR 0011, point 1). A pull request runs its
+      # own workflow and can print anything, so the main workflow prints no hash there.
+      - name: Install bundle of the range runner
+        if: github.event_name == 'push'
+        run: |
+          sha=$(sha256sum "$RUNNER_TEMP/balistid-runner-bundle.tar" | cut -d' ' -f1)
+          echo "Bundle sha256 of the runner at $GITHUB_SHA: $sha"
+          python3 tools/ci/release.py bootstrap "$sha"
+      # The maintainer downloads this file and root checks it against the hash above (ADR 0011, point 1).
+      - name: Upload the bundle
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: balistid-runner-bundle
+          path: ${{ runner.temp }}/balistid-runner-bundle.tar
+          if-no-files-found: error
+          retention-days: 30
+
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor (pinned by sha256) for the pin-check gate tests
+        run: |
+          tarball="zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/$tarball"
+          echo "$ZIZMOR_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" zizmor
+      - name: Install gitleaks (pinned by sha256) for the rescan detection test
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+      - run: >-
+          ZIZMOR="$RUNNER_TEMP/zizmor" GITLEAKS="$RUNNER_TEMP/gitleaks"
+          python3 -m unittest discover -s tools/ci/tests -v
+
+  docs-budget:
+    # A scheduled run has no commit range to check.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Layout and budget of the tree that lands and of every commit in the change
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          range="$(python3 tools/ci/change_range.py)"
+          python3 tools/ci/docs_budget.py
+          python3 tools/ci/docs_budget.py --range "$range"
+      - name: The retired project name stays out of the tree
+        # The bracket keeps this line from matching itself. Only "no match" (exit 1) passes, so a fatal
+        # git error fails the step; --text also searches files that are binary or marked binary.
+        run: |
+          rc=0; git grep -n -i --text 'k[o]rdon' || rc=$?
+          test "$rc" -eq 1
+          if git ls-files | grep -i 'k[o]rdon'; then exit 1; fi
+
+  pin-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor (pinned by sha256)
+        run: |
+          tarball="zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/$tarball"
+          echo "$ZIZMOR_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" zizmor
+      - name: Audit workflows (hash-pinned actions and more)
+        run: '"$RUNNER_TEMP/zizmor" --offline --config zizmor.yml .github/workflows/'
+
+  commit-lint:
+    # A scheduled run has no commit range to check.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lint every commit in the change
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          range="$(python3 tools/ci/change_range.py)"
+          set -- --range "$range"
+          if [ "$EVENT" = "push" ] || [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+            set -- "$@" --dependabot-pr
+          fi
+          python3 tools/ci/commit_lint.py "$@"
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks (pinned by sha256)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+      - name: Scan full history
+        # Force text diffs so .gitattributes cannot hide files and ignore inline allow comments.
+        # gitleaks still reads a committed .gitleaksignore; docs-budget rejects that path.
+        run: |
+          printf '* diff\n' > .git/info/attributes
+          mkdir -p "$RUNNER_TEMP/no-ignore"
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
+            --ignore-gitleaks-allow --gitleaks-ignore-path "$RUNNER_TEMP/no-ignore" .
+      - name: Rescan files gitleaks skips, from every commit in history, with the repository rules
+        run: |
+          python3 tools/ci/rescan_skipped.py --range HEAD --gitleaks "$RUNNER_TEMP/gitleaks" \
+            --config .gitleaks.toml
+
+  workflow-lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint (pinned by sha256)
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
+      - run: '"$RUNNER_TEMP/actionlint" -color'
+      - run: shellcheck githooks/*

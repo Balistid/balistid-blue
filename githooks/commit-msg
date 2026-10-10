@@ -1,0 +1,8 @@
+#!/bin/sh
+# Removes tool-inserted attribution lines, then lints. CI lints the whole range again and rejects.
+set -eu
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "commit-msg: python3 is not installed" >&2
+    exit 1
+fi
+exec python3 tools/ci/commit_lint.py --strip-attribution --message-file "$1"
