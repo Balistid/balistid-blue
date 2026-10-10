@@ -1,6 +1,6 @@
 # 0011 — Run range jobs for agents in a confined runner
 
-- Status: proposed
+- Status: accepted 2026-10-10 (PR 13 on 506f775: 22 runs PASS, a memory-filling exec job RAN, no OOM kill)
 - Date: 2026-10-04
 - Decided-by: alex
 - Agent: claude/opus-5.5
