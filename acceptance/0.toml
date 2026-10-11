@@ -58,7 +58,7 @@ min = 2000
 unit = "records/s for 600 s with zero loss"
 rows = ["T4"]
 adr = "0005"
-method = "Range VM generator gives every exec a sequence number in argv; read from the collector's store (Laurel-only runs are a baseline and never pass), every number is stored once and none outside the generated set, audit lost is unchanged, no dispatcher overflow, the rate holds in every 10 s window; guest steal over 1 % is INVALID (ADR 0018)."
+method = "Range VM generator gives every exec a sequence number in argv; read from the collector's store (Laurel-only runs are a baseline and never pass), every number is stored once and none outside the generated set, audit lost is unchanged, no dispatcher overflow, the rate holds in every 10 s window, where a number emitted at most 100 ms after the end of the window it was due in still counts there (scheduler jitter, at most 1 % of a window); guest steal over 1 % is INVALID (ADR 0018)."
 
 [[metric]]
 id = "burst_rate"
