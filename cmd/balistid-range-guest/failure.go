@@ -85,15 +85,17 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	start := time.Now()
 	failAt := start.Add(span/2 + time.Duration(extra.Int64()))
-	stopSync := time.Duration(0)
+	// The writer stops syncing after the number due LastSync before the failure.
+	var stopAfter uint64
 	if tr.Load.Writer.LastSync > 0 {
-		stopSync = failAt.Add(-tr.Load.Writer.LastSync).Sub(start)
+		stopAfter = uint64(failAt.Add(-tr.Load.Writer.LastSync).Sub(start).Seconds()*float64(tr.Load.Rate)) + 1
 	}
 	self, err := os.Executable()
 	if err != nil {
 		return fail("own path: " + err.Error())
 	}
-	child := exec.CommandContext(ctx, self, writerArg, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync), ms(stopSync)) //nolint:gosec // our own binary, durations from the table
+	child := exec.CommandContext(ctx, self, writerArg, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync), //nolint:gosec // our own binary, values from the table
+		strconv.FormatUint(stopAfter, 10))
 	pipe, err := child.StdinPipe()
 	if err != nil {
 		return fail("writer pipe: " + err.Error())
@@ -117,7 +119,8 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return fail(fmt.Sprintf("load ended before the failure: %v", genErr))
 	}
 	h := hand.H(time.Now())
-	if err := mark(fmt.Sprintf("balistid-fail %d\n", h)); err != nil {
+	// A mark starts on a line of its own: the console's last line may be a prompt without an end.
+	if err := mark(fmt.Sprintf("\nbalistid-fail %d\n", h)); err != nil {
 		return fail(err.Error())
 	}
 	if tr.Failure == rangejob.FailReset {
@@ -128,7 +131,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := child.Process.Kill(); err != nil {
 		return fail("kill writer: " + err.Error())
 	}
-	if err := mark("balistid-killed\n"); err != nil {
+	if err := mark("\nbalistid-killed\n"); err != nil {
 		return fail(err.Error())
 	}
 	_ = child.Wait()
@@ -159,24 +162,21 @@ func (r *report) stored() error {
 	return write(r.facts)
 }
 
-// writerMain is the measured writer's process: hold, sync and stop-sync in milliseconds, numbers on
-// stdin, records appended to the numbers file.
+// writerMain is the measured writer's process: hold and sync in milliseconds and the number after
+// which it stops syncing (0: never), numbers on stdin, records appended to the numbers file.
 func writerMain(args []string) error {
 	if len(args) != 3 {
-		return errors.New("want hold, sync and stop-sync in milliseconds")
+		return errors.New("want hold and sync in milliseconds and a stop-after number")
 	}
-	var d [3]time.Duration
+	var v [3]uint64
 	for i, a := range args {
-		n, err := strconv.Atoi(a)
-		if err != nil || n < 0 {
-			return fmt.Errorf("argument %d: not a number of milliseconds", i+1)
+		n, err := strconv.ParseUint(a, 10, 63)
+		if err != nil {
+			return fmt.Errorf("argument %d: not a number", i+1)
 		}
-		d[i] = time.Duration(n) * time.Millisecond
+		v[i] = n
 	}
-	pol := rangeguest.Policy{Hold: d[0], Sync: d[1]}
-	if d[2] > 0 {
-		pol.StopSync = time.Now().Add(d[2])
-	}
+	pol := rangeguest.Policy{Hold: time.Duration(v[0]) * time.Millisecond, Sync: time.Duration(v[1]) * time.Millisecond, StopAfter: v[2]} //nolint:gosec // parsed into 63 bits
 	f, err := os.OpenFile(numbersFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("numbers file: %w", err)
@@ -198,14 +198,22 @@ func mountScratch() error {
 	return nil
 }
 
-// mark writes one line straight to the serial console.
-func mark(line string) error {
+// tcsbrk is TCSBRK (asm-generic/ioctls.h); with argument 1 it is tcdrain(3).
+const tcsbrk = 0x5409
+
+// mark writes text straight to the serial console and waits until the UART has sent it, so a
+// sysrq b right after cannot cut it short.
+func mark(text string) error {
 	f, err := os.OpenFile(consoleDev, os.O_WRONLY|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return fmt.Errorf("console: %w", err)
 	}
-	_, err = f.WriteString(line)
-	return errors.Join(err, f.Close())
+	_, werr := f.WriteString(text)
+	var drain error
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), tcsbrk, 1); errno != 0 {
+		drain = fmt.Errorf("drain console: %w", errno)
+	}
+	return errors.Join(werr, drain, f.Close())
 }
 
 func readHead(dev string, head []byte) error {

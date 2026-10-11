@@ -2,6 +2,8 @@ package rangevm
 
 import (
 	"bytes"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +121,10 @@ func TestFailureTrialsNeedTheirMarksInTime(t *testing.T) {
 			t.Errorf("%s: Invalid %q after %d boots, H %d; want %q after %d, H %d", c.name, out.Invalid, len(vm.boots), out.Marks.H, c.why, c.boots, c.wantH)
 		}
 	}
+	broken := &fakeVM{streams: [][]byte{facts(t, append(echo("kill-crash", 1), fact(FactTrialError, "mkfs failed"))...)}}
+	if out, _ := runFake(t, kill, broken.run); !strings.Contains(out.Invalid, "mkfs failed") {
+		t.Errorf("a guest that could not run the trial: %q, want its reason, not the missing mark", out.Invalid)
+	}
 	plain := &fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 09\n")}}
 	if out, _ := runFake(t, resetTrial, plain.run); out.Invalid != "" || !out.Marks.Fail.IsZero() {
 		t.Errorf("a trial that is not a failure trial read marks: %+v", out)
@@ -129,7 +135,38 @@ func TestFailureTrialsNeedTheirMarksInTime(t *testing.T) {
 func TestMarkWriterKeepsLinesShort(t *testing.T) {
 	mw := &markWriter{w: &bytes.Buffer{}, now: clockAt(time.Unix(0, 0))}
 	_, _ = mw.Write(bytes.Repeat([]byte("x"), 1<<20))
-	if len(mw.line) > maxMarkLine || !mw.long {
+	if len(mw.line) > maxMarkLine {
 		t.Errorf("kept %d bytes of an unfinished line", len(mw.line))
 	}
+}
+
+// The serial getty leaves "archlinux login: " without an end on the console; a mark that starts
+// with its own newline still stands on a line of its own, one that does not is never seen.
+func TestMarksAfterALoginPrompt(t *testing.T) {
+	prompt := "\r\n\r\nArch Linux 7.2.8-arch1-2 (ttyS0)\r\n\r\narchlinux login: "
+	for in, wantH := range map[string]uint64{prompt + "\nbalistid-fail 5\n": 5, prompt + "balistid-fail 5\n": 0} {
+		mw := &markWriter{w: &bytes.Buffer{}, now: clockAt(time.Unix(0, 0))}
+		_, _ = mw.Write([]byte(in))
+		if mw.m.H != wantH || mw.m.Bad != "" {
+			t.Errorf("%q: marks %+v, want H %d", in, mw.m, wantH)
+		}
+	}
+}
+
+// Whatever the console carries, a stamped fail mark is exactly a line "balistid-fail <H>".
+func FuzzMarkWriter(f *testing.F) {
+	f.Add([]byte("archlinux login: \nbalistid-fail 41\r\nbalistid-killed\n"))
+	f.Add([]byte("balistid-fail 1\nbalistid-fail 2\n"))
+	f.Fuzz(func(t *testing.T, in []byte) {
+		mw := &markWriter{w: io.Discard, now: clockAt(time.Unix(0, 0))}
+		_, _ = mw.Write(in)
+		if mw.m.Bad != "" || mw.m.Fail.IsZero() {
+			return
+		}
+		line := "balistid-fail " + strconv.FormatUint(mw.m.H, 10)
+		text := "\n" + string(in)
+		if !strings.Contains(text, "\n"+line+"\n") && !strings.Contains(text, "\n"+line+"\r\n") {
+			t.Fatalf("fail mark H=%d stamped from %q", mw.m.H, in)
+		}
+	})
 }

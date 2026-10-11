@@ -61,7 +61,10 @@ func TestTrialLoadIsTheAcceptanceThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tr := range Trials() {
-		if tr.Expect != "" || tr.Failure != "" {
+		if tr.Failure != "" {
+			// Failure controls run at sustained_rate (acceptance crash_loss_ms).
+			tr.Metric, tr.Load.Seconds = "sustained_rate", 600
+		} else if tr.Expect != "" {
 			continue
 		}
 		block := regexp.MustCompile(`(?m)^id = "` + tr.Metric + `"\nmin = (\d+)\nunit = "records/s for (\d+) s`).FindSubmatch(data)

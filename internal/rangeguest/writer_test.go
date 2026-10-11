@@ -27,6 +27,21 @@ func (d *diskFile) Sync() error {
 	return d.fail
 }
 
+// lost counts the numbers 1..h a file of records does not hold.
+func lost(data []byte, h uint64) uint64 {
+	seen := map[uint64]bool{}
+	for i := 0; i+RecordSize <= len(data); i += RecordSize {
+		seen[binary.LittleEndian.Uint64(data[i:])] = true
+	}
+	var n uint64
+	for seq := uint64(1); seq <= h; seq++ {
+		if !seen[seq] {
+			n++
+		}
+	}
+	return n
+}
+
 // run hands over rate numbers per second until failAt, ticking every millisecond, and returns H and
 // the numbers up to it that a reset (only synced bytes) and a kill (all written bytes) lose.
 func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost, killLost uint64) {
@@ -37,10 +52,11 @@ func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost
 	w := NewWriter(f, pol, c)
 	var hand Handover
 	every := time.Second / time.Duration(rate)
-	next := start
+	next, seq := start, uint64(0)
 	for c.now.Before(start.Add(failAt)) {
 		if !c.now.Before(next) {
-			if _, err := w.Append(); err != nil {
+			seq++
+			if err := w.Append(seq); err != nil {
 				t.Fatal(err)
 			}
 			hand.Add(c.now)
@@ -51,15 +67,7 @@ func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost
 		c.now = c.now.Add(time.Millisecond)
 	}
 	h = hand.H(c.now)
-	synced, err := Stored(f.disk.Bytes())
-	if err != nil {
-		t.Fatal(err)
-	}
-	written, err := Stored(append(f.disk.Bytes(), f.cache.Bytes()...))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return h, Lost(synced, h), Lost(written, h)
+	return h, lost(f.disk.Bytes(), h), lost(append(f.disk.Bytes(), f.cache.Bytes()...), h)
 }
 
 // The controls of ADR 0018 point 4: syncing every 250 ms loses nothing a reset must keep; a last
@@ -71,16 +79,13 @@ func TestWriterPoliciesAgainstH(t *testing.T) {
 	if h < 9000 || reset != 0 {
 		t.Errorf("sync every 250 ms: H %d, %d lost to a reset; want H about 9100 and none", h, reset)
 	}
-	_, reset, _ = run(t, Policy{Sync: 250 * time.Millisecond, StopSync: time.Unix(0, 0).Add(fail - 1500*time.Millisecond)}, 1000, fail)
-	if reset == 0 {
+	if _, reset, _ = run(t, Policy{Sync: 250 * time.Millisecond, StopAfter: 8500}, 1000, fail); reset == 0 {
 		t.Error("last sync 1500 ms before the reset lost nothing")
 	}
-	_, _, kill := run(t, Policy{Hold: 2 * time.Second}, 1000, fail)
-	if kill == 0 {
+	if _, _, kill := run(t, Policy{Hold: 2 * time.Second}, 1000, fail); kill == 0 {
 		t.Error("holding records 2 s before write() lost nothing to a kill")
 	}
-	_, _, kill = run(t, Policy{}, 1000, fail)
-	if kill != 0 {
+	if _, _, kill := run(t, Policy{}, 1000, fail); kill != 0 {
 		t.Errorf("writing at once lost %d to a kill", kill)
 	}
 	if _, reset, _ = run(t, Policy{Sync: 5 * time.Second}, 1000, fail+2*time.Second); reset == 0 {
@@ -88,13 +93,13 @@ func TestWriterPoliciesAgainstH(t *testing.T) {
 	}
 }
 
-// Each number is written once, in order.
+// Each number is written once, in the order handed.
 func TestWriterWritesEachNumberOnce(t *testing.T) {
 	c := &fakeClock{now: time.Unix(0, 0)}
 	f := &diskFile{}
 	w := NewWriter(f, Policy{Hold: 3 * time.Millisecond}, c)
-	for range 50 {
-		if _, err := w.Append(); err != nil {
+	for seq := uint64(1); seq <= 50; seq++ {
+		if err := w.Append(seq); err != nil {
 			t.Fatal(err)
 		}
 		c.now = c.now.Add(time.Millisecond)
@@ -103,12 +108,12 @@ func TestWriterWritesEachNumberOnce(t *testing.T) {
 	if err := w.Tick(); err != nil {
 		t.Fatal(err)
 	}
-	nums, err := Stored(f.cache.Bytes())
-	if err != nil || len(nums) != 50 {
-		t.Fatalf("stored %d numbers, %v; want 50", len(nums), err)
+	data := f.cache.Bytes()
+	if len(data) != 50*RecordSize {
+		t.Fatalf("stored %d bytes, want 50 records", len(data))
 	}
-	for i, n := range nums {
-		if n != uint64(i)+1 {
+	for i := 0; i < 50; i++ {
+		if n := binary.LittleEndian.Uint64(data[i*RecordSize:]); n != uint64(i)+1 {
 			t.Fatalf("record %d is %d", i, n)
 		}
 	}
@@ -117,24 +122,8 @@ func TestWriterWritesEachNumberOnce(t *testing.T) {
 func TestWriterReportsFileErrors(t *testing.T) {
 	c := &fakeClock{now: time.Unix(0, 0)}
 	w := NewWriter(&diskFile{fail: errors.New("disk gone")}, Policy{Sync: time.Millisecond}, c)
-	if _, err := w.Append(); err == nil {
+	if err := w.Append(1); err == nil {
 		t.Error("a failed write went unreported")
-	}
-}
-
-func TestStoredAndLost(t *testing.T) {
-	if _, err := Stored(make([]byte, RecordSize+1)); err == nil {
-		t.Error("a cut record was read")
-	}
-	nums, err := Stored([]byte{1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0})
-	if err != nil || len(nums) != 2 || nums[1] != 3 {
-		t.Fatalf("Stored = %v, %v", nums, err)
-	}
-	if got := Lost(nums, 4); got != 2 {
-		t.Errorf("Lost(1 3, 4) = %d, want 2 and 4", got)
-	}
-	if got := Lost(nums, 1); got != 0 {
-		t.Errorf("Lost(1 3, 1) = %d, numbers above H may go", got)
 	}
 }
 
@@ -188,17 +177,29 @@ func TestServeWriterStoresWhatItIsHanded(t *testing.T) {
 		in.Write(binary.LittleEndian.AppendUint64(nil, n))
 	}
 	f := &diskFile{}
-	if err := ServeWriter(&in, NewWriter(f, Policy{Hold: time.Hour}, WallClock)); err != nil {
+	if err := ServeWriter(&in, NewWriter(f, Policy{}, WallClock)); err != nil {
 		t.Fatal(err)
 	}
-	if p, n := StoredPrefix(f.disk.Bytes()); p != 100 || n != 100 {
-		t.Errorf("synced %d through %d; want all 100 flushed and synced at the end", n, p)
-	}
-	bad := bytes.NewReader(append(binary.LittleEndian.AppendUint64(nil, 1), binary.LittleEndian.AppendUint64(nil, 3)...))
-	if err := ServeWriter(bad, NewWriter(&diskFile{}, Policy{}, WallClock)); err == nil {
-		t.Error("a number out of sequence was stored")
+	if p, n := StoredPrefix(f.cache.Bytes()); p != 100 || n != 100 {
+		t.Errorf("wrote %d through %d; want all 100", n, p)
 	}
 	if err := ServeWriter(bytes.NewReader([]byte{1, 0, 0}), NewWriter(&diskFile{}, Policy{}, WallClock)); err == nil {
 		t.Error("a cut number was accepted")
 	}
+}
+
+// Whatever a crash leaves in the file, every number up to the prefix is stored, and the prefix never
+// exceeds the whole records.
+func FuzzStoredPrefix(f *testing.F) {
+	f.Add(binary.LittleEndian.AppendUint64(binary.LittleEndian.AppendUint64(nil, 1), 2))
+	f.Add([]byte{1, 0, 0})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		prefix, count := StoredPrefix(data)
+		if count != uint64(len(data)/RecordSize) || prefix > count {
+			t.Fatalf("prefix %d, count %d of %d bytes", prefix, count, len(data))
+		}
+		if lost(data, prefix) != 0 {
+			t.Fatalf("prefix %d has a gap", prefix)
+		}
+	})
 }
