@@ -41,14 +41,25 @@ type Store interface {
 	Close(ctx context.Context) ([]store.Seal, error)
 }
 
-// Links tracks Laurel's connections as the reader sees them, for the writer's health records.
-type Links struct {
-	mu        sync.Mutex
-	gen       uint64
+// maxLinkEvents bounds connection events between two ticks; more are counted, not kept.
+const maxLinkEvents = 16
+
+// linkEvent is one connection or EOF as the reader saw it.
+type linkEvent struct {
 	connected bool
 	pid       int
 	cause     string
-	everPID   int
+}
+
+// Links tracks Laurel's connections as the reader sees them, for the writer's health records; every
+// change is kept until the writer takes it, so two changes between ticks are both recorded.
+type Links struct {
+	mu        sync.Mutex
+	events    []linkEvent
+	dropped   int
+	connected bool
+	started   bool
+	lastPID   int
 }
 
 // Connected records a new connection from pid: the collector's first, a restarted Laurel (another pid)
@@ -56,30 +67,40 @@ type Links struct {
 func (l *Links) Connected(pid int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	cause := "reconnect"
 	switch {
-	case l.gen == 0:
-		l.cause = "collector-start"
-	case pid != l.everPID:
-		l.cause = "laurel-restart"
-	default:
-		l.cause = "reconnect"
+	case !l.started:
+		cause = "collector-start"
+	case pid != l.lastPID:
+		cause = "laurel-restart"
 	}
-	l.gen++
-	l.connected, l.pid, l.everPID = true, pid, pid
+	l.started, l.connected, l.lastPID = true, true, pid
+	l.add(linkEvent{connected: true, pid: pid, cause: cause})
 }
 
 // Disconnected records EOF on the connection being read.
 func (l *Links) Disconnected() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.gen++
 	l.connected = false
+	l.add(linkEvent{pid: l.lastPID, cause: "eof"})
 }
 
-func (l *Links) state() (gen uint64, connected bool, pid int, cause string) {
+func (l *Links) add(e linkEvent) {
+	if len(l.events) == maxLinkEvents {
+		l.dropped++
+		return
+	}
+	l.events = append(l.events, e)
+}
+
+// take returns the events since the last take, how many did not fit, and whether a connection is open.
+func (l *Links) take() ([]linkEvent, int, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.gen, l.connected, l.pid, l.cause
+	ev, dropped := l.events, l.dropped
+	l.events, l.dropped = nil, 0
+	return ev, dropped, l.connected
 }
 
 // Writer owns the store (ADR 0013): it is the only goroutine that calls it. It appends what the reader
@@ -111,7 +132,6 @@ type Writer struct {
 	lastStats   time.Time
 	lastJournal time.Time
 	lastRound   time.Time
-	seenGen     uint64
 	connectedAt time.Time // when the connection being read began; zero while none is
 	health      string
 	notes       [][]byte
@@ -177,7 +197,7 @@ func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
 	w.appendQueued(ctx)
 	w.flush(ctx, now)
-	w.connections(now)
+	w.connections(now, true)
 	w.canary(now)
 	w.losses()
 	if now.Sub(w.lastStats) >= statsEvery {
@@ -197,8 +217,12 @@ func (w *Writer) step(ctx context.Context) {
 	}
 }
 
-// appendQueued stores every queued record, or counts it lost while the store is down.
+// appendQueued stores every queued record, or counts it lost while the store is down. Until the first
+// Open returns, records wait in the queue, which drops and counts what does not fit (ADR 0016, point 5).
 func (w *Writer) appendQueued(ctx context.Context) {
+	if w.st == nil && w.down == "starting" {
+		return
+	}
 	for _, r := range w.Queue.Drain() {
 		if w.st == nil {
 			w.Losses.Add(StageStore, r)
@@ -257,22 +281,25 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
 
-// connections notes every connection change and sends a probe over each new connection at once.
-func (w *Writer) connections(now time.Time) {
-	gen, connected, pid, cause := w.Links.state()
-	if gen == w.seenGen {
-		return
+// connections notes every connection change and, with probe, sends a probe over a new connection at once.
+func (w *Writer) connections(now time.Time, probe bool) {
+	events, dropped, connected := w.Links.take()
+	for _, e := range events {
+		w.note(map[string]any{"kind": "connection", "laurel_pid": e.pid, "cause": e.cause})
 	}
-	w.seenGen = gen
-	if connected {
+	if dropped > 0 {
+		w.note(map[string]any{"kind": "connection", "dropped_events": dropped})
+	}
+	switch {
+	case !connected:
+		w.connectedAt = time.Time{}
+	case len(events) > 0: // a new connection: only a probe sent after it proves it
 		w.connectedAt = now
-		w.note(map[string]any{"kind": "connection", "laurel_pid": pid, "cause": cause})
-		w.Canary.Probe(now, false)
-		w.lastRound = now // the next round waits a full interval, or it would replace this probe
-		return
+		if probe {
+			w.Canary.Probe(now, false)
+			w.lastRound = now // the next round waits a full interval, or it would replace this probe
+		}
 	}
-	w.connectedAt = time.Time{}
-	w.note(map[string]any{"kind": "connection", "laurel_pid": pid, "cause": "eof"})
 }
 
 func (w *Writer) canary(now time.Time) {
@@ -392,6 +419,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.Log.Warn("stopped with the store down", "lost", w.Losses.Take(), "pending", w.pending)
 		return nil
 	}
+	w.connections(w.Now(), false)
 	w.losses()
 	w.note(map[string]any{"kind": "stopping"})
 	w.writeNotes()

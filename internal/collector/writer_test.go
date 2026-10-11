@@ -307,6 +307,17 @@ func TestFlushFailureCountsUncommittedBatch(t *testing.T) {
 	}
 }
 
+func TestRecordsWaitForTheFirstOpen(t *testing.T) {
+	r := newRig(t)
+	r.push(event(1, ""), event(2, ""))
+	r.start(nil)
+	r.settle()
+	r.step(0)
+	if n := len(r.st.committed); n != 2 || len(r.st.kinds("lost")) != 0 {
+		t.Fatalf("committed %d of 2 records queued before the store opened", n)
+	}
+}
+
 func TestStoreDownReaderKeepsDrainingAndReopens(t *testing.T) {
 	r := newRig(t)
 	r.start(errors.New("no disk"))
@@ -378,15 +389,23 @@ func TestLagOverBudgetIsHealthEvent(t *testing.T) {
 
 func TestStartRestartReexecToldApart(t *testing.T) {
 	l := &Links{}
-	var causes []string
 	for _, pid := range []int{10, 10, 11} {
 		l.Connected(pid)
-		_, _, _, cause := l.state()
-		causes = append(causes, cause)
 		l.Disconnected()
 	}
-	if strings.Join(causes, " ") != "collector-start reconnect laurel-restart" {
-		t.Fatalf("causes %v", causes)
+	events, dropped, connected := l.take()
+	var causes []string
+	for _, e := range events {
+		causes = append(causes, e.cause)
+	}
+	if strings.Join(causes, " ") != "collector-start eof reconnect eof laurel-restart eof" || dropped != 0 || connected {
+		t.Fatalf("causes %v, dropped %d, connected %v", causes, dropped, connected)
+	}
+	for range maxLinkEvents + 3 {
+		l.Connected(12)
+	}
+	if events, dropped, _ := l.take(); len(events) != maxLinkEvents || dropped != 3 {
+		t.Fatalf("kept %d events, dropped %d", len(events), dropped)
 	}
 }
 
