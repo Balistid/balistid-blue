@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-11 by claude/opus-5.5
+Updated: 2026-10-11 (evening) by claude/opus-5.5
 
 ## Where we are
 
@@ -12,24 +12,20 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Range, runner (0009-0011) | VM where agents test the recorder | ADR 0011 accepted; installed at 506f775; ADR 0018 trials proposed |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
-| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | ADRs 0016, 0017 proposed |
+| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94; framing, queue on a branch |
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- ADR 0016 (collector): socket activation, a reader that never blocks Laurel (a full queue drops and counts),
-  lines stored as evidence, loss counted per stage, store failure drains and retries, canary without exec. Laurel
-  0.8.2, auditd 4.2.1 and kernel source showed that blocking Laurel moves loss to auditd, uncounted, and can freeze
-  the host; it amends ADR 0007 points 2 and 5. ADR 0017: health from the collector's own canary. ADR 0016 proposes a
-  scheduled CI workflow for `fuzz_hours`.
-- Store commits per Flush (250 ms) or a page budget (#88): 1 KiB records 157 → ~18000/s (btrfs/NVMe, maintainer's
-  machine, not the range). `burst_rate` stays zero loss; at 64 KiB records `rss_mib` load may drop, counted.
-- ADR 0015 (#90): store, shard, collector and normalizer merge without the maintainer until installed.
+- Collector master plan (Opus critic and Codex, two rounds each, GO): checkpoints CP1 store side, CP2 collector core,
+  CP3 gates and units, CP4 range; acceptance proof path per metric. Kept outside the repo with the maintainer.
+- #94 (CP1): `rawrecord.FromParts` and `Record.Check`, `Store.Append(record)` with `ErrRefused`, `store.ReadSeals`.
+- CP2 started: `internal/collector` framing (lines as evidence, ID serial, malformed, lines over 2 MiB streamed),
+  byte-bounded queue that never blocks, losses per stage; fuzz and mutation tested, 2.4 µs per 1 KiB line.
 ## Next step
-1. Collector in agent-merged pull requests (ADR 0015): `Store.Append` takes a record; acceptor, reader, queue and
-   loss counters with fuzz seeds; writer, health, canary, reopen, shutdown and `cmd/balistid-collector`. Each with
-   an Opus critic and a Codex full review. Then the fuzz workflow (maintainer pushes it), the whole-source review.
-2. Deployment and range (owned, after the review): units and the `.socket` grammar, Laurel `unix:`, the canary rule,
-   go_gate for the SQLite module, the range image with the collector, kill -9 and hard-reset trials.
+1. Merge #94 after Codex and the maintainer's approval (owned `internal/rawrecord/`).
+2. CP2: acceptor (SO_PEERCRED, two connections), writer (Flush, store failure, reopen), canary and health
+   (ADR 0017), `cmd/balistid-collector`; one pull request, one critic and one Codex review.
+3. Laurel spike outside the sandbox (fixtures, line lengths); runner trials in ADR 0018 (another session).
 ## Open decisions (maintainer)
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - Runner: #86 waits for the next reinstall; Codex's process_vm_writev NO-GO on the tick filter (#75) is open.
