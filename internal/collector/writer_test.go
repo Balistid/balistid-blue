@@ -19,13 +19,18 @@ import (
 )
 
 // fakeStore stands in for the store; its failures are switched by the test.
+// Like the store, it keeps health records and its count of records dropped at the cap until a Flush
+// commits them, and a failed Flush or Close loses what it held.
 type fakeStore struct {
 	mu                       sync.Mutex
 	appended, committed      []rawrecord.Record
-	notes                    []map[string]any
+	queued, notes            []map[string]any
+	dropped, droppedStored   int
 	failAppend, failFlush    bool
 	refuse, full, rejectNote bool
+	failClose, sealNext      bool          // sealNext: the next Append seals, committing what came before
 	block                    chan struct{} // Append waits on it when set
+	onFlush                  func()        // runs inside Flush, as a slow commit would
 	closed                   int
 }
 
@@ -44,20 +49,45 @@ func (s *fakeStore) Append(_ context.Context, r rawrecord.Record) (bool, []store
 	case s.refuse:
 		return false, nil, fmt.Errorf("%w: test", store.ErrRefused)
 	case s.full:
+		s.dropped++
 		return false, nil, nil
 	}
+	var sealed []store.Seal
+	if s.sealNext {
+		s.sealNext = false
+		s.commit()
+		sealed = []store.Seal{{Name: "00000000000000000001.db"}}
+	}
 	s.appended = append(s.appended, r)
-	return true, nil, nil
+	return true, sealed, nil
 }
 
 func (s *fakeStore) Flush(context.Context) ([]store.Seal, error) {
 	s.mu.Lock()
+	onFlush := s.onFlush
+	s.mu.Unlock()
+	if onFlush != nil {
+		onFlush()
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.failFlush {
+		s.lose()
 		return nil, errors.New("fsync failed")
 	}
-	s.committed, s.appended = append(s.committed, s.appended...), nil
+	s.commit()
 	return nil, nil
+}
+
+// lose drops what a failed store held uncommitted.
+func (s *fakeStore) lose() {
+	s.appended, s.queued, s.dropped = nil, nil, 0
+}
+
+func (s *fakeStore) commit() {
+	s.committed, s.appended = append(s.committed, s.appended...), nil
+	s.notes, s.queued = append(s.notes, s.queued...), nil
+	s.droppedStored, s.dropped = s.droppedStored+s.dropped, 0
 }
 
 func (s *fakeStore) NoteHealth(b []byte) error {
@@ -70,7 +100,7 @@ func (s *fakeStore) NoteHealth(b []byte) error {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
 	}
-	s.notes = append(s.notes, m)
+	s.queued = append(s.queued, m)
 	return nil
 }
 
@@ -80,6 +110,11 @@ func (s *fakeStore) Close(context.Context) ([]store.Seal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed++
+	if s.failClose || s.failFlush {
+		s.lose()
+		return nil, errors.New("close failed")
+	}
+	s.commit()
 	return nil, nil
 }
 
@@ -358,6 +393,7 @@ func TestRefusedRecordKeepsTheStore(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.refuse = true })
 	r.push(event(9, ""))
 	r.step(0)
+	r.step(0) // commits the loss record handed over in the step before
 	if r.st.closed != 0 || !r.last.up {
 		t.Fatal("a refused record closed the store")
 	}
@@ -376,6 +412,7 @@ func TestHealthRecordWaitsWhileStoreRejectsIt(t *testing.T) {
 	}
 	r.st.set(func(s *fakeStore) { s.rejectNote = false })
 	r.step(0)
+	r.step(0)
 	if n := len(r.st.kinds("started")); n != 1 {
 		t.Fatalf("started stored %d after the store took records again", n)
 	}
@@ -388,6 +425,7 @@ func TestLagOverBudgetIsHealthEvent(t *testing.T) {
 	r.push(event(1, ""))
 	time.Sleep(50 * time.Millisecond) // the writer appends on Ready; the tick 1.5 s later commits it
 	r.step(1500 * time.Millisecond)
+	r.step(0)
 	if lag := r.st.kinds("lag"); len(lag) != 1 || lag[0]["lag_ms"] != 1500.0 {
 		t.Fatalf("lag records %v", lag)
 	}
@@ -664,9 +702,10 @@ func TestProbeCountsOnlyOnceCommitted(t *testing.T) {
 	r.start(nil)
 	r.settle()
 	connect(r, 77)
-	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0)
 	r.push(enrichedCanaryLine(1, probed(r), 1000, 4242, CanaryKey))
+	time.Sleep(50 * time.Millisecond) // appended on Ready, before the tick that commits it
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0)
 	if health(r) == "OK" {
 		t.Fatal("a probe whose commit failed made the sensor OK")
@@ -764,5 +803,167 @@ func TestStoppedCanaryRecordsTurnUnknown(t *testing.T) {
 	r.step(CanaryEvery)
 	if health(r) != "UNKNOWN canary-missed" {
 		t.Fatalf("health %q after two rounds without canary records", health(r))
+	}
+}
+
+// reopenAfterFailure lets the failed store's writer open a working one.
+func reopenAfterFailure(r *rig) {
+	r.t.Helper()
+	r.st.set(func(s *fakeStore) { s.failFlush = false })
+	r.opens <- nil
+	r.step(ReopenEvery)
+	for range 50 {
+		if r.step(0); r.last.up {
+			r.step(0) // hands over what waited
+			r.step(0) // and commits it
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	r.t.Fatal("the store did not reopen")
+}
+
+// A loss record the store took but did not commit before it failed is handed to the next store.
+func TestLossRecordSurvivesAFailedCommit(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.step(0) // the loss record goes to the store, uncommitted
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.step(0)
+	reopenAfterFailure(r)
+	lost := r.st.kinds("lost")
+	if len(lost) != 1 || lost[0]["stage"] != "queue" || lost[0]["first_seq"] != 21.0 {
+		t.Fatalf("committed loss records %v", lost)
+	}
+}
+
+// Records the store dropped at its cap are counted by the writer until the store commits its own
+// loss record, so a failed commit does not forget them.
+func TestCapDropsSurviveAFailedCommit(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.full = true })
+	r.push(event(31, ""))
+	time.Sleep(50 * time.Millisecond)
+	r.st.set(func(s *fakeStore) { s.full, s.failFlush = false, true })
+	r.step(0)
+	reopenAfterFailure(r)
+	lost := r.st.kinds("lost")
+	if len(lost) != 1 || lost[0]["stage"] != "cap" || lost[0]["count"] != 1.0 || lost[0]["first_seq"] != 31.0 {
+		t.Fatalf("committed loss records %v", lost)
+	}
+}
+
+func TestCapDropsCommittedByTheStoreAreNotCountedTwice(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.full = true })
+	r.push(event(41, ""))
+	r.step(0)
+	r.st.set(func(s *fakeStore) { s.full = false })
+	r.step(0) // the store commits its own loss record
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.push(event(42, ""))
+	time.Sleep(50 * time.Millisecond)
+	r.step(0) // a later failure must not count the committed drop again
+	reopenAfterFailure(r)
+	for _, l := range r.st.kinds("lost") {
+		if l["stage"] == "cap" {
+			t.Fatalf("a drop the store already counted was counted again: %v", l)
+		}
+	}
+	if r.st.droppedStored != 1 {
+		t.Fatalf("the store's own loss record counted %d", r.st.droppedStored)
+	}
+}
+
+// A canary record that arrives after its probe's deadline, before the next tick, proves nothing.
+func TestCanaryArrivingAfterItsDeadlineIsNotProof(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	n := probed(r)
+	r.advance(CanaryEvery + time.Millisecond)
+	r.push(canaryLine(1, n, 1000, 4242))
+	time.Sleep(50 * time.Millisecond) // appended on Ready, between ticks
+	r.step(0)
+	if health(r) == "OK" {
+		t.Fatal("a probe stored after its deadline made the sensor OK")
+	}
+}
+
+func TestLagIsMeasuredWhenTheCommitEnds(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.onFlush = func() { r.advance(2 * time.Second) } })
+	r.push(event(1, ""))
+	time.Sleep(50 * time.Millisecond)
+	r.step(0)
+	r.st.set(func(s *fakeStore) { s.onFlush = nil })
+	r.step(0)
+	if lag := r.st.kinds("lag"); len(lag) != 1 || lag[0]["lag_ms"].(float64) < 2000 {
+		t.Fatalf("lag records %v", lag)
+	}
+}
+
+func TestCloseFailureAtStopIsReported(t *testing.T) {
+	r := newRig(t)
+	var log strings.Builder
+	var mu sync.Mutex
+	r.w.Log = slog.New(slog.NewTextHandler(writerFunc(func(b []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return log.Write(b)
+	}), nil))
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.failClose = true })
+	r.push(event(51, ""))
+	time.Sleep(50 * time.Millisecond)
+	close(r.stop)
+	err := <-r.done
+	r.done <- nil
+	mu.Lock()
+	defer mu.Unlock()
+	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "Count:1") {
+		t.Fatalf("Run = %v, log:\n%s", err, log.String())
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(b []byte) (int, error) { return f(b) }
+
+// What a seal committed is not sent again when the store fails afterwards: every health record is
+// committed exactly once.
+func TestASealCommitsWhatWasHandedOver(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 61, noon, []byte("dropped")))
+	r.step(0) // the loss record goes to the store, uncommitted
+	r.st.set(func(s *fakeStore) { s.sealNext, s.failFlush = true, true })
+	r.push(event(62, "")) // its Append seals, committing the loss record; the Flush after it fails
+	time.Sleep(50 * time.Millisecond)
+	r.step(0)
+	reopenAfterFailure(r)
+	seen := map[float64]int{}
+	for _, n := range r.st.kinds("lost") {
+		seen[n["note_seq"].(float64)]++
+	}
+	for seq, n := range seen {
+		if n != 1 {
+			t.Fatalf("health record %v committed %d times", seq, n)
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("the loss record was never committed")
 	}
 }
