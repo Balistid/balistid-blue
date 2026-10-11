@@ -39,7 +39,10 @@ type Writer struct {
 	clk      Clock
 	pending  []handed
 	last     uint64
+	written  uint64
 	lastSync time.Time
+	// Synced is the highest number written before the last fsync that returned.
+	Synced uint64
 }
 
 type handed struct {
@@ -71,6 +74,7 @@ func (w *Writer) Tick() error {
 		if _, err := w.f.Write(buf); err != nil {
 			return fmt.Errorf("write: %w", err)
 		}
+		w.written = max(w.written, w.pending[n-1].seq)
 		w.pending = w.pending[n:]
 	}
 	stopped := w.pol.StopAfter != 0 && w.last > w.pol.StopAfter
@@ -78,7 +82,7 @@ func (w *Writer) Tick() error {
 		if err := w.f.Sync(); err != nil {
 			return fmt.Errorf("sync: %w", err)
 		}
-		w.lastSync = now
+		w.lastSync, w.Synced = now, w.written
 	}
 	return nil
 }
@@ -114,8 +118,8 @@ func StoredPrefix(data []byte) (prefix, count uint64) {
 
 // ServeWriter is the measured writer's process: it stores each 8-byte number read from r through a
 // Writer, ticking every millisecond so held records are written and syncs happen on time, until r
-// ends.
-func ServeWriter(r io.Reader, w *Writer) error {
+// ends. After each fsync that moved Synced it sends Synced to synced as 8 bytes.
+func ServeWriter(r io.Reader, w *Writer, synced io.Writer) error {
 	nums := make(chan uint64, 1024)
 	readErr := make(chan error, 1)
 	go func() {
@@ -143,13 +147,31 @@ func ServeWriter(r io.Reader, w *Writer) error {
 				}
 				return w.Tick()
 			}
+			before := w.Synced
 			if err := w.Append(n); err != nil {
 				return err
 			}
+			if err := report(synced, before, w.Synced); err != nil {
+				return err
+			}
 		case <-tick.C:
+			before := w.Synced
 			if err := w.Tick(); err != nil {
+				return err
+			}
+			if err := report(synced, before, w.Synced); err != nil {
 				return err
 			}
 		}
 	}
+}
+
+func report(synced io.Writer, before, now uint64) error {
+	if now == before {
+		return nil
+	}
+	if _, err := synced.Write(binary.LittleEndian.AppendUint64(nil, now)); err != nil {
+		return fmt.Errorf("report sync: %w", err)
+	}
+	return nil
 }

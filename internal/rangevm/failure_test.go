@@ -39,7 +39,7 @@ func failureRun(tr rangejob.Trial, change ...string) Outcome {
 			last[name] = value
 		}
 	}
-	o := Outcome{Marks: Marks{H: 1000}}
+	o := Outcome{Marks: Marks{H: 1000, Synced: 1100}}
 	for _, n := range order {
 		if v, ok := last[n]; ok {
 			o.Facts = append(o.Facts, Record{Name: n, Value: v})
@@ -113,6 +113,19 @@ func TestJudgeFailure(t *testing.T) {
 	o.Facts = append(o.Facts[:3], Record{Name: FactTrialError, Value: "mkfs failed"})
 	if v, r := JudgeTrial(kill, o, cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "mkfs failed") {
 		t.Errorf("guest error: %s (%s)", v, r)
+	}
+	// sync250's premise is a writer synced through H; without it the run is INVALID, not a MISS.
+	sync250 := trial(t, "reset-control-sync250")
+	stalled := failureRun(sync250, "stored_prefix=999")
+	stalled.Marks.Synced = 999
+	if v, r := JudgeTrial(sync250, stalled, cleanBuild, cleanBuild); v != Invalid {
+		t.Errorf("sync250 synced short of H: %s (%s); want INVALID", v, r)
+	}
+	lastsync := trial(t, "reset-control-lastsync1500")
+	short := failureRun(lastsync, "stored_prefix=999")
+	short.Marks.Synced = 900
+	if v, r := JudgeTrial(lastsync, short, cleanBuild, cleanBuild); v != Miss {
+		t.Errorf("lastsync1500 synced short of H by design: %s (%s); want MISS", v, r)
 	}
 	reset := trial(t, "reset-control-sync250")
 	for _, c := range []string{"scratch_journal=no", "scratch_recovery=no", "first:kernel=6.1", "first:canary=x"} {

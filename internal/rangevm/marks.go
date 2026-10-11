@@ -3,16 +3,16 @@ package rangevm
 import (
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
-// Failure trials (ADR 0018, point 3): just before it fails, the guest writes "balistid-fail <H>"
-// straight to its serial console, H the end of the contiguous numbers returned 900 ms earlier; a kill
-// trial then writes "balistid-killed". The host stamps each line as it arrives, and the run is
+// Failure trials (ADR 0018, point 3): just before it fails, the guest writes "balistid-fail <H> <S>"
+// straight to its serial console, H the end of the contiguous numbers returned 900 ms earlier and S
+// the highest number the measured writer had written before its last fsync returned (0 without
+// one); a kill trial then writes "balistid-killed". The host stamps each line as it arrives, and the run is
 // INVALID unless QEMU exits (reset) or the kill line arrives within MarkWindow of the fail line.
 const (
 	FailReset  = rangejob.FailReset
@@ -28,6 +28,7 @@ const (
 // the time QEMU exited. Bad says why they cannot be trusted, "" when they can.
 type Marks struct {
 	H      uint64
+	Synced uint64
 	Fail   time.Time
 	Killed time.Time
 	Exited time.Time
@@ -69,15 +70,17 @@ func (s *markWriter) end() {
 		return
 	}
 	now := s.now()
-	digits, spaced := strings.CutPrefix(line, markFail+" ")
-	h, err := strconv.ParseUint(digits, 10, 64)
+	rest, spaced := strings.CutPrefix(line, markFail+" ")
+	hs, ss, two := strings.Cut(rest, " ")
+	h, errH := plainNumber(hs)
+	synced, errS := plainNumber(ss)
 	switch {
 	case isFail && !s.m.Fail.IsZero():
 		s.m.Bad = "two fail marks"
-	case isFail && (!spaced || err != nil || strconv.FormatUint(h, 10) != digits):
+	case isFail && (!spaced || !two || errH != nil || errS != nil):
 		s.m.Bad = "malformed fail mark"
 	case isFail:
-		s.m.H, s.m.Fail = h, now
+		s.m.H, s.m.Synced, s.m.Fail = h, synced, now
 	case line != markKilled:
 		s.m.Bad = "malformed kill mark"
 	case !s.m.Killed.IsZero():

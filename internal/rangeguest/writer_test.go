@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"io"
 	"testing"
 	"time"
 )
@@ -177,13 +178,13 @@ func TestServeWriterStoresWhatItIsHanded(t *testing.T) {
 		in.Write(binary.LittleEndian.AppendUint64(nil, n))
 	}
 	f := &diskFile{}
-	if err := ServeWriter(&in, NewWriter(f, Policy{}, WallClock)); err != nil {
+	if err := ServeWriter(&in, NewWriter(f, Policy{}, WallClock), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if p, n := StoredPrefix(f.cache.Bytes()); p != 100 || n != 100 {
 		t.Errorf("wrote %d through %d; want all 100", n, p)
 	}
-	if err := ServeWriter(bytes.NewReader([]byte{1, 0, 0}), NewWriter(&diskFile{}, Policy{}, WallClock)); err == nil {
+	if err := ServeWriter(bytes.NewReader([]byte{1, 0, 0}), NewWriter(&diskFile{}, Policy{}, WallClock), io.Discard); err == nil {
 		t.Error("a cut number was accepted")
 	}
 }
@@ -202,4 +203,34 @@ func FuzzStoredPrefix(f *testing.F) {
 			t.Fatalf("prefix %d has a gap", prefix)
 		}
 	})
+}
+
+// Synced covers only what was written before the fsync that returned, never what was still held.
+func TestWriterSyncedIsWhatTheLastSyncCovered(t *testing.T) {
+	c := &fakeClock{now: time.Unix(0, 0)}
+	w := NewWriter(&diskFile{}, Policy{Hold: 5 * time.Millisecond, Sync: 10 * time.Millisecond}, c)
+	for seq := uint64(1); seq <= 12; seq++ {
+		if err := w.Append(seq); err != nil {
+			t.Fatal(err)
+		}
+		if seq < 10 && w.Synced != 0 {
+			t.Fatalf("synced %d before the first sync was due", w.Synced)
+		}
+		c.now = c.now.Add(time.Millisecond)
+	}
+	// The sync at 10 ms covered what had been held 5 ms by then: numbers 1..6.
+	if w.Synced != 6 {
+		t.Errorf("Synced = %d, want 6", w.Synced)
+	}
+	var in, out bytes.Buffer
+	for n := uint64(1); n <= 3; n++ {
+		in.Write(binary.LittleEndian.AppendUint64(nil, n))
+	}
+	if err := ServeWriter(&in, NewWriter(&diskFile{}, Policy{Sync: time.Nanosecond}, WallClock), &out); err != nil {
+		t.Fatal(err)
+	}
+	b := out.Bytes()
+	if len(b) == 0 || len(b)%RecordSize != 0 || binary.LittleEndian.Uint64(b[len(b)-RecordSize:]) != 3 {
+		t.Errorf("reported %v, want reports ending with 3", b)
+	}
 }
