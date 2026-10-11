@@ -271,13 +271,15 @@ func boot(ctx context.Context, base, parent string, serial io.Writer, job []byte
 		if why != "" {
 			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why, Marks: marks}, nil
 		}
-		if out == mw {
-			if why := failureInvalid(lim.Failure, marks); why != "" {
-				return Outcome{Invalid: why, Marks: marks}, nil
-			}
-		}
 		o := readResults(resultsPath)
 		o.Marks = marks
+		if v, ok := factValue(o.Facts, FactTrialError); ok {
+			o.FirstBoot, o.Invalid = first, fmt.Sprintf("the guest could not run the trial: \"%s\"", Printable(v, 256))
+			return o, nil
+		}
+		if out == mw && o.Invalid == "" {
+			o.Invalid = failureInvalid(lim.Failure, marks)
+		}
 		switch {
 		case o.Invalid != "":
 			if phase > 1 {
@@ -472,4 +474,14 @@ func (c *capped) Write(p []byte) (int, error) {
 		c.left -= n
 	}
 	return len(p), nil
+}
+
+// factValue is the value of the first fact called name.
+func factValue(facts []Record, name string) (string, bool) {
+	for _, f := range facts {
+		if f.Name == name {
+			return f.Value, true
+		}
+	}
+	return "", false
 }

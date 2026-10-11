@@ -36,13 +36,12 @@ type Marks struct {
 
 // markWriter passes serial output to w unchanged and stamps the marks it finds. The guest's console
 // is hostile input (T30): a line starting with a mark's name must be exactly that mark, each mark
-// may come once, the kill mark only after the fail mark, and a line is looked at only up to
-// maxMarkLine bytes; anything else makes the marks Bad, never a mark.
+// may come once, the kill mark only after the fail mark, and only the first maxMarkLine bytes of a
+// line are kept, which no mark exceeds; anything else makes the marks Bad, never a mark.
 type markWriter struct {
 	w    io.Writer
 	now  func() time.Time
 	line []byte
-	long bool
 	m    Marks
 }
 
@@ -53,8 +52,6 @@ func (s *markWriter) Write(p []byte) (int, error) {
 			s.end()
 		case len(s.line) < maxMarkLine:
 			s.line = append(s.line, c)
-		default:
-			s.long = true
 		}
 	}
 	n, err := s.w.Write(p)
@@ -66,8 +63,7 @@ func (s *markWriter) Write(p []byte) (int, error) {
 
 func (s *markWriter) end() {
 	line := strings.TrimSuffix(string(s.line), "\r")
-	long := s.long
-	s.line, s.long = s.line[:0], false
+	s.line = s.line[:0]
 	isFail, isKilled := strings.HasPrefix(line, markFail), strings.HasPrefix(line, markKilled)
 	if !isFail && !isKilled || s.m.Bad != "" {
 		return
@@ -76,8 +72,6 @@ func (s *markWriter) end() {
 	digits, spaced := strings.CutPrefix(line, markFail+" ")
 	h, err := strconv.ParseUint(digits, 10, 64)
 	switch {
-	case long:
-		s.m.Bad = fmt.Sprintf("a failure mark is over %d bytes", maxMarkLine)
 	case isFail && !s.m.Fail.IsZero():
 		s.m.Bad = "two fail marks"
 	case isFail && (!spaced || err != nil || strconv.FormatUint(h, 10) != digits):

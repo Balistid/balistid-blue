@@ -35,3 +35,14 @@ func TestSuperblock(t *testing.T) {
 		}
 	}
 }
+
+// Any head is read without panic, and only one with the ext4 magic at its place is ext4.
+func FuzzSuperblock(f *testing.F) {
+	f.Add(superblock(0xEF53, 0x103c, 0x22c6))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, head []byte) {
+		if _, _, err := Superblock(head); err == nil && binary.LittleEndian.Uint16(head[1024+0x38:]) != 0xEF53 {
+			t.Fatal("accepted a head without the ext4 magic")
+		}
+	})
+}

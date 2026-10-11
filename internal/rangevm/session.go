@@ -679,7 +679,8 @@ func Check(ctx context.Context, image, cache, state string) (Result, error) {
 // collector's store reader joins the table.
 const LabelBaseline = "baseline"
 
-// LabelControl marks a control's result: it must be a MISS, and never counts for its metric.
+// LabelControl marks a control's result: it must give its trial's Expect, and never counts for its
+// metric.
 const LabelControl = "control"
 
 // trialLabel is control for a control, else baseline.

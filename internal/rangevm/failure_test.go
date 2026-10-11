@@ -96,6 +96,14 @@ func TestJudgeFailure(t *testing.T) {
 		if v, _ := JudgeTrial(tr, o, cleanBuild, cleanBuild); v != Invalid {
 			t.Errorf("%s with an invalid boot: %s", name, v)
 		}
+		dup := failureRun(tr)
+		dup.Facts = append(dup.Facts, dup.Facts[3])
+		if v, _ := JudgeTrial(tr, dup, cleanBuild, cleanBuild); v != Invalid {
+			t.Errorf("%s with a repeated fact: %s", name, v)
+		}
+		if v, _ := JudgeTrial(tr, failureRun(tr), cleanBuild, strings.Repeat("f", 40)); v != Invalid {
+			t.Errorf("%s judged by another build: %s", name, v)
+		}
 		if v, _ := JudgeTrial(tr, failureRun(tr), "dev", "dev"); v != Invalid {
 			t.Errorf("%s from a dev launcher: %s", name, v)
 		}
