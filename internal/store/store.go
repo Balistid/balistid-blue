@@ -93,6 +93,7 @@ type Store struct {
 	health      [][]byte // health records waiting for Flush
 	torn        bool     // the index ends in a torn line
 	unknown     string
+	sealLost    bool // a seal failed: what the shard held since its last commit may be gone
 	now         func() time.Time
 	crashAt     func(string) // a test seam: crash tests kill the process at these named points
 }
@@ -722,6 +723,7 @@ func (s *Store) seal(ctx context.Context) (Seal, error) {
 	sum, err := s.cur.Seal(ctx)
 	s.cur = nil
 	if err != nil {
+		s.sealLost = true
 		return Seal{}, s.fail(fmt.Errorf("seal %s: %w", s.curName, err))
 	}
 	s.crashAt("sealed")
@@ -745,7 +747,7 @@ func (s *Store) Close(ctx context.Context) ([]Seal, error) {
 	switch {
 	case s.unknown == "":
 		flushErr = s.flush(ctx)
-	case s.dropped > 0 || len(s.health) > 0: // what is waiting is lost: say so
+	case s.dropped > 0 || len(s.health) > 0 || s.sealLost: // what is waiting, or a failed seal took, is lost: say so
 		flushErr = errors.New("store: " + s.unknown)
 	}
 	if s.cur == nil {
