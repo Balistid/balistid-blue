@@ -29,6 +29,8 @@ type fakeStore struct {
 	failAppend, failFlush    bool
 	refuse, full, rejectNote bool
 	failClose, sealNext      bool          // sealNext: the next Append seals, committing what came before
+	commitThenFail           bool          // the next Flush commits, then fails; Close then has nothing left to lose
+	sealThenFail             bool          // the next Append seals, committing what came before, then fails
 	block                    chan struct{} // Append waits on it when set
 	onFlush                  func()        // runs inside Flush, as a slow commit would
 	closed                   int
@@ -44,6 +46,10 @@ func (s *fakeStore) Append(_ context.Context, r rawrecord.Record) (bool, []store
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
+	case s.sealThenFail:
+		s.sealThenFail = false
+		s.commit()
+		return false, []store.Seal{{Name: "00000000000000000001.db"}}, errors.New("disk gone after the seal")
 	case s.failAppend:
 		return false, nil, errors.New("disk gone")
 	case s.refuse:
@@ -76,6 +82,10 @@ func (s *fakeStore) Flush(context.Context) ([]store.Seal, error) {
 		return nil, errors.New("fsync failed")
 	}
 	s.commit()
+	if s.commitThenFail {
+		s.commitThenFail = false
+		return nil, errors.New("failed after the commit")
+	}
 	return nil, nil
 }
 
@@ -809,7 +819,7 @@ func TestStoppedCanaryRecordsTurnUnknown(t *testing.T) {
 // reopenAfterFailure lets the failed store's writer open a working one.
 func reopenAfterFailure(r *rig) {
 	r.t.Helper()
-	r.st.set(func(s *fakeStore) { s.failFlush = false })
+	r.st.set(func(s *fakeStore) { s.failFlush, s.failClose = false, false })
 	r.opens <- nil
 	r.step(ReopenEvery)
 	for range 50 {
@@ -965,5 +975,51 @@ func TestASealCommitsWhatWasHandedOver(t *testing.T) {
 	}
 	if len(seen) == 0 {
 		t.Fatal("the loss record was never committed")
+	}
+}
+
+// countCap returns how many cap drops are on record: the store's own and the collector's "cap" losses.
+func countCap(st *fakeStore) int {
+	n := st.droppedStored
+	for _, l := range st.kinds("lost") {
+		if l["stage"] == "cap" {
+			n += int(l["count"].(float64))
+		}
+	}
+	return n
+}
+
+// A Flush that commits and then fails, or an Append that seals and then fails, committed what the
+// store held: one drop at the cap stays one drop, and no health record is committed twice.
+func TestACommitBeforeAFailureIsNotCountedAgain(t *testing.T) {
+	for name, fail := range map[string]func(*fakeStore){
+		"flush":              func(s *fakeStore) { s.commitThenFail = true },
+		"append":             func(s *fakeStore) { s.sealThenFail = true },
+		"append, then close": func(s *fakeStore) { s.sealThenFail, s.failClose = true, true },
+	} {
+		r := newRig(t)
+		r.start(nil)
+		r.settle()
+		r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 70, noon, []byte("dropped")))
+		r.st.set(func(s *fakeStore) { s.full = true })
+		r.push(event(71, ""))
+		r.step(0) // the drop at the cap and the loss record go to the store, uncommitted
+		r.st.set(func(s *fakeStore) { s.full = false; fail(s) })
+		r.push(event(72, ""))
+		time.Sleep(50 * time.Millisecond)
+		r.step(0)
+		reopenAfterFailure(r)
+		if n := countCap(r.st); n != 1 {
+			t.Fatalf("%s: one drop at the cap is on record %d times", name, n)
+		}
+		seen := map[float64]int{}
+		for _, n := range r.st.kinds("lost") {
+			seen[n["note_seq"].(float64)]++
+		}
+		for seq, n := range seen {
+			if n != 1 {
+				t.Fatalf("%s: health record %v committed %d times", name, seq, n)
+			}
+		}
 	}
 }
