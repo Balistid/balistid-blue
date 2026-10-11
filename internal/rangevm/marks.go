@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // Failure trials (ADR 0018, point 3): just before it fails, the guest writes "balistid-fail <H>"
@@ -13,8 +15,8 @@ import (
 // trial then writes "balistid-killed". The host stamps each line as it arrives, and the run is
 // INVALID unless QEMU exits (reset) or the kill line arrives within MarkWindow of the fail line.
 const (
-	FailReset  = "reset"
-	FailKill   = "kill"
+	FailReset  = rangejob.FailReset
+	FailKill   = rangejob.FailKill
 	MarkWindow = 100 * time.Millisecond
 
 	markFail    = "balistid-fail"

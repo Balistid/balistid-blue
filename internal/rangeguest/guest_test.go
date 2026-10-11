@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -87,12 +88,15 @@ func TestFreshStateReadsOnlyARewrite(t *testing.T) {
 	}
 }
 
-func TestTrialForRunsOnlyOneBootTrialsInPhaseOne(t *testing.T) {
-	if tr, err := TrialFor("rate-burst", "1"); err != nil || tr.Name != "rate-burst" {
-		t.Errorf("TrialFor(rate-burst, 1) = %+v, %v", tr, err)
+func TestTrialForTakesOnlyATrialsOwnBoots(t *testing.T) {
+	for _, c := range [][2]string{{"rate-burst", "1"}, {"reset-control-sync250", "1"}, {"reset-control-sync250", "2"}} {
+		if tr, p, err := TrialFor(c[0], c[1]); err != nil || tr.Name != c[0] || strconv.Itoa(p) != c[1] {
+			t.Errorf("TrialFor(%q, %q) = %s, %d, %v", c[0], c[1], tr.Name, p, err)
+		}
 	}
-	for _, c := range [][2]string{{"rate-burst", "2"}, {"rate-burst", ""}, {"rate-burst", "01"}, {"nope", "1"}, {"", "1"}} {
-		if _, err := TrialFor(c[0], c[1]); err == nil {
+	for _, c := range [][2]string{{"rate-burst", "2"}, {"reset-control-sync250", "3"}, {"kill-control-buffer2s", "2"},
+		{"rate-burst", "0"}, {"rate-burst", ""}, {"rate-burst", "01"}, {"rate-burst", "+1"}, {"nope", "1"}, {"", "1"}} {
+		if _, _, err := TrialFor(c[0], c[1]); err == nil {
 			t.Errorf("TrialFor(%q, %q) accepted", c[0], c[1])
 		}
 	}

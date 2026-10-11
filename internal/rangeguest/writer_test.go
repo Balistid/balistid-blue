@@ -2,6 +2,7 @@ package rangeguest
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -34,6 +35,7 @@ func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost
 	start := c.now
 	f := &diskFile{}
 	w := NewWriter(f, pol, c)
+	var hand Handover
 	every := time.Second / time.Duration(rate)
 	next := start
 	for c.now.Before(start.Add(failAt)) {
@@ -41,13 +43,14 @@ func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost
 			if _, err := w.Append(); err != nil {
 				t.Fatal(err)
 			}
+			hand.Add(c.now)
 			next = next.Add(every)
 		} else if err := w.Tick(); err != nil {
 			t.Fatal(err)
 		}
 		c.now = c.now.Add(time.Millisecond)
 	}
-	h = w.H(c.now)
+	h = hand.H(c.now)
 	synced, err := Stored(f.disk.Bytes())
 	if err != nil {
 		t.Fatal(err)
@@ -132,5 +135,70 @@ func TestStoredAndLost(t *testing.T) {
 	}
 	if got := Lost(nums, 1); got != 0 {
 		t.Errorf("Lost(1 3, 1) = %d, numbers above H may go", got)
+	}
+}
+
+func TestHandoverH(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	var h Handover
+	for i := range 5 {
+		h.Add(t0.Add(time.Duration(i) * 100 * time.Millisecond))
+	}
+	// failAt t0+1300 ms: handed at or before t0+400 ms count, that is all five.
+	if got := h.H(t0.Add(1300 * time.Millisecond)); got != 5 {
+		t.Errorf("H = %d, want 5", got)
+	}
+	if got := h.H(t0.Add(1199 * time.Millisecond)); got != 3 {
+		t.Errorf("H just before the fourth is due = %d, want 3", got)
+	}
+	if got := h.H(t0); got != 0 {
+		t.Errorf("H at the first hand-over = %d, want 0", got)
+	}
+}
+
+func TestStoredPrefix(t *testing.T) {
+	rec := func(nums ...uint64) []byte {
+		var b []byte
+		for _, n := range nums {
+			b = binary.LittleEndian.AppendUint64(b, n)
+		}
+		return b
+	}
+	cases := []struct {
+		data          []byte
+		prefix, count uint64
+	}{
+		{rec(1, 2, 3), 3, 3},
+		{rec(2, 1, 4), 2, 3},
+		{rec(1, 2, 2, 3), 3, 4},
+		{append(rec(1, 2), 7, 0), 2, 2},
+		{rec(0, 2), 0, 2},
+		{nil, 0, 0},
+	}
+	for i, c := range cases {
+		if p, n := StoredPrefix(c.data); p != c.prefix || n != c.count {
+			t.Errorf("case %d: %d, %d; want %d, %d", i, p, n, c.prefix, c.count)
+		}
+	}
+}
+
+func TestServeWriterStoresWhatItIsHanded(t *testing.T) {
+	var in bytes.Buffer
+	for n := uint64(1); n <= 100; n++ {
+		in.Write(binary.LittleEndian.AppendUint64(nil, n))
+	}
+	f := &diskFile{}
+	if err := ServeWriter(&in, NewWriter(f, Policy{Hold: time.Hour}, WallClock)); err != nil {
+		t.Fatal(err)
+	}
+	if p, n := StoredPrefix(f.disk.Bytes()); p != 100 || n != 100 {
+		t.Errorf("synced %d through %d; want all 100 flushed and synced at the end", n, p)
+	}
+	bad := bytes.NewReader(append(binary.LittleEndian.AppendUint64(nil, 1), binary.LittleEndian.AppendUint64(nil, 3)...))
+	if err := ServeWriter(bad, NewWriter(&diskFile{}, Policy{}, WallClock)); err == nil {
+		t.Error("a number out of sequence was stored")
+	}
+	if err := ServeWriter(bytes.NewReader([]byte{1, 0, 0}), NewWriter(&diskFile{}, Policy{}, WallClock)); err == nil {
+		t.Error("a cut number was accepted")
 	}
 }

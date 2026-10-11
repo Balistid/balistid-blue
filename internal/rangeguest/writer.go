@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
 
@@ -39,7 +40,6 @@ type Writer struct {
 	pending  []handed
 	next     uint64
 	lastSync time.Time
-	handedAt []time.Time
 }
 
 type handed struct {
@@ -57,7 +57,6 @@ func (w *Writer) Append() (uint64, error) {
 	seq, now := w.next, w.clk.Now()
 	w.next++
 	w.pending = append(w.pending, handed{seq, now})
-	w.handedAt = append(w.handedAt, now)
 	return seq, w.Tick()
 }
 
@@ -85,13 +84,95 @@ func (w *Writer) Tick() error {
 	return nil
 }
 
+// Handover records when each number 1, 2, ... was handed over, as the side that hands them sees it.
+type Handover struct{ at []time.Time }
+
+// Add records the next number as handed over at t.
+func (h *Handover) Add(t time.Time) { h.at = append(h.at, t) }
+
 // H is the end of the contiguous numbers handed over at least HandLag before failAt.
-func (w *Writer) H(failAt time.Time) uint64 {
-	var h uint64
-	for h < uint64(len(w.handedAt)) && !w.handedAt[h].After(failAt.Add(-HandLag)) {
-		h++
+func (h *Handover) H(failAt time.Time) uint64 {
+	var n uint64
+	for n < uint64(len(h.at)) && !h.at[n].After(failAt.Add(-HandLag)) {
+		n++
 	}
-	return h
+	return n
+}
+
+// StoredPrefix returns the longest run 1..N of numbers a file of records holds, ignoring a cut
+// last record (a crash may leave one past N), and how many whole records it holds.
+func StoredPrefix(data []byte) (prefix, count uint64) {
+	nums, _ := Stored(data[:len(data)-len(data)%RecordSize])
+	seen := make(map[uint64]bool, len(nums))
+	for _, n := range nums {
+		seen[n] = true
+	}
+	for seen[prefix+1] {
+		prefix++
+	}
+	return prefix, uint64(len(nums))
+}
+
+// ServeWriter is the measured writer's process: it stores each 8-byte number read from r through a
+// Writer, ticking every millisecond so held records are written and syncs happen on time, until r
+// ends. A number out of sequence is an error.
+func ServeWriter(r io.Reader, w *Writer) error {
+	nums := make(chan uint64, 1024)
+	readErr := make(chan error, 1)
+	go func() {
+		var b [RecordSize]byte
+		for {
+			if _, err := io.ReadFull(r, b[:]); err != nil {
+				close(nums)
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				readErr <- err
+				return
+			}
+			nums <- binary.LittleEndian.Uint64(b[:])
+		}
+	}()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case n, ok := <-nums:
+			if !ok {
+				if err := <-readErr; err != nil {
+					return fmt.Errorf("read: %w", err)
+				}
+				return w.Flush()
+			}
+			seq, err := w.Append()
+			if err != nil {
+				return err
+			}
+			if seq != n {
+				return fmt.Errorf("handed %d, expected %d", n, seq)
+			}
+		case <-tick.C:
+			if err := w.Tick(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// Flush writes everything held and syncs, at the end of a run nothing failed.
+func (w *Writer) Flush() error {
+	var buf []byte
+	for _, p := range w.pending {
+		buf = binary.LittleEndian.AppendUint64(buf, p.seq)
+	}
+	w.pending = nil
+	if _, err := w.f.Write(buf); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	if err := w.f.Sync(); err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
+	return nil
 }
 
 // Stored reads the numbers a file of records holds, in order; a cut record is an error.

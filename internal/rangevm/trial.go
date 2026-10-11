@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -46,12 +47,12 @@ var counts = []string{
 	FactDrainSteal, FactStored, FactMissing, FactDuplicate, FactOutside,
 }
 
-// JudgeTrial judges a run of tr from an image built from commit image by a launcher built from
+// judgeRate judges a run of rate trial tr from an image built from commit image by a launcher built from
 // commit launcher. The guest's facts form a closed set, each once, as plain values; anything else,
 // another kernel or build, a reader that did not see the run's end, or steal over 1 % is INVALID.
 // Loss, a changed audit lost counter, a plugin-queue overflow or a rate not held in every 10 s window
 // is a MISS, so a control, whose reader drops one number, must come out MISS (ADR 0018, point 4).
-func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, reason string) {
+func judgeRate(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, reason string) {
 	if o.Invalid != "" {
 		return Invalid, o.Invalid
 	}
@@ -119,10 +120,103 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 	return Pass, loss
 }
 
-// ExpectedVerdict is what a sound run of tr gives: MISS for a control, else PASS.
+// ExpectedVerdict is what a sound run of tr gives: a control's Expect, else PASS.
 func ExpectedVerdict(tr rangejob.Trial) string {
-	if tr.Load.Drop {
-		return Miss
+	if tr.Expect != "" {
+		return tr.Expect
 	}
 	return Pass
+}
+
+// Facts of a failure trial (ADR 0018, point 3): after a reset the second boot reports the scratch
+// disk's superblock as it found it before mounting, and both kinds report the longest run 1..N of
+// numbers the stored file holds and how many records it holds.
+const (
+	FactScratchJournal  = "scratch_journal"
+	FactScratchRecovery = "scratch_recovery"
+	FactStoredPrefix    = "stored_prefix"
+	FactStoredCount     = "stored_count"
+)
+
+// JudgeTrial judges a run of tr: a rate trial by its counts, a failure trial by what survived.
+func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, reason string) {
+	if tr.Failure != "" {
+		return judgeFailure(tr, o, launcher, image)
+	}
+	return judgeRate(tr, o, launcher, image)
+}
+
+// judgeFailure: the host's marks, the closed facts of each boot, the target kernel and, after a
+// reset, ext4 with a journal that still needed recovery are required, else INVALID. Every number up
+// to H, the end of the contiguous numbers handed over 900 ms before the failure, must be stored,
+// else MISS.
+func judgeFailure(tr rangejob.Trial, o Outcome, launcher, image string) (string, string) {
+	if o.Invalid != "" {
+		return Invalid, o.Invalid
+	}
+	if launcher != image || !buildinfo.IsCommitID(launcher) {
+		return Invalid, fmt.Sprintf("launcher is not a clean build of the image commit %s", image)
+	}
+	for _, r := range slices.Concat(o.FirstBoot, o.Facts) {
+		if r.Name == FactTrialError {
+			return Invalid, fmt.Sprintf("the guest could not run the trial: \"%s\"", Printable(r.Value, 256))
+		}
+	}
+	last := []string{FactTrial, FactPhase, FactKernel, FactStoredPrefix, FactStoredCount}
+	if tr.Failure == FailReset {
+		first, err := closedFacts(o.FirstBoot, []string{FactTrial, FactPhase, FactKernel, FactResetArmed})
+		if err != nil {
+			return Invalid, "first boot: " + err.Error()
+		}
+		if first[FactKernel] != TargetKernel {
+			return Invalid, "first boot ran another kernel"
+		}
+		last = append(last, FactScratchJournal, FactScratchRecovery)
+	}
+	f, err := closedFacts(o.Facts, last)
+	if err != nil {
+		return Invalid, err.Error()
+	}
+	prefix, errP := plainNumber(f[FactStoredPrefix])
+	count, errC := plainNumber(f[FactStoredCount])
+	switch {
+	case f[FactKernel] != TargetKernel:
+		return Invalid, fmt.Sprintf("guest kernel \"%s\" is not the target %s", Printable(f[FactKernel], 128), TargetKernel)
+	case errP != nil || errC != nil || count < prefix:
+		return Invalid, "stored counts are not plain numbers that add up"
+	case tr.Failure == FailReset && (f[FactScratchJournal] != "yes" || f[FactScratchRecovery] != "yes"):
+		return Invalid, "the reset did not leave ext4 with a journal that needs recovery"
+	case o.Marks.H == 0:
+		return Invalid, "nothing was handed over in time to have to survive"
+	case prefix < o.Marks.H:
+		return Miss, fmt.Sprintf("numbers up to H=%d had to survive the %s; stored through %d", o.Marks.H, tr.Failure, prefix)
+	}
+	return Pass, fmt.Sprintf("every number up to H=%d survived the %s (stored through %d)", o.Marks.H, tr.Failure, prefix)
+}
+
+// closedFacts maps facts that must be exactly names, each once.
+func closedFacts(facts []Record, names []string) (map[string]string, error) {
+	f := map[string]string{}
+	for _, r := range facts {
+		if !slices.Contains(names, r.Name) {
+			return nil, fmt.Errorf("unexpected fact \"%s\"", Printable(r.Name, 64))
+		}
+		if _, dup := f[r.Name]; dup {
+			return nil, fmt.Errorf("fact %s reported twice", r.Name)
+		}
+		f[r.Name] = r.Value
+	}
+	if len(f) != len(names) {
+		return nil, fmt.Errorf("report has %d of %d facts", len(f), len(names))
+	}
+	return f, nil
+}
+
+// plainNumber is a canonical decimal.
+func plainNumber(s string) (uint64, error) {
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || strconv.FormatUint(v, 10) != s {
+		return 0, errors.New("not a plain number")
+	}
+	return v, nil
 }
