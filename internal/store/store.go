@@ -118,7 +118,8 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 		return nil, fmt.Errorf("store: %s is not a directory of this user that only it can write", dir)
 	}
 	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt}
-	if err := s.readIndex(); err != nil {
+	var err error
+	if s.seals, s.torn, err = readSeals(dir); err != nil {
 		return nil, err
 	}
 	pending, err := s.scan()
@@ -160,40 +161,59 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	return s, nil
 }
 
-// readIndex loads the index. A last line without its newline is a torn append: it is left out, so its
-// shard is recovered and the index rewritten (ADR 0013, point 6).
-func (s *Store) readIndex() error {
-	f, err := os.OpenFile(filepath.Join(s.dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+// ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
+// checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
+// the collector stopped. torn reports a last index line cut short: its shard is sealed but missing from
+// seals until Open recovers it. A dir that is missing, not a directory or a symlink is an error, not an
+// empty store.
+func ReadSeals(ctx context.Context, dir string) (seals []Seal, torn bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, fmt.Errorf("store: index: %w", err)
+	}
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return nil, false, fmt.Errorf("store: %w", err)
+	}
+	if !st.IsDir() {
+		return nil, false, fmt.Errorf("store: %s is not a directory", dir)
+	}
+	return readSeals(dir)
+}
+
+// readSeals parses the index of dir. A last line without its newline is a torn append: it is left out
+// and reported, so Open recovers its shard and rewrites the index (ADR 0013, point 6).
+func readSeals(dir string) ([]Seal, bool, error) {
+	f, err := os.OpenFile(filepath.Join(dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the index, a fixed name in the store directory
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("store: index: %w", err)
+		return nil, false, fmt.Errorf("store: index: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("store: index: not a regular file (%w)", err)
+		return nil, false, fmt.Errorf("store: index: not a regular file (%w)", err)
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("store: index: %w", err)
+		return nil, false, fmt.Errorf("store: index: %w", err)
 	}
 	if !bytes.HasPrefix(data, []byte(indexHeader)) {
-		return errors.New("store: index: not a balistid-seals 1 file")
+		return nil, false, errors.New("store: index: not a balistid-seals 1 file")
 	}
 	lines := strings.Split(string(data[len(indexHeader):]), "\n")
-	s.torn = lines[len(lines)-1] != ""
+	var seals []Seal
 	for i, line := range lines[:len(lines)-1] {
 		l, err := parseSeal(line)
 		if err != nil {
-			return fmt.Errorf("store: index line %d: %w", i+2, err)
+			return nil, false, fmt.Errorf("store: index line %d: %w", i+2, err)
 		}
-		if want := s.nextAfter(); l.First != want {
-			return fmt.Errorf("store: index line %d: seq %d, want %d", i+2, l.First, want)
+		if want := nextAfter(seals); l.First != want {
+			return nil, false, fmt.Errorf("store: index line %d: seq %d, want %d", i+2, l.First, want)
 		}
-		s.seals = append(s.seals, l)
+		seals = append(seals, l)
 	}
-	return nil
+	return seals, lines[len(lines)-1] != "", nil
 }
 
 func parseSeal(line string) (Seal, error) {
@@ -211,11 +231,12 @@ func parseSeal(line string) (Seal, error) {
 	return Seal{Name: f[0], First: first, Last: last, SHA256: [32]byte(sum)}, nil
 }
 
-func (s *Store) nextAfter() uint64 {
-	if len(s.seals) == 0 {
+// nextAfter is the first seq after seals.
+func nextAfter(seals []Seal) uint64 {
+	if len(seals) == 0 {
 		return 1
 	}
-	return s.seals[len(s.seals)-1].Last + 1
+	return seals[len(seals)-1].Last + 1
 }
 
 // scan checks every entry of dir: the index and reserve are regular files, indexed shards exist without
