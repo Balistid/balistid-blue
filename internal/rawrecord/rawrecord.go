@@ -64,9 +64,10 @@ func FromParts(seq uint64, provider string, providerSeq uint64, received int64, 
 	return r, nil
 }
 
-// keep returns a copy of what a truncated record holds: the first and the last MaxBytes/2 bytes.
+// keep returns a copy of what a truncated record holds: head and tail, MaxBytes/2 bytes each, as both
+// callers cut or checked them; the capacity is the constant, never a sum of input lengths.
 func keep(head, tail []byte) []byte {
-	return append(append(make([]byte, 0, len(head)+len(tail)), head...), tail...)
+	return append(append(make([]byte, 0, MaxBytes), head...), tail...)
 }
 
 // Check reports whether r is a record New or FromParts could have made that SQLite can store: provider
