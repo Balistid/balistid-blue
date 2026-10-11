@@ -267,18 +267,19 @@ func TestEveryBootMustExitCleanlyAndEchoByName(t *testing.T) {
 		streams [][]byte
 		exits   []string
 		boots   int
+		why     string
 	}{
-		"boot 1 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"exit: exit status 1"}, 1},
-		"boot 2 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"", "exit: exit status 1"}, 2},
-		"boot 1 trial renamed": {[][]byte{facts(t, renamed(1, 0)...), facts(t, armed(2)...)}, nil, 1},
-		"boot 1 phase renamed": {[][]byte{facts(t, renamed(1, 1)...), facts(t, armed(2)...)}, nil, 1},
-		"boot 2 trial renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 0)...)}, nil, 2},
-		"boot 2 phase renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 1)...)}, nil, 2},
+		"boot 1 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"exit: exit status 1"}, 1, "vm: exit: exit status 1"},
+		"boot 2 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"", "exit: exit status 1"}, 2, "second boot: exit: exit status 1"},
+		"boot 1 trial renamed": {[][]byte{facts(t, renamed(1, 0)...), facts(t, armed(2)...)}, nil, 1, "boot 1 did not echo"},
+		"boot 1 phase renamed": {[][]byte{facts(t, renamed(1, 1)...), facts(t, armed(2)...)}, nil, 1, "boot 1 did not echo"},
+		"boot 2 trial renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 0)...)}, nil, 2, "boot 2 did not echo"},
+		"boot 2 phase renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 1)...)}, nil, 2, "boot 2 did not echo"},
 	} {
 		vm := &fakeVM{streams: c.streams, exits: c.exits}
 		out, _ := runFake(t, resetTrial, vm.run)
-		if out.Invalid == "" || len(vm.boots) != c.boots {
-			t.Errorf("%s: Invalid %q after %d boots, want INVALID after %d", name, out.Invalid, len(vm.boots), c.boots)
+		if !strings.Contains(out.Invalid, c.why) || len(vm.boots) != c.boots {
+			t.Errorf("%s: Invalid %q after %d boots, want %q after %d", name, out.Invalid, len(vm.boots), c.why, c.boots)
 		}
 	}
 }
