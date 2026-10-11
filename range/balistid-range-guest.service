@@ -10,6 +10,8 @@ FailureAction=poweroff-force
 
 [Service]
 Type=oneshot
+# A trial's name and boot phase, which the host passes over fw_cfg (ADR 0018, point 1).
+ImportCredential=balistid.*
 ExecStart=/usr/lib/balistid-range/guest
 StandardOutput=journal+console
 StandardError=journal+console

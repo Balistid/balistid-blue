@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // Retention (R5): base images are about a GiB each; results are small.
@@ -68,6 +69,8 @@ type Result struct {
 	ImageSHA256    string          `json:"image_sha256"`
 	TargetKernel   string          `json:"target_kernel"`
 	GuestKernel    string          `json:"guest_kernel"`
+	Trial          string          `json:"trial,omitempty"`
+	Label          string          `json:"label,omitempty"`
 	Verdict        string          `json:"verdict"`
 	Reason         string          `json:"reason"`
 	Manifest       json.RawMessage `json:"manifest"`
@@ -665,7 +668,40 @@ func cleanRevision(settings []debug.BuildSetting) string {
 // state/results/<id>; a run that ends in an error leaves no result directory behind. A launcher
 // that is not a clean build of the image's commit judged the run with code nobody can name, so
 // its verdict is UNKNOWN (R1).
-func Check(ctx context.Context, image, cache, state string) (res Result, err error) {
+func Check(ctx context.Context, image, cache, state string) (Result, error) {
+	return check(ctx, image, cache, state, "", "", func(runs string, serial io.Writer) (Outcome, error) {
+		return Run(ctx, image, runs, serial, nil)
+	}, JudgeSelftest)
+}
+
+// LabelBaseline marks a trial result read from Laurel's log, not the collector's store: it measures
+// the sensor and never passes a metric (ADR 0018, point 4). Every trial is read so until the
+// collector's store reader joins the table.
+const LabelBaseline = "baseline"
+
+// LabelControl marks a control's result: it must be a MISS, and never counts for its metric.
+const LabelControl = "control"
+
+// trialLabel is control for a control, else baseline.
+func trialLabel(tr rangejob.Trial) string {
+	if tr.Load.Drop {
+		return LabelControl
+	}
+	return LabelBaseline
+}
+
+// CheckTrial runs trial tr of image once and stores its Result, named after the trial and labelled
+// baseline or control, and serial log as Check does.
+func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Trial) (Result, error) {
+	lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch}
+	return check(ctx, image, cache, state, tr.Name, trialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
+		return RunTrial(ctx, image, runs, serial, lim)
+	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) })
+}
+
+// check runs boot once under the cache lock and stores the verdict judge gives it with the serial log.
+func check(ctx context.Context, image, cache, state, trial, label string, boot func(runs string, serial io.Writer) (Outcome, error),
+	judge func(o Outcome, launcher, image string) (verdict, reason string)) (res Result, err error) {
 	held, err := Lock(cache)
 	if err != nil {
 		return Result{}, err
@@ -701,21 +737,21 @@ func Check(ctx context.Context, image, cache, state string) (res Result, err err
 	if err != nil {
 		return Result{}, fmt.Errorf("serial log: %w", err)
 	}
-	outcome, runErr := Run(ctx, image, filepath.Join(cache, "runs"), serial, nil)
+	outcome, runErr := boot(filepath.Join(cache, "runs"), serial)
 	if err := errors.Join(runErr, serial.Close()); err != nil {
 		return Result{}, err
 	}
 
 	res = Result{
 		SchemaVersion: resultSchema, ID: id, RangeCommit: img.Commit, LauncherCommit: launcherCommit(),
-		Image: image, ImageSHA256: img.SHA256, TargetKernel: TargetKernel, Manifest: img.Manifest,
+		Image: image, ImageSHA256: img.SHA256, TargetKernel: TargetKernel, Trial: trial, Label: label, Manifest: img.Manifest,
 	}
 	for _, f := range outcome.Facts {
 		if f.Name == FactKernel {
 			res.GuestKernel = f.Value
 		}
 	}
-	res.Verdict, res.Reason = JudgeSelftest(outcome, res.LauncherCommit, img.Commit)
+	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, img.Commit)
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io/fs"
 	"strings"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // JobSerial is the virtio serial of the job disk (rangevm attaches it read-only).
@@ -33,6 +35,34 @@ func JobDevice(sys fs.FS) (string, error) {
 		found = "/dev/" + e.Name()
 	}
 	return found, nil
+}
+
+// TrialCredentials returns the trial name and boot phase the host passed as the systemd credentials
+// balistid.trial and balistid.phase (ADR 0018, point 1), read from creds, the unit's credentials
+// directory, or "" for both when creds is nil or holds neither. One without the other is an error.
+func TrialCredentials(creds fs.FS) (name, phase string, err error) {
+	if creds == nil {
+		return "", "", nil
+	}
+	n, errName := fs.ReadFile(creds, "balistid.trial")
+	p, errPhase := fs.ReadFile(creds, "balistid.phase")
+	switch {
+	case errors.Is(errName, fs.ErrNotExist) && errors.Is(errPhase, fs.ErrNotExist):
+		return "", "", nil
+	case errName != nil || errPhase != nil:
+		return "", "", errors.New("trial credentials incomplete")
+	}
+	return string(n), string(p), nil
+}
+
+// TrialFor returns the table's trial called name for boot phase: only one-boot trials, phase 1, run
+// here (reset and kill trials come with their own guest side).
+func TrialFor(name, phase string) (rangejob.Trial, error) {
+	tr, ok := rangejob.Lookup(name)
+	if !ok || tr.Boots != 1 || phase != "1" {
+		return rangejob.Trial{}, errors.New("not a one-boot trial of this image")
+	}
+	return tr, nil
 }
 
 // Chunks splits data into base64 strings of at most size raw bytes each, so arbitrary program

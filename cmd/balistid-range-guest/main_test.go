@@ -100,3 +100,20 @@ func TestLaurelWindowIsCompleteOnlyWithoutARotation(t *testing.T) {
 		t.Fatalf("log removed: %s", cut)
 	}
 }
+
+// A trial never runs with a job disk (ADR 0018, point 1); without either the guest runs the self-test.
+func TestModeRefusesATrialWithAJobDisk(t *testing.T) {
+	cases := []struct{ trial, dev, want string }{
+		{"", "", modeSelftest},
+		{"", "/dev/vdc", modeJob},
+		{"rate-burst", "", modeTrial},
+	}
+	for _, c := range cases {
+		if got, err := mode(c.trial, c.dev); err != nil || got != c.want {
+			t.Errorf("mode(%q, %q) = %q, %v; want %q", c.trial, c.dev, got, err, c.want)
+		}
+	}
+	if got, err := mode("rate-burst", "/dev/vdc"); err == nil {
+		t.Errorf("a trial with a job disk ran as %q", got)
+	}
+}

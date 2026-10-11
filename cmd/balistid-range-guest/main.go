@@ -51,9 +51,20 @@ func main() {
 func run() error {
 	ctx := context.Background()
 	diagnose(ctx)
-	if dev, err := rangeguest.JobDevice(os.DirFS("/sys")); err != nil {
+	trial, phase, err := rangeguest.TrialCredentials(credentials())
+	if err != nil {
+		return fmt.Errorf("trial: %w", err)
+	}
+	dev, err := rangeguest.JobDevice(os.DirFS("/sys"))
+	if err != nil {
 		return fmt.Errorf("job disk: %w", err)
-	} else if dev != "" {
+	}
+	switch m, err := mode(trial, dev); {
+	case err != nil:
+		return err
+	case m == modeTrial:
+		return runTrial(ctx, trial, phase)
+	case m == modeJob:
 		return runJob(ctx, dev)
 	}
 	var facts []fact
@@ -93,6 +104,28 @@ func run() error {
 	add("overflow_journal", journal)
 	add("audit_lost_after", lost)
 	return write(facts)
+}
+
+// What the guest runs.
+const (
+	modeSelftest = "self-test"
+	modeJob      = "job"
+	modeTrial    = "trial"
+)
+
+// mode is a trial when the host passed one, an exec job when a job disk is attached, else the
+// self-test; a trial with a job disk is refused, so agents never choose code a trial runs as root
+// (ADR 0018, point 1).
+func mode(trial, jobDev string) (string, error) {
+	switch {
+	case trial != "" && jobDev != "":
+		return "", errors.New("a trial never runs with a job disk")
+	case trial != "":
+		return modeTrial, nil
+	case jobDev != "":
+		return modeJob, nil
+	}
+	return modeSelftest, nil
 }
 
 // The exec job's program and its transient unit; the report's limits are rangevm's, which the
@@ -417,11 +450,10 @@ func waitFor(ok func() bool) bool {
 // canary execs a binary with a fresh random argument that must come back through kernel, auditd
 // and Laurel (acceptance canary_interval_s).
 func canary(ctx context.Context) string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	token, err := token("balistid-canary-")
+	if err != nil {
 		return "error: " + err.Error()
 	}
-	token := "balistid-canary-" + hex.EncodeToString(b[:])
 	if err := exec.CommandContext(ctx, "/usr/bin/true", token).Run(); err != nil { //nolint:gosec // the token is our own random hex
 		return "error: " + err.Error()
 	}
@@ -429,6 +461,15 @@ func canary(ctx context.Context) string {
 		return "seen"
 	}
 	return "missing"
+}
+
+// token is prefix and 16 fresh random bytes in hex.
+func token(prefix string) (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("random token: %w", err)
+	}
+	return prefix + hex.EncodeToString(b[:]), nil
 }
 
 // disableAudit tries `auditctl -e 0`. Its exit status and text prove nothing (the errno goes to

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
@@ -46,8 +47,25 @@ func run(ctx context.Context) int {
 			return 1
 		}
 		return 0
+	case len(os.Args) == 4 && os.Args[1] == "trial":
+		tr, ok := rangejob.Lookup(os.Args[2])
+		if !ok {
+			fmt.Fprintln(os.Stderr, "balistid-range: no such trial")
+			return 2
+		}
+		res, err := rangevm.CheckTrial(ctx, os.Args[3], cache, state, tr)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "balistid-range:", err)
+			return 1
+		}
+		fmt.Printf("%s %s %s: %s (result %s)\n", tr.Name, res.Label, res.Verdict, res.Reason, res.ID)
+		if want := rangevm.ExpectedVerdict(tr); res.Verdict != want {
+			fmt.Printf("%s must give %s\n", tr.Name, want)
+			return 1
+		}
+		return 0
 	default:
-		fmt.Fprintln(os.Stderr, "usage: balistid-range build | balistid-range run <image.raw>")
+		fmt.Fprintln(os.Stderr, "usage: balistid-range build | balistid-range run <image.raw> | balistid-range trial <name> <image.raw>")
 		return 2
 	}
 }
