@@ -223,6 +223,12 @@ func (r *rig) settle() {
 		r.step(0)
 		if !r.last.opening {
 			r.step(0) // writes what waited for the store
+			if r.last.up {
+				select { // the probe a newly opened store sends, unless its syscall is stuck
+				case <-r.touched:
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -569,10 +575,10 @@ func TestLeftoverCanaryFilesRemovedAtStart(t *testing.T) {
 
 func TestTouchCreatesNextAndRemovesPrevious(t *testing.T) {
 	dir := t.TempDir()
-	if err := errors.Join(touch(dir, 1), touch(dir, 2)); err != nil {
+	if err := errors.Join(touch(dir, 1), touch(dir, 2), touch(dir, 4)); err != nil { // 3 never touched
 		t.Fatal(err)
 	}
-	if left, _ := filepath.Glob(filepath.Join(dir, "c-*")); len(left) != 1 || filepath.Base(left[0]) != "c-2" {
+	if left, _ := filepath.Glob(filepath.Join(dir, "c-*")); len(left) != 1 || filepath.Base(left[0]) != "c-4" {
 		t.Fatalf("left %v", left)
 	}
 }
@@ -605,5 +611,158 @@ func TestHealthRecordsWaitingForTheStoreAreBounded(t *testing.T) {
 	}
 	if r.last.waiting > maxNotes {
 		t.Fatalf("%d health records waiting", r.last.waiting)
+	}
+}
+
+// enrichedCanaryLine is shaped as Laurel writes it with enrich and translate on (deploy/laurel): the
+// "PID" and "PPID" objects and "UID" name next to the numbers they enrich.
+func enrichedCanaryLine(serial int, n uint64, uid, pid int, key string) string {
+	return fmt.Sprintf(`{"ID":"1.2:%d","SYSCALL":{"syscall":"openat","success":"yes","uid":%d,"UID":"balistid-collector",`+
+		`"pid":%d,"PID":{"EVENT_ID":"1.1:1","comm":"balistid-collec","exe":"/usr/bin/balistid-collector"},`+
+		`"ppid":1,"PPID":{"EVENT_ID":"1.0:1","comm":"systemd"},"key":%s},"SPAWNED_BY":{"ID":"1.0:1"},`+
+		`"PATH":[{"name":"/var/lib/balistid/canary/c-%d","NAME":"c"}]}`, serial, uid, pid, jsonString(key), n)
+}
+
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+// latestProbe returns the number of the last probe sent so far.
+func latestProbe(r *rig) uint64 {
+	r.t.Helper()
+	n := probed(r)
+	for {
+		select {
+		case m := <-r.touched:
+			n = m
+		case <-time.After(100 * time.Millisecond):
+			return n
+		}
+	}
+}
+
+func TestCanaryProbeReadsLaurelsEnrichedRecord(t *testing.T) {
+	for name, line := range map[string]string{
+		"enriched":     enrichedCanaryLine(1, 3, 1000, 4242, CanaryKey),
+		"several keys": enrichedCanaryLine(1, 3, 1000, 4242, "other\x01"+CanaryKey),
+	} {
+		if got := canaryProbe([]byte(line), 1000, 4242); got != "c-3" {
+			t.Fatalf("%s: canaryProbe = %q", name, got)
+		}
+	}
+	if got := canaryProbe([]byte(enrichedCanaryLine(1, 3, 1000, 4242, "balistid-canary-not")), 1000, 4242); got != "" {
+		t.Fatalf("a key that only starts like the canary's matched: %q", got)
+	}
+}
+
+func TestProbeCountsOnlyOnceCommitted(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.step(0)
+	r.push(enrichedCanaryLine(1, probed(r), 1000, 4242, CanaryKey))
+	r.step(0)
+	if health(r) == "OK" {
+		t.Fatal("a probe whose commit failed made the sensor OK")
+	}
+}
+
+func TestReopenedStoreNeedsANewProbe(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.push(canaryLine(1, probed(r), 1000, 4242))
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q", health(r))
+	}
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.push(event(2, ""))
+	r.step(time.Second)
+	r.st.set(func(s *fakeStore) { s.failFlush = false })
+	r.step(ReopenEvery) // the round's probe goes out; the reopen waits for its slot
+	r.advance(time.Second)
+	r.opens <- nil
+	for range 50 {
+		if r.step(0); r.last.up {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if health(r) == "OK" {
+		t.Fatal("OK after reopen on a probe sent before it")
+	}
+	r.push(canaryLine(3, latestProbe(r), 1000, 4242))
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q after the reopened store's probe", health(r))
+	}
+}
+
+func TestStoreLossCarriesSerialsAndBytes(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.push(event(11, ""), event(12, ""))
+	r.step(0)
+	l := r.last.pending[StageStore]
+	if l.Count != 2 || l.FirstSeq != 11 || l.LastSeq != 12 || l.Bytes != uint64(2*len(event(11, ""))) {
+		t.Fatalf("store loss %+v", l)
+	}
+}
+
+func TestLateRecordOfAMissedProbeDoesNotCount(t *testing.T) {
+	r := newRig(t)
+	release := make(chan struct{})
+	r.w.Canary.touch = func(_ string, n uint64) error { <-release; r.touched <- n; return nil }
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.step(CanaryEvery) // the connection's probe misses its deadline
+	close(release)
+	n := probed(r)
+	r.push(canaryLine(1, n, 1000, 4242)) // late: must neither prove nor forgive the miss
+	r.step(time.Second)
+	if health(r) == "OK" {
+		t.Fatal("a probe stored after its deadline made the sensor OK")
+	}
+	r.step(CanaryEvery) // the round's probe goes out
+	latestProbe(r)
+	r.step(CanaryEvery) // and misses: the second miss in a row
+	if health(r) != "UNKNOWN canary-missed" {
+		t.Fatalf("health %q: the late record hid a miss", health(r))
+	}
+}
+
+// Probes that come back while their records stop arriving (auditd stopped, the connection still open)
+// must turn a proven sensor UNKNOWN within two rounds.
+func TestStoppedCanaryRecordsTurnUnknown(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.push(canaryLine(1, probed(r), 1000, 4242))
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q", health(r))
+	}
+	r.step(CanaryEvery)
+	latestProbe(r)
+	r.step(CanaryEvery)
+	latestProbe(r)
+	r.step(CanaryEvery)
+	if health(r) != "UNKNOWN canary-missed" {
+		t.Fatalf("health %q after two rounds without canary records", health(r))
 	}
 }

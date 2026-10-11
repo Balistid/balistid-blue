@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,7 +34,7 @@ type Canary struct {
 	uid, pid int
 	n        uint64
 	sent     time.Time // when probe n went out; zero when no probe is outstanding
-	seen     bool      // probe n was stored
+	seen     bool      // probe n's record was stored
 	seenSent time.Time // when the latest stored probe went out
 	misses   int
 	inFlight chan struct{} // holds a token while a probe goroutine has not returned
@@ -58,15 +59,18 @@ func NewCanary(dir string, uid, pid int) (*Canary, error) {
 	}, nil
 }
 
-// Probe sends probe n+1 without waiting for its syscall. While an earlier probe's goroutine has not
-// returned no new one starts; scheduled says this was the round's probe, which then counts as a miss.
+// Probe sends probe n+1 without waiting for its syscall. A probe still outstanding past its deadline is
+// first counted as missed, so a new probe never hides one. While an earlier probe's goroutine has not
+// returned no syscall starts; a scheduled round then still takes number n+1, which nothing can match,
+// so it misses at its own deadline, one miss per round as with any other probe.
 func (c *Canary) Probe(now time.Time, scheduled bool) {
+	c.expire(now)
 	select {
 	case c.inFlight <- struct{}{}:
 	default:
 		if scheduled {
-			c.misses++
-			c.sent = time.Time{}
+			c.n++
+			c.sent, c.seen = now, false
 		}
 		return
 	}
@@ -84,14 +88,24 @@ func (c *Canary) Probe(now time.Time, scheduled bool) {
 	}()
 }
 
-// touch creates c-<n> and removes c-<n-1>; the create is what the audit rule records.
+// touch creates c-<n> and removes every other c-* file, also one a stuck probe left behind a round
+// that took a number without a syscall; the create is what the audit rule records.
 func touch(dir string, n uint64) error {
-	f, err := os.OpenFile(filepath.Join(dir, "c-"+strconv.FormatUint(n, 10)), //nolint:gosec // the canary's own directory
+	name := "c-" + strconv.FormatUint(n, 10)
+	f, err := os.OpenFile(filepath.Join(dir, name), //nolint:gosec // the canary's own directory
 		os.O_CREATE|os.O_EXCL|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("collector: canary: %w", err)
 	}
-	return errors.Join(f.Close(), removeIfThere(filepath.Join(dir, "c-"+strconv.FormatUint(n-1, 10))))
+	errs := []error{f.Close()}
+	old, err := filepath.Glob(filepath.Join(dir, "c-*"))
+	errs = append(errs, err)
+	for _, p := range old {
+		if filepath.Base(p) != name {
+			errs = append(errs, removeIfThere(p))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func removeIfThere(path string) error {
@@ -111,9 +125,10 @@ func (c *Canary) Failure() error {
 	}
 }
 
-// Observe marks the outstanding probe seen when r, already stored, is its record: the canary key, the
-// collector's uid and pid, a successful syscall and the basename c-<n>. A record of an older probe or
-// of any other process does not count.
+// Observe marks the outstanding probe seen when r, just stored, is its record: the canary key, the
+// collector's uid and pid, a successful syscall and the basename c-<n>. A record of an older probe, of a
+// probe past its deadline or of any other process does not count. A store that fails before its next
+// commit takes the writer to UNKNOWN, and only a probe sent after the store reopened proves it again.
 func (c *Canary) Observe(r rawrecord.Record) {
 	if c.sent.IsZero() || c.seen || !bytes.Contains(r.Data, []byte(CanaryKey)) {
 		return
@@ -126,11 +141,16 @@ func (c *Canary) Observe(r rawrecord.Record) {
 // Due ends a probe whose deadline passed without its record: a miss. It reports whether the canary
 // now counts as failing (two misses in a row).
 func (c *Canary) Due(now time.Time) bool {
+	c.expire(now)
+	return c.misses >= canaryMisses
+}
+
+// expire counts the outstanding probe as missed once its deadline passed.
+func (c *Canary) expire(now time.Time) {
 	if !c.sent.IsZero() && !c.seen && now.Sub(c.sent) >= CanaryEvery {
 		c.misses++
 		c.sent = time.Time{}
 	}
-	return c.misses >= canaryMisses
 }
 
 // SeenSince reports whether a probe sent at or after t was stored: only such a probe proves a
@@ -138,47 +158,39 @@ func (c *Canary) Due(now time.Time) bool {
 func (c *Canary) SeenSince(t time.Time) bool { return !c.seenSent.IsZero() && !c.seenSent.Before(t) }
 
 // canaryProbe returns the basename the record's PATH names when the record is a successful syscall of
-// uid and pid under the canary key, else "".
+// uid and pid under the canary key, else "". Keys are matched exactly: Laurel puts an enriched "PID"
+// object beside "pid", which a case-insensitive decoder would take for it.
 func canaryProbe(data []byte, uid, pid int) string {
-	var e struct {
-		SYSCALL struct {
-			Key     json.RawMessage `json:"key"`
-			UID     json.Number     `json:"uid"`
-			PID     json.Number     `json:"pid"`
-			Success string          `json:"success"`
-		}
-		PATH []struct {
-			Name string `json:"name"`
-		}
-	}
-	d := json.NewDecoder(bytes.NewReader(data))
-	d.UseNumber()
-	if err := d.Decode(&e); err != nil || e.SYSCALL.Success != "yes" ||
-		e.SYSCALL.UID.String() != strconv.Itoa(uid) || e.SYSCALL.PID.String() != strconv.Itoa(pid) ||
-		!hasKey(e.SYSCALL.Key, CanaryKey) {
+	var top map[string]json.RawMessage
+	var sc map[string]json.RawMessage
+	var paths []map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil || json.Unmarshal(top["SYSCALL"], &sc) != nil ||
+		json.Unmarshal(top["PATH"], &paths) != nil {
 		return ""
 	}
-	for _, p := range e.PATH {
-		if base := filepath.Base(p.Name); strings.HasPrefix(base, "c-") {
-			return base
+	var success string
+	if json.Unmarshal(sc["success"], &success) != nil || success != "yes" ||
+		string(sc["uid"]) != strconv.Itoa(uid) || string(sc["pid"]) != strconv.Itoa(pid) || !hasKey(sc["key"], CanaryKey) {
+		return ""
+	}
+	for _, p := range paths {
+		var name string
+		if json.Unmarshal(p["name"], &name) == nil {
+			if base := filepath.Base(name); strings.HasPrefix(base, "c-") {
+				return base
+			}
 		}
 	}
 	return ""
 }
 
-// hasKey reports whether an audit key field, a string or a list of strings, holds key.
+// hasKey reports whether an audit key field holds key: a string, in which the kernel joins several keys
+// with \x01, or a list of strings.
 func hasKey(raw json.RawMessage, key string) bool {
 	var one string
 	if json.Unmarshal(raw, &one) == nil {
-		return one == key
+		return slices.Contains(strings.Split(one, "\x01"), key)
 	}
 	var many []string
-	if json.Unmarshal(raw, &many) == nil {
-		for _, k := range many {
-			if k == key {
-				return true
-			}
-		}
-	}
-	return false
+	return json.Unmarshal(raw, &many) == nil && slices.Contains(many, key)
 }

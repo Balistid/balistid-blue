@@ -35,13 +35,18 @@ func (l *Losses) Add(stage Stage, r rawrecord.Record) {
 		l.by = map[Stage]Loss{}
 	}
 	c := l.by[stage]
+	c.add(r)
+	l.by[stage] = c
+}
+
+// add counts r into the loss.
+func (c *Loss) add(r rawrecord.Record) {
 	if c.Count == 0 {
 		c.FirstSeq, c.FirstAt = r.ProviderSeq, r.Received
 	}
 	c.Count++
 	c.Bytes += r.OrigLen
 	c.LastSeq, c.LastAt = r.ProviderSeq, r.Received
-	l.by[stage] = c
 }
 
 // Take returns the losses counted since the last Take and starts counting afresh.
