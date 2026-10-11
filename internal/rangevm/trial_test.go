@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -78,6 +79,8 @@ func TestRunTrialRefusesLimitsOutsideTheirRange(t *testing.T) {
 		"setup over batch": func(l *Limits) { l.Wall = 30*time.Minute - setupTimeout + time.Second },
 		"no serial":        func(l *Limits) { l.Serial = 0 },
 		"negative serial":  func(l *Limits) { l.Serial = -1 },
+		"serial over cap":  func(l *Limits) { l.Serial = MaxTrialSerial + 1 },
+		"serial overflow":  func(l *Limits) { l.Serial = math.MaxInt64 },
 		"no boot":          func(l *Limits) { l.Boots = 0 },
 		"three boots":      func(l *Limits) { l.Boots = 3 },
 		"negative scratch": func(l *Limits) { l.Scratch = -1 },
@@ -94,8 +97,12 @@ func TestRunTrialRefusesLimitsOutsideTheirRange(t *testing.T) {
 			t.Errorf("%s: error quotes the name: %v", name, err)
 		}
 	}
-	if _, err := RunTrial(t.Context(), "/nonexistent", t.TempDir(), io.Discard, ok); err == nil || !strings.Contains(err.Error(), "base image") {
-		t.Errorf("valid limits: %v, want only the missing base image", err)
+	top := ok
+	top.Serial = MaxTrialSerial
+	for _, lim := range []Limits{ok, top} {
+		if _, err := RunTrial(t.Context(), "/nonexistent", t.TempDir(), io.Discard, lim); err == nil || !strings.Contains(err.Error(), "base image") {
+			t.Errorf("valid limits %+v: %v, want only the missing base image", lim, err)
+		}
 	}
 }
 
@@ -110,9 +117,10 @@ type bootCall struct {
 }
 
 // fakeVM stands in for qemu-img and QEMU: boot i notes what it was given, then writes streams[i]
-// to the results disk.
+// to the results disk and exits as exits[i] says ("" for clean).
 type fakeVM struct {
 	streams [][]byte
+	exits   []string
 	boots   []bootCall
 	overlay []string
 }
@@ -144,6 +152,9 @@ func (f *fakeVM) run(ctx context.Context, argv []string, timeout time.Duration, 
 	defer w.Close() //nolint:errcheck // test
 	if _, err := w.WriteAt(f.streams[i], 0); err != nil {
 		return "exit: " + err.Error()
+	}
+	if i < len(f.exits) {
+		return f.exits[i]
 	}
 	return ""
 }
@@ -243,6 +254,35 @@ func TestSecondBootMustEchoAndFinish(t *testing.T) {
 	}
 }
 
+// A boot that wrote complete, echoed and armed facts and then exited badly is INVALID, on either
+// boot; so is a boot whose facts carry the right values under the wrong names.
+func TestEveryBootMustExitCleanlyAndEchoByName(t *testing.T) {
+	armed := func(phase int) []Record { return append(echo("reset-crash", phase), fact(FactResetArmed, "yes")) }
+	renamed := func(phase int, at int) []Record {
+		recs := armed(phase)
+		recs[at].Name += "x"
+		return recs
+	}
+	for name, c := range map[string]struct {
+		streams [][]byte
+		exits   []string
+		boots   int
+	}{
+		"boot 1 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"exit: exit status 1"}, 1},
+		"boot 2 exits badly":   {[][]byte{facts(t, armed(1)...), facts(t, armed(2)...)}, []string{"", "exit: exit status 1"}, 2},
+		"boot 1 trial renamed": {[][]byte{facts(t, renamed(1, 0)...), facts(t, armed(2)...)}, nil, 1},
+		"boot 1 phase renamed": {[][]byte{facts(t, renamed(1, 1)...), facts(t, armed(2)...)}, nil, 1},
+		"boot 2 trial renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 0)...)}, nil, 2},
+		"boot 2 phase renamed": {[][]byte{facts(t, armed(1)...), facts(t, renamed(2, 1)...)}, nil, 2},
+	} {
+		vm := &fakeVM{streams: c.streams, exits: c.exits}
+		out, _ := runFake(t, resetTrial, vm.run)
+		if out.Invalid == "" || len(vm.boots) != c.boots {
+			t.Errorf("%s: Invalid %q after %d boots, want INVALID after %d", name, out.Invalid, len(vm.boots), c.boots)
+		}
+	}
+}
+
 // Run boots once with its own limits, no fw_cfg credentials and no scratch disk; a one-boot trial
 // boots once as well.
 func TestOneBootRuns(t *testing.T) {
@@ -311,5 +351,20 @@ func TestScratchDiskOutlivesTheResetAndFitsTheSizeCap(t *testing.T) {
 	}
 	if slices.Contains(vm.overlay, inRun+"/"+scratch) || vm.overlay[1] != fmt.Sprintf("--fsize=%d", WriteCap(1)) {
 		t.Errorf("overlay step argv %q: want no scratch disk and the plain cap", vm.overlay)
+	}
+}
+
+// Run's errors keep their text: a results disk that already exists is "results disk: open …".
+func TestPrepareKeepsRunsErrorText(t *testing.T) {
+	dir := t.TempDir()
+	vars := filepath.Join(dir, "vars.fd")
+	if err := os.WriteFile(vars, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, results), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepare(dir, nil, vars, 0); err == nil || !strings.HasPrefix(err.Error(), "results disk: open ") {
+		t.Errorf("prepare = %v, want \"results disk: open …\"", err)
 	}
 }

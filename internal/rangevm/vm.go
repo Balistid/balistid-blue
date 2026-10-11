@@ -62,11 +62,13 @@ type Limits struct {
 	Scratch int64
 }
 
-// Caps of a trial: with its setup it fits an acceptance batch (ADR 0018, point 5), and its scratch
-// disk the runner's disk admission.
+// Caps of a trial: with its setup it fits an acceptance batch (ADR 0018, point 5), its serial
+// budget keeps runCommand's byte counter far from overflow, and its scratch disk fits the runner's
+// disk admission.
 const (
-	MaxTrialWall = 30*time.Minute - setupTimeout
-	MaxScratch   = 4 << 30
+	MaxTrialWall   = 30*time.Minute - setupTimeout
+	MaxTrialSerial = 16 << 20
+	MaxScratch     = 4 << 30
 )
 
 // runLimits are the self-test's and an exec job's (ADR 0009, point 4).
@@ -88,8 +90,8 @@ func (l Limits) check() error {
 		return errors.New("trial name is not a lowercase word of at most 32 characters")
 	case l.Wall <= 0 || l.Wall > MaxTrialWall:
 		return fmt.Errorf("trial wall clock must be in (0, %s]", MaxTrialWall)
-	case l.Serial <= 0:
-		return errors.New("trial serial budget must be positive")
+	case l.Serial <= 0 || l.Serial > MaxTrialSerial:
+		return fmt.Errorf("trial serial budget must be in (0, %d] bytes", int64(MaxTrialSerial))
 	case l.Boots != 1 && l.Boots != 2:
 		return errors.New("a trial boots once or twice")
 	case l.Scratch < 0 || l.Scratch > MaxScratch:
@@ -377,7 +379,7 @@ func prepare(runDir string, job []byte, varsTemplate string, scratchBytes int64)
 func sparseFile(path string, size int64) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // run directory created by Run
 	if err != nil {
-		return fmt.Errorf("create: %w", err)
+		return err //nolint:wrapcheck // callers name the file; Run's error text stays as it was
 	}
 	return errors.Join(f.Truncate(size), f.Close())
 }
