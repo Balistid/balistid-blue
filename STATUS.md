@@ -12,20 +12,20 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Range, runner (0009-0011) | VM where agents test the recorder | ADR 0011 accepted; installed at 506f775; ADR 0018 trials proposed |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
-| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94; framing, queue on a branch |
+| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94; core in the CP2 pull request, not in an image |
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - Collector master plan (Opus critic and Codex, two rounds each, GO): checkpoints CP1 store side, CP2 collector core,
   CP3 gates and units, CP4 range; acceptance proof path per metric. Kept outside the repo with the maintainer.
 - #94 (CP1): `rawrecord.FromParts` and `Record.Check`, `Store.Append(record)` with `ErrRefused`, `store.ReadSeals`.
-- CP2 started: `internal/collector` framing (lines as evidence, ID serial, malformed, lines over 2 MiB streamed),
-  byte-bounded queue that never blocks, losses per stage; fuzz and mutation tested, 2.4 µs per 1 KiB line.
+- CP2: `internal/collector` (lines as evidence, byte-bounded queue that never blocks, SO_PEERCRED acceptor, one
+  writer owning the store, losses per stage, canary health with exact-key Laurel parsing, reopen, watchdog) and
+  `cmd/balistid-collector` (socket from systemd, READY, stop within 100 ms). Opus critic 2 rounds GO.
 ## Next step
-1. Merge #94 after Codex and the maintainer's approval (owned `internal/rawrecord/`).
-2. CP2: acceptor (SO_PEERCRED, two connections), writer (Flush, store failure, reopen), canary and health
-   (ADR 0017), `cmd/balistid-collector`; one pull request, one critic and one Codex review.
-3. Laurel spike outside the sandbox (fixtures, line lengths); runner trials in ADR 0018 (another session).
+1. Merge #94 (maintainer approves owned `internal/rawrecord/`), then the CP2 pull request after its Codex review.
+2. CP3, owned: `*.socket` gate, go_gate for the SQLite modules, units, sysusers, tmpfiles (MASTER_PLAN B1-B3).
+3. Laurel spike outside the sandbox (fixtures, line lengths, `\x01` keys); range trials with ADR 0018 (B4).
 ## Open decisions (maintainer)
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - Runner: #86 waits for the next reinstall; Codex's process_vm_writev NO-GO on the tick filter (#75) is open.
