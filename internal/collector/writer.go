@@ -243,6 +243,9 @@ func (w *Writer) appendQueued(ctx context.Context) {
 			w.Log.Error("record refused", "err", err)
 			w.Losses.Add(StageFraming, r)
 		case err != nil:
+			if len(sealed) > 0 { // the seal before the failure committed what came before
+				w.committed()
+			}
 			w.Losses.Add(StageStore, r)
 			w.fail(ctx, "store-append", err)
 		case !stored:
@@ -261,11 +264,13 @@ func (w *Writer) flush(ctx context.Context) {
 	if w.st == nil {
 		return
 	}
-	if _, err := w.st.Flush(ctx); err != nil {
-		w.fail(ctx, "store-flush", err)
-		return
+	sealed, err := w.st.Flush(ctx)
+	if len(sealed) > 0 || err == nil {
+		w.committed() // a seal on the way committed what was handed over, even if Flush then failed
 	}
-	w.committed()
+	if err != nil {
+		w.fail(ctx, "store-flush", err)
+	}
 }
 
 // committed is called once the store committed everything handed to it: the records, the health
@@ -285,16 +290,20 @@ func (w *Writer) committed() {
 // fail counts what the store had not committed as lost at most, closes it and schedules a reopen.
 func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.Log.Error("store failed", "reason", reason, "err", err)
-	if w.batch.Count > 0 {
-		w.addPending(StageStore, w.batch)
-	}
-	if w.capped.Count > 0 {
-		w.addPending(StageCap, w.capped)
-	}
-	w.requeue(w.inflight)
-	w.batch, w.capped, w.inflight = Loss{}, Loss{}, nil
-	if _, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr != nil {
+	// Close commits what the store held, or fails saying it is lost (store.Close): only then is it
+	// counted and handed to the next store, so nothing committed is counted twice.
+	if _, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr == nil {
+		w.committed()
+	} else {
 		w.Log.Error("store close failed", "err", cerr)
+		if w.batch.Count > 0 {
+			w.addPending(StageStore, w.batch)
+		}
+		if w.capped.Count > 0 {
+			w.addPending(StageCap, w.capped)
+		}
+		w.requeue(w.inflight)
+		w.batch, w.capped, w.inflight = Loss{}, Loss{}, nil
 	}
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
