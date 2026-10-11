@@ -125,8 +125,8 @@ type Writer struct {
 	opening     bool
 	cancelOpen  context.CancelFunc
 	nextOpen    time.Time
-	uncommitted uint64 // records appended since the last commit, lost at most if a call fails
-	oldest      int64  // receive time of the oldest uncommitted record
+	batch       Loss      // records appended since the last commit, lost at most if a store call fails
+	openedAt    time.Time // when the store last opened; only a probe sent after it proves the new store
 	pending     map[Stage]Loss
 	maxLag      time.Duration
 	lastStats   time.Time
@@ -188,8 +188,10 @@ func (w *Writer) openDone(r openResult) {
 		w.down, w.nextOpen = "store-open", w.Now().Add(ReopenEvery)
 		return
 	}
-	w.st, w.down = r.st, ""
+	w.st, w.down, w.openedAt = r.st, "", w.Now()
 	w.Log.Info("store open")
+	w.Canary.Probe(w.openedAt, false)
+	w.lastRound = w.openedAt
 }
 
 // step is one tick: append, flush, probe, health, stats, watchdog.
@@ -238,12 +240,9 @@ func (w *Writer) appendQueued(ctx context.Context) {
 			w.fail(ctx, "store-append", err)
 		case stored:
 			if len(sealed) > 0 { // the seal committed every record before this one
-				w.uncommitted = 0
+				w.batch = Loss{}
 			}
-			if w.uncommitted == 0 {
-				w.oldest = r.Received
-			}
-			w.uncommitted++
+			w.batch.add(r)
 			w.Canary.Observe(r)
 		}
 	}
@@ -257,24 +256,24 @@ func (w *Writer) flush(ctx context.Context, now time.Time) {
 		w.fail(ctx, "store-flush", err)
 		return
 	}
-	if w.uncommitted > 0 {
-		if lag := now.Sub(time.Unix(0, w.oldest)); lag > w.maxLag {
+	if w.batch.Count > 0 {
+		if lag := now.Sub(time.Unix(0, w.batch.FirstAt)); lag > w.maxLag {
 			w.maxLag = lag
 			if lag > lagBudget {
 				w.note(map[string]any{"kind": "lag", "lag_ms": lag.Milliseconds()})
 			}
 		}
 	}
-	w.uncommitted = 0
+	w.batch = Loss{}
 }
 
 // fail counts what the store had not committed as lost at most, closes it and schedules a reopen.
 func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.Log.Error("store failed", "reason", reason, "err", err)
-	if w.uncommitted > 0 {
-		w.addPending(StageStore, Loss{Count: w.uncommitted, FirstAt: w.oldest, LastAt: w.Now().UnixNano()})
+	if w.batch.Count > 0 {
+		w.addPending(StageStore, w.batch)
 	}
-	w.uncommitted = 0
+	w.batch = Loss{}
 	if _, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr != nil {
 		w.Log.Error("store close failed", "err", cerr)
 	}
@@ -363,13 +362,20 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN laurel-disconnected"
 	case failing:
 		h = "UNKNOWN canary-missed"
-	case !w.Canary.SeenSince(w.connectedAt):
+	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
 	}
 	if h != w.health {
 		w.health = h
 		w.note(map[string]any{"kind": "health", "state": h})
 	}
+}
+
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 // Health returns the state the latest tick computed.
@@ -423,6 +429,9 @@ func (w *Writer) shutdown(ctx context.Context) error {
 	w.losses()
 	w.note(map[string]any{"kind": "stopping"})
 	w.writeNotes()
+	for _, n := range w.notes {
+		w.Log.Warn("health record not stored at stop", "record", string(n))
+	}
 	if _, err := w.st.Close(ctx); err != nil {
 		return fmt.Errorf("collector: close store: %w", err)
 	}
