@@ -16,7 +16,7 @@ import (
 
 // The sandbox is an allowlist: any added mount, share or capability must change this test.
 func TestSandboxArgvIsExactlyTheAllowlist(t *testing.T) {
-	got := sandboxArgv("/img/base.raw", "/cache/run-1", 123, "/usr/bin/true")
+	got := sandboxArgv("/img/base.raw", "/cache/run-1", 123, false, "/usr/bin/true")
 	want := []string{
 		"/usr/bin/prlimit", "--fsize=123", "--core=0", "--",
 		"/usr/bin/bwrap",
@@ -45,7 +45,7 @@ func TestSandboxArgvIsExactlyTheAllowlist(t *testing.T) {
 
 // The job disk is the only addition a job makes, and it is read-only.
 func TestQemuArgvWithAJob(t *testing.T) {
-	plain, job := qemuArgv(false), qemuArgv(true)
+	plain, job := qemuArgv(false, false, "", 0), qemuArgv(true, false, "", 0)
 	want := append(slices.Clone(plain[:len(plain)-2]),
 		"-drive", "if=none,id=job,format=raw,readonly=on,file=/range/run/job.raw",
 		"-device", "virtio-blk-pci,drive=job,serial=balistid-job",
@@ -106,7 +106,7 @@ func TestRemoveRunDir(t *testing.T) {
 
 // The VM argv is exact as well: no device, NIC or option appears without changing this test.
 func TestQemuArgv(t *testing.T) {
-	argv := qemuArgv(false)
+	argv := qemuArgv(false, false, "", 0)
 	want := []string{
 		"/usr/bin/qemu-system-x86_64",
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",

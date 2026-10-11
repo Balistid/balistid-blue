@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,8 @@ const (
 	resultsID = "balistid-results"
 	jobDisk   = "job.raw"
 	jobID     = "balistid-job"
+	scratch   = "scratch.raw"
+	scratchID = "balistid-scratch"
 )
 
 // Limits of one run (ADR 0009, points 3–5).
@@ -47,12 +51,72 @@ const (
 	setupShown   = 512 // bytes of the overlay step's output kept in its INVALID reason
 )
 
+// Limits of a trial run (ADR 0018, points 1-2): Wall bounds all its boots together, Serial each
+// boot's output; Boots is 2 for a reset trial, whose first boot must arm the reset. Scratch is the
+// size of a writable disk the boots share for the store a trial measures, or 0 for none.
+type Limits struct {
+	Trial   string
+	Wall    time.Duration
+	Serial  int64
+	Boots   int
+	Scratch int64
+}
+
+// Caps of a trial: with its setup it fits an acceptance batch (ADR 0018, point 5), and its scratch
+// disk the runner's disk admission.
+const (
+	MaxTrialWall = 30*time.Minute - setupTimeout
+	MaxScratch   = 4 << 30
+)
+
+// runLimits are the self-test's and an exec job's (ADR 0009, point 4).
+var runLimits = Limits{Wall: RunTimeout, Serial: SerialBudget, Boots: 1}
+
+// Facts of a trial boot: it opens with the trial and phase it read (ADR 0018, point 1), and a first
+// boot of two says reset_armed=yes before it resets itself.
+const (
+	FactTrial      = "trial"
+	FactPhase      = "phase"
+	FactResetArmed = "reset_armed"
+)
+
+var trialName = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+
+func (l Limits) check() error {
+	switch {
+	case !trialName.MatchString(l.Trial):
+		return errors.New("trial name is not a lowercase word of at most 32 characters")
+	case l.Wall <= 0 || l.Wall > MaxTrialWall:
+		return fmt.Errorf("trial wall clock must be in (0, %s]", MaxTrialWall)
+	case l.Serial <= 0:
+		return errors.New("trial serial budget must be positive")
+	case l.Boots != 1 && l.Boots != 2:
+		return errors.New("a trial boots once or twice")
+	case l.Scratch < 0 || l.Scratch > MaxScratch:
+		return fmt.Errorf("trial scratch disk must be in [0, %d] bytes", int64(MaxScratch))
+	}
+	return nil
+}
+
+// fileCap is the size limit prlimit gives every file QEMU writes in a run under l.
+func (l Limits) fileCap(baseSize int64) int64 { return max(WriteCap(baseSize), l.Scratch) }
+
+// DiskNeed is all a run under l can write in its run directory: a scratch disk is a fourth file and
+// raises the one per-file cap for all four (ADR 0011, point 6; ADR 0018, point 2).
+func (l Limits) DiskNeed(baseSize int64) int64 {
+	if l.Scratch == 0 {
+		return 3 * WriteCap(baseSize)
+	}
+	return 4 * l.fileCap(baseSize)
+}
+
 // sandboxArgv wraps prog in prlimit and bwrap (ADR 0009, point 3): no network, no host $HOME,
-// read-only /usr, base image and run directory, and only the three run files writable, so the
-// per-file size limit bounds all the disk a compromised QEMU can fill; the bwrap root and /dev are
-// remounted read-only, so it has no tmpfs to fill (its memory is bounded only by the host).
-// --core=0 because SIGXFSZ dumps core by default, and a QEMU core holds guest memory.
-func sandboxArgv(base, runDir string, fsize int64, prog ...string) []string {
+// read-only /usr, base image and run directory, and only the three run files writable, plus a
+// trial's scratch disk (ADR 0018), so the per-file size limit bounds all the disk a compromised
+// QEMU can fill; the bwrap root and /dev are remounted read-only, so it has no tmpfs to fill (its
+// memory is bounded only by the host). --core=0 because SIGXFSZ dumps core by default, and a QEMU
+// core holds guest memory.
+func sandboxArgv(base, runDir string, fsize int64, withScratch bool, prog ...string) []string {
 	argv := []string{
 		prlimitPath, fmt.Sprintf("--fsize=%d", fsize), "--core=0", "--",
 		bwrapPath,
@@ -70,10 +134,11 @@ func sandboxArgv(base, runDir string, fsize int64, prog ...string) []string {
 		"--bind", filepath.Join(runDir, overlay), inRun + "/" + overlay,
 		"--bind", filepath.Join(runDir, results), inRun + "/" + results,
 		"--bind", filepath.Join(runDir, firmVars), inRun + "/" + firmVars,
-		"--remount-ro", "/dev",
-		"--remount-ro", "/",
-		"--",
 	}
+	if withScratch {
+		argv = append(argv, "--bind", filepath.Join(runDir, scratch), inRun+"/"+scratch)
+	}
+	argv = append(argv, "--remount-ro", "/dev", "--remount-ro", "/", "--")
 	return append(argv, prog...)
 }
 
@@ -83,8 +148,9 @@ func overlayArgv() []string {
 }
 
 // qemuArgv is the VM: no default devices, no NIC, no display, and `format=` on every drive so no
-// guest-written bytes are ever probed as an image header (ADR 0009, point 2).
-func qemuArgv(job bool) []string {
+// guest-written bytes are ever probed as an image header (ADR 0009, point 2). A trial's name and
+// boot phase reach the guest only as systemd credentials over fw_cfg (ADR 0018, point 1).
+func qemuArgv(job, withScratch bool, trial string, phase int) []string {
 	argv := []string{
 		qemuPath,
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",
@@ -107,14 +173,25 @@ func qemuArgv(job bool) []string {
 			"-drive", "if=none,id=job,format=raw,readonly=on,file="+inRun+"/"+jobDisk,
 			"-device", "virtio-blk-pci,drive=job,serial="+jobID)
 	}
+	if withScratch {
+		argv = append(argv,
+			"-drive", "if=none,id=scratch,format=raw,file="+inRun+"/"+scratch,
+			"-device", "virtio-blk-pci,drive=scratch,serial="+scratchID)
+	}
+	if trial != "" {
+		argv = append(argv,
+			"-fw_cfg", "name=opt/io.systemd.credentials/balistid.trial,string="+trial,
+			"-fw_cfg", fmt.Sprintf("name=opt/io.systemd.credentials/balistid.phase,string=%d", phase))
+	}
 	return append(argv, "-serial", "stdio")
 }
 
-// Outcome of one run. Invalid is empty only when the VM exited cleanly and the results stream
-// parsed; Facts are then what the guest reported.
+// Outcome of one run. Invalid is empty only when every boot exited cleanly and its results stream
+// parsed; Facts are then what the last boot reported, FirstBoot the first of a run that booted twice.
 type Outcome struct {
-	Facts   []Record
-	Invalid string
+	Facts     []Record
+	FirstBoot []Record
+	Invalid   string
 }
 
 // ErrCleanup marks an error of Run after a run that ended: its Outcome stands, only the run
@@ -125,10 +202,27 @@ var ErrCleanup = errors.New("remove run directory")
 // serial output to serial, and deletes the run directory afterwards (R5).
 //
 // A non-nil job is a job disk image (rangejob.EncodeDisk) attached read-only for the guest to run.
-func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte) (out Outcome, err error) {
+func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte) (Outcome, error) {
 	if job != nil && len(job) != rangejob.DiskBytes {
 		return Outcome{}, fmt.Errorf("job disk is %d bytes, want %d", len(job), rangejob.DiskBytes)
 	}
+	return boot(ctx, base, parent, serial, job, runLimits, runCommand, ovmfVars)
+}
+
+// RunTrial boots base for the trial lim names, never with a job disk, and boots the same overlay
+// and firmware variables a second time only after a first boot that armed its reset (ADR 0018).
+func RunTrial(ctx context.Context, base, parent string, serial io.Writer, lim Limits) (Outcome, error) {
+	if err := lim.check(); err != nil {
+		return Outcome{}, err
+	}
+	return boot(ctx, base, parent, serial, nil, lim, runCommand, ovmfVars)
+}
+
+// command runs argv as runCommand does; tests replace it to stand in for QEMU.
+type command func(ctx context.Context, argv []string, timeout time.Duration, budget int64, out io.Writer) string
+
+// boot runs everything Run and RunTrial share; vars is the firmware variables template it copies.
+func boot(ctx context.Context, base, parent string, serial io.Writer, job []byte, lim Limits, run command, vars string) (out Outcome, err error) {
 	st, err := os.Stat(base)
 	if err != nil {
 		return Outcome{}, fmt.Errorf("base image: %w", err)
@@ -138,19 +232,76 @@ func Run(ctx context.Context, base, parent string, serial io.Writer, job []byte)
 		return Outcome{}, fmt.Errorf("run directory: %w", err)
 	}
 	defer func() { err = removeRunDir(runDir, err) }()
-	if err := prepare(runDir, job); err != nil {
+	if err := prepare(runDir, job, vars, lim.Scratch); err != nil {
 		return Outcome{}, err
 	}
-	fsize := WriteCap(st.Size())
+	fsize := lim.fileCap(st.Size())
+	withScratch := lim.Scratch > 0
 
 	var setup bytes.Buffer
-	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, overlayArgv()...), setupTimeout, SerialBudget, &setup); why != "" {
+	if why := run(ctx, sandboxArgv(base, runDir, WriteCap(st.Size()), false, overlayArgv()...), setupTimeout, SerialBudget, &setup); why != "" {
 		return Outcome{Invalid: "overlay: " + why + ": " + Printable(strings.TrimSpace(setup.String()), setupShown)}, nil
 	}
-	if why := runCommand(ctx, sandboxArgv(base, runDir, fsize, qemuArgv(job != nil)...), RunTimeout, SerialBudget, serial); why != "" {
-		return Outcome{Invalid: "vm: " + why}, nil
+	ctx, cancel := context.WithTimeout(ctx, lim.Wall)
+	defer cancel()
+	resultsPath := filepath.Join(runDir, results)
+	var first []Record
+	for phase := 1; ; phase++ {
+		if why := run(ctx, sandboxArgv(base, runDir, fsize, withScratch, qemuArgv(job != nil, withScratch, lim.Trial, phase)...), lim.Wall, lim.Serial, serial); why != "" {
+			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why}, nil
+		}
+		o := readResults(resultsPath)
+		switch {
+		case o.Invalid != "":
+			if phase > 1 {
+				o.Invalid = "second boot: " + o.Invalid
+			}
+		case !echoes(o.Facts, lim.Trial, phase):
+			o.Invalid = fmt.Sprintf("boot %d did not echo its trial and phase", phase)
+		case phase < lim.Boots && !armed(o.Facts):
+			o.Invalid = "first boot did not arm its reset"
+		}
+		if o.Invalid != "" || phase == lim.Boots {
+			o.FirstBoot = first
+			return o, nil
+		}
+		// A new file also undoes whatever boot 1's QEMU did to the old one's mode or size.
+		if err := errors.Join(os.Remove(resultsPath), sparseFile(resultsPath, ResultsBytes)); err != nil {
+			return Outcome{Facts: o.Facts, Invalid: "results disk: " + err.Error()}, nil
+		}
+		first = o.Facts
 	}
-	return readResults(filepath.Join(runDir, results)), nil
+}
+
+func bootName(phase int) string {
+	if phase == 1 {
+		return "vm: "
+	}
+	return "second boot: "
+}
+
+// echoes reports whether a trial boot opened with the trial and phase the host gave it; a run
+// without a trial has nothing to echo.
+func echoes(facts []Record, trial string, phase int) bool {
+	if trial == "" {
+		return true
+	}
+	return len(facts) >= 2 && facts[0].Name == FactTrial && facts[0].Value == trial &&
+		facts[1].Name == FactPhase && facts[1].Value == strconv.Itoa(phase)
+}
+
+// armed requires reset_armed=yes and no other value of it, so conflicting facts never arm a reset.
+func armed(facts []Record) bool {
+	seen := false
+	for _, f := range facts {
+		if f.Name == FactResetArmed {
+			if f.Value != "yes" {
+				return false
+			}
+			seen = true
+		}
+	}
+	return seen
 }
 
 // removeRunDir deletes runDir after Run. A failure after a run that ended wraps ErrCleanup, so the
@@ -167,8 +318,8 @@ func removeRunDir(runDir string, runErr error) error {
 }
 
 // WriteCap is the size limit of each of the three files QEMU can write (overlay, results, firmware
-// variables) for a base image of baseSize bytes; prlimit applies it per file, so a run can write up
-// to three times this much, which the runner's disk admission must reserve (ADR 0011, point 6).
+// variables) for a base image of baseSize bytes in a run without a scratch disk; prlimit applies it
+// per file, so such a run can write three times this much (Limits.DiskNeed, ADR 0011, point 6).
 func WriteCap(baseSize int64) int64 { return baseSize + ResultsBytes }
 
 // readResults treats every problem with the results disk as INVALID: a compromised QEMU can
@@ -193,9 +344,9 @@ func readResults(path string) Outcome {
 	return Outcome{Facts: facts}
 }
 
-// prepare writes the zeroed results disk, a private copy of the firmware variables and the empty
-// overlay file that qemu-img fills; the sandbox can write only these three files.
-func prepare(runDir string, job []byte) error {
+// prepare writes the zeroed results disk, a private copy of the firmware variables, the empty
+// overlay file that qemu-img fills and a trial's scratch disk; the sandbox can write only these.
+func prepare(runDir string, job []byte, varsTemplate string, scratchBytes int64) error {
 	if job != nil {
 		if err := os.WriteFile(filepath.Join(runDir, jobDisk), job, 0o400); err != nil {
 			return fmt.Errorf("job disk: %w", err)
@@ -204,25 +355,31 @@ func prepare(runDir string, job []byte) error {
 	if err := os.WriteFile(filepath.Join(runDir, overlay), nil, 0o600); err != nil {
 		return fmt.Errorf("overlay: %w", err)
 	}
-	vars, err := os.ReadFile(ovmfVars)
+	vars, err := os.ReadFile(varsTemplate) //nolint:gosec // a fixed firmware path, or a test's file
 	if err != nil {
 		return fmt.Errorf("firmware variables: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(runDir, firmVars), vars, 0o600); err != nil { //nolint:gosec // run directory created by Run
 		return fmt.Errorf("firmware variables: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(runDir, results), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // run directory created by Run
-	if err != nil {
+	if err := sparseFile(filepath.Join(runDir, results), ResultsBytes); err != nil {
 		return fmt.Errorf("results disk: %w", err)
 	}
-	if err := f.Truncate(ResultsBytes); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("results disk: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("results disk: %w", err)
+	if scratchBytes > 0 {
+		if err := sparseFile(filepath.Join(runDir, scratch), scratchBytes); err != nil {
+			return fmt.Errorf("scratch disk: %w", err)
+		}
 	}
 	return nil
+}
+
+// sparseFile creates path, which must not exist, as size zero bytes.
+func sparseFile(path string, size int64) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // run directory created by Run
+	if err != nil {
+		return fmt.Errorf("create: %w", err)
+	}
+	return errors.Join(f.Truncate(size), f.Close())
 }
 
 // runCommand runs argv with an empty environment and returns why the run is INVALID, or "" for a
