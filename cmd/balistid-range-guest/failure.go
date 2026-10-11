@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -100,10 +101,25 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return fail("writer pipe: " + err.Error())
 	}
+	syncs, err := child.StdoutPipe()
+	if err != nil {
+		return fail("writer pipe: " + err.Error())
+	}
 	child.Stderr = os.Stderr
 	if err := child.Start(); err != nil {
 		return fail("writer: " + err.Error())
 	}
+	// synced follows the highest number the writer had written before its last fsync returned.
+	var synced atomic.Uint64
+	go func() {
+		var b [rangeguest.RecordSize]byte
+		for {
+			if _, err := io.ReadFull(syncs, b[:]); err != nil {
+				return
+			}
+			synced.Store(binary.LittleEndian.Uint64(b[:]))
+		}
+	}()
 	var hand rangeguest.Handover
 	_, _, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, func(seq uint64) error {
 		if !time.Now().Before(failAt) {
@@ -120,7 +136,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	h := hand.H(time.Now())
 	// A mark starts on a line of its own: the console's last line may be a prompt without an end.
-	if err := mark(fmt.Sprintf("\nbalistid-fail %d\n", h)); err != nil {
+	if err := mark(fmt.Sprintf("\nbalistid-fail %d %d\n", h, synced.Load())); err != nil {
 		return fail(err.Error())
 	}
 	if tr.Failure == rangejob.FailReset {
@@ -182,7 +198,7 @@ func writerMain(args []string) error {
 		return fmt.Errorf("numbers file: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // synced by ServeWriter
-	if err := rangeguest.ServeWriter(os.Stdin, rangeguest.NewWriter(f, pol, rangeguest.WallClock)); err != nil {
+	if err := rangeguest.ServeWriter(os.Stdin, rangeguest.NewWriter(f, pol, rangeguest.WallClock), os.Stdout); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil

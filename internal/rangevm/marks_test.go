@@ -19,7 +19,7 @@ func TestMarkWriterStampsExactMarksAndPassesEverything(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	var out bytes.Buffer
 	mw := &markWriter{w: &out, now: clockAt(t0)}
-	in := "booting\r\nbalistid-range-guest: armed\nbalistid-fa" + "il 41\r\nbalistid-killed\n[ 3.2] tail"
+	in := "booting\r\nbalistid-range-guest: armed\nbalistid-fa" + "il 41 7\r\nbalistid-killed\n[ 3.2] tail"
 	for _, part := range []string{in[:20], in[20:47], in[47:]} {
 		if n, err := mw.Write([]byte(part)); err != nil || n != len(part) {
 			t.Fatalf("Write = %d, %v", n, err)
@@ -29,7 +29,7 @@ func TestMarkWriterStampsExactMarksAndPassesEverything(t *testing.T) {
 		t.Errorf("console changed: %q", out.String())
 	}
 	m := mw.m
-	if m.Bad != "" || m.H != 41 || !m.Fail.Equal(t0.Add(10*time.Millisecond)) || !m.Killed.Equal(t0.Add(20*time.Millisecond)) {
+	if m.Bad != "" || m.H != 41 || m.Synced != 7 || !m.Fail.Equal(t0.Add(10*time.Millisecond)) || !m.Killed.Equal(t0.Add(20*time.Millisecond)) {
 		t.Errorf("marks = %+v", m)
 	}
 }
@@ -38,18 +38,21 @@ func TestMarkWriterStampsExactMarksAndPassesEverything(t *testing.T) {
 // line too long to look at makes the marks Bad: hostile console text never becomes a mark.
 func TestMarkWriterRefusesAnythingButExactMarks(t *testing.T) {
 	cases := []string{
-		"balistid-fail 041\n",
+		"balistid-fail 041 0\n",
 		"balistid-fail \n",
-		"balistid-fail 4 1\n",
+		"balistid-fail 4  1\n",
 		"balistid-fail -1\n",
 		"balistid-fail 41 \n",
+		"balistid-fail 41\n",
+		"balistid-fail 41 0 0\n",
+		"balistid-fail 41 00\n",
 		"balistid-fail\t41\n",
 		"balistid-failure 3\n",
-		"balistid-fail 18446744073709551616\n",
-		"balistid-fail 1\nbalistid-fail 2\n",
+		"balistid-fail 18446744073709551616 0\n",
+		"balistid-fail 1 0\nbalistid-fail 2 0\n",
 		"balistid-killed\n",
-		"balistid-fail 1\nbalistid-killed now\n",
-		"balistid-fail 1\nbalistid-killed\nbalistid-killed\n",
+		"balistid-fail 1 0\nbalistid-killed now\n",
+		"balistid-fail 1 0\nbalistid-killed\nbalistid-killed\n",
 		"balistid-fail " + strings.Repeat("1", 60) + "\n",
 	}
 	for _, in := range cases {
@@ -60,7 +63,7 @@ func TestMarkWriterRefusesAnythingButExactMarks(t *testing.T) {
 		}
 	}
 	mw := &markWriter{w: &bytes.Buffer{}, now: clockAt(time.Unix(0, 0))}
-	_, _ = mw.Write([]byte("balistid-fail 7"))
+	_, _ = mw.Write([]byte("balistid-fail 7 0"))
 	if !mw.m.Fail.IsZero() {
 		t.Error("a mark without its newline was stamped")
 	}
@@ -107,12 +110,12 @@ func TestFailureTrialsNeedTheirMarksInTime(t *testing.T) {
 		why   string
 		wantH uint64
 	}{
-		{"reset in time", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 9\n")}}, 2, "", 9},
-		{"reset exits late", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 9\n")}, linger: []time.Duration{150 * time.Millisecond}}, 1, "after the fail mark", 9},
+		{"reset in time", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 9 0\n")}}, 2, "", 9},
+		{"reset exits late", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 9 0\n")}, linger: []time.Duration{150 * time.Millisecond}}, 1, "after the fail mark", 9},
 		{"reset without mark", reset, fakeVM{streams: [][]byte{armed, second}}, 1, "no fail mark", 0},
-		{"reset garbled", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 09\n")}}, 1, "malformed", 0},
-		{"kill in time", kill, fakeVM{streams: [][]byte{killed}, serial: [][]byte{[]byte("balistid-fail 3\nbalistid-killed\n")}}, 1, "", 3},
-		{"kill without kill mark", kill, fakeVM{streams: [][]byte{killed}, serial: [][]byte{[]byte("balistid-fail 3\n")}}, 1, "no kill mark", 3},
+		{"reset garbled", reset, fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 09 0\n")}}, 1, "malformed", 0},
+		{"kill in time", kill, fakeVM{streams: [][]byte{killed}, serial: [][]byte{[]byte("balistid-fail 3 0\nbalistid-killed\n")}}, 1, "", 3},
+		{"kill without kill mark", kill, fakeVM{streams: [][]byte{killed}, serial: [][]byte{[]byte("balistid-fail 3 0\n")}}, 1, "no kill mark", 3},
 	}
 	for _, c := range cases {
 		vm := c.vm
@@ -125,7 +128,7 @@ func TestFailureTrialsNeedTheirMarksInTime(t *testing.T) {
 	if out, _ := runFake(t, kill, broken.run); !strings.Contains(out.Invalid, "mkfs failed") {
 		t.Errorf("a guest that could not run the trial: %q, want its reason, not the missing mark", out.Invalid)
 	}
-	plain := &fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 09\n")}}
+	plain := &fakeVM{streams: [][]byte{armed, second}, serial: [][]byte{[]byte("balistid-fail 09 0\n")}}
 	if out, _ := runFake(t, resetTrial, plain.run); out.Invalid != "" || !out.Marks.Fail.IsZero() {
 		t.Errorf("a trial that is not a failure trial read marks: %+v", out)
 	}
@@ -144,7 +147,7 @@ func TestMarkWriterKeepsLinesShort(t *testing.T) {
 // with its own newline still stands on a line of its own, one that does not is never seen.
 func TestMarksAfterALoginPrompt(t *testing.T) {
 	prompt := "\r\n\r\nArch Linux 7.2.8-arch1-2 (ttyS0)\r\n\r\narchlinux login: "
-	for in, wantH := range map[string]uint64{prompt + "\nbalistid-fail 5\n": 5, prompt + "balistid-fail 5\n": 0} {
+	for in, wantH := range map[string]uint64{prompt + "\nbalistid-fail 5 0\n": 5, prompt + "balistid-fail 5 0\n": 0} {
 		mw := &markWriter{w: &bytes.Buffer{}, now: clockAt(time.Unix(0, 0))}
 		_, _ = mw.Write([]byte(in))
 		if mw.m.H != wantH || mw.m.Bad != "" {
@@ -153,17 +156,17 @@ func TestMarksAfterALoginPrompt(t *testing.T) {
 	}
 }
 
-// Whatever the console carries, a stamped fail mark is exactly a line "balistid-fail <H>".
+// Whatever the console carries, a stamped fail mark is exactly a line "balistid-fail <H> <S>".
 func FuzzMarkWriter(f *testing.F) {
 	f.Add([]byte("archlinux login: \nbalistid-fail 41\r\nbalistid-killed\n"))
-	f.Add([]byte("balistid-fail 1\nbalistid-fail 2\n"))
+	f.Add([]byte("balistid-fail 1 0\nbalistid-fail 2 0\n"))
 	f.Fuzz(func(t *testing.T, in []byte) {
 		mw := &markWriter{w: io.Discard, now: clockAt(time.Unix(0, 0))}
 		_, _ = mw.Write(in)
 		if mw.m.Bad != "" || mw.m.Fail.IsZero() {
 			return
 		}
-		line := "balistid-fail " + strconv.FormatUint(mw.m.H, 10)
+		line := "balistid-fail " + strconv.FormatUint(mw.m.H, 10) + " " + strconv.FormatUint(mw.m.Synced, 10)
 		text := "\n" + string(in)
 		if !strings.Contains(text, "\n"+line+"\n") && !strings.Contains(text, "\n"+line+"\r\n") {
 			t.Fatalf("fail mark H=%d stamped from %q", mw.m.H, in)
