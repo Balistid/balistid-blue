@@ -1,7 +1,7 @@
 # 0007 — Split Balistid Blue into small processes with separate identities
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01, amended 2026-10-10 (R13 already updated)
+- Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (point 5 by ADR 0016)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -33,8 +33,8 @@ are inside the threat model.
    cannot write it or any of these. Raw records leave the collector only towards ledger and normalizer.
 4. Units use systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateNetwork` except
    the relay, restricted capabilities and address families) and live in the repository.
-5. A slow reader catches up from `seq`; a slow collector makes Laurel block, and loss shows up as
-   in ADR 0004.
+5. A slow reader catches up from `seq`. (Amended by ADR 0016: the collector never blocks Laurel; a full queue drops
+   and counts, because blocking moves loss into auditd, where nothing counts it, and can freeze the host.)
 
 ## Alternatives considered
 

@@ -98,7 +98,7 @@ min = 1
 unit = "hours of Go fuzzing per parser (collector, ledger, normalizer, sockets) without a crash"
 rows = ["T18", "T19", "T20"]
 adr = "0007"
-method = "go test -fuzz in CI or the range; corpus committed under testdata."
+method = "go test -fuzz in a scheduled CI workflow (ADR 0016); seed corpus committed as testdata/*.jsonl."
 
 [[metric]]
 id = "rss_mib"
