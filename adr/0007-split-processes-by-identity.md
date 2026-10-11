@@ -1,7 +1,7 @@
 # 0007 — Split Balistid Blue into small processes with separate identities
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (point 5 by ADR 0016)
+- Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (points 2 and 5 by ADR 0016)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -27,7 +27,8 @@ are inside the threat model.
 1. This ADR amends R13: the one long-running privileged Balistid Blue process is `balistid-auditstat`; it parses no
    sensor data and only reports fixed structures. The collector needs no privilege.
 2. Every local Unix socket checks its peer with `SO_PEERCRED` against a per-socket uid allowlist and accepts
-   only typed, size-capped requests; anything else is refused and counted in a per-minute summary.
+   only typed, size-capped requests; anything else is refused and counted in a per-minute summary. (Amended by
+   ADR 0016: Laurel's socket carries evidence lines, not requests.)
 3. Binaries, units, configuration and keys belong to root or their service user and are installed by
    `balistid-install`; the maintainer's user, and so the agents, can read the derived database but
    cannot write it or any of these. Raw records leave the collector only towards ledger and normalizer.

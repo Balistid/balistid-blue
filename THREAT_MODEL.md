@@ -24,7 +24,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | ID | Actor | Threat | Control | Proof | Status |
 |---|---|---|---|---|---|
 | T1 | A1 | Alter or delete shards, keys, units, config | Service uids own them (0007) | test perm_matrix | designed |
-| T2 | A1 | Impersonate Laurel, squat its socket, read the raw stream | systemd-held socket root:_laurel 0660, `SO_PEERCRED` (0016) | test peer_refused | designed |
+| T2 | A1 | Impersonate Laurel, squat its socket, read the raw stream | systemd-held socket root:_laurel 0660 in root-owned `/run/balistid`, `SO_PEERCRED` (0016) | test peer_refused | designed |
 | T3 | A1 | Act through io_uring, unseen by exit rules | io_uring disabled, `kernel.io_uring_disabled=2` (0004) | range smoke test | partial: root can re-enable it at runtime |
 | T4 | A1 | Flood audit to cause loss or fill the store | Loss entries alarm; cap drops new; maintainer expiry | loss_alarm_s, raw_cap_gib | partial: blind until handled |
 | T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | range smoke test, test rules_locked | designed |
@@ -47,7 +47,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
 | T24 | A6 | Crash or power loss loses committed records | WAL `FULL`, a commit at every Flush (250 ms) or 2 MiB, sealing barrier (0005, 0013) | crash_loss_ms | designed |
-| T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day | partial: boot before the reader and a dead Laurel's unread data stay uncounted |
+| T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day | partial: boot before the reader and a dead Laurel's unread data stay uncounted (0016) |
 | T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test | designed |
 | T27 | A6 | Pi dies, or push delivery fails | — | — | gap: dead-man switch, floor 3 |
 | T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |

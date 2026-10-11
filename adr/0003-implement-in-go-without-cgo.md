@@ -1,7 +1,7 @@
 # 0003 — Implement Balistid Blue in Go, without cgo
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01, amended 2026-10-10 (toolchain named by go.mod)
+- Date: 2026-10-01, amended 2026-10-10 (toolchain named by go.mod), 2026-10-11 (`*.socket` by a line grammar, ADR 0016)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
