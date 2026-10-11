@@ -119,7 +119,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	}
 	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt}
 	var err error
-	if s.seals, s.torn, err = readSeals(dir); err != nil {
+	if s.seals, s.torn, err = readSeals(ctx, dir); err != nil {
 		return nil, err
 	}
 	pending, err := s.scan()
@@ -161,28 +161,60 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	return s, nil
 }
 
+// ErrUnindexed marks a store directory holding shards its index does not list (a torn or lost index
+// line, or a shard still open): its seals are not the whole store.
+var ErrUnindexed = errors.New("store: shards missing from the index")
+
+// maxIndexBytes bounds the index read into memory: about 128 bytes a seal, so over 100000 shards,
+// years of daily shards at the cap. A larger index is refused, not read.
+const maxIndexBytes = 16 << 20
+
+// indexCheckEvery is how many index lines are parsed between checks of ctx.
+const indexCheckEvery = 4096
+
 // ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
 // checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
-// the collector stopped. torn reports a last index line cut short: its shard is sealed but missing from
-// seals until Open recovers it. A dir that is missing, not a directory or a symlink is an error, not an
-// empty store.
-func ReadSeals(ctx context.Context, dir string) (seals []Seal, torn bool, err error) {
-	if err := ctx.Err(); err != nil {
-		return nil, false, fmt.Errorf("store: index: %w", err)
-	}
+// the collector stopped. A shard file the index does not list makes it fail with ErrUnindexed, along with
+// the seals it did list: Open would recover that shard, a reader would silently miss it. A dir that is
+// missing, not a directory or a symlink is an error, not an empty store.
+func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	st, err := os.Lstat(dir)
 	if err != nil {
-		return nil, false, fmt.Errorf("store: %w", err)
+		return nil, fmt.Errorf("store: %w", err)
 	}
 	if !st.IsDir() {
-		return nil, false, fmt.Errorf("store: %s is not a directory", dir)
+		return nil, fmt.Errorf("store: %s is not a directory", dir)
 	}
-	return readSeals(dir)
+	seals, torn, err := readSeals(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	listed := make(map[string]bool, len(seals))
+	for _, l := range seals {
+		listed[l.Name] = true
+	}
+	var missing []string
+	for _, e := range entries {
+		if shardName.MatchString(e.Name()) && !listed[e.Name()] {
+			missing = append(missing, e.Name())
+		}
+	}
+	if torn || len(missing) > 0 {
+		return seals, fmt.Errorf("%w: %v (torn last line: %v)", ErrUnindexed, missing, torn)
+	}
+	return seals, nil
 }
 
 // readSeals parses the index of dir. A last line without its newline is a torn append: it is left out
 // and reported, so Open recovers its shard and rewrites the index (ADR 0013, point 6).
-func readSeals(dir string) ([]Seal, bool, error) {
+func readSeals(ctx context.Context, dir string) ([]Seal, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, fmt.Errorf("store: index: %w", err)
+	}
 	f, err := os.OpenFile(filepath.Join(dir, indexName), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the index, a fixed name in the store directory
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
@@ -194,9 +226,12 @@ func readSeals(dir string) ([]Seal, bool, error) {
 	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
 		return nil, false, fmt.Errorf("store: index: not a regular file (%w)", err)
 	}
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, maxIndexBytes+1))
 	if err != nil {
 		return nil, false, fmt.Errorf("store: index: %w", err)
+	}
+	if len(data) > maxIndexBytes {
+		return nil, false, fmt.Errorf("store: index over %d bytes", maxIndexBytes)
 	}
 	if !bytes.HasPrefix(data, []byte(indexHeader)) {
 		return nil, false, errors.New("store: index: not a balistid-seals 1 file")
@@ -204,6 +239,11 @@ func readSeals(dir string) ([]Seal, bool, error) {
 	lines := strings.Split(string(data[len(indexHeader):]), "\n")
 	var seals []Seal
 	for i, line := range lines[:len(lines)-1] {
+		if i%indexCheckEvery == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, false, fmt.Errorf("store: index: %w", err)
+			}
+		}
 		l, err := parseSeal(line)
 		if err != nil {
 			return nil, false, fmt.Errorf("store: index line %d: %w", i+2, err)
@@ -212,6 +252,9 @@ func readSeals(dir string) ([]Seal, bool, error) {
 			return nil, false, fmt.Errorf("store: index line %d: seq %d, want %d", i+2, l.First, want)
 		}
 		seals = append(seals, l)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, fmt.Errorf("store: index: %w", err)
 	}
 	return seals, lines[len(lines)-1] != "", nil
 }

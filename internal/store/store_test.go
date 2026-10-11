@@ -874,15 +874,15 @@ func sealedThree(t *testing.T, dir string) []Seal {
 func TestReadSealsMatchesTheStore(t *testing.T) {
 	dir := t.TempDir()
 	want := sealedThree(t, dir)
-	got, torn, err := ReadSeals(t.Context(), dir)
-	if err != nil || torn || fmt.Sprint(got) != fmt.Sprint(want) || len(got) != 3 {
-		t.Fatalf("ReadSeals = %v, %v, %v; the store indexed %v", got, torn, err, want)
+	got, err := ReadSeals(t.Context(), dir)
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) || len(got) != 3 {
+		t.Fatalf("ReadSeals = %v, %v; the store indexed %v", got, err, want)
 	}
-	if got, torn, err := ReadSeals(t.Context(), t.TempDir()); err != nil || torn || len(got) != 0 {
-		t.Fatalf("no index: %v, %v, %v", got, torn, err)
+	if got, err := ReadSeals(t.Context(), t.TempDir()); err != nil || len(got) != 0 {
+		t.Fatalf("empty store: %v, %v", got, err)
 	}
 	for _, p := range []string{filepath.Join(dir, "missing"), filepath.Join(dir, indexName)} {
-		if got, _, err := ReadSeals(t.Context(), p); err == nil {
+		if got, err := ReadSeals(t.Context(), p); err == nil {
 			t.Fatalf("%s: ReadSeals = %v, want an error", p, got)
 		}
 	}
@@ -899,8 +899,32 @@ func TestReadSealsSkipsTornLastLine(t *testing.T) {
 	if err := os.WriteFile(index, data[:len(data)-10], 0o600); err != nil { //nolint:gosec // test temp dir
 		t.Fatal(err)
 	}
-	if got, torn, err := ReadSeals(t.Context(), dir); err != nil || !torn || fmt.Sprint(got) != fmt.Sprint(want[:2]) {
-		t.Fatalf("ReadSeals = %v, %v, %v; want the first two seals and torn", got, torn, err)
+	if got, err := ReadSeals(t.Context(), dir); !errors.Is(err, ErrUnindexed) || fmt.Sprint(got) != fmt.Sprint(want[:2]) {
+		t.Fatalf("ReadSeals = %v, %v; want the first two seals and ErrUnindexed", got, err)
+	}
+}
+
+// A sealed shard whose whole index line is gone, or a store without its index, is not a smaller store.
+func TestReadSealsRefusesShardsMissingFromTheIndex(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	index := filepath.Join(dir, indexName)
+	data, err := os.ReadFile(index) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	if err := os.WriteFile(index, []byte(strings.Join(lines[:3], "")), 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	if got, err := ReadSeals(t.Context(), dir); !errors.Is(err, ErrUnindexed) || !strings.Contains(err.Error(), want[2].Name) {
+		t.Fatalf("a lost last line: %v, %v", got, err)
+	}
+	if err := os.Remove(index); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadSeals(t.Context(), dir); !errors.Is(err, ErrUnindexed) || len(got) != 0 {
+		t.Fatalf("no index beside three shards: %v, %v", got, err)
 	}
 }
 
@@ -921,7 +945,7 @@ func TestReadSealsRefusesMalformedLine(t *testing.T) {
 		if err := os.WriteFile(index, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got, _, err := ReadSeals(t.Context(), dir); err == nil {
+		if got, err := ReadSeals(t.Context(), dir); err == nil {
 			t.Fatalf("%s: ReadSeals = %v, want an error", name, got)
 		}
 	}
@@ -959,8 +983,8 @@ func TestReadSealsWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test temp dir
-	if _, torn, err := ReadSeals(t.Context(), dir); err != nil || !torn {
-		t.Fatalf("ReadSeals on a read-only directory: torn %v, %v", torn, err)
+	if _, err := ReadSeals(t.Context(), dir); !errors.Is(err, ErrUnindexed) {
+		t.Fatalf("ReadSeals on a read-only directory with a torn index: %v", err)
 	}
 	if after := listing(); after != before {
 		t.Fatalf("ReadSeals changed the directory:\n%s\nwas\n%s", after, before)
@@ -970,7 +994,47 @@ func TestReadSealsWritesNothing(t *testing.T) {
 func TestReadSealsHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, _, err := ReadSeals(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+	if _, err := ReadSeals(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ReadSeals after cancel: %v", err)
+	}
+	dir := t.TempDir()
+	sealedThree(t, dir)
+	for n := range 2 { // cancelled at the first line, and after the last
+		if _, err := ReadSeals(&cancelAfter{Context: t.Context(), n: n + 1}, dir); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ReadSeals cancelled after %d checks: %v", n+1, err)
+		}
+	}
+}
+
+// cancelAfter reports cancellation from its n+1st Err call on.
+type cancelAfter struct {
+	context.Context
+	n int
+}
+
+func (c *cancelAfter) Err() error {
+	if c.n == 0 {
+		return context.Canceled
+	}
+	c.n--
+	return nil
+}
+
+func TestReadSealsRefusesAnOversizedIndex(t *testing.T) {
+	dir := t.TempDir()
+	body := indexHeader + strings.Repeat("x", maxIndexBytes)
+	if err := os.WriteFile(filepath.Join(dir, indexName), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSeals(t.Context(), dir); err == nil || !strings.Contains(err.Error(), "index over") {
+		t.Fatalf("ReadSeals = %v", err)
+	}
+}
+
+func TestStoreFailureIsNotARefusal(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	s.unknown = "disk gone"
+	if _, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 1, noon, []byte("x"))); err == nil || errors.Is(err, ErrRefused) {
+		t.Fatalf("Append on a failed store = %v, want an error that is not ErrRefused", err)
 	}
 }

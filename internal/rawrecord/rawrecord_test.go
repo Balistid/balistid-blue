@@ -210,6 +210,13 @@ func TestFromPartsRefusesWhatNewCannotProduce(t *testing.T) {
 	}
 }
 
+func TestFromPartsRefusesProviderSeqOverInt64(t *testing.T) {
+	part := make([]byte, MaxBytes/2)
+	if _, err := FromParts(1, "laurel", 1<<63, noon, part, part, MaxBytes+1, [32]byte{}); err == nil {
+		t.Fatal("FromParts accepted a provider seq over int64")
+	}
+}
+
 func TestFromPartsKeepsACopy(t *testing.T) {
 	data := make([]byte, MaxBytes+1)
 	head, tail, n, sum := fromData(data)
