@@ -37,7 +37,7 @@ method = "A canary process makes an audited syscall that must come back through 
 [[metric]]
 id = "loss_per_day"
 max = 0
-unit = "records reported lost by the kernel or the auditd dispatcher"
+unit = "records reported lost by the kernel, the auditd dispatcher or the collector (ADR 0016)"
 rows = ["T4", "T25"]
 adr = "0004"
 method = "Seven days of normal use on the reference host."
@@ -82,7 +82,7 @@ max = 2048
 unit = "KiB per stored record (ARG_MAX at the default 8 MiB stack); larger records are stored truncated (head, tail, original length, SHA-256) and counted in health"
 rows = ["T20"]
 adr = "0007"
-method = "Test runs execs with 131 KB (xargs) and 2 MB argv: stored whole, no alarm; raises the stack limit and runs a 6 MB argv: truncated, counted; feeds malformed records: loss entries."
+method = "Test runs execs with 131 KB (xargs) and 2 MB argv: stored whole, no alarm; raises the stack limit and runs a 6 MB argv: truncated, counted; feeds malformed records: stored and counted malformed (ADR 0016)."
 
 [[metric]]
 id = "truncation_alarm_per_hour"
@@ -98,7 +98,7 @@ min = 1
 unit = "hours of Go fuzzing per parser (collector, ledger, normalizer, sockets) without a crash"
 rows = ["T18", "T19", "T20"]
 adr = "0007"
-method = "go test -fuzz in a scheduled CI workflow (ADR 0016); seed corpus committed as testdata/*.jsonl."
+method = "go test -fuzz on the commit to be installed, in a scheduled CI workflow (ADR 0016); crashers committed as seeds in testdata/*.jsonl."
 
 [[metric]]
 id = "rss_mib"
@@ -203,7 +203,7 @@ method = "Maximum (not a percentile) over a 24 h run with host and Pi connected.
 [[metric]]
 id = "loss_alarm_s"
 max = 120
-unit = "s from injected kernel or dispatcher loss, or a health failure, to a phone alert"
+unit = "s from injected kernel, dispatcher or collector loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
 method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials. balistid-auditstat polls at most every 5 s."
