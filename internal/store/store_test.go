@@ -858,3 +858,119 @@ func TestAppendRefusesInconsistentRecord(t *testing.T) {
 		closeStore(t, s)
 	}
 }
+
+// sealedThree leaves dir with three sealed shards in the index, as a collector that ran three days does.
+func sealedThree(t *testing.T, dir string) []Seal {
+	t.Helper()
+	s := open(t, dir, small)
+	for d := range 3 {
+		onDay(s, d)
+		add(t, s, noon+int64(d)*day, fmt.Sprint("day ", d))
+	}
+	closeStore(t, s)
+	return s.Seals()
+}
+
+func TestReadSealsMatchesTheStore(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	got, torn, err := ReadSeals(t.Context(), dir)
+	if err != nil || torn || fmt.Sprint(got) != fmt.Sprint(want) || len(got) != 3 {
+		t.Fatalf("ReadSeals = %v, %v, %v; the store indexed %v", got, torn, err, want)
+	}
+	if got, torn, err := ReadSeals(t.Context(), t.TempDir()); err != nil || torn || len(got) != 0 {
+		t.Fatalf("no index: %v, %v, %v", got, torn, err)
+	}
+	for _, p := range []string{filepath.Join(dir, "missing"), filepath.Join(dir, indexName)} {
+		if got, _, err := ReadSeals(t.Context(), p); err == nil {
+			t.Fatalf("%s: ReadSeals = %v, want an error", p, got)
+		}
+	}
+}
+
+func TestReadSealsSkipsTornLastLine(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	index := filepath.Join(dir, indexName)
+	data, err := os.ReadFile(index) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, data[:len(data)-10], 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	if got, torn, err := ReadSeals(t.Context(), dir); err != nil || !torn || fmt.Sprint(got) != fmt.Sprint(want[:2]) {
+		t.Fatalf("ReadSeals = %v, %v, %v; want the first two seals and torn", got, torn, err)
+	}
+}
+
+func TestReadSealsRefusesMalformedLine(t *testing.T) {
+	dir := t.TempDir()
+	sealedThree(t, dir)
+	index := filepath.Join(dir, indexName)
+	data, err := os.ReadFile(index) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	for name, body := range map[string]string{
+		"header":  "balistid-seals 2\n" + strings.Join(lines[1:], ""),
+		"line":    lines[0] + "x y z\n" + strings.Join(lines[2:], ""),
+		"seq gap": lines[0] + lines[1] + lines[3],
+	} {
+		if err := os.WriteFile(index, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := ReadSeals(t.Context(), dir); err == nil {
+			t.Fatalf("%s: ReadSeals = %v, want an error", name, got)
+		}
+	}
+}
+
+// The guest reads a stopped collector's directory; nothing in it may change, even a torn index.
+func TestReadSealsWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	sealedThree(t, dir)
+	index := filepath.Join(dir, indexName)
+	data, err := os.ReadFile(index) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(index, append(data, "000000"...), 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	listing := func() string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var b strings.Builder
+		for _, e := range entries {
+			info, err := e.Info()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintln(&b, e.Name(), info.Size(), info.Mode(), info.ModTime().UnixNano())
+		}
+		return b.String()
+	}
+	before := listing()
+	if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // test temp dir
+	if _, torn, err := ReadSeals(t.Context(), dir); err != nil || !torn {
+		t.Fatalf("ReadSeals on a read-only directory: torn %v, %v", torn, err)
+	}
+	if after := listing(); after != before {
+		t.Fatalf("ReadSeals changed the directory:\n%s\nwas\n%s", after, before)
+	}
+}
+
+func TestReadSealsHonoursCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, _, err := ReadSeals(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadSeals after cancel: %v", err)
+	}
+}
