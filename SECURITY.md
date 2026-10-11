@@ -4,9 +4,8 @@ Balistid Blue is pre-alpha and not yet suitable for protecting a machine.
 
 ## Reporting a vulnerability
 
-Please do not open a public issue. Use GitHub's private vulnerability reporting on this repository,
-or contact the maintainer through the address listed on the organisation profile. Expect an answer
-within 7 days.
+Please do not open a public issue. Use GitHub's private vulnerability reporting on this repository.
+Expect an answer within 7 days.
 
 ## Scope
 
