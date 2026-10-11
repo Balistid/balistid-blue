@@ -58,7 +58,7 @@ func TestSandboxIsolatesHost(t *testing.T) {
 	if why := runCommand(context.Background(), prog, time.Minute, 1000, io.Discard); !strings.Contains(why, "exit status 10") {
 		t.Fatalf("probe outside the sandbox = %q, want exit status 10", why)
 	}
-	if why := runCommand(context.Background(), sandboxArgv(base, runDir, 4096, prog...), time.Minute, 1000, io.Discard); why != "" {
+	if why := runCommand(context.Background(), sandboxArgv(base, runDir, 4096, false, prog...), time.Minute, 1000, io.Discard); why != "" {
 		t.Fatalf("probe inside the sandbox: %s (see the exit codes on probe)", why)
 	}
 	if st, err := os.Stat(filepath.Join(runDir, overlay)); err != nil || st.Size() > 4096 {
