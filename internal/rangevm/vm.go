@@ -53,13 +53,16 @@ const (
 
 // Limits of a trial run (ADR 0018, points 1-2): Wall bounds all its boots together, Serial each
 // boot's output; Boots is 2 for a reset trial, whose first boot must arm the reset. Scratch is the
-// size of a writable disk the boots share for the store a trial measures, or 0 for none.
+// size of a writable disk the boots share for the store a trial measures, or 0 for none. Failure
+// is FailReset or FailKill for a failure trial, whose first boot must mark its failure in time
+// (ADR 0018, point 3), else "".
 type Limits struct {
 	Trial   string
 	Wall    time.Duration
 	Serial  int64
 	Boots   int
 	Scratch int64
+	Failure string
 }
 
 // Caps of a trial: with its setup it fits an acceptance batch (ADR 0018, point 5), its serial
@@ -96,6 +99,9 @@ func (l Limits) check() error {
 		return errors.New("a trial boots once or twice")
 	case l.Scratch < 0 || l.Scratch > MaxScratch:
 		return fmt.Errorf("trial scratch disk must be in [0, %d] bytes", int64(MaxScratch))
+	case l.Failure != "" && l.Failure != FailReset && l.Failure != FailKill,
+		l.Failure == FailReset && l.Boots != 2, l.Failure == FailKill && l.Boots != 1:
+		return errors.New("a reset trial boots twice, a kill trial once, and nothing else fails")
 	}
 	return nil
 }
@@ -190,10 +196,12 @@ func qemuArgv(job, withScratch bool, trial string, phase int) []string {
 
 // Outcome of one run. Invalid is empty only when every boot exited cleanly and its results stream
 // parsed; Facts are then what the last boot reported, FirstBoot the first of a run that booted twice.
+// Marks are a failure trial's, stamped on the host.
 type Outcome struct {
 	Facts     []Record
 	FirstBoot []Record
 	Invalid   string
+	Marks     Marks
 }
 
 // ErrCleanup marks an error of Run after a run that ended: its Outcome stands, only the run
@@ -248,11 +256,28 @@ func boot(ctx context.Context, base, parent string, serial io.Writer, job []byte
 	defer cancel()
 	resultsPath := filepath.Join(runDir, results)
 	var first []Record
+	var marks Marks
 	for phase := 1; ; phase++ {
-		if why := run(ctx, sandboxArgv(base, runDir, fsize, withScratch, qemuArgv(job != nil, withScratch, lim.Trial, phase)...), lim.Wall, lim.Serial, serial); why != "" {
-			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why}, nil
+		out := serial
+		mw := &markWriter{w: serial, now: time.Now}
+		if phase == 1 && lim.Failure != "" {
+			out = mw
+		}
+		why := run(ctx, sandboxArgv(base, runDir, fsize, withScratch, qemuArgv(job != nil, withScratch, lim.Trial, phase)...), lim.Wall, lim.Serial, out)
+		if out == mw {
+			mw.m.Exited = time.Now()
+			marks = mw.m
+		}
+		if why != "" {
+			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why, Marks: marks}, nil
+		}
+		if out == mw {
+			if why := failureInvalid(lim.Failure, marks); why != "" {
+				return Outcome{Invalid: why, Marks: marks}, nil
+			}
 		}
 		o := readResults(resultsPath)
+		o.Marks = marks
 		switch {
 		case o.Invalid != "":
 			if phase > 1 {

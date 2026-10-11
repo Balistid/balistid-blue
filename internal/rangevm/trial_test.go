@@ -85,6 +85,9 @@ func TestRunTrialRefusesLimitsOutsideTheirRange(t *testing.T) {
 		"three boots":      func(l *Limits) { l.Boots = 3 },
 		"negative scratch": func(l *Limits) { l.Scratch = -1 },
 		"huge scratch":     func(l *Limits) { l.Scratch = MaxScratch + 1 },
+		"unknown failure":  func(l *Limits) { l.Failure = "crash" },
+		"kill twice":       func(l *Limits) { l.Failure = FailKill },
+		"reset once":       func(l *Limits) { l.Failure, l.Boots = FailReset, 1 },
 	}
 	for name, edit := range cases {
 		lim := ok
@@ -116,16 +119,19 @@ type bootCall struct {
 	argv     []string
 }
 
-// fakeVM stands in for qemu-img and QEMU: boot i notes what it was given, then writes streams[i]
-// to the results disk and exits as exits[i] says ("" for clean).
+// fakeVM stands in for qemu-img and QEMU: boot i notes what it was given, writes serial[i] to its
+// console and streams[i] to the results disk, waits linger[i] and exits as exits[i] says ("" for
+// clean).
 type fakeVM struct {
 	streams [][]byte
 	exits   []string
+	serial  [][]byte
+	linger  []time.Duration
 	boots   []bootCall
 	overlay []string
 }
 
-func (f *fakeVM) run(ctx context.Context, argv []string, timeout time.Duration, budget int64, _ io.Writer) string {
+func (f *fakeVM) run(ctx context.Context, argv []string, timeout time.Duration, budget int64, console io.Writer) string {
 	if !slices.Contains(argv, qemuPath) {
 		f.overlay = argv
 		return ""
@@ -152,6 +158,12 @@ func (f *fakeVM) run(ctx context.Context, argv []string, timeout time.Duration, 
 	defer w.Close() //nolint:errcheck // test
 	if _, err := w.WriteAt(f.streams[i], 0); err != nil {
 		return "exit: " + err.Error()
+	}
+	if i < len(f.serial) {
+		_, _ = console.Write(f.serial[i])
+	}
+	if i < len(f.linger) {
+		time.Sleep(f.linger[i])
 	}
 	if i < len(f.exits) {
 		return f.exits[i]
