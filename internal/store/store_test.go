@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -1037,4 +1039,46 @@ func TestStoreFailureIsNotARefusal(t *testing.T) {
 	if _, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 1, noon, []byte("x"))); err == nil || errors.Is(err, ErrRefused) {
 		t.Fatalf("Append on a failed store = %v, want an error that is not ErrRefused", err)
 	}
+}
+
+// A seal whose commit fails during rotation drops what the shard held since its last commit; Close must
+// then fail, so the collector counts that loss instead of taking it as committed. The file-size limit
+// that makes the commit fail is set in a child process, not in the test binary running other tests.
+func TestCloseReportsWhatAFailedSealLost(t *testing.T) {
+	if os.Getenv("BALISTID_SEAL_FAIL_CHILD") == "1" {
+		sealFailChild(t)
+		return
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestCloseReportsWhatAFailedSealLost$") //nolint:gosec // the test binary itself
+	cmd.Env = append(os.Environ(), "BALISTID_SEAL_FAIL_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "close failed: true") {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+}
+
+func sealFailChild(t *testing.T) {
+	signal.Ignore(syscall.SIGXFSZ)
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "r1")
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	add(t, s, noon+1, "r2")
+	if err := s.NoteHealth([]byte(`{"schema_version":1,"kind":"probe"}`)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(s.dir, s.curName+"-wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: uint64(st.Size()), Max: uint64(st.Size())}); err != nil { //nolint:gosec // a file size
+		t.Fatal(err)
+	}
+	onDay(s, 1) // the next Append rotates: flush, then a seal whose commit cannot grow the WAL
+	if _, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 3, noon+2, []byte("r3"))); err == nil {
+		t.Fatal("the seal did not fail; the test no longer reaches the path it pins")
+	}
+	_, err = s.Close(t.Context())
+	fmt.Println("close failed:", err != nil)
 }
