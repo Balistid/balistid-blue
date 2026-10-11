@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/shard"
 )
 
@@ -27,7 +28,7 @@ func BenchmarkAppend(b *testing.B) {
 			b.ReportAllocs()
 			flushed := time.Now()
 			for seq := uint64(1); b.Loop(); seq++ {
-				stored, _, err := s.Append(b.Context(), "laurel", seq, 0, data)
+				stored, _, err := s.Append(b.Context(), rawrecord.New(0, "laurel", seq, 0, data))
 				if err != nil || !stored {
 					b.Fatalf("append %d: stored %v, %v", seq, stored, err)
 				}

@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/shard"
 )
 
@@ -43,7 +44,7 @@ func TestCrashChild(t *testing.T) {
 	}
 	drops, stored := 0, []int{}
 	for i := 1; i <= 2000; i++ {
-		ok, _, err := s.Append(t.Context(), "laurel", uint64(i), noon+int64(i/200)*day, []byte(fmt.Sprintf("rec-%d-%s", i, strings.Repeat("x", 900))))
+		ok, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", uint64(i), noon+int64(i/200)*day, []byte(fmt.Sprintf("rec-%d-%s", i, strings.Repeat("x", 900)))))
 		if err != nil {
 			t.Fatal(err)
 		}
