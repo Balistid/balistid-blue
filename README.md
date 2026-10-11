@@ -76,6 +76,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/rawrecord/` | The stored evidence record: its byte encoding, leaf hash and truncation (ADR 0005) |
 | `internal/shard/` | Raw records in one SQLite file per shard: append with gap-free seq, seal, verified read (ADR 0005) |
 | `internal/store/` | Shards under a cap: rotation, loss records, reserve, the seal index and recovery after a crash (ADR 0005, 0013) |
+| `internal/collector/` | Collector: Laurel's lines to records as evidence, a byte-bounded queue that never blocks Laurel, loss counted per stage (ADR 0016) |
 | `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
