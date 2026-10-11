@@ -5,6 +5,9 @@ package rawrecord
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"math"
 )
 
 const (
@@ -32,13 +35,54 @@ func New(seq uint64, provider string, providerSeq uint64, received int64, data [
 		Seq: seq, Provider: provider, ProviderSeq: providerSeq, Received: received,
 		OrigLen: uint64(len(data)), OrigSHA256: sha256.Sum256(data),
 	}
-	if len(data) > MaxBytes {
-		half := MaxBytes / 2
-		r.Data = append(append(make([]byte, 0, MaxBytes), data[:half]...), data[len(data)-half:]...)
+	if half := MaxBytes / 2; len(data) > MaxBytes {
+		r.Data = keep(data[:half], data[len(data)-half:])
 	} else {
 		r.Data = append([]byte(nil), data...)
 	}
 	return r
+}
+
+// FromParts returns the record of data longer than MaxBytes that the caller never held whole (ADR 0016,
+// point 2): its first and last MaxBytes/2 bytes, its length and its SHA-256. For the same data it equals
+// New. Parts that New could not have produced are refused, so a record never claims more than it keeps.
+func FromParts(seq uint64, provider string, providerSeq uint64, received int64, head, tail []byte,
+	origLen uint64, origSHA256 [32]byte,
+) (Record, error) {
+	half := MaxBytes / 2
+	if len(head) != half || len(tail) != half || origLen <= MaxBytes {
+		return Record{}, fmt.Errorf("rawrecord: parts of %d and %d bytes for %d delivered bytes, want %d each above %d",
+			len(head), len(tail), origLen, half, MaxBytes)
+	}
+	r := Record{
+		Seq: seq, Provider: provider, ProviderSeq: providerSeq, Received: received,
+		Data: keep(head, tail), OrigLen: origLen, OrigSHA256: origSHA256,
+	}
+	if err := r.Check(); err != nil {
+		return Record{}, err
+	}
+	return r, nil
+}
+
+// keep returns a copy of what a truncated record holds: the first and the last MaxBytes/2 bytes.
+func keep(head, tail []byte) []byte {
+	return append(append(make([]byte, 0, len(head)+len(tail)), head...), tail...)
+}
+
+// Check reports whether r is a record New or FromParts could have made that SQLite can store: provider
+// seq and original length within int64, data whole up to MaxBytes or else exactly MaxBytes, and whole
+// data matching its hash. Seq is the store's to assign and is not checked here.
+func (r Record) Check() error {
+	n := uint64(len(r.Data))
+	switch {
+	case r.ProviderSeq > math.MaxInt64 || r.OrigLen > math.MaxInt64:
+		return fmt.Errorf("rawrecord: provider seq %d or length %d over int64", r.ProviderSeq, r.OrigLen)
+	case (r.OrigLen <= MaxBytes && n != r.OrigLen) || (r.OrigLen > MaxBytes && n != MaxBytes):
+		return fmt.Errorf("rawrecord: %d data bytes for %d delivered", n, r.OrigLen)
+	case !r.Truncated() && sha256.Sum256(r.Data) != r.OrigSHA256:
+		return errors.New("rawrecord: data does not match its SHA-256")
+	}
+	return nil
 }
 
 // Truncated reports whether Data holds less than the delivered data.

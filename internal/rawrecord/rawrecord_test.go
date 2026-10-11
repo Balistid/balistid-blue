@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -162,6 +163,103 @@ func checkRecord(t *testing.T, r Record, data []byte) {
 	if r.Truncated() != (len(data) > MaxBytes) {
 		t.Fatalf("Truncated = %v for %d bytes", r.Truncated(), len(data))
 	}
+}
+
+// fromData splits data the way a streaming reader would see it.
+func fromData(data []byte) (head, tail []byte, n uint64, sum [32]byte) {
+	half := MaxBytes / 2
+	return data[:half], data[len(data)-half:], uint64(len(data)), sha256.Sum256(data)
+}
+
+func TestFromPartsEqualsNew(t *testing.T) {
+	for _, n := range []int{MaxBytes + 1, MaxBytes + 3, 3 * MaxBytes} {
+		data := make([]byte, n)
+		for i := range data {
+			data[i] = byte(i * 13)
+		}
+		head, tail, length, sum := fromData(data)
+		got, err := FromParts(1, "laurel", 42, noon, head, tail, length, sum)
+		if err != nil {
+			t.Fatalf("FromParts of %d bytes: %v", n, err)
+		}
+		if want := New(1, "laurel", 42, noon, data); !bytes.Equal(got.Encode(), want.Encode()) {
+			t.Fatalf("FromParts and New disagree for %d bytes", n)
+		}
+		checkRecord(t, got, data)
+	}
+}
+
+func TestFromPartsRefusesWhatNewCannotProduce(t *testing.T) {
+	half := MaxBytes / 2
+	part := make([]byte, half)
+	for name, c := range map[string]struct {
+		head, tail []byte
+		n          uint64
+	}{
+		"short head":          {part[1:], part, MaxBytes + 1},
+		"long tail":           {part, append(part, 0), MaxBytes + 1},
+		"no tail":             {part, nil, MaxBytes + 1},
+		"length at the limit": {part, part, MaxBytes},
+		"length below parts":  {part, part, 1},
+		"uneven split":        {part[1:], append(part, 0), MaxBytes + 1},
+		"length over int64":   {part, part, 1 << 63},
+	} {
+		if _, err := FromParts(1, "laurel", 1, noon, c.head, c.tail, c.n, [32]byte{}); err == nil {
+			t.Fatalf("%s: FromParts accepted it", name)
+		}
+	}
+}
+
+func TestFromPartsKeepsACopy(t *testing.T) {
+	data := make([]byte, MaxBytes+1)
+	head, tail, n, sum := fromData(data)
+	r, err := FromParts(1, "laurel", 1, noon, head, tail, n, sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head[0], tail[0] = 1, 1
+	if r.Data[0] != 0 || r.Data[MaxBytes/2] != 0 {
+		t.Fatal("Data changed with the caller's buffers")
+	}
+}
+
+func TestCheck(t *testing.T) {
+	whole := New(1, "laurel", 1, noon, []byte("ab"))
+	cut := New(1, "laurel", 1, noon, make([]byte, MaxBytes+1))
+	if err := errors.Join(whole.Check(), cut.Check()); err != nil {
+		t.Fatalf("Check refused what New made: %v", err)
+	}
+	for name, r := range map[string]Record{
+		"provider seq over int64": New(1, "laurel", 1<<63, noon, []byte("ab")),
+		"length over int64":       {Data: cut.Data, OrigLen: 1 << 63},
+		"short data":              {Data: []byte("a"), OrigLen: 2, OrigSHA256: whole.OrigSHA256},
+		"truncated, short data":   {Data: cut.Data[1:], OrigLen: cut.OrigLen},
+		"whole, other hash":       {Data: []byte("ac"), OrigLen: 2, OrigSHA256: whole.OrigSHA256},
+	} {
+		if err := r.Check(); err == nil {
+			t.Fatalf("%s: Check accepted it", name)
+		}
+	}
+}
+
+// Any parts either make a record New could have made from data of that length, or are refused.
+func FuzzFromParts(f *testing.F) {
+	f.Add(uint64(MaxBytes+1), MaxBytes/2, MaxBytes/2, byte(7))
+	f.Add(uint64(MaxBytes), MaxBytes/2, MaxBytes/2, byte(0))
+	f.Add(uint64(MaxBytes+1), 0, MaxBytes, byte(1))
+	f.Fuzz(func(t *testing.T, n uint64, headLen, tailLen int, fill byte) {
+		if headLen < 0 || tailLen < 0 || headLen > MaxBytes || tailLen > MaxBytes {
+			return
+		}
+		head, tail := bytes.Repeat([]byte{fill}, headLen), bytes.Repeat([]byte{fill ^ 1}, tailLen)
+		r, err := FromParts(1, "laurel", 1, noon, head, tail, n, [32]byte{})
+		if err != nil {
+			return
+		}
+		if !r.Truncated() || len(r.Data) != MaxBytes || r.OrigLen <= MaxBytes {
+			t.Fatalf("accepted parts %d+%d for %d bytes", headLen, tailLen, n)
+		}
+	})
 }
 
 func FuzzNew(f *testing.F) {
