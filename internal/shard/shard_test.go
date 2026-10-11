@@ -116,6 +116,22 @@ func TestAppendRefusesNumbersOverInt64(t *testing.T) {
 	}
 }
 
+func TestAppendRefusesWhatCheckRefuses(t *testing.T) {
+	cut := rawrecord.New(1, "laurel", 1, noon, make([]byte, rawrecord.MaxBytes+1))
+	cut.Data = cut.Data[:rawrecord.MaxBytes-1]
+	whole := rawrecord.New(1, "laurel", 1, noon, []byte("ab"))
+	whole.Data = []byte("ac")
+	for name, r := range map[string]rawrecord.Record{"truncated short of MaxBytes": cut, "whole, other hash": whole} {
+		w, err := Create(t.Context(), filepath.Join(t.TempDir(), "shard.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := w.Append(t.Context(), r); err == nil {
+			t.Errorf("Append accepted a record %s", name)
+		}
+	}
+}
+
 // A reader holding the WAL keeps the checkpoint from finishing; the seal must fail, not publish.
 func TestSealFailsWhileAReaderHoldsTheWAL(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shard.db")
