@@ -857,7 +857,7 @@ func TestCapDropsSurviveAFailedCommit(t *testing.T) {
 	r.settle()
 	r.st.set(func(s *fakeStore) { s.full = true })
 	r.push(event(31, ""))
-	time.Sleep(50 * time.Millisecond)
+	until(t, func() bool { r.st.mu.Lock(); defer r.st.mu.Unlock(); return r.st.dropped == 1 })
 	r.st.set(func(s *fakeStore) { s.full, s.failFlush = false, true })
 	r.step(0)
 	reopenAfterFailure(r)
@@ -976,6 +976,18 @@ func TestASealCommitsWhatWasHandedOver(t *testing.T) {
 	if len(seen) == 0 {
 		t.Fatal("the loss record was never committed")
 	}
+}
+
+// until waits for cond, which the writer's goroutine makes true, instead of a fixed sleep.
+func until(t *testing.T, cond func() bool) {
+	t.Helper()
+	for range 500 {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the writer never got there")
 }
 
 // countCap returns how many cap drops are on record: the store's own and the collector's "cap" losses.
