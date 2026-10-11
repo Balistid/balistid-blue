@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"testing"
+	"time"
 )
 
 // Every trial fits one batch with its setup (ADR 0018, point 1), and its load is one the guest has.
@@ -19,10 +20,19 @@ func TestTrialTableFitsTheBudget(t *testing.T) {
 			t.Errorf("%s: count, wall and serial must be positive", tr.Name)
 		case int64(tr.Count)*int64(tr.Wall+Setup) > int64(Batch):
 			t.Errorf("%s: %d × (%s + %s) exceeds the %s batch", tr.Name, tr.Count, tr.Wall, Setup, Batch)
-		case tr.Load.Kind != LoadExec && tr.Load.Kind != LoadPtrace:
-			t.Errorf("%s: unknown load %q", tr.Name, tr.Load.Kind)
 		case tr.Load.Seconds < 10 || tr.Load.Seconds%10 != 0 || tr.Load.Rate < 1 || tr.Metric == "":
 			t.Errorf("%s: a trial measures a metric at a positive rate for whole 10 s windows", tr.Name)
+		case tr.Expect != "" && tr.Expect != ExpectPass && tr.Expect != ExpectMiss, tr.Load.Drop && tr.Expect != ExpectMiss:
+			t.Errorf("%s: a control expects PASS or MISS, and one that drops a number MISS", tr.Name)
+		case (tr.Failure != "") != (tr.Load.Kind == LoadWrite):
+			t.Errorf("%s: exactly the failure trials hand numbers to a measured writer", tr.Name)
+		case tr.Failure == "" && tr.Load.Kind != LoadExec && tr.Load.Kind != LoadPtrace:
+			t.Errorf("%s: unknown load %q", tr.Name, tr.Load.Kind)
+		case tr.Failure == FailReset && (tr.Boots != 2 || tr.Scratch == 0), tr.Failure == FailKill && (tr.Boots != 1 || tr.Scratch == 0),
+			tr.Failure != "" && tr.Failure != FailReset && tr.Failure != FailKill, tr.Failure == "" && (tr.Boots != 1 || tr.Scratch != 0):
+			t.Errorf("%s: a reset boots twice and a kill once, both on a scratch disk; a rate trial boots once without one", tr.Name)
+		case tr.Load.Writer != (WriterPolicy{}) && tr.Load.Kind != LoadWrite:
+			t.Errorf("%s: only a write load has a writer policy", tr.Name)
 		}
 		seen[tr.Name] = true
 	}
@@ -51,7 +61,7 @@ func TestTrialLoadIsTheAcceptanceThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tr := range Trials() {
-		if tr.Load.Drop {
+		if tr.Expect != "" || tr.Failure != "" {
 			continue
 		}
 		block := regexp.MustCompile(`(?m)^id = "` + tr.Metric + `"\nmin = (\d+)\nunit = "records/s for (\d+) s`).FindSubmatch(data)
@@ -61,6 +71,26 @@ func TestTrialLoadIsTheAcceptanceThreshold(t *testing.T) {
 		}
 		if rate, s := string(block[1]), string(block[2]); rate != strconv.Itoa(tr.Load.Rate) || s != strconv.Itoa(tr.Load.Seconds) {
 			t.Errorf("%s: %d/s for %d s, acceptance says %s/s for %s s", tr.Name, tr.Load.Rate, tr.Load.Seconds, rate, s)
+		}
+	}
+}
+
+// The failure controls are the ones ADR 0018 point 4 names: a writer syncing every 250 ms to the
+// end (must pass), one whose last sync is 1500 ms before the reset, and one holding records 2 s
+// before write() under a kill (both must miss), all at sustained_rate.
+func TestFailureControlsAreTheADRs(t *testing.T) {
+	want := map[string]struct {
+		failure, expect string
+		writer          WriterPolicy
+	}{
+		"reset-control-sync250":      {FailReset, ExpectPass, WriterPolicy{Sync: 250 * time.Millisecond}},
+		"reset-control-lastsync1500": {FailReset, ExpectMiss, WriterPolicy{Sync: 250 * time.Millisecond, LastSync: 1500 * time.Millisecond}},
+		"kill-control-buffer2s":      {FailKill, ExpectMiss, WriterPolicy{Hold: 2 * time.Second}},
+	}
+	for name, w := range want {
+		tr, ok := Lookup(name)
+		if !ok || tr.Failure != w.failure || tr.Expect != w.expect || tr.Load.Writer != w.writer || tr.Load.Rate != 2000 {
+			t.Errorf("%s = %+v, want %+v at 2000/s", name, tr, w)
 		}
 	}
 }

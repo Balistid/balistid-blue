@@ -42,6 +42,13 @@ const (
 type fact struct{ name, value string }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == writerArg {
+		if err := writerMain(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "balistid-range-guest writer:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "balistid-range-guest:", err)
 		os.Exit(1)

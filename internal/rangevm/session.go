@@ -684,7 +684,7 @@ const LabelControl = "control"
 
 // trialLabel is control for a control, else baseline.
 func trialLabel(tr rangejob.Trial) string {
-	if tr.Load.Drop {
+	if tr.Expect != "" {
 		return LabelControl
 	}
 	return LabelBaseline
@@ -693,7 +693,7 @@ func trialLabel(tr rangejob.Trial) string {
 // CheckTrial runs trial tr of image once and stores its Result, named after the trial and labelled
 // baseline or control, and serial log as Check does.
 func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Trial) (Result, error) {
-	lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch}
+	lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
 	return check(ctx, image, cache, state, tr.Name, trialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
 		return RunTrial(ctx, image, runs, serial, lim)
 	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) })

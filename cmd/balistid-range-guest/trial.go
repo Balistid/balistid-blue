@@ -43,9 +43,12 @@ func runTrial(ctx context.Context, name, phase string) error {
 		add(rangevm.FactTrialError, why)
 		return write(facts)
 	}
-	tr, err := rangeguest.TrialFor(name, phase)
+	tr, boot, err := rangeguest.TrialFor(name, phase)
 	if err != nil {
 		return fail(err.Error())
+	}
+	if tr.Failure != "" {
+		return runFailure(ctx, tr, boot, facts)
 	}
 	lostBefore := valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
 	overflowBefore := freshOverflow(ctx)

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io/fs"
+	"strconv"
 	"strings"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -55,14 +56,14 @@ func TrialCredentials(creds fs.FS) (name, phase string, err error) {
 	return string(n), string(p), nil
 }
 
-// TrialFor returns the table's trial called name for boot phase: only one-boot trials, phase 1, run
-// here (reset and kill trials come with their own guest side).
-func TrialFor(name, phase string) (rangejob.Trial, error) {
+// TrialFor returns the table's trial called name and the boot phase, 1 up to the trial's boots.
+func TrialFor(name, phase string) (rangejob.Trial, int, error) {
 	tr, ok := rangejob.Lookup(name)
-	if !ok || tr.Boots != 1 || phase != "1" {
-		return rangejob.Trial{}, errors.New("not a one-boot trial of this image")
+	p, err := strconv.Atoi(phase)
+	if !ok || err != nil || strconv.Itoa(p) != phase || p < 1 || p > tr.Boots {
+		return rangejob.Trial{}, 0, errors.New("not a trial and boot of this image")
 	}
-	return tr, nil
+	return tr, p, nil
 }
 
 // Chunks splits data into base64 strings of at most size raw bytes each, so arbitrary program

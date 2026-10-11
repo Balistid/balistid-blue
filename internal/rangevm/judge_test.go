@@ -17,7 +17,7 @@ const cleanBuild = "0123456789abcdef0123456789abcdef01234567"
 // Every trial of the table is a run RunTrial accepts.
 func TestTrialTableIsValidLimits(t *testing.T) {
 	for _, tr := range rangejob.Trials() {
-		lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch}
+		lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
 		if err := lim.check(); err != nil {
 			t.Errorf("%s: %v", tr.Name, err)
 		}
