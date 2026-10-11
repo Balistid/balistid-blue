@@ -114,11 +114,11 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	if w.started && r.Seq != w.next {
 		return fmt.Errorf("record seq %d, want %d", r.Seq, w.next)
 	}
-	if r.Seq > math.MaxInt64 || r.ProviderSeq > math.MaxInt64 || r.OrigLen > math.MaxInt64 || len(r.Data) > rawrecord.MaxBytes {
-		return fmt.Errorf("record seq %d: a number over SQLite's int64 or data over %d bytes", r.Seq, rawrecord.MaxBytes)
+	if r.Seq > math.MaxInt64 {
+		return fmt.Errorf("record seq %d over SQLite's int64", r.Seq)
 	}
-	if uint64(len(r.Data)) > r.OrigLen || (!r.Truncated() && sha256.Sum256(r.Data) != r.OrigSHA256) {
-		return fmt.Errorf("record seq %d: data does not match its original length and hash", r.Seq)
+	if err := r.Check(); err != nil {
+		return fmt.Errorf("record seq %d: %w", r.Seq, err)
 	}
 	// A row takes at most its bytes plus two pages: a leaf page it may have alone and the unused
 	// part of its last overflow page. Counting encoded bytes alone lets small rows pass the budget.
@@ -138,8 +138,8 @@ func (w *Writer) Append(ctx context.Context, r rawrecord.Record) error {
 	}
 	leaf := r.Leaf()
 	_, err := w.tx.ExecContext(uncancelled, "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		int64(r.Seq), r.Provider, int64(r.ProviderSeq), r.Received, append([]byte{}, r.Data...),
-		int64(r.OrigLen), r.OrigSHA256[:], leaf[:])
+		int64(r.Seq), r.Provider, int64(r.ProviderSeq), r.Received, append([]byte{}, r.Data...), //nolint:gosec // Seq checked above, ProviderSeq by Check
+		int64(r.OrigLen), r.OrigSHA256[:], leaf[:]) //nolint:gosec // OrigLen bounded by Check
 	if err != nil {
 		return w.fail(fmt.Errorf("append record %d: %w", r.Seq, err))
 	}

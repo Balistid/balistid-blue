@@ -29,6 +29,9 @@ import (
 const (
 	// LossProvider and HealthProvider name the store's own records.
 	LossProvider, HealthProvider = "balistid-loss", "balistid-health"
+	// SensorProvider is the only provider Append accepts: Laurel's lines (ADR 0004). Another sensor
+	// needs its own ADR (R9).
+	SensorProvider = "laurel"
 	// LossChunk is the reserve given back to the filesystem at a time for records past the cap.
 	LossChunk = 64 << 10
 	// FlushEvery is how often the collector calls Flush (ADR 0013, point 1).
@@ -452,16 +455,21 @@ func (s *Store) NoteHealth(data []byte) error {
 // ones; the collector can always catch up from here, after the last seal the ledger reports.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 
-// Append stores data with the next seq, or drops it at the cap and counts it for a loss record, which
-// Flush or the next stored record writes. It returns whether the data was stored and any shard it
-// sealed on the way, already in the index. A stored record is durable once the next Flush, Close or
-// seal returns; a crash before that loses it, as it does a record still on its way to Append.
-func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64, received int64, data []byte) (bool, []Seal, error) {
+// Append stores a sensor's record under the next seq, whatever r.Seq holds, or drops it at the cap and
+// counts it for a loss record, which Flush or the next stored record writes. A record that
+// rawrecord.Check refuses, or from a provider other than the sensor's, fails with ErrRefused and the
+// store stays usable; any other error means the store failed. It returns whether r was stored and any shard it sealed on the way, already in
+// the index. A stored record is durable once the next Flush, Close or seal returns; a crash before
+// that loses it, as it does a record still on its way to Append.
+func (s *Store) Append(ctx context.Context, r rawrecord.Record) (bool, []Seal, error) {
 	if s.unknown != "" {
 		return false, nil, errors.New("store: " + s.unknown)
 	}
-	r := rawrecord.New(s.next, provider, providerSeq, received, data) // its length does not depend on Seq
-	size := int64(r.EncodedLen())
+	if err := checkRecord(r); err != nil {
+		return false, nil, err
+	}
+	received := r.Received
+	size := int64(r.EncodedLen()) // its length does not depend on Seq
 	used, err := s.used()
 	if err != nil {
 		return false, nil, s.fail(err)
@@ -487,6 +495,21 @@ func (s *Store) Append(ctx context.Context, provider string, providerSeq uint64,
 		return false, sealed, err
 	}
 	return true, sealed, nil
+}
+
+// ErrRefused marks a record Append did not take because of the record itself; the store is unharmed.
+var ErrRefused = errors.New("store: record refused")
+
+// checkRecord admits only the sensor's records that rawrecord.Check accepts; the store's own providers
+// are written by the store alone (ADR 0013). Anything else is refused before the shard would fail on it.
+func checkRecord(r rawrecord.Record) error {
+	if r.Provider != SensorProvider {
+		return fmt.Errorf("%w: provider %q is not the sensor's", ErrRefused, r.Provider)
+	}
+	if err := r.Check(); err != nil {
+		return fmt.Errorf("%w: %w", ErrRefused, err)
+	}
+	return nil
 }
 
 // rotate seals the current shard when size more bytes would pass ShardMax or the store's clock is on
