@@ -45,7 +45,7 @@ method = "Seven days of normal use on the reference host."
 [[metric]]
 id = "reconnects_per_day"
 max = 0
-unit = "Laurel-to-collector reconnects outside restarts and shutdowns"
+unit = "Laurel-to-collector reconnects outside restarts and shutdowns; a manual SIGHUP to Laurel counts as one (ADR 0017)"
 rows = ["T25"]
 adr = "0004"
 method = "Seven days of normal use; each reconnect is an event because the records it lost cannot be counted."
@@ -98,7 +98,7 @@ min = 1
 unit = "hours of Go fuzzing per parser (collector, ledger, normalizer, sockets) without a crash"
 rows = ["T18", "T19", "T20"]
 adr = "0007"
-method = "go test -fuzz on the commit to be installed, in a scheduled CI workflow (ADR 0016); crashers committed as seeds in testdata/*.jsonl."
+method = "go test -fuzz in a scheduled CI workflow on main (ADR 0016); only a commit it fuzzed is installed; crashers committed as seeds in testdata/*.jsonl."
 
 [[metric]]
 id = "rss_mib"
@@ -180,7 +180,7 @@ max = 60
 unit = "s per refusal summary record (count per socket and reason, rule version, one sample) in the raw store"
 rows = ["T20"]
 adr = "0007"
-method = "Test floods every socket with invalid requests: every minute with refusals has one summary record; nothing else grows."
+method = "Test floods every socket with invalid requests: every minute with refusals has one summary record; nothing else grows (Laurel's socket stores malformed lines as evidence, ADR 0016)."
 
 # --- Anchoring and the Pi (ADR 0006) ---
 
@@ -206,7 +206,7 @@ max = 120
 unit = "s from injected kernel, dispatcher or collector loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
-method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials. balistid-auditstat polls at most every 5 s."
+method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials; so do a full collector queue and a failing store (ADR 0016). balistid-auditstat polls at most every 5 s."
 
 [[metric]]
 id = "silence_alarm_s"
