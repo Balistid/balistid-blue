@@ -175,8 +175,8 @@ const indexCheckEvery = 4096
 
 // ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
 // checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
-// the collector stopped. A shard file the index does not list makes it fail with ErrUnindexed, along with
-// the seals it did list: Open would recover that shard, a reader would silently miss it. A dir that is
+// the collector stopped. A shard file the index does not list, or any shard sidecar, makes it fail with
+// ErrUnindexed, along with the seals it did list: Open would recover that shard, a reader would silently miss it. A dir that is
 // missing, not a directory or a symlink is an error, not an empty store.
 func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	st, err := os.Lstat(dir)
@@ -200,8 +200,9 @@ func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	}
 	var missing []string
 	for _, e := range entries {
-		if shardName.MatchString(e.Name()) && !listed[e.Name()] {
-			missing = append(missing, e.Name())
+		// A sealed shard has no sidecar: a -wal, -shm or -journal file, never listed, holds data no seal covers.
+		if name := e.Name(); shardName.MatchString(sidecarOf(name)) && !listed[name] {
+			missing = append(missing, name)
 		}
 	}
 	if torn || len(missing) > 0 {

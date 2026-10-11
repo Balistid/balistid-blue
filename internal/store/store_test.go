@@ -1082,3 +1082,41 @@ func sealFailChild(t *testing.T) {
 	_, err = s.Close(t.Context())
 	fmt.Println("close failed:", err != nil)
 }
+
+// A sidecar, beside an indexed shard or alone, holds data no seal covers: the store is incomplete.
+func TestReadSealsRefusesShardSidecars(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	for _, name := range []string{want[0].Name + "-wal", "00000000000000000009.db-journal", want[1].Name + "-shm"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadSeals(t.Context(), dir); !errors.Is(err, ErrUnindexed) || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: ReadSeals = %v", name, err)
+		}
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Cancellation is checked while a long index is parsed, not only before and after: it stops the parse
+// before a bad line past the first check interval.
+func TestReadSealsChecksCancellationWhileParsing(t *testing.T) {
+	dir := t.TempDir()
+	var b strings.Builder
+	b.WriteString(indexHeader)
+	sum := strings.Repeat("a", 64)
+	for seq := 1; seq <= indexCheckEvery+1; seq++ {
+		fmt.Fprintf(&b, "%020d.db %d %d %s\n", seq, seq, seq, sum)
+	}
+	b.WriteString("not a seal\n")
+	if err := os.WriteFile(filepath.Join(dir, indexName), []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ReadSeals(&cancelAfter{Context: t.Context(), n: 2}, dir) // start and line 0 pass, the next check cancels
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ReadSeals = %v, want cancellation before the bad line", err)
+	}
+}
