@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +34,7 @@ func open(t *testing.T, dir string, lim Limits) *Store {
 
 func add(t *testing.T, s *Store, received int64, data string) bool {
 	t.Helper()
-	stored, _, err := s.Append(t.Context(), "laurel", 7, received, []byte(data))
+	stored, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 7, received, []byte(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestShardsSealAtShardMaxAndDayIntoTheIndex(t *testing.T) {
 	s := open(t, dir, small)
 	var sealed []Seal
 	for i := range 40 {
-		_, got, err := s.Append(t.Context(), "laurel", uint64(i), noon+int64(i), make([]byte, 8<<10))
+		_, got, err := s.Append(t.Context(), rawrecord.New(0, "laurel", uint64(i), noon+int64(i), make([]byte, 8<<10)))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,7 +140,7 @@ func TestShardsSealAtShardMaxAndDayIntoTheIndex(t *testing.T) {
 		t.Fatal("no shard sealed at ShardMax")
 	}
 	onDay(s, 1)
-	_, got, err := s.Append(t.Context(), "laurel", 99, noon+day, []byte("next day"))
+	_, got, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 99, noon+day, []byte("next day")))
 	if err != nil || len(got) != 1 {
 		t.Fatalf("a new UTC day sealed %d shards, %v", len(got), err)
 	}
@@ -209,7 +211,7 @@ func TestAUsedUpReserveIsUnknownAndCloseStillSeals(t *testing.T) {
 	if s.Health() == "" {
 		t.Fatal("a used-up reserve is not UNKNOWN")
 	}
-	if _, _, err := s.Append(t.Context(), "laurel", 1, noon, []byte("late")); err == nil {
+	if _, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 1, noon, []byte("late"))); err == nil {
 		t.Fatal("an UNKNOWN store took a record")
 	}
 	if _, err := s.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "used up") {
@@ -412,7 +414,7 @@ func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
 		t.Fatal("a record whose two copies pass the cap was stored")
 	}
 	onDay(s, 1)
-	_, sealed, err := s.Append(t.Context(), "laurel", 1, noon+day, []byte("next day, small"))
+	_, sealed, err := s.Append(t.Context(), rawrecord.New(0, "laurel", 1, noon+day, []byte("next day, small")))
 	if err != nil || len(sealed) != 1 {
 		t.Fatalf("Append sealed %d shards, %v", len(sealed), err)
 	}
@@ -775,5 +777,84 @@ func TestOneRecoveryRecordCoversEveryRecoveredShard(t *testing.T) {
 	}
 	if notes != 1 {
 		t.Fatalf("%d recovery records for one Open", notes)
+	}
+}
+
+// A record the collector built from a streamed line keeps the length and hash it carries; the store
+// assigns its own seq.
+func TestAppendKeepsCallerOrigLenAndSHA(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 32<<20, ShardMax: 16 << 20, Headroom: small.Headroom})
+	data := make([]byte, rawrecord.MaxBytes+5)
+	for i := range data {
+		data[i] = byte(i * 3)
+	}
+	half := rawrecord.MaxBytes / 2
+	r, err := rawrecord.FromParts(999, "laurel", 42, noon, data[:half], data[len(data)-half:], uint64(len(data)), sha256.Sum256(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored, _, err := s.Append(t.Context(), r); err != nil || !stored {
+		t.Fatalf("Append = %v, %v", stored, err)
+	}
+	closeStore(t, s)
+	var got []rawrecord.Record
+	for _, l := range s.Seals() {
+		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
+			got = append(got, r)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := rawrecord.New(1, "laurel", 42, noon, data)
+	if len(got) != 1 || !bytes.Equal(got[0].Encode(), want.Encode()) {
+		t.Fatalf("stored %d records, want the record New makes of the data under seq 1", len(got))
+	}
+}
+
+func TestAppendRefusesUnlistedProvider(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	for _, p := range []string{LossProvider, HealthProvider, "Laurel", "", "auditd"} {
+		if stored, _, err := s.Append(t.Context(), rawrecord.New(0, p, 1, noon, []byte("x"))); !errors.Is(err, ErrRefused) || stored {
+			t.Fatalf("provider %q: Append = %v, %v", p, stored, err)
+		}
+	}
+	if !add(t, s, noon, "after the refusals") || s.Health() != "" {
+		t.Fatalf("store unusable after refusals: %q", s.Health())
+	}
+	closeStore(t, s)
+	if got := readAll(t, dir); len(got) != 1 || string(got[0].Data) != "after the refusals" {
+		t.Fatalf("stored %d records", len(got))
+	}
+}
+
+func TestAppendRefusesInconsistentRecord(t *testing.T) {
+	big := make([]byte, rawrecord.MaxBytes+1)
+	for name, mutate := range map[string]func(*rawrecord.Record){
+		"data shorter than its length": func(r *rawrecord.Record) { r.Data = r.Data[:1] },
+		"length longer than its data":  func(r *rawrecord.Record) { r.OrigLen++ },
+		"truncated, data not MaxBytes": func(r *rawrecord.Record) {
+			*r = rawrecord.New(0, "laurel", 1, noon, big)
+			r.Data = r.Data[:rawrecord.MaxBytes-1]
+		},
+		"whole, data not its hash": func(r *rawrecord.Record) { r.Data[0] ^= 1 },
+		"provider seq over int64":  func(r *rawrecord.Record) { r.ProviderSeq = 1 << 63 },
+		"length over int64": func(r *rawrecord.Record) {
+			*r = rawrecord.New(0, "laurel", 1, noon, big)
+			r.OrigLen = 1 << 63
+		},
+	} {
+		s := open(t, t.TempDir(), small)
+		r := rawrecord.New(0, "laurel", 1, noon, []byte("ab"))
+		mutate(&r)
+		if stored, _, err := s.Append(t.Context(), r); !errors.Is(err, ErrRefused) || stored {
+			t.Fatalf("%s: Append = %v, %v", name, stored, err)
+		}
+		if !add(t, s, noon, "fine") || s.Health() != "" {
+			t.Fatalf("%s: store unusable after the refusal", name)
+		}
+		closeStore(t, s)
 	}
 }
