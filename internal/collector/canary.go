@@ -129,7 +129,8 @@ func (c *Canary) Failure() error {
 // collector's uid and pid, a successful syscall and the basename c-<n>. A record of an older probe, of a
 // probe past its deadline or of any other process does not count. A store that fails before its next
 // commit takes the writer to UNKNOWN, and only a probe sent after the store reopened proves it again.
-func (c *Canary) Observe(r rawrecord.Record) {
+func (c *Canary) Observe(r rawrecord.Record, now time.Time) {
+	c.expire(now) // a record arriving after its probe's deadline proves nothing
 	if c.sent.IsZero() || c.seen || !bytes.Contains(r.Data, []byte(CanaryKey)) {
 		return
 	}

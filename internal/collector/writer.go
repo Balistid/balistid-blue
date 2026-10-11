@@ -20,6 +20,9 @@ const (
 	StageStore Stage = "store"
 	// StageShutdown counts records still queued when the store could not take them at stop.
 	StageShutdown Stage = "shutdown"
+	// StageCap counts records the store dropped at its cap whose own loss record it had not committed
+	// when it failed; once committed, the store's record counts them.
+	StageCap Stage = "cap"
 
 	// ReopenEvery is how long the writer waits before opening a failed store again.
 	ReopenEvery = 30 * time.Second
@@ -28,8 +31,9 @@ const (
 	// lagBudget is the longest handover-to-commit time before it is a health event (crash_loss_ms).
 	lagBudget    = time.Second
 	healthSchema = 1
-	// maxNotes bounds health records waiting for the store; older ones give way and are counted.
-	maxNotes = 64
+	// maxNotes bounds health records waiting for the store: those handed over but not committed (the
+	// store queues at most 64) and as many again; older ones give way and are counted.
+	maxNotes = 128
 )
 
 // Store is what the writer needs of the store; *store.Store satisfies it.
@@ -134,7 +138,10 @@ type Writer struct {
 	lastRound   time.Time
 	connectedAt time.Time // when the connection being read began; zero while none is
 	health      string
-	notes       [][]byte
+	notes       [][]byte // health records waiting to be handed to the store
+	inflight    [][]byte // handed to the store, not yet committed: sent again if the store fails
+	capped      Loss     // dropped at the cap by the store, its loss record not yet committed
+	noteSeq     uint64   // numbers every health record, so one sent twice after a failure is seen as one
 	lostNotes   uint64
 }
 
@@ -198,7 +205,7 @@ func (w *Writer) openDone(r openResult) {
 func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
 	w.appendQueued(ctx)
-	w.flush(ctx, now)
+	w.flush(ctx)
 	w.connections(now, true)
 	w.canary(now)
 	w.losses()
@@ -238,17 +245,19 @@ func (w *Writer) appendQueued(ctx context.Context) {
 		case err != nil:
 			w.Losses.Add(StageStore, r)
 			w.fail(ctx, "store-append", err)
-		case stored:
-			if len(sealed) > 0 { // the seal committed every record before this one
-				w.batch = Loss{}
+		case !stored:
+			w.capped.add(r)
+		default:
+			if len(sealed) > 0 { // the seal committed everything handed over before this record
+				w.committed()
 			}
 			w.batch.add(r)
-			w.Canary.Observe(r)
+			w.Canary.Observe(r, w.Now())
 		}
 	}
 }
 
-func (w *Writer) flush(ctx context.Context, now time.Time) {
+func (w *Writer) flush(ctx context.Context) {
 	if w.st == nil {
 		return
 	}
@@ -256,15 +265,21 @@ func (w *Writer) flush(ctx context.Context, now time.Time) {
 		w.fail(ctx, "store-flush", err)
 		return
 	}
+	w.committed()
+}
+
+// committed is called once the store committed everything handed to it: the records, the health
+// records and its own cap loss record. It measures the lag from handover to this commit.
+func (w *Writer) committed() {
 	if w.batch.Count > 0 {
-		if lag := now.Sub(time.Unix(0, w.batch.FirstAt)); lag > w.maxLag {
+		if lag := w.Now().Sub(time.Unix(0, w.batch.FirstAt)); lag > w.maxLag {
 			w.maxLag = lag
 			if lag > lagBudget {
 				w.note(map[string]any{"kind": "lag", "lag_ms": lag.Milliseconds()})
 			}
 		}
 	}
-	w.batch = Loss{}
+	w.batch, w.capped, w.inflight = Loss{}, Loss{}, nil
 }
 
 // fail counts what the store had not committed as lost at most, closes it and schedules a reopen.
@@ -273,7 +288,11 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	if w.batch.Count > 0 {
 		w.addPending(StageStore, w.batch)
 	}
-	w.batch = Loss{}
+	if w.capped.Count > 0 {
+		w.addPending(StageCap, w.capped)
+	}
+	w.requeue(w.inflight)
+	w.batch, w.capped, w.inflight = Loss{}, Loss{}, nil
 	if _, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr != nil {
 		w.Log.Error("store close failed", "err", cerr)
 	}
@@ -382,18 +401,27 @@ func later(a, b time.Time) time.Time {
 func (w *Writer) Health() string { return w.health }
 
 func (w *Writer) note(fields map[string]any) {
+	w.noteSeq++
 	fields["schema_version"] = healthSchema
 	fields["at"] = w.Now().UnixNano()
+	fields["note_seq"] = w.noteSeq
 	b, err := json.Marshal(fields)
 	if err != nil {
 		w.Log.Error("health record not encoded", "err", err)
 		return
 	}
-	if len(w.notes) == maxNotes {
-		w.notes, w.lostNotes = w.notes[1:], w.lostNotes+1
-		w.Log.Warn("health record dropped while the store cannot take it", "dropped", w.lostNotes)
+	w.requeue(nil, b)
+}
+
+// requeue puts health records back ahead of those waiting, oldest first, and then appends more; past
+// maxNotes the oldest give way, counted and logged.
+func (w *Writer) requeue(first [][]byte, more ...[]byte) {
+	w.notes = append(append(append([][]byte(nil), first...), w.notes...), more...)
+	if over := len(w.notes) - maxNotes; over > 0 {
+		w.lostNotes += uint64(over)
+		w.Log.Warn("health records dropped while the store cannot take them", "dropped", w.lostNotes)
+		w.notes = w.notes[over:]
 	}
-	w.notes = append(w.notes, b)
 }
 
 // writeNotes hands health records to the store; the store keeps at most 64, so the rest wait.
@@ -406,6 +434,7 @@ func (w *Writer) writeNotes() {
 			w.Log.Warn("health record waits", "err", err)
 			return
 		}
+		w.inflight = append(w.inflight, w.notes[0])
 		w.notes = w.notes[1:]
 	}
 }
@@ -433,6 +462,11 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.Log.Warn("health record not stored at stop", "record", string(n))
 	}
 	if _, err := w.st.Close(ctx); err != nil {
+		w.Log.Error("store close failed at stop: these may be lost", "records", w.batch, "cap_dropped", w.capped,
+			"health_records", len(w.inflight), "err", err)
+		for _, n := range w.inflight {
+			w.Log.Warn("health record not committed at stop", "record", string(n))
+		}
 		return fmt.Errorf("collector: close store: %w", err)
 	}
 	return nil

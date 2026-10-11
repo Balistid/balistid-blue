@@ -93,11 +93,11 @@ func (r *Reader) emit(l *line, whole bool) {
 	r.mu.Lock()
 	r.counts.Records++
 	r.counts.Bytes += rec.OrigLen
-	switch {
-	case !ok || !whole:
+	if !ok || !whole {
 		r.counts.Malformed++
 		rec.ProviderSeq = 0
-	case rec.Truncated():
+	}
+	if rec.Truncated() {
 		r.counts.Truncated++
 	}
 	r.mu.Unlock()

@@ -187,3 +187,11 @@ func BenchmarkReadConn(b *testing.B) {
 		}
 	}
 }
+
+func TestMalformedLongLineCountsAsTruncatedToo(t *testing.T) {
+	long := `{"x":"` + strings.Repeat("y", rawrecord.MaxBytes+10) + `"}`
+	recs, counts, _ := read(t, long+"\n")
+	if len(recs) != 1 || !recs[0].Truncated() || counts.Malformed != 1 || counts.Truncated != 1 {
+		t.Fatalf("counts %+v", counts)
+	}
+}
