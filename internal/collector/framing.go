@@ -13,6 +13,7 @@ import (
 	"hash"
 	"io"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -36,14 +37,19 @@ type Counts struct {
 type Reader struct {
 	q      *Queue
 	now    func() time.Time
+	mu     sync.Mutex
 	counts Counts
 }
 
 // NewReader returns a reader that queues into q and stamps records with now.
 func NewReader(q *Queue, now func() time.Time) *Reader { return &Reader{q: q, now: now} }
 
-// Counts returns what the reader has seen so far. Only the goroutine running ReadConn may call it.
-func (r *Reader) Counts() Counts { return r.counts }
+// Counts returns what the reader has seen so far.
+func (r *Reader) Counts() Counts {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.counts
+}
 
 // ReadConn reads one connection to EOF. A head cut by EOF is stored as malformed, as is a tail that
 // opens a connection, because neither parses as a line of its own. It returns nil at EOF, ctx's error
@@ -84,6 +90,7 @@ func (r *Reader) ReadConn(ctx context.Context, conn io.Reader) error {
 func (r *Reader) emit(l *line, whole bool) {
 	rec, ok := l.record(r.now().UnixNano())
 	l.reset()
+	r.mu.Lock()
 	r.counts.Records++
 	r.counts.Bytes += rec.OrigLen
 	switch {
@@ -93,6 +100,7 @@ func (r *Reader) emit(l *line, whole bool) {
 	case rec.Truncated():
 		r.counts.Truncated++
 	}
+	r.mu.Unlock()
 	r.q.Push(rec)
 }
 
