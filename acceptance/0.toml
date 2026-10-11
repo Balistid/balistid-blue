@@ -13,10 +13,10 @@ reference_host = "32 cores, 31 GiB RAM, NVMe SSD, kernel 7.2.x"
 [[metric]]
 id = "healthy_ok"
 min = 99.9
-unit = "% of 30 s samples reporting OK during a 24 h healthy run on a smoke-tested kernel"
+unit = "% of 30 s samples reporting OK during seven days of normal use on the reference host, smoke-tested kernel"
 rows = ["T26"]
 adr = "0004"
-method = "Range VM, normal synthetic workload; any UNKNOWN must carry a named reason and counts against the limit."
+method = "The seven days of loss_per_day (ADR 0018: not in the range, which a day-long run would hold), computed from the collector's health records; a result at the maintainer's uid is advisory (T33) and who computes the binding one is decided in 9.5; any UNKNOWN must carry a named reason and counts against the limit."
 
 [[metric]]
 id = "sensor_down_s"
@@ -58,7 +58,7 @@ min = 2000
 unit = "records/s for 600 s with zero loss"
 rows = ["T4"]
 adr = "0005"
-method = "Range VM generator embeds a unique token in every event; the set of tokens stored must equal the set generated."
+method = "Range VM generator gives every exec a sequence number in argv; read from the collector's store (Laurel-only runs are a baseline and never pass), every number is stored once and none outside the generated set, audit lost is unchanged, no dispatcher overflow, the rate holds in every 10 s window; guest steal over 1 % is INVALID (ADR 0018)."
 
 [[metric]]
 id = "burst_rate"
@@ -66,7 +66,7 @@ min = 10000
 unit = "records/s for 10 s with zero loss"
 rows = ["T4"]
 adr = "0005"
-method = "As sustained_rate, on top of an idle baseline."
+method = "As sustained_rate, on top of an idle baseline, with the number as the address of ptrace(PEEKDATA) of no process (ADR 0018)."
 
 [[metric]]
 id = "crash_loss_ms"
@@ -74,7 +74,7 @@ max = 1000
 unit = "ms of records handed over but not yet committed"
 rows = ["T24"]
 adr = "0005"
-method = "20 trials each of kill -9 of the collector and a hard VM reset (cache=none) at sustained_rate. Every record whose commit was acknowledged must survive; only records handed over within the limit before the failure may be lost."
+method = "20 trials each of kill -9 of the collector and a guest reset (sysrq b; ADR 0018: the host stamps the failure within 100 ms of the guest's last mark, the store's ext4 must need recovery, a device's volatile write cache is not modelled) at sustained_rate. Every record whose commit was acknowledged must survive; only records handed over within the limit before the failure may be lost."
 
 [[metric]]
 id = "record_max_kib"
