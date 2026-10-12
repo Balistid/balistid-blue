@@ -36,8 +36,9 @@ var errFailNow = errors.New("failure moment reached")
 // runFailure runs boot `boot` of failure trial tr (ADR 0018, point 3). Boot 1 makes ext4 on the
 // scratch disk, mounts it, and for a reset reports its echo and reset_armed=yes before any load, so
 // the host can boot again; it then hands numbers to the measured writer, a child process, at the
-// trial's rate, and at a random moment in the load's second half writes "balistid-fail <H>" to the
-// console and resets with sysrq b, or kills the writer and writes "balistid-killed". After a reset
+// trial's rate, and at a random moment in the load's second half writes "balistid-fail <H> <S>" to
+// the console (S: what the writer had synced, ADR 0019) and resets with sysrq b, or kills the writer
+// and writes "balistid-killed". After a reset
 // boot 2 reads the superblock before anything mounts the disk. Both report what the file holds.
 func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) error {
 	r := &report{facts: facts}
@@ -226,8 +227,17 @@ func mark(text string) error {
 	}
 	_, werr := f.WriteString(text)
 	var drain error
-	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), tcsbrk, 1); errno != 0 {
-		drain = fmt.Errorf("drain console: %w", errno)
+	for {
+		// The writer child's SIGCHLD after a kill interrupts the drain, which the kernel does not
+		// restart: retry, or the mark could be cut short.
+		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), tcsbrk, 1)
+		if errno == syscall.EINTR {
+			continue
+		}
+		if errno != 0 {
+			drain = fmt.Errorf("drain console: %w", errno)
+		}
+		break
 	}
 	return errors.Join(werr, drain, f.Close())
 }
