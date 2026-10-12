@@ -9,7 +9,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Part | Does | State |
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
-| Range, runner (0009-0011) | VM where agents test the recorder | ADR 0011 accepted; installed at 506f775; ADR 0018 trials and ADR 0019 margins proposed |
+| Range, runner (0009-0011) | VM where agents test the recorder | ADR 0011 accepted; installed at 506f775; ADR 0018 trials, ADR 0019 margins and ADR 0020 deterministic failure controls proposed |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94; core in the CP2 pull request, not in an image |

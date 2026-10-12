@@ -66,7 +66,8 @@ func TestJudgeFailure(t *testing.T) {
 		}
 		cases := map[string]string{
 			"stored_prefix=999":  Miss,
-			"stored_prefix=1000": Pass,
+			"stored_prefix=1000": Miss, // synced through 1100: 1001..1100 had to survive (ADR 0020)
+			"stored_prefix=1100": Pass,
 			"stored_prefix=0999": Invalid,
 			"stored_count=1100":  Invalid,
 			"kernel=6.1":         Invalid,
