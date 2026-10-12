@@ -3,10 +3,12 @@ package main
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -125,5 +127,47 @@ func TestMarksAreWholeLines(t *testing.T) {
 	}
 	if killMark != "\nbalistid-killed\n" {
 		t.Errorf("killMark = %q", killMark)
+	}
+}
+
+// Only a writer that SIGKILL ended counts as killed; one that exited by itself lost its records for
+// another reason.
+func TestKilledBySIGKILL(t *testing.T) {
+	sleeper := exec.CommandContext(t.Context(), "/usr/bin/sleep", "30")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = sleeper.Process.Kill()
+	_ = sleeper.Wait()
+	if err := killedBySIGKILL(sleeper.ProcessState); err != nil {
+		t.Errorf("a killed sleeper: %v", err)
+	}
+	failed := exec.CommandContext(t.Context(), "/usr/bin/false")
+	_ = failed.Run()
+	if err := killedBySIGKILL(failed.ProcessState); err == nil {
+		t.Error("a writer that exited 1 counted as killed")
+	}
+	term := exec.CommandContext(t.Context(), "/usr/bin/sleep", "30")
+	if err := term.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_ = term.Process.Signal(syscall.SIGTERM)
+	_ = term.Wait()
+	if err := killedBySIGKILL(term.ProcessState); err == nil {
+		t.Error("a writer ended by SIGTERM counted as killed")
+	}
+	if err := killedBySIGKILL(nil); err == nil {
+		t.Error("a writer that has not ended counted as killed")
+	}
+}
+
+// H describes the moment it was taken: a fail mark that leaves later than MarkWindow is refused.
+func TestMarkInTime(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	if err := markInTime(t0, t0.Add(100*time.Millisecond)); err != nil {
+		t.Errorf("a mark 100 ms after H: %v", err)
+	}
+	if err := markInTime(t0, t0.Add(101*time.Millisecond)); err == nil {
+		t.Error("a mark 101 ms after H was accepted")
 	}
 }

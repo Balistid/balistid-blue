@@ -184,10 +184,13 @@ func judgeFailure(tr rangejob.Trial, o Outcome, launcher, image string) (string,
 		// The control's premise is a writer synced through H; a host that stalled its storage
 		// broke the premise, not the file system. A number up to S lost is a real loss (ADR 0019).
 		return Invalid, fmt.Sprintf("the writer had synced only through %d of H=%d", o.Marks.Synced, o.Marks.H)
-	case prefix < o.Marks.H:
-		return Miss, fmt.Sprintf("numbers up to H=%d had to survive the %s; stored through %d", o.Marks.H, tr.Failure, prefix)
+	case prefix < max(o.Marks.H, o.Marks.Synced):
+		// Everything handed over in time, and everything an fsync had returned for, must survive.
+		return Miss, fmt.Sprintf("numbers up to %d (H=%d, synced %d) had to survive the %s; stored through %d",
+			max(o.Marks.H, o.Marks.Synced), o.Marks.H, o.Marks.Synced, tr.Failure, prefix)
 	}
-	return Pass, fmt.Sprintf("every number up to H=%d survived the %s (stored through %d)", o.Marks.H, tr.Failure, prefix)
+	return Pass, fmt.Sprintf("every number up to %d (H=%d, synced %d) survived the %s (stored through %d)",
+		max(o.Marks.H, o.Marks.Synced), o.Marks.H, o.Marks.Synced, tr.Failure, prefix)
 }
 
 // closedFacts maps facts that must be exactly names, each once.

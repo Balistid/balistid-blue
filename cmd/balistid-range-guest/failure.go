@@ -85,19 +85,11 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return fail("random failure moment: " + err.Error())
 	}
-	start := time.Now()
-	failAt := start.Add(span/2 + time.Duration(extra.Int64()))
-	// The writer stops syncing after the number due LastSync before the failure.
-	var stopAfter uint64
-	if tr.Load.Writer.LastSync > 0 {
-		stopAfter = rangeguest.DueAt(failAt.Add(-tr.Load.Writer.LastSync).Sub(start), tr.Load.Rate)
-	}
 	self, err := os.Executable()
 	if err != nil {
 		return fail("own path: " + err.Error())
 	}
-	child := exec.CommandContext(ctx, self, writerArg, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync), //nolint:gosec // our own binary, values from the table
-		strconv.FormatUint(stopAfter, 10))
+	child := exec.CommandContext(ctx, self, writerArg, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync)) //nolint:gosec // our own binary, values from the table
 	pipe, err := child.StdinPipe()
 	if err != nil {
 		return fail("writer pipe: " + err.Error())
@@ -110,21 +102,38 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := child.Start(); err != nil {
 		return fail("writer: " + err.Error())
 	}
-	// synced follows the highest number the writer had written before its last fsync returned.
+	// synced follows the highest number the writer had written before its last fsync returned; a
+	// broken report is the writer's failure, not a slow sync.
 	var synced atomic.Uint64
+	var reportErr atomic.Bool
 	go func() {
 		var b [rangeguest.RecordSize]byte
 		for {
 			if _, err := io.ReadFull(syncs, b[:]); err != nil {
+				reportErr.Store(!errors.Is(err, io.EOF))
 				return
 			}
 			synced.Store(binary.LittleEndian.Uint64(b[:]))
 		}
 	}()
+	waited := make(chan struct{})
+	go func() { _ = child.Wait(); close(waited) }()
+
+	// One epoch for the load, the failure moment and the stop-sync moment (ADR 0020).
+	start := time.Now()
+	failAt := start.Add(span/2 + time.Duration(extra.Int64()))
+	stopAt, stopped := failAt.Add(-tr.Load.Writer.LastSync), tr.Load.Writer.LastSync == 0
 	var hand rangeguest.Handover
 	_, _, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, func(seq uint64) error {
-		if !time.Now().Before(failAt) {
+		now := time.Now()
+		if !now.Before(failAt) {
 			return errFailNow
+		}
+		if !stopped && !now.Before(stopAt) {
+			if _, err := pipe.Write(binary.LittleEndian.AppendUint64(nil, rangeguest.StopSyncing)); err != nil {
+				return fmt.Errorf("stop sync: %w", err)
+			}
+			stopped = true
 		}
 		if _, err := pipe.Write(binary.LittleEndian.AppendUint64(nil, seq)); err != nil {
 			return fmt.Errorf("hand over: %w", err)
@@ -132,12 +141,20 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 		hand.Add(time.Now())
 		return nil
 	}, rangeguest.WallClock)
-	if !errors.Is(genErr, errFailNow) {
+	switch {
+	case !errors.Is(genErr, errFailNow):
 		return fail(fmt.Sprintf("load ended before the failure: %v", genErr))
+	case closed(waited) || reportErr.Load():
+		return fail("the writer failed before the failure")
 	}
-	h := hand.H(time.Now())
-	// A mark starts on a line of its own: the console's last line may be a prompt without an end.
+	taken := time.Now()
+	h := hand.H(taken)
 	if err := mark(failMark(h, synced.Load())); err != nil {
+		return fail(err.Error())
+	}
+	// H describes the moment it was taken: a mark that took longer to leave describes a failure
+	// that did not happen then, so the trial reports instead of failing (ADR 0020).
+	if err := markInTime(taken, time.Now()); err != nil {
 		return fail(err.Error())
 	}
 	if tr.Failure == rangejob.FailReset {
@@ -148,12 +165,44 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := child.Process.Kill(); err != nil {
 		return fail("kill writer: " + err.Error())
 	}
+	<-waited
+	if err := killedBySIGKILL(child.ProcessState); err != nil {
+		return fail(err.Error())
+	}
 	if err := mark(killMark); err != nil {
 		return fail(err.Error())
 	}
-	_ = child.Wait()
 	_ = pipe.Close()
 	return r.stored()
+}
+
+// killedBySIGKILL is nil only for a process that SIGKILL ended: a writer that had already exited
+// lost its records for another reason, which a kill trial must not count as its own.
+func killedBySIGKILL(st *os.ProcessState) error {
+	if st == nil {
+		return errors.New("the writer has not ended")
+	}
+	if ws, ok := st.Sys().(syscall.WaitStatus); !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		return fmt.Errorf("the writer ended as %s, not by SIGKILL", st)
+	}
+	return nil
+}
+
+// markInTime is nil when the fail mark left within MarkWindow of the moment H was taken.
+func markInTime(taken, left time.Time) error {
+	if late := left.Sub(taken); late > rangevm.MarkWindow {
+		return fmt.Errorf("the fail mark took %s to leave", late)
+	}
+	return nil
+}
+
+func closed(c <-chan struct{}) bool {
+	select {
+	case <-c:
+		return true
+	default:
+		return false
+	}
 }
 
 // report collects a trial boot's facts.
@@ -179,13 +228,13 @@ func (r *report) stored() error {
 	return write(r.facts)
 }
 
-// writerMain is the measured writer's process: hold and sync in milliseconds and the number after
-// which it stops syncing (0: never), numbers on stdin, records appended to the numbers file.
+// writerMain is the measured writer's process: hold and sync in milliseconds, numbers on stdin (0:
+// stop syncing), records appended to the numbers file.
 func writerMain(args []string) error {
-	if len(args) != 3 {
-		return errors.New("want hold and sync in milliseconds and a stop-after number")
+	if len(args) != 2 {
+		return errors.New("want hold and sync in milliseconds")
 	}
-	var v [3]uint64
+	var v [2]uint64
 	for i, a := range args {
 		n, err := strconv.ParseUint(a, 10, 63)
 		if err != nil {
@@ -193,7 +242,7 @@ func writerMain(args []string) error {
 		}
 		v[i] = n
 	}
-	pol := rangeguest.Policy{Hold: time.Duration(v[0]) * time.Millisecond, Sync: time.Duration(v[1]) * time.Millisecond, StopAfter: v[2]} //nolint:gosec // parsed into 63 bits
+	pol := rangeguest.Policy{Hold: time.Duration(v[0]) * time.Millisecond, Sync: time.Duration(v[1]) * time.Millisecond} //nolint:gosec // parsed into 63 bits
 	f, err := os.OpenFile(numbersFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("numbers file: %w", err)
@@ -209,7 +258,14 @@ func mountScratch() error {
 	if err := os.MkdirAll(scratchMount, 0o700); err != nil {
 		return fmt.Errorf("mount point: %w", err)
 	}
-	if err := syscall.Mount(scratchDev, scratchMount, "ext4", 0, ""); err != nil {
+	// Only an fsync puts data on the scratch disk: no journal commit or flusher thread may write it
+	// earlier, so what a control did not sync is lost for certain (ADR 0020).
+	for name, value := range map[string]string{"dirty_writeback_centisecs": "0", "dirty_expire_centisecs": "360000"} {
+		if err := os.WriteFile("/proc/sys/vm/"+name, []byte(value), 0); err != nil {
+			return fmt.Errorf("vm.%s: %w", name, err)
+		}
+	}
+	if err := syscall.Mount(scratchDev, scratchMount, "ext4", 0, "commit=300"); err != nil {
 		return fmt.Errorf("mount scratch: %w", err)
 	}
 	return nil

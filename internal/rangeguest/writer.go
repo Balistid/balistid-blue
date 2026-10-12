@@ -16,13 +16,16 @@ const RecordSize = 8
 const HandLag = 900 * time.Millisecond
 
 // Policy is how the measured writer of the failure controls stores what it is handed (ADR 0018,
-// point 4): it keeps a number in memory for Hold before write(), and fsyncs every Sync until it has
-// been handed a number past StopAfter (0: to the end). Sync 0 never syncs.
+// point 4): it keeps a number in memory for Hold before write(), and fsyncs every Sync until it is
+// told to stop (StopSync). Sync 0 never syncs.
 type Policy struct {
-	Hold      time.Duration
-	Sync      time.Duration
-	StopAfter uint64
+	Hold time.Duration
+	Sync time.Duration
 }
+
+// StopSyncing, handed over as a number, tells the writer to sync no more: the side that knows when
+// the failure comes sends it, on its own clock (ADR 0020).
+const StopSyncing = 0
 
 // SyncFile is the part of *os.File the writer uses; tests replace it.
 type SyncFile interface {
@@ -38,7 +41,7 @@ type Writer struct {
 	pol      Policy
 	clk      Clock
 	pending  []handed
-	last     uint64
+	stopped  bool
 	written  uint64
 	lastSync time.Time
 	// Synced is the highest number written before the last fsync that returned.
@@ -55,14 +58,17 @@ func NewWriter(f SyncFile, pol Policy, clk Clock) *Writer {
 	return &Writer{f: f, pol: pol, clk: clk, lastSync: clk.Now()}
 }
 
-// Append takes number seq and writes what is due.
+// Append takes number seq and writes what is due; StopSyncing ends syncing instead.
 func (w *Writer) Append(seq uint64) error {
+	if seq == StopSyncing {
+		w.stopped = true
+		return w.Tick()
+	}
 	w.pending = append(w.pending, handed{seq, w.clk.Now()})
-	w.last = max(w.last, seq)
 	return w.Tick()
 }
 
-// Tick writes every number held for Hold and fsyncs when Sync is due and StopAfter not passed.
+// Tick writes every number held for Hold and fsyncs when Sync is due and syncing not stopped.
 func (w *Writer) Tick() error {
 	now := w.clk.Now()
 	n := 0
@@ -77,8 +83,7 @@ func (w *Writer) Tick() error {
 		w.written = max(w.written, w.pending[n-1].seq)
 		w.pending = w.pending[n:]
 	}
-	stopped := w.pol.StopAfter != 0 && w.last > w.pol.StopAfter
-	if w.pol.Sync > 0 && !stopped && now.Sub(w.lastSync) >= w.pol.Sync {
+	if w.pol.Sync > 0 && !w.stopped && now.Sub(w.lastSync) >= w.pol.Sync {
 		if err := w.f.Sync(); err != nil {
 			return fmt.Errorf("sync: %w", err)
 		}
@@ -174,10 +179,4 @@ func report(synced io.Writer, before, now uint64) error {
 		return fmt.Errorf("report sync: %w", err)
 	}
 	return nil
-}
-
-// DueAt is the number due at d after the start of a load of rate per second: number i is due at
-// (i-1)/rate.
-func DueAt(d time.Duration, rate int) uint64 {
-	return uint64(d.Seconds()*float64(rate)) + 1
 }

@@ -48,6 +48,12 @@ func lost(data []byte, h uint64) uint64 {
 // the numbers up to it that a reset (only synced bytes) and a kill (all written bytes) lose.
 func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost, killLost uint64) {
 	t.Helper()
+	return runStopping(t, pol, rate, failAt, 0)
+}
+
+// runStopping is run that also hands over StopSyncing at stopAt (0: never).
+func runStopping(t *testing.T, pol Policy, rate int, failAt, stopAt time.Duration) (h, resetLost, killLost uint64) {
+	t.Helper()
 	c := &fakeClock{now: time.Unix(0, 0)}
 	start := c.now
 	f := &diskFile{}
@@ -55,7 +61,14 @@ func run(t *testing.T, pol Policy, rate int, failAt time.Duration) (h, resetLost
 	var hand Handover
 	every := time.Second / time.Duration(rate)
 	next, seq := start, uint64(0)
+	stopped := false
 	for c.now.Before(start.Add(failAt)) {
+		if stopAt > 0 && !stopped && !c.now.Before(start.Add(stopAt)) {
+			if err := w.Append(StopSyncing); err != nil {
+				t.Fatal(err)
+			}
+			stopped = true
+		}
 		if !c.now.Before(next) {
 			seq++
 			if err := w.Append(seq); err != nil {
@@ -81,7 +94,7 @@ func TestWriterPoliciesAgainstH(t *testing.T) {
 	if h < 9000 || reset != 0 {
 		t.Errorf("sync every 250 ms: H %d, %d lost to a reset; want H about 9100 and none", h, reset)
 	}
-	if _, reset, _ = run(t, Policy{Sync: 250 * time.Millisecond, StopAfter: 8500}, 1000, fail); reset == 0 {
+	if _, reset, _ = runStopping(t, Policy{Sync: 250 * time.Millisecond}, 1000, fail, fail-1500*time.Millisecond); reset == 0 {
 		t.Error("last sync 1500 ms before the reset lost nothing")
 	}
 	if _, _, kill := run(t, Policy{Hold: 2 * time.Second}, 1000, fail); kill == 0 {
@@ -233,18 +246,6 @@ func TestWriterSyncedIsWhatTheLastSyncCovered(t *testing.T) {
 	b := out.Bytes()
 	if len(b) == 0 || len(b)%RecordSize != 0 || binary.LittleEndian.Uint64(b[len(b)-RecordSize:]) != 3 {
 		t.Errorf("reported %v, want reports ending with 3", b)
-	}
-}
-
-func TestDueAt(t *testing.T) {
-	for _, c := range []struct {
-		d    time.Duration
-		rate int
-		want uint64
-	}{{0, 2000, 1}, {1500 * time.Millisecond, 2000, 3001}, {499 * time.Millisecond, 2, 1}, {500 * time.Millisecond, 2, 2}} {
-		if got := DueAt(c.d, c.rate); got != c.want {
-			t.Errorf("DueAt(%s, %d) = %d, want %d", c.d, c.rate, got, c.want)
-		}
 	}
 }
 
