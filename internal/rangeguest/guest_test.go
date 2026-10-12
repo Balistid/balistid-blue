@@ -1,6 +1,8 @@
 package rangeguest
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,15 +55,21 @@ func TestFreshStateReadsOnlyARewrite(t *testing.T) {
 	const no, yes = "plugin queue overflow detected = no\n", "plugin queue overflow detected = yes\n"
 	cases := map[string]struct {
 		before string
-		signal func()
+		signal func(context.Context) error
 		want   string
 	}{
-		"not rewritten":   {no, func() {}, "stale"},
-		"rewritten yes":   {no, func() { write(yes) }, "yes"},
-		"rewritten no":    {yes, func() { write("x\n" + no) }, "no"},
-		"left truncated":  {no, func() { write("") }, "stale"},
-		"created":         {"", func() { write(yes) }, "yes"},
-		"half then whole": {no, func() { write("plugin"); go func() { time.Sleep(30 * time.Millisecond); write(yes) }() }, "yes"},
+		"not rewritten":  {no, func(context.Context) error { return nil }, "stale"},
+		"rewritten yes":  {no, func(context.Context) error { write(yes); return nil }, "yes"},
+		"rewritten no":   {yes, func(context.Context) error { write("x\n" + no); return nil }, "no"},
+		"left truncated": {no, func(context.Context) error { write(""); return nil }, "stale"},
+		"created":        {"", func(context.Context) error { write(yes); return nil }, "yes"},
+		"signal failed":  {no, func(context.Context) error { write(yes); return errors.New("auditctl") }, "stale"},
+		"signal hangs":   {no, func(ctx context.Context) error { <-ctx.Done(); write(yes); return ctx.Err() }, "stale"},
+		"half then whole": {no, func(context.Context) error {
+			write("plugin")
+			go func() { time.Sleep(30 * time.Millisecond); write(yes) }()
+			return nil
+		}, "yes"},
 	}
 	for name, c := range cases {
 		_ = os.Remove(path)
@@ -72,8 +80,9 @@ func TestFreshStateReadsOnlyARewrite(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if got := FreshState(path, c.signal, 300*time.Millisecond, 5*time.Millisecond); got != c.want {
-			t.Errorf("%s: %q, want %q", name, got, c.want)
+		start := time.Now()
+		if got := FreshState(t.Context(), path, c.signal, 300*time.Millisecond, 5*time.Millisecond); got != c.want || time.Since(start) > time.Second {
+			t.Errorf("%s: %q after %s, want %q within the deadline", name, got, time.Since(start), c.want)
 		}
 	}
 }

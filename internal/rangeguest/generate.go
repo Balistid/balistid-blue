@@ -1,6 +1,7 @@
 package rangeguest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -34,10 +35,10 @@ const (
 )
 
 // Generate emits 1, 2, ... rate × seconds through emit, one at a time, on a fixed schedule of rate
-// per second, without pause while behind (ADR 0018, point 4). A number counts in the 10 s window it
-// was due in if emitted at most grace after that window ends, else in the window it was emitted in;
-// none is emitted later than grace after the schedule ends. It returns how many it emitted and the
-// fewest counted in any window.
+// per second, without pause while behind (ADR 0018, point 4; ADR 0019). A number is timed when emit
+// returns: it counts in the 10 s window it was due in if done at most grace after that window ends,
+// else in the window it was done in, and in none if done more than grace after the schedule ends,
+// where the generator stops. It returns how many it emitted and the fewest counted in any window.
 func Generate(rate, seconds int, emit func(seq uint64) error, clk Clock) (generated, windowMin uint64, err error) {
 	if rate < 1 || seconds < 10 || seconds%10 != 0 {
 		return 0, 0, errors.New("load must be a positive rate for whole 10 s windows")
@@ -48,21 +49,19 @@ func Generate(rate, seconds int, emit func(seq uint64) error, clk Clock) (genera
 	start := clk.Now()
 	for seq := uint64(1); seq <= planned; seq++ {
 		due := time.Duration(seq-1) * time.Second / time.Duration(rate)
-		elapsed := clk.Now().Sub(start)
-		if elapsed >= span+grace {
+		if elapsed := clk.Now().Sub(start); elapsed > span+grace {
 			break
-		}
-		if due > elapsed {
+		} else if due > elapsed {
 			clk.Sleep(due - elapsed)
-			elapsed = clk.Now().Sub(start)
 		}
 		if err := emit(seq); err != nil {
 			return generated, 0, fmt.Errorf("event %d: %w", seq, err)
 		}
 		generated++
+		done := clk.Now().Sub(start)
 		w := int(due / window)
-		if elapsed >= time.Duration(w+1)*window+grace {
-			w = int(elapsed / window)
+		if done > time.Duration(w+1)*window+grace {
+			w = int(done / window)
 		}
 		if w < len(counts) {
 			counts[w]++
@@ -174,18 +173,26 @@ func TickDelta(before, after string) (total, steal uint64, err error) {
 // FreshState reads auditd's plugin-queue overflow flag from the state file at path, only once
 // auditd rewrote it after signal asked it to: a file left from before would report "no" for an
 // overflow it never saw, and auditd truncates the file before it writes it, so only "yes" or "no"
-// ends the wait. No complete rewrite within wait reads "stale", which the host judges INVALID.
-func FreshState(path string, signal func(), wait, poll time.Duration) string {
+// ends the wait. One deadline of wait bounds the signal and the wait for the rewrite; a failed
+// signal or no complete rewrite in time reads "stale", which the host judges INVALID.
+func FreshState(ctx context.Context, path string, signal func(context.Context) error, wait, poll time.Duration) string {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	old, errOld := os.Stat(path)
-	signal()
-	for deadline := time.Now().Add(wait); time.Now().Before(deadline); time.Sleep(poll) {
+	if signal(ctx) != nil {
+		return "stale"
+	}
+	for ctx.Err() == nil {
 		now, err := os.Stat(path)
-		if err != nil || errOld == nil && os.SameFile(old, now) && now.ModTime().Equal(old.ModTime()) && now.Size() == old.Size() {
-			continue
+		if err == nil && (errOld != nil || !os.SameFile(old, now) || !now.ModTime().Equal(old.ModTime()) || now.Size() != old.Size()) {
+			data, err := os.ReadFile(path) //nolint:gosec // auditd's fixed state file, or a test's
+			if v := OverflowDetected(string(data)); err == nil && (v == "yes" || v == "no") {
+				return v
+			}
 		}
-		data, err := os.ReadFile(path) //nolint:gosec // auditd's fixed state file, or a test's
-		if v := OverflowDetected(string(data)); err == nil && (v == "yes" || v == "no") {
-			return v
+		select {
+		case <-ctx.Done():
+		case <-time.After(poll):
 		}
 	}
 	return "stale"

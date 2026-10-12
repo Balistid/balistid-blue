@@ -40,6 +40,7 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 		FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel,
 		FactGenerated: planned, FactWindowMin: strconv.Itoa(tr.Load.Rate * 10), FactLostBefore: "0", FactLostAfter: "0",
 		FactOverflowBefore: "no", FactOverflowAfter: "no", FactCPUTicks: "10000", FactStealTicks: "100", FactFollow: "ok",
+		FactDrainCPU: "5000", FactDrainSteal: "50",
 		FactStored: planned, FactMissing: "0", FactDuplicate: "0", FactOutside: "0",
 	}
 	for _, c := range change {
@@ -63,13 +64,20 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 	cases := map[string][]string{
 		Miss: {
 			"missing=1,stored=1199999", "duplicate=1", "outside=1", "audit_lost_after=1", "overflow_after=yes",
-			"window_min=19999", "generated=1199999,stored=1199999",
+			"window_min=19999", "generated=1199999,stored=1199999,window_min=19999",
 		},
 		Invalid: {
 			"follow=barrier missing", "steal_ticks=101", "cpu_ticks=0", "kernel=6.0.0", "overflow_after=stale",
 			"overflow_before=yes", "overflow_after=maybe", "generated=1200001,stored=1200001", "stored=1199999",
 			"generated=", "duplicate=00", "missing=-1", "missing=1 ", "trial=rate-burst",
 			"cpu_ticks=0,steal_ticks=0",
+			// Codex round 1 on #100: contradictions get no binding verdict.
+			"window_min=120001",
+			"stored=18446744073709551615,missing=1200001",
+			"stored=1200001,missing=0",
+			"audit_lost_before=10,audit_lost_after=0",
+			"drain_steal_ticks=51",
+			"drain_cpu_ticks=0,drain_steal_ticks=1",
 		},
 	}
 	for want, changes := range cases {

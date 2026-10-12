@@ -1,6 +1,7 @@
 package rangeguest
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -87,8 +88,8 @@ func TestRecordDropsTheControlsNumberOnce(t *testing.T) {
 	for _, a := range []string{"balistid-n-1", "balistid-n-2", "balistid-n-2", "balistid-n-3"} {
 		fl.record([]byte(execLine(a)))
 	}
-	if s, m, d, _ := fl.nums.Count(3); s != 3 || m != 0 || d != 0 {
-		t.Errorf("drop counted %d stored, %d missing, %d duplicate; want the repeat to fill the dropped one", s, m, d)
+	if s, m, d, _ := fl.nums.Count(3); s != 2 || m != 1 || d != 1 {
+		t.Errorf("drop counted %d stored, %d missing, %d duplicate; want 2 missing the dropped one and its repeat a duplicate", s, m, d)
 	}
 }
 
@@ -212,7 +213,7 @@ func TestFollowerFinishesAtTheBarrier(t *testing.T) {
 	l.write(execLine("balistid-n-1"), execLine("balistid-n-2"))
 	l.rotate()
 	l.write(execLine("balistid-n-3"))
-	nums, err := fl.Finish("balistid-canary-x", func() error {
+	nums, err := fl.Finish(t.Context(), "balistid-canary-x", func(context.Context) error {
 		l.write(execLine("balistid-canary-x"), execLine("balistid-n-4"))
 		return nil
 	}, 5*time.Second)
@@ -228,8 +229,48 @@ func TestFollowerFinishesAtTheBarrier(t *testing.T) {
 	if err := fl.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fl.Finish("balistid-canary-y", func() error { return nil }, 50*time.Millisecond); err == nil {
+	if _, err := fl.Finish(t.Context(), "balistid-canary-y", func(context.Context) error { return nil }, 50*time.Millisecond); err == nil {
 		t.Error("finished without the barrier")
+	}
+
+	// The mark runs under the same deadline: one that hangs ends with it.
+	l = newLaurel(t)
+	fl = NewFollower(l.path, rangejob.LoadExec, 0)
+	if err := fl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = fl.Finish(t.Context(), "balistid-canary-z", func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, 50*time.Millisecond)
+	if err == nil || time.Since(start) > time.Second {
+		t.Errorf("a hanging mark: %v after %s", err, time.Since(start))
+	}
+}
+
+// A log that does not end with a whole line at Start ends with part of an event from before the run:
+// its rest is not the run's, so it is neither a number nor outside.
+func TestTailSkipsTheLineItStartsInside(t *testing.T) {
+	l := newLaurel(t)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true",`)
+	fl := NewFollower(l.path, rangejob.LoadExec, 0)
+	if err := fl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`"balistid-n-5"]}}` + "\n")
+	_ = f.Close()
+	l.write(execLine("balistid-n-1"))
+	nums, err := fl.Finish(t.Context(), "balistid-canary-p", func(context.Context) error {
+		l.write(execLine("balistid-canary-p"))
+		return nil
+	}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, m, d, o := nums.Count(1); s != 1 || m != 0 || d != 0 || o != 0 {
+		t.Errorf("counted %d, %d, %d, %d; want only number 1", s, m, d, o)
 	}
 }
 
