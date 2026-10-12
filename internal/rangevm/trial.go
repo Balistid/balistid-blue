@@ -31,7 +31,7 @@ const (
 	FactMissing        = "missing"
 	FactDuplicate      = "duplicate"
 	FactOutside        = "outside"
-	// FactTrialError replaces the counts when the guest could not run the trial.
+	// FactTrialError replaces the counts when the guest could not run the trial; boot reports it.
 	FactTrialError = "trial_error"
 )
 
@@ -61,9 +61,6 @@ func judgeRate(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, r
 	}
 	f := map[string]string{}
 	for _, r := range o.Facts {
-		if r.Name == FactTrialError {
-			return Invalid, fmt.Sprintf("the guest could not run the trial: \"%s\"", Printable(r.Value, 256))
-		}
 		if !slices.Contains(rateFacts, r.Name) {
 			return Invalid, fmt.Sprintf("unexpected fact \"%s\" in a trial report", Printable(r.Name, 64))
 		}
@@ -157,11 +154,6 @@ func judgeFailure(tr rangejob.Trial, o Outcome, launcher, image string) (string,
 	if launcher != image || !buildinfo.IsCommitID(launcher) {
 		return Invalid, fmt.Sprintf("launcher is not a clean build of the image commit %s", image)
 	}
-	for _, r := range slices.Concat(o.FirstBoot, o.Facts) {
-		if r.Name == FactTrialError {
-			return Invalid, fmt.Sprintf("the guest could not run the trial: \"%s\"", Printable(r.Value, 256))
-		}
-	}
 	last := []string{FactTrial, FactPhase, FactKernel, FactStoredPrefix, FactStoredCount}
 	if tr.Failure == FailReset {
 		first, err := closedFacts(o.FirstBoot, []string{FactTrial, FactPhase, FactKernel, FactResetArmed})
@@ -188,9 +180,9 @@ func judgeFailure(tr rangejob.Trial, o Outcome, launcher, image string) (string,
 		return Invalid, "the reset did not leave ext4 with a journal that needs recovery"
 	case o.Marks.H == 0:
 		return Invalid, "nothing was handed over in time to have to survive"
-	case tr.Expect == Pass && tr.Load.Writer.Sync > 0 && o.Marks.Synced < o.Marks.H:
+	case tr.Expect == Pass && tr.Load.Writer.Sync > 0 && o.Marks.Synced < o.Marks.H && prefix >= o.Marks.Synced:
 		// The control's premise is a writer synced through H; a host that stalled its storage
-		// broke the premise, not the file system.
+		// broke the premise, not the file system. A number up to S lost is a real loss (ADR 0019).
 		return Invalid, fmt.Sprintf("the writer had synced only through %d of H=%d", o.Marks.Synced, o.Marks.H)
 	case prefix < o.Marks.H:
 		return Miss, fmt.Sprintf("numbers up to H=%d had to survive the %s; stored through %d", o.Marks.H, tr.Failure, prefix)

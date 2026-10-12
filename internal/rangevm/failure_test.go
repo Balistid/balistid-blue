@@ -108,18 +108,18 @@ func TestJudgeFailure(t *testing.T) {
 			t.Errorf("%s from a dev launcher: %s", name, v)
 		}
 	}
-	kill := trial(t, "kill-control-buffer2s")
-	o := failureRun(kill)
-	o.Facts = append(o.Facts[:3], Record{Name: FactTrialError, Value: "mkfs failed"})
-	if v, r := JudgeTrial(kill, o, cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "mkfs failed") {
-		t.Errorf("guest error: %s (%s)", v, r)
-	}
 	// sync250's premise is a writer synced through H; without it the run is INVALID, not a MISS.
 	sync250 := trial(t, "reset-control-sync250")
 	stalled := failureRun(sync250, "stored_prefix=999")
 	stalled.Marks.Synced = 999
 	if v, r := JudgeTrial(sync250, stalled, cleanBuild, cleanBuild); v != Invalid {
 		t.Errorf("sync250 synced short of H: %s (%s); want INVALID", v, r)
+	}
+	// A number up to S lost is a real loss of synced data, whatever H was.
+	lostSynced := failureRun(sync250, "stored_prefix=500")
+	lostSynced.Marks.Synced = 900
+	if v, r := JudgeTrial(sync250, lostSynced, cleanBuild, cleanBuild); v != Miss {
+		t.Errorf("sync250 lost synced numbers: %s (%s); want MISS", v, r)
 	}
 	lastsync := trial(t, "reset-control-lastsync1500")
 	short := failureRun(lastsync, "stored_prefix=999")
