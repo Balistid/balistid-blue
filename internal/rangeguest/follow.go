@@ -85,6 +85,7 @@ type Follower struct {
 	nums    Numbers
 	barrier string
 	seen    bool
+	seenAt  time.Time
 	err     error
 	stop    chan struct{}
 	stopped chan struct{}
@@ -112,10 +113,11 @@ func (fl *Follower) Start() error {
 // Finish runs mark, which must exec /usr/bin/true with barrier as an argument, and returns the
 // numbers found once that exec's record arrives: Laurel writes events in order, so everything before
 // it is then in the log (ADR 0018, point 4). One deadline of wait bounds mark and the wait for its
-// record; no barrier in time is an error.
+// record; a barrier the reader reaches after the deadline, behind a backlog, is as missing as none.
 func (fl *Follower) Finish(ctx context.Context, barrier string, mark func(context.Context) error, wait time.Duration) (*Numbers, error) {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
+	deadline, _ := ctx.Deadline()
 	fl.mu.Lock()
 	fl.barrier = barrier
 	fl.mu.Unlock()
@@ -139,7 +141,7 @@ func (fl *Follower) Finish(ctx context.Context, barrier string, mark func(contex
 		return nil, fmt.Errorf("barrier: %w", markErr)
 	case fl.err != nil:
 		return nil, fl.err
-	case !fl.seen:
+	case !fl.seen || fl.seenAt.After(deadline):
 		return nil, errors.New("barrier missing")
 	}
 	return &fl.nums, nil
@@ -148,6 +150,11 @@ func (fl *Follower) Finish(ctx context.Context, barrier string, mark func(contex
 func (fl *Follower) follow() {
 	defer close(fl.stopped)
 	for {
+		select {
+		case <-fl.stop: // also between lines, so a backlog cannot outlast Finish
+			return
+		default:
+		}
 		line, err := fl.tail.line()
 		if err != nil {
 			fl.mu.Lock()
@@ -177,7 +184,7 @@ func (fl *Follower) follow() {
 // (enrichment), so lines are read as maps, never into structs that match names case-insensitively.
 func (fl *Follower) record(line []byte) {
 	if fl.barrier != "" && bytes.Contains(line, []byte(fl.barrier)) && slices.Contains(execArgs(line), fl.barrier) {
-		fl.seen = true
+		fl.seen, fl.seenAt = true, time.Now()
 		return
 	}
 	var nums []uint64
@@ -375,7 +382,7 @@ func (t *logTail) next() (bool, error) {
 	if n, err := t.read(); err != nil || n > 0 {
 		return false, err
 	}
-	if len(t.buf) > 0 {
+	if len(t.buf) > 0 || t.partial {
 		return false, errors.New("rotated log ends inside a line")
 	}
 	at := 0
