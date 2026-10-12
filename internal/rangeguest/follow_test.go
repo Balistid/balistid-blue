@@ -385,3 +385,53 @@ func TestTailFollowsTenRotationsBehind(t *testing.T) {
 		t.Fatalf("ten rotations behind: %q, %v", got, err)
 	}
 }
+
+// A barrier the reader only reaches after the deadline, behind a backlog, does not end the run in
+// time: the measurement is missing, not complete.
+func TestBarrierBehindABacklogMissesTheDeadline(t *testing.T) {
+	l := newLaurel(t)
+	fl := NewFollower(l.path, rangejob.LoadExec, 0)
+	if err := fl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	const lines = 50000
+	backlog := make([]string, 0, lines)
+	for n := 1; n <= lines; n++ {
+		backlog = append(backlog, execLine(fmt.Sprintf("balistid-n-%d", n)))
+	}
+	l.write(backlog...)
+	l.write(execLine("balistid-canary-late"))
+	start := time.Now()
+	_, err := fl.Finish(t.Context(), "balistid-canary-late", func(context.Context) error { return nil }, time.Millisecond)
+	if err == nil {
+		t.Error("a barrier read after the deadline completed the run")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Errorf("Finish took %s: the reader did not stop at the deadline", time.Since(start))
+	}
+	if stored, _, _, _ := fl.nums.Count(lines); stored == lines {
+		t.Error("the reader went on through the whole backlog after the deadline")
+	}
+}
+
+// A start inside a line that a rotation then cuts off is a broken log, never a silent loss of the
+// next file's first record.
+func TestTailRefusesARotationInsideTheStartingLine(t *testing.T) {
+	l := newLaurel(t)
+	f, err := os.OpenFile(l.path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"EXECVE":{"argc":2,`)
+	_ = f.Close()
+	tail := logTail{path: l.path}
+	if err := tail.openAtEnd(); err != nil {
+		t.Fatal(err)
+	}
+	defer tail.close()
+	l.rotate()
+	l.write(execLine("balistid-n-1"))
+	if got, err := readAll(t, &tail); err == nil {
+		t.Errorf("read %q across a rotation inside the starting line", got)
+	}
+}
