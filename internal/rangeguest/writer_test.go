@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -233,4 +234,57 @@ func TestWriterSyncedIsWhatTheLastSyncCovered(t *testing.T) {
 	if len(b) == 0 || len(b)%RecordSize != 0 || binary.LittleEndian.Uint64(b[len(b)-RecordSize:]) != 3 {
 		t.Errorf("reported %v, want reports ending with 3", b)
 	}
+}
+
+func TestDueAt(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		rate int
+		want uint64
+	}{{0, 2000, 1}, {1500 * time.Millisecond, 2000, 3001}, {499 * time.Millisecond, 2, 1}, {500 * time.Millisecond, 2, 2}} {
+		if got := DueAt(c.d, c.rate); got != c.want {
+			t.Errorf("DueAt(%s, %d) = %d, want %d", c.d, c.rate, got, c.want)
+		}
+	}
+}
+
+// A sync that happens on the timer, not on a hand-over, is reported too.
+func TestServeWriterReportsSyncsOnTheTimer(t *testing.T) {
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeWriter(pr, NewWriter(&diskFile{}, Policy{Sync: 20 * time.Millisecond}, WallClock), &out)
+	}()
+	for n := uint64(1); n <= 3; n++ {
+		if _, err := pw.Write(binary.LittleEndian.AppendUint64(nil, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	got := out.bytes()
+	_ = pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < RecordSize || binary.LittleEndian.Uint64(got[len(got)-RecordSize:]) != 3 {
+		t.Errorf("reported %v before the end, want a timer sync of 3", got)
+	}
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }

@@ -90,7 +90,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	// The writer stops syncing after the number due LastSync before the failure.
 	var stopAfter uint64
 	if tr.Load.Writer.LastSync > 0 {
-		stopAfter = uint64(failAt.Add(-tr.Load.Writer.LastSync).Sub(start).Seconds()*float64(tr.Load.Rate)) + 1
+		stopAfter = rangeguest.DueAt(failAt.Add(-tr.Load.Writer.LastSync).Sub(start), tr.Load.Rate)
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -137,7 +137,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	h := hand.H(time.Now())
 	// A mark starts on a line of its own: the console's last line may be a prompt without an end.
-	if err := mark(fmt.Sprintf("\nbalistid-fail %d %d\n", h, synced.Load())); err != nil {
+	if err := mark(failMark(h, synced.Load())); err != nil {
 		return fail(err.Error())
 	}
 	if tr.Failure == rangejob.FailReset {
@@ -148,7 +148,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := child.Process.Kill(); err != nil {
 		return fail("kill writer: " + err.Error())
 	}
-	if err := mark("\nbalistid-killed\n"); err != nil {
+	if err := mark(killMark); err != nil {
 		return fail(err.Error())
 	}
 	_ = child.Wait()
@@ -255,3 +255,9 @@ func readHead(dev string, head []byte) error {
 }
 
 func ms(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
+
+// The marks start on a line of their own: the console's last line may be a login prompt without an
+// end (ADR 0019 point 3 for S).
+const killMark = "\nbalistid-killed\n"
+
+func failMark(h, synced uint64) string { return fmt.Sprintf("\nbalistid-fail %d %d\n", h, synced) }

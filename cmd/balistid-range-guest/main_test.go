@@ -117,3 +117,13 @@ func TestModeRefusesATrialWithAJobDisk(t *testing.T) {
 		t.Errorf("a trial with a job disk ran as %q", got)
 	}
 }
+
+// Each mark stands on a line of its own and the fail mark carries H then S (ADR 0019).
+func TestMarksAreWholeLines(t *testing.T) {
+	if got := failMark(41, 7); got != "\nbalistid-fail 41 7\n" {
+		t.Errorf("failMark = %q", got)
+	}
+	if killMark != "\nbalistid-killed\n" {
+		t.Errorf("killMark = %q", killMark)
+	}
+}

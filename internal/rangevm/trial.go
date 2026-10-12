@@ -180,7 +180,7 @@ func judgeFailure(tr rangejob.Trial, o Outcome, launcher, image string) (string,
 		return Invalid, "the reset did not leave ext4 with a journal that needs recovery"
 	case o.Marks.H == 0:
 		return Invalid, "nothing was handed over in time to have to survive"
-	case tr.Expect == Pass && tr.Load.Writer.Sync > 0 && o.Marks.Synced < o.Marks.H && prefix >= o.Marks.Synced:
+	case tr.Expect == Pass && o.Marks.Synced < o.Marks.H && prefix >= o.Marks.Synced:
 		// The control's premise is a writer synced through H; a host that stalled its storage
 		// broke the premise, not the file system. A number up to S lost is a real loss (ADR 0019).
 		return Invalid, fmt.Sprintf("the writer had synced only through %d of H=%d", o.Marks.Synced, o.Marks.H)
