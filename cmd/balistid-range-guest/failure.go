@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"sync/atomic"
 	"syscall"
@@ -41,7 +42,7 @@ var errFailNow = errors.New("failure moment reached")
 // and writes "balistid-killed". After a reset
 // boot 2 reads the superblock before anything mounts the disk. Both report what the file holds.
 func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) error {
-	r := &report{facts: facts}
+	r := &report{facts: facts, send: write}
 	add, fail := r.add, r.fail
 	if !waitFor(func() bool { _, err := os.Stat(scratchDev); return err == nil }) {
 		return fail("no scratch disk")
@@ -60,7 +61,7 @@ func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) 
 		if err := mountScratch(); err != nil {
 			return fail(err.Error())
 		}
-		return r.stored()
+		return r.stored(numbersFile)
 	}
 	if out, err := exec.CommandContext(ctx, "/usr/bin/mkfs.ext4", "-q", "-F", scratchDev).CombinedOutput(); err != nil {
 		return fail(fmt.Sprintf("mkfs: %v: %.200s", err, out))
@@ -74,27 +75,58 @@ func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) 
 			return err
 		}
 	}
-	return loadAndFail(ctx, tr, r)
+	return loadAndFail(ctx, tr, r, guestEnv)
 }
 
-// loadAndFail hands numbers to the writer until the failure moment and fails there.
-func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
+// failEnv is what the load of a failure trial touches outside its process: the console the marks
+// go to and how it is drained, the reset, the writer process and its numbers file, when the failure
+// comes, and where the report goes. Tests replace it.
+type failEnv struct {
+	console   string
+	drain     func(*os.File) error
+	reset     func() error
+	writer    func(ctx context.Context, args ...string) *exec.Cmd
+	numbers   string
+	failAfter func(span time.Duration) (time.Duration, error)
+}
+
+var guestEnv = failEnv{
+	console: consoleDev,
+	drain:   tcdrain,
+	reset:   func() error { return os.WriteFile(sysrqTrigger, []byte("b"), 0) },
+	writer: func(ctx context.Context, args ...string) *exec.Cmd {
+		self, _ := os.Executable()
+		return exec.CommandContext(ctx, self, append([]string{writerArg}, args...)...) //nolint:gosec // our own binary
+	},
+	numbers: numbersFile,
+	failAfter: func(span time.Duration) (time.Duration, error) {
+		extra, err := rand.Int(rand.Reader, big.NewInt(int64(span/2)))
+		if err != nil {
+			return 0, fmt.Errorf("random failure moment: %w", err)
+		}
+		return span/2 + time.Duration(extra.Int64()), nil
+	},
+}
+
+// freezeWait bounds how long the writer may take to answer Freeze.
+const freezeWait = time.Second
+
+// loadAndFail hands numbers to the writer until the failure moment, freezes the writer so its synced
+// state is final, takes H, writes the fail mark with H and S, and fails: a reset, or SIGKILL of the
+// writer and the kill mark (ADR 0018 point 3, ADR 0020).
+func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report, env failEnv) error {
 	fail := r.fail
 	span := time.Duration(tr.Load.Seconds) * time.Second
-	extra, err := rand.Int(rand.Reader, big.NewInt(int64(span/2)))
+	after, err := env.failAfter(span)
 	if err != nil {
-		return fail("random failure moment: " + err.Error())
+		return fail(err.Error())
 	}
-	self, err := os.Executable()
-	if err != nil {
-		return fail("own path: " + err.Error())
-	}
-	child := exec.CommandContext(ctx, self, writerArg, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync)) //nolint:gosec // our own binary, values from the table
+	child := env.writer(ctx, ms(tr.Load.Writer.Hold), ms(tr.Load.Writer.Sync), env.numbers)
 	pipe, err := child.StdinPipe()
 	if err != nil {
 		return fail("writer pipe: " + err.Error())
 	}
-	syncs, err := child.StdoutPipe()
+	reports, err := child.StdoutPipe()
 	if err != nil {
 		return fail("writer pipe: " + err.Error())
 	}
@@ -102,26 +134,39 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := child.Start(); err != nil {
 		return fail("writer: " + err.Error())
 	}
-	// synced follows the highest number the writer had written before its last fsync returned; a
+	// The writer reports S after each fsync, and answers Freeze with the marker and its final S. A
 	// broken report is the writer's failure, not a slow sync.
-	var synced atomic.Uint64
 	var reportErr atomic.Bool
+	var finalS atomic.Uint64
+	frozen := make(chan struct{})
 	go func() {
 		var b [rangeguest.RecordSize]byte
 		for {
-			if _, err := io.ReadFull(syncs, b[:]); err != nil {
+			if _, err := io.ReadFull(reports, b[:]); err != nil {
 				reportErr.Store(!errors.Is(err, io.EOF))
 				return
 			}
-			synced.Store(binary.LittleEndian.Uint64(b[:]))
+			if binary.LittleEndian.Uint64(b[:]) != rangeguest.Freeze {
+				continue
+			}
+			if _, err := io.ReadFull(reports, b[:]); err != nil {
+				reportErr.Store(true)
+				return
+			}
+			finalS.Store(binary.LittleEndian.Uint64(b[:]))
+			close(frozen)
 		}
 	}()
 	waited := make(chan struct{})
 	go func() { _ = child.Wait(); close(waited) }()
+	send := func(n uint64) error {
+		_, err := pipe.Write(binary.LittleEndian.AppendUint64(nil, n))
+		return err //nolint:wrapcheck // callers say which message
+	}
 
 	// One epoch for the load, the failure moment and the stop-sync moment (ADR 0020).
 	start := time.Now()
-	failAt := start.Add(span/2 + time.Duration(extra.Int64()))
+	failAt := start.Add(after)
 	stopAt, stopped := failAt.Add(-tr.Load.Writer.LastSync), tr.Load.Writer.LastSync == 0
 	var hand rangeguest.Handover
 	_, _, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, func(seq uint64) error {
@@ -130,36 +175,46 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 			return errFailNow
 		}
 		if !stopped && !now.Before(stopAt) {
-			if _, err := pipe.Write(binary.LittleEndian.AppendUint64(nil, rangeguest.StopSyncing)); err != nil {
+			if err := send(rangeguest.StopSyncing); err != nil {
 				return fmt.Errorf("stop sync: %w", err)
 			}
 			stopped = true
 		}
-		if _, err := pipe.Write(binary.LittleEndian.AppendUint64(nil, seq)); err != nil {
+		if err := send(seq); err != nil {
 			return fmt.Errorf("hand over: %w", err)
 		}
 		hand.Add(time.Now())
 		return nil
 	}, rangeguest.WallClock)
-	switch {
-	case !errors.Is(genErr, errFailNow):
+	if !errors.Is(genErr, errFailNow) {
 		return fail(fmt.Sprintf("load ended before the failure: %v", genErr))
-	case closed(waited) || reportErr.Load():
-		return fail("the writer failed before the failure")
+	}
+	// Freeze: from the answer on the writer writes and syncs nothing, so S is exactly what an fsync
+	// covered when the failure comes, and no writer I/O can fail during the mark.
+	if err := send(rangeguest.Freeze); err != nil {
+		return fail("freeze writer: " + err.Error())
+	}
+	select {
+	case <-frozen:
+	case <-waited:
+		return fail("the writer ended before it froze")
+	case <-time.After(freezeWait):
+		return fail("the writer did not freeze")
 	}
 	taken := time.Now()
 	h := hand.H(taken)
-	if err := mark(failMark(h, synced.Load())); err != nil {
+	if err := mark(env, failMark(h, finalS.Load())); err != nil {
 		return fail(err.Error())
 	}
-	// H describes the moment it was taken: a mark that took longer to leave describes a failure
-	// that did not happen then, so the trial reports instead of failing (ADR 0020).
 	if err := markInTime(taken, time.Now()); err != nil {
 		return fail(err.Error())
 	}
+	if closed(waited) || reportErr.Load() {
+		return fail("the writer ended before the failure")
+	}
 	if tr.Failure == rangejob.FailReset {
 		// Reboot at once, without syncing or unmounting; with -no-reboot QEMU exits.
-		_ = os.WriteFile(sysrqTrigger, []byte("b"), 0)
+		_ = env.reset()
 		return fail("sysrq b did not reset the guest")
 	}
 	if err := child.Process.Kill(); err != nil {
@@ -169,11 +224,11 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err := killedBySIGKILL(child.ProcessState); err != nil {
 		return fail(err.Error())
 	}
-	if err := mark(killMark); err != nil {
+	if err := mark(env, killMark); err != nil {
 		return fail(err.Error())
 	}
 	_ = pipe.Close()
-	return r.stored()
+	return r.stored(env.numbers)
 }
 
 // killedBySIGKILL is nil only for a process that SIGKILL ended: a writer that had already exited
@@ -206,36 +261,39 @@ func closed(c <-chan struct{}) bool {
 }
 
 // report collects a trial boot's facts.
-type report struct{ facts []fact }
+type report struct {
+	facts []fact
+	send  func([]fact) error
+}
 
 func (r *report) add(name, value string) { r.facts = append(r.facts, fact{name, value}) }
 
 // fail reports why the guest could not run the trial, which the host judges INVALID.
 func (r *report) fail(why string) error {
 	r.add(rangevm.FactTrialError, why)
-	return write(r.facts)
+	return r.send(r.facts)
 }
 
 // stored adds what the numbers file holds and writes the report.
-func (r *report) stored() error {
-	data, err := os.ReadFile(numbersFile)
+func (r *report) stored(numbers string) error {
+	data, err := os.ReadFile(numbers) //nolint:gosec // the trial's own numbers file
 	if err != nil {
 		return r.fail("numbers: " + err.Error())
 	}
 	prefix, count := rangeguest.StoredPrefix(data)
 	r.add(rangevm.FactStoredPrefix, strconv.FormatUint(prefix, 10))
 	r.add(rangevm.FactStoredCount, strconv.FormatUint(count, 10))
-	return write(r.facts)
+	return r.send(r.facts)
 }
 
-// writerMain is the measured writer's process: hold and sync in milliseconds, numbers on stdin (0:
-// stop syncing), records appended to the numbers file.
+// writerMain is the measured writer's process: hold and sync in milliseconds and the numbers file;
+// numbers on stdin (StopSyncing, Freeze), records appended to the file.
 func writerMain(args []string) error {
-	if len(args) != 2 {
-		return errors.New("want hold and sync in milliseconds")
+	if len(args) != 3 || !filepath.IsAbs(args[2]) {
+		return errors.New("want hold and sync in milliseconds and the numbers file")
 	}
 	var v [2]uint64
-	for i, a := range args {
+	for i, a := range args[:2] {
 		n, err := strconv.ParseUint(a, 10, 63)
 		if err != nil {
 			return fmt.Errorf("argument %d: not a number", i+1)
@@ -243,7 +301,7 @@ func writerMain(args []string) error {
 		v[i] = n
 	}
 	pol := rangeguest.Policy{Hold: time.Duration(v[0]) * time.Millisecond, Sync: time.Duration(v[1]) * time.Millisecond} //nolint:gosec // parsed into 63 bits
-	f, err := os.OpenFile(numbersFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(args[2], os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)                                           //nolint:gosec // an absolute path the guest itself passes
 	if err != nil {
 		return fmt.Errorf("numbers file: %w", err)
 	}
@@ -274,28 +332,31 @@ func mountScratch() error {
 // tcsbrk is TCSBRK (asm-generic/ioctls.h); with argument 1 it is tcdrain(3).
 const tcsbrk = 0x5409
 
-// mark writes text straight to the serial console and waits until the UART has sent it, so a
-// sysrq b right after cannot cut it short.
-func mark(text string) error {
-	f, err := os.OpenFile(consoleDev, os.O_WRONLY|syscall.O_NOCTTY, 0)
+// mark appends text to the console and waits until it has been sent, so a sysrq b right after
+// cannot cut it short.
+func mark(env failEnv, text string) error {
+	f, err := os.OpenFile(env.console, os.O_WRONLY|os.O_APPEND|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return fmt.Errorf("console: %w", err)
 	}
 	_, werr := f.WriteString(text)
-	var drain error
+	return errors.Join(werr, env.drain(f), f.Close())
+}
+
+// tcdrain waits until the UART has sent everything written to f.
+func tcdrain(f *os.File) error {
 	for {
 		// The writer child's SIGCHLD after a kill interrupts the drain, which the kernel does not
 		// restart: retry, or the mark could be cut short.
 		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), tcsbrk, 1)
-		if errno == syscall.EINTR {
+		switch errno {
+		case 0:
+			return nil
+		case syscall.EINTR:
 			continue
 		}
-		if errno != 0 {
-			drain = fmt.Errorf("drain console: %w", errno)
-		}
-		break
+		return fmt.Errorf("drain console: %w", errno)
 	}
-	return errors.Join(werr, drain, f.Close())
 }
 
 func readHead(dev string, head []byte) error {

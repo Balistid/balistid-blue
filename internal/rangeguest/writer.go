@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"time"
 )
 
@@ -27,6 +28,11 @@ type Policy struct {
 // the failure comes sends it, on its own clock (ADR 0020).
 const StopSyncing = 0
 
+// Freeze, handed over as a number, makes the writer write and sync nothing more and answer with
+// Freeze and its final Synced: the failure then meets a writer whose synced state is known exactly
+// (ADR 0020).
+const Freeze = math.MaxUint64
+
 // SyncFile is the part of *os.File the writer uses; tests replace it.
 type SyncFile interface {
 	Write(p []byte) (int, error)
@@ -42,6 +48,7 @@ type Writer struct {
 	clk      Clock
 	pending  []handed
 	stopped  bool
+	frozen   bool
 	written  uint64
 	lastSync time.Time
 	// Synced is the highest number written before the last fsync that returned.
@@ -60,9 +67,13 @@ func NewWriter(f SyncFile, pol Policy, clk Clock) *Writer {
 
 // Append takes number seq and writes what is due; StopSyncing ends syncing instead.
 func (w *Writer) Append(seq uint64) error {
-	if seq == StopSyncing {
+	switch seq {
+	case StopSyncing:
 		w.stopped = true
 		return w.Tick()
+	case Freeze:
+		w.frozen = true
+		return nil
 	}
 	w.pending = append(w.pending, handed{seq, w.clk.Now()})
 	return w.Tick()
@@ -70,6 +81,9 @@ func (w *Writer) Append(seq uint64) error {
 
 // Tick writes every number held for Hold and fsyncs when Sync is due and syncing not stopped.
 func (w *Writer) Tick() error {
+	if w.frozen {
+		return nil
+	}
 	now := w.clk.Now()
 	n := 0
 	var buf []byte
@@ -123,7 +137,8 @@ func StoredPrefix(data []byte) (prefix, count uint64) {
 
 // ServeWriter is the measured writer's process: it stores each 8-byte number read from r through a
 // Writer, ticking every millisecond so held records are written and syncs happen on time, until r
-// ends. After each fsync that moved Synced it sends Synced to synced as 8 bytes.
+// ends. After each fsync that moved Synced it sends Synced to synced as 8 bytes; on Freeze it sends
+// Freeze and then Synced, and stays idle.
 func ServeWriter(r io.Reader, w *Writer, synced io.Writer) error {
 	nums := make(chan uint64, 1024)
 	readErr := make(chan error, 1)
@@ -155,6 +170,12 @@ func ServeWriter(r io.Reader, w *Writer, synced io.Writer) error {
 			before := w.Synced
 			if err := w.Append(n); err != nil {
 				return err
+			}
+			if n == Freeze { // the answer: the marker, then the final Synced
+				if _, err := synced.Write(binary.LittleEndian.AppendUint64(binary.LittleEndian.AppendUint64(nil, Freeze), w.Synced)); err != nil {
+					return fmt.Errorf("answer freeze: %w", err)
+				}
+				continue
 			}
 			if err := report(synced, before, w.Synced); err != nil {
 				return err
