@@ -55,8 +55,8 @@ func TestGenerateReportsARateNotHeld(t *testing.T) {
 	c := &fakeClock{now: time.Unix(0, 0)}
 	var got []uint64
 	generated, windowMin, err := Generate(100, 10, emitter(c, 20*time.Millisecond, &got), c)
-	if err != nil || generated != 505 || windowMin != 505 {
-		t.Errorf("slow emitter: %d generated, %d in the slowest window, %v; want 505 and 505", generated, windowMin, err)
+	if err != nil || generated != 506 || windowMin != 505 {
+		t.Errorf("slow emitter: %d generated, %d in the slowest window, %v; want 506, the last done past grace and counted nowhere, and 505", generated, windowMin, err)
 	}
 	c = &fakeClock{now: time.Unix(0, 0)}
 	n := 0
@@ -66,8 +66,8 @@ func TestGenerateReportsARateNotHeld(t *testing.T) {
 		}
 		return nil
 	}, c)
-	if generated != 2000 || windowMin != 500 {
-		t.Errorf("stall: %d generated, %d in the slowest window; want 2000 and 500", generated, windowMin)
+	if generated != 2000 || windowMin != 499 {
+		t.Errorf("stall: %d generated, %d in the slowest window; want 2000 and 499: the stalled one is done in the second window", generated, windowMin)
 	}
 }
 
@@ -121,6 +121,23 @@ func TestTrialCredentials(t *testing.T) {
 	} {
 		if _, _, err := TrialCredentials(half); err == nil {
 			t.Errorf("%v: one credential without the other accepted", half)
+		}
+	}
+}
+
+// A number is timed when its emit returns: one that blocks past the window's end plus grace leaves
+// its window short, and one done exactly grace after the end still counts (ADR 0019: at most 100 ms).
+func TestGenerateTimesANumberWhenItIsDone(t *testing.T) {
+	for cost, want := range map[time.Duration]uint64{110 * time.Millisecond: 1000, 111 * time.Millisecond: 999, 3 * time.Second: 999} {
+		c := &fakeClock{now: time.Unix(0, 0)}
+		generated, windowMin, err := Generate(100, 10, func(seq uint64) error {
+			if seq == 1000 {
+				c.now = c.now.Add(cost)
+			}
+			return nil
+		}, c)
+		if err != nil || generated != 1000 || windowMin != want {
+			t.Errorf("last emit taking %s: %d generated, %d in the slowest window, %v; want 1000 and %d", cost, generated, windowMin, err, want)
 		}
 	}
 }

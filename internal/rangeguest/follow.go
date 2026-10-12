@@ -2,6 +2,7 @@ package rangeguest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,10 +75,11 @@ func (n *Numbers) Count(generated uint64) (stored, missing, duplicate, outside u
 // nothing the generator caused is lost to a file that was renamed meanwhile. It is the baseline
 // reader: the collector's store reader replaces it for runs that pass a metric.
 type Follower struct {
-	tail logTail
-	kind string
-	skip uint64
-	poll time.Duration
+	tail    logTail
+	kind    string
+	skip    uint64
+	skipped bool
+	poll    time.Duration
 
 	mu      sync.Mutex
 	nums    Numbers
@@ -109,14 +111,16 @@ func (fl *Follower) Start() error {
 
 // Finish runs mark, which must exec /usr/bin/true with barrier as an argument, and returns the
 // numbers found once that exec's record arrives: Laurel writes events in order, so everything before
-// it is then in the log (ADR 0018, point 4). No barrier within wait is an error.
-func (fl *Follower) Finish(barrier string, mark func() error, wait time.Duration) (*Numbers, error) {
+// it is then in the log (ADR 0018, point 4). One deadline of wait bounds mark and the wait for its
+// record; no barrier in time is an error.
+func (fl *Follower) Finish(ctx context.Context, barrier string, mark func(context.Context) error, wait time.Duration) (*Numbers, error) {
+	ctx, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
 	fl.mu.Lock()
 	fl.barrier = barrier
 	fl.mu.Unlock()
-	markErr := mark()
-	deadline := time.Now().Add(wait)
-	for markErr == nil && time.Now().Before(deadline) {
+	markErr := mark(ctx)
+	for markErr == nil && ctx.Err() == nil {
 		fl.mu.Lock()
 		done := fl.seen || fl.err != nil
 		fl.mu.Unlock()
@@ -194,8 +198,12 @@ func (fl *Follower) record(line []byte) {
 		fl.nums.outside++
 	}
 	for _, n := range nums {
-		if n == fl.skip && fl.skip != 0 {
-			fl.skip = 0
+		if fl.skip != 0 && n == fl.skip {
+			// The dropped number stays dropped: a second record of it is a duplicate, never its stand-in.
+			if fl.skipped {
+				fl.nums.duplicate++
+			}
+			fl.skipped = true
 			continue
 		}
 		fl.nums.Add(n)
@@ -274,6 +282,9 @@ type logTail struct {
 	f      *os.File
 	offset int64
 	buf    []byte
+	// partial is set when the log did not end with a whole line at Start: that line's rest is
+	// another event's, not the run's.
+	partial bool
 }
 
 func (t *logTail) openAtEnd() error {
@@ -285,6 +296,14 @@ func (t *logTail) openAtEnd() error {
 	if err != nil {
 		_ = f.Close()
 		return fmt.Errorf("seek log: %w", err)
+	}
+	if off > 0 {
+		var last [1]byte
+		if _, err := f.ReadAt(last[:], off-1); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("read log: %w", err)
+		}
+		t.partial = last[0] != '\n'
 	}
 	t.f, t.offset = f, off
 	return nil
@@ -307,6 +326,10 @@ func (t *logTail) line() ([]byte, error) {
 		if i >= 0 {
 			line := t.buf[:i]
 			t.buf = t.buf[i+1:]
+			if t.partial {
+				t.partial = false
+				continue
+			}
 			return line, nil
 		}
 		n, err := t.read()

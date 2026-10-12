@@ -23,6 +23,8 @@ const (
 	FactOverflowAfter  = "overflow_after"
 	FactCPUTicks       = "cpu_ticks"
 	FactStealTicks     = "steal_ticks"
+	FactDrainCPU       = "drain_cpu_ticks"
+	FactDrainSteal     = "drain_steal_ticks"
 	FactFollow         = "follow"
 	FactStored         = "stored"
 	FactMissing        = "missing"
@@ -34,14 +36,14 @@ const (
 
 var rateFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter,
-	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactFollow, FactStored, FactMissing,
-	FactDuplicate, FactOutside,
+	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactDrainCPU, FactDrainSteal, FactFollow,
+	FactStored, FactMissing, FactDuplicate, FactOutside,
 }
 
 // counts are the rate facts that must be plain decimal numbers.
 var counts = []string{
-	FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactCPUTicks, FactStealTicks, FactStored,
-	FactMissing, FactDuplicate, FactOutside,
+	FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactCPUTicks, FactStealTicks, FactDrainCPU,
+	FactDrainSteal, FactStored, FactMissing, FactDuplicate, FactOutside,
 }
 
 // JudgeTrial judges a run of tr from an image built from commit image by a launcher built from
@@ -90,11 +92,17 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return Invalid, fmt.Sprintf("the reader did not see the whole run: \"%s\"", Printable(f[FactFollow], 256))
 	case f[FactOverflowBefore] != "no" || (f[FactOverflowAfter] != "no" && f[FactOverflowAfter] != "yes"):
 		return Invalid, "the plugin queue state is unknown"
-	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100:
-		return Invalid, fmt.Sprintf("guest steal %d of %d CPU ticks is over 1 %%", n[FactStealTicks], n[FactCPUTicks])
-	case n[FactStored]+n[FactMissing] != n[FactGenerated] || n[FactGenerated] == 0 || n[FactGenerated] > planned:
+	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100 || n[FactDrainSteal] > n[FactDrainCPU]/100:
+		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks under load, %d of %d while draining",
+			n[FactStealTicks], n[FactCPUTicks], n[FactDrainSteal], n[FactDrainCPU])
+	case n[FactGenerated] == 0 || n[FactGenerated] > planned || n[FactStored] > n[FactGenerated] ||
+		n[FactMissing] != n[FactGenerated]-n[FactStored]:
 		return Invalid, fmt.Sprintf("generated %d of %d planned, stored %d and missing %d do not add up",
 			n[FactGenerated], planned, n[FactStored], n[FactMissing])
+	case n[FactWindowMin] > n[FactGenerated]/uint64(tr.Load.Seconds/10): //nolint:gosec // positive table value
+		return Invalid, fmt.Sprintf("the slowest 10 s window holds %d of %d generated", n[FactWindowMin], n[FactGenerated])
+	case n[FactLostAfter] < n[FactLostBefore]:
+		return Invalid, "the audit lost counter went backwards"
 	}
 	loss := fmt.Sprintf("generated %d, stored %d, missing %d, duplicate %d, outside %d",
 		n[FactGenerated], n[FactStored], n[FactMissing], n[FactDuplicate], n[FactOutside])

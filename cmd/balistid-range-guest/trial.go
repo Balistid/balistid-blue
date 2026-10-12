@@ -66,16 +66,20 @@ func runTrial(ctx context.Context, name, phase string) error {
 	statBefore := readTrim("/proc/stat")
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
+	statLoaded := readTrim("/proc/stat")
 
 	token, err := token("balistid-canary-")
 	if err != nil {
 		return fail(err.Error())
 	}
-	nums, followErr := fl.Finish(token, func() error {
+	nums, followErr := fl.Finish(ctx, token, func(ctx context.Context) error {
 		return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 	}, waitLimit)
-	// Steal counts up to the barrier: host contention while the reader drains is INVALID, not a MISS.
-	cpu, steal, tickErr := rangeguest.TickDelta(statBefore, readTrim("/proc/stat"))
+	// Steal under load and while the reader drains, each on its own: a short burst of host contention
+	// in either is INVALID, not diluted by the other into a PASS or a MISS.
+	cpu, steal, loadErr := rangeguest.TickDelta(statBefore, statLoaded)
+	drainCPU, drainSteal, drainErr := rangeguest.TickDelta(statLoaded, readTrim("/proc/stat"))
+	tickErr := errors.Join(loadErr, drainErr)
 	switch {
 	case genErr != nil:
 		return fail("generator: " + genErr.Error())
@@ -98,6 +102,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 	add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	add(rangevm.FactCPUTicks, u(cpu))
 	add(rangevm.FactStealTicks, u(steal))
+	add(rangevm.FactDrainCPU, u(drainCPU))
+	add(rangevm.FactDrainSteal, u(drainSteal))
 	add(rangevm.FactFollow, follow)
 	add(rangevm.FactStored, u(stored))
 	add(rangevm.FactMissing, u(missing))
@@ -108,7 +114,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 
 // freshOverflow asks auditd to rewrite its state file and reads the overflow flag from that rewrite.
 func freshOverflow(ctx context.Context) string {
-	return rangeguest.FreshState(auditdState, func() {
-		_ = exec.CommandContext(ctx, "/usr/bin/auditctl", "--signal", "state").Run()
+	return rangeguest.FreshState(ctx, auditdState, func(ctx context.Context) error {
+		return exec.CommandContext(ctx, "/usr/bin/auditctl", "--signal", "state").Run()
 	}, stateWait, 50*time.Millisecond)
 }
