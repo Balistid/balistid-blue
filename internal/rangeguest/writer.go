@@ -175,3 +175,9 @@ func report(synced io.Writer, before, now uint64) error {
 	}
 	return nil
 }
+
+// DueAt is the number due at d after the start of a load of rate per second: number i is due at
+// (i-1)/rate.
+func DueAt(d time.Duration, rate int) uint64 {
+	return uint64(d.Seconds()*float64(rate)) + 1
+}
