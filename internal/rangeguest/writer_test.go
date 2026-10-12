@@ -289,3 +289,64 @@ func (b *lockedBuffer) bytes() []byte {
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
 }
+
+// countingFile counts writes and syncs.
+type countingFile struct {
+	mu            sync.Mutex
+	writes, syncs int
+}
+
+func (c *countingFile) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes++
+	return len(p), nil
+}
+
+func (c *countingFile) Sync() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.syncs++
+	return nil
+}
+
+func (c *countingFile) counts() (int, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writes, c.syncs
+}
+
+// After answering Freeze the writer writes, syncs and reports nothing more, and its answer is the
+// marker followed by the final Synced (ADR 0020).
+func TestServeWriterFreezes(t *testing.T) {
+	pr, pw := io.Pipe()
+	var out lockedBuffer
+	f := &countingFile{}
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeWriter(pr, NewWriter(f, Policy{Hold: 30 * time.Millisecond, Sync: 5 * time.Millisecond}, WallClock), &out)
+	}()
+	for n := uint64(1); n <= 50; n++ {
+		_, _ = pw.Write(binary.LittleEndian.AppendUint64(nil, n))
+	}
+	time.Sleep(60 * time.Millisecond)
+	_, _ = pw.Write(binary.LittleEndian.AppendUint64(nil, Freeze))
+	time.Sleep(20 * time.Millisecond)
+	answered := out.bytes()
+	writes, syncs := f.counts()
+	time.Sleep(100 * time.Millisecond)
+	if w2, s2 := f.counts(); w2 != writes || s2 != syncs {
+		t.Errorf("after Freeze: %d→%d writes, %d→%d syncs", writes, w2, syncs, s2)
+	}
+	if later := out.bytes(); len(later) != len(answered) {
+		t.Errorf("reported %d more bytes after the Freeze answer", len(later)-len(answered))
+	}
+	n := len(answered)
+	if n < 16 || binary.LittleEndian.Uint64(answered[n-16:]) != Freeze {
+		t.Fatalf("answer %v does not end with the marker and the final Synced", answered)
+	}
+	_ = pw.Close()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
