@@ -9,7 +9,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Part | Does | State |
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
-| Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 192df46 (evidence PASS); trial table, failure trials, agent `trial` jobs, acceptance slot (#99-#104); trials are baseline until the collector joins the image |
+| Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799 (evidence PASS; #107 waits for the next install); trial table, failure trials, agent `trial` jobs, acceptance slot (#99-#104); trials are baseline until the collector joins the image |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94, core #97; no units (CP3), not in an image (B4) |
@@ -20,15 +20,17 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - Runner (ADR 0018-0021): trial limits (#99), rate trials (#100), failure trials with host-stamped marks (#101),
   measures beside each verdict (#102), inbox `trial` jobs (#103), the acceptance suite in its own slot (#104).
   ADR 0021: repeated INVALID runs make a metric INVALID, never a MISS. KVM check on 9daa33a: every trial gave its
-  expected verdict (sustained 1 200 000 of 1 200 000, burst 100 000 of 100 000). Reinstalled at 192df46.
+  expected verdict (sustained 1 200 000 of 1 200 000, burst 100 000 of 100 000). Installed at 2c09799 (#106 shows
+  outside records); baselines and an agent job ran by themselves. #107: tripwire probes every denied clause.
 ## Next step
-1. Runner: the first acceptance batches on 192df46 run by themselves; no tick over 40 min.
+1. Runner: done until the collector joins the image; install #107 with the next runner change. One baseline run
+   counted a record outside the generated set (13 Oct); #106 shows the record when it happens again.
 2. Collector CP3, owned: `*.socket` gate, go_gate for the SQLite modules, units, sysusers, tmpfiles; then the Laurel
    spike and B4 (collector and store reader in the image, its trials in the table).
 3. Store: `ReadSeals` does not check that indexed shards exist or refuse foreign files, as `Open` does.
 ## Open decisions (maintainer)
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
-- Runner: Codex's process_vm_writev NO-GO on the tick filter (#75) is open. A VM setup error fails the tick (exit 1).
+- Runner: a VM setup error fails the tick (exit 1) on purpose (maintainer, 13 Oct): a broken host shows in systemd.
 - Acceptance: a start that fails inside the sandbox wrappers counts as INVALID (ADR 0021, accepted under T36).
 - `test_release.py` bootstrap cleanup removes every `/tmp/balistid-install.*`, also other runs'.
 - Does `systemd_exposure` (2.5) cover the runner? Install skips .wants/.requires (root-only).
