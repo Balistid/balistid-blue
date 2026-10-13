@@ -1598,3 +1598,32 @@ func TestAHostStopIsNotRecorded(t *testing.T) {
 		t.Fatalf("results %+v", res)
 	}
 }
+
+// A run whose record cannot be saved did not happen for the suite: its result says INVALID, never
+// the verdict the suite lost, and it runs again.
+func TestAnUnsavedRunIsInvalid(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	trial := tr.trial
+	tr.trial = func(c context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+		if err := os.Chmod(tr.State, 0o500); err != nil { //nolint:gosec // a directory needs its x bit
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(tr.State, 0o700) }) //nolint:gosec // so TempDir can remove it
+		return trial(c, base, parent, serial, lim)
+	}
+	if err := tr.Tick(t.Context()); err == nil {
+		t.Fatal("an unsaved suite was not reported")
+	}
+	if err := os.Chmod(tr.State, 0o700); err != nil { //nolint:gosec // a directory needs its x bit
+		t.Fatal(err)
+	}
+	res := tr.results(t, LabelAcceptance)
+	if len(res) != 1 || res[0].Verdict != rangevm.Invalid || res[0].Reason != "the acceptance suite could not be saved" {
+		t.Fatalf("results %+v", res)
+	}
+	if a := tr.acceptance(t); a.Trials["rate-sustained"] != (TrialRuns{}) {
+		t.Fatalf("suite %+v", a)
+	}
+}

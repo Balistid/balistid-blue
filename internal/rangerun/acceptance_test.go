@@ -1,6 +1,7 @@
 package rangerun
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,5 +213,17 @@ func TestATrialThatCannotMeasureGivesUp(t *testing.T) {
 	}
 	if next, ok := a.Next(); !ok || next.Name == sync.Name {
 		t.Fatalf("after %d INVALID the suite still runs %s", sync.Count+1, next.Name)
+	}
+}
+
+// A MISS made by INVALID runs stands with the result that made it, so retention keeps it.
+func TestAMissOfInvalidsKeepsItsResult(t *testing.T) {
+	burst := tableTrial(t, "rate-burst")
+	a := Acceptance{}.ForCommit(testCommit)
+	for i := range burst.Count + 1 {
+		a = a.Record(burst, counted, rangevm.Invalid, fmt.Sprintf("20261013T0900%02dZ-00000000", i))
+	}
+	if v, r := a.Verdict("burst_rate"), a.Trials[burst.Name]; v != rangevm.Miss || r.Miss != "20261013T090003Z-00000000" {
+		t.Fatalf("verdict %q, runs %+v", v, r)
 	}
 }
