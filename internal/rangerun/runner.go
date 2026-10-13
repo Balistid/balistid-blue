@@ -354,8 +354,8 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 				return r.trial(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, lim)
 			}, func(o rangevm.Outcome) Run {
 				v, why := rangevm.JudgeTrial(tr, o, r.Commit, img.Commit)
-				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o), Measures: rangevm.Measures(tr, o)}
-			})
+				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
+			}, func(o rangevm.Outcome) map[string]uint64 { return rangevm.Measures(tr, o) })
 		})
 	case rangejob.KindExec:
 		return r.execJob(ctx, img, info, job)
@@ -432,11 +432,14 @@ func (r *Runner) execJob(ctx context.Context, img image, info *JobInfo, job rang
 func (r *Runner) vm(ctx context.Context, img image, disk []byte, judge func(rangevm.Outcome) Run) (Run, []byte, error) {
 	return r.boot(ctx, func(ctx context.Context, serial io.Writer) (rangevm.Outcome, error) {
 		return r.run(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, disk)
-	}, judge)
+	}, judge, nil)
 }
 
-// boot is vm for any way of booting the image: a run with an optional job disk, or a trial.
-func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer) (rangevm.Outcome, error), judge func(rangevm.Outcome) Run) (Run, []byte, error) {
+// boot is vm for any way of booting the image: a run with an optional job disk, or a trial. measure
+// (nil for none) reads a run's measures whatever its verdict: an INVALID trial keeps the timings
+// that show why.
+func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer) (rangevm.Outcome, error),
+	judge func(rangevm.Outcome) Run, measure func(rangevm.Outcome) map[string]uint64) (Run, []byte, error) {
 	var serial bytes.Buffer
 	watched, stop := r.watch(ctx)
 	o, err := start(watched, &serial)
@@ -447,15 +450,22 @@ func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer
 	if errors.Is(err, rangevm.ErrCleanup) {
 		cleanup, err = fmt.Errorf("run: %w", err), nil
 	}
-	switch {
-	case err != nil:
+	if err != nil {
 		return Run{Verdict: rangevm.Invalid, Reason: "runner: " + err.Error()}, serial.Bytes(), fmt.Errorf("run: %w", err)
-	case errors.Is(cause, ErrMemoryReserve), errors.Is(cause, ErrMemoryUnknown):
-		return Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error()}, serial.Bytes(), cleanup
-	case o.Invalid != "":
-		return Run{Verdict: rangevm.Invalid, Reason: o.Invalid}, serial.Bytes(), cleanup
 	}
-	return judge(o), serial.Bytes(), cleanup
+	var run Run
+	switch {
+	case errors.Is(cause, ErrMemoryReserve), errors.Is(cause, ErrMemoryUnknown):
+		run = Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error()}
+	case o.Invalid != "":
+		run = Run{Verdict: rangevm.Invalid, Reason: o.Invalid}
+	default:
+		run = judge(o)
+	}
+	if measure != nil {
+		run.Measures = measure(o)
+	}
+	return run, serial.Bytes(), cleanup
 }
 
 // begin creates the result directory and writes an INVALID result into it, which stands if the
@@ -494,7 +504,7 @@ var severity = map[string]int{rangevm.Fail: 4, rangevm.Miss: 4, rangevm.Invalid:
 // worse than any.
 func (r *Runner) result(id, label string, img image, info *JobInfo, runs []Run) Result {
 	res := Result{ID: id, Label: label, RunnerCommit: r.Commit, ImageCommit: img.Commit, ImageSHA256: img.SHA256,
-		Job: info, Limits: CurrentLimits(), Runs: runs, Verdict: rangevm.Invalid, Reason: "no run"}
+		Job: info, Limits: limitsOf(info), Runs: runs, Verdict: rangevm.Invalid, Reason: "no run"}
 	worst := -1
 	for _, run := range runs {
 		rank, known := severity[run.Verdict]

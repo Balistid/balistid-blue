@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
@@ -90,6 +91,19 @@ type Run struct {
 	LaurelBytes  int    `json:"laurel_bytes,omitempty"`
 	// Measures are a trial run's counts and timings (rangevm.Measures).
 	Measures map[string]uint64 `json:"measures,omitempty"`
+}
+
+// limitsOf are the limits of info's runs: a trial job's wall clock and serial budget are its
+// trial's, every other run has CurrentLimits.
+func limitsOf(info *JobInfo) Limits {
+	l := CurrentLimits()
+	if info == nil || info.Kind != rangejob.KindTrial {
+		return l
+	}
+	if tr, ok := rangejob.Lookup(info.Trial); ok {
+		l.RunTimeoutS, l.SerialBudget = int(tr.Wall/time.Second), int(tr.Serial)
+	}
+	return l
 }
 
 // CurrentLimits are the limits of every run of this runner.

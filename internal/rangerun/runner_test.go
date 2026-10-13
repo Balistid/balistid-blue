@@ -1272,6 +1272,9 @@ func TestTickRunsATrialJob(t *testing.T) {
 	if m := res[0].Runs[1].Measures; m[rangevm.FactStealTicks] != 7 || m[rangevm.FactMissing] != 0 || len(m) == 0 {
 		t.Fatalf("measures %v", m)
 	}
+	if l := res[0].Limits; l.RunTimeoutS != int(burst.Wall/time.Second) || l.SerialBudget != int(burst.Serial) {
+		t.Fatalf("a trial result states the limits %+v", l)
+	}
 	if ev := tr.results(t, LabelEvidence); ev != nil {
 		t.Fatalf("an agent trial became evidence: %+v", ev)
 	}
@@ -1311,5 +1314,23 @@ func TestTrialJobsFitTheKeptBytes(t *testing.T) {
 			t.Errorf("%s keeps %d serial bytes in %d runs; maxKeptBytes counts %d in %d", tr.Name, tr.Serial, tr.Count,
 				rangevm.SerialBudget, rangejob.MaxTrials)
 		}
+	}
+}
+
+// An INVALID trial keeps its measures: a fail mark QEMU outlived by 150 ms is why it is INVALID.
+func TestAnInvalidTrialKeepsItsMeasures(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	t0 := time.Unix(1790899200, 0)
+	tr.vm.outcome = func(rangevm.Limits) rangevm.Outcome {
+		return rangevm.Outcome{Invalid: "QEMU exited late", Marks: rangevm.Marks{H: 99, Synced: 100, Fail: t0, Exited: t0.Add(150 * time.Millisecond)}}
+	}
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"trial","trial":"reset-control-sync250","trials":1}`, nil)
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	res := tr.results(t, LabelAgent)
+	if len(res) != 1 || res[0].Verdict != rangevm.Invalid || res[0].Runs[0].Measures[rangevm.MeasureExitAfterFail] != 150000 {
+		t.Fatalf("agent results %+v", res)
 	}
 }
