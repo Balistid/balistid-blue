@@ -22,15 +22,20 @@ import (
 const (
 	LabelAgent    = "agent"
 	LabelEvidence = "evidence"
+	// LabelAcceptance marks a run of the acceptance suite, scheduled only by the runner for its own
+	// image (ADR 0018, point 6); each run carries its trial's label, baseline or control.
+	LabelAcceptance = "acceptance"
 )
 
 // Retention (R5): escaping can make a result up to 4x its caps, maxKeptBytes, about 45 MiB. KeepAgent
 // holds a day of quota, so a result outlives the window it was made in (about 1.05 GiB, 1.1 GiB while
 // a fresh result is written).
 const (
-	KeepAgent    = 24
-	KeepEvidence = 50
-	resultSchema = 1
+	KeepAgent = 24
+	// KeepAcceptance holds four suites of the table's runs; a MISS that stands is pinned.
+	KeepAcceptance = 40
+	KeepEvidence   = 50
+	resultSchema   = 1
 	// Results are read by the maintainer's group, the group of the directories they are in.
 	resultPerm = 0o640
 )
@@ -89,7 +94,9 @@ type Run struct {
 	OutBytes     int    `json:"out_bytes,omitempty"`
 	OutTruncated bool   `json:"out_truncated,omitempty"`
 	LaurelBytes  int    `json:"laurel_bytes,omitempty"`
-	// Measures are a trial run's counts and timings (rangevm.Measures).
+	// Label is an acceptance run's trial label, baseline or control; Measures are a trial run's
+	// counts and timings (rangevm.Measures).
+	Label    string            `json:"label,omitempty"`
 	Measures map[string]uint64 `json:"measures,omitempty"`
 }
 
@@ -118,7 +125,7 @@ func CurrentLimits() Limits {
 // NewResultDir creates an empty result directory under results/label, named by the time, a random
 // token and, for an agent job, its name (already a plain job name), and returns its path and id.
 func NewResultDir(results, label, job string, now time.Time) (dir, id string, err error) {
-	if label != LabelAgent && label != LabelEvidence {
+	if label != LabelAgent && label != LabelEvidence && label != LabelAcceptance {
 		return "", "", fmt.Errorf("unknown result label %q", label)
 	}
 	var token [4]byte

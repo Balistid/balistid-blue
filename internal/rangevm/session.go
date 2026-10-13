@@ -684,8 +684,8 @@ const LabelBaseline = "baseline"
 // metric.
 const LabelControl = "control"
 
-// trialLabel is control for a control, else baseline.
-func trialLabel(tr rangejob.Trial) string {
+// TrialLabel is control for a control, else baseline.
+func TrialLabel(tr rangejob.Trial) string {
 	if tr.Expect != "" {
 		return LabelControl
 	}
@@ -695,7 +695,7 @@ func trialLabel(tr rangejob.Trial) string {
 // CheckTrial runs trial tr of image once and stores its Result, named after the trial and labelled
 // baseline or control, and serial log as Check does.
 func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Trial) (Result, error) {
-	return check(ctx, image, cache, state, tr.Name, trialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
+	return check(ctx, image, cache, state, tr.Name, TrialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
 		return RunTrial(ctx, image, runs, serial, TrialLimits(tr))
 	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) },
 		func(o Outcome) map[string]uint64 { return Measures(tr, o) })

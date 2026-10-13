@@ -32,7 +32,7 @@ func printableASCII(t *testing.T, path string) {
 func resultsRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, l := range []string{LabelAgent, LabelEvidence} {
+	for _, l := range []string{LabelAgent, LabelEvidence, LabelAcceptance} {
 		d := filepath.Join(root, l)
 		if err := os.Mkdir(d, 0o750); err != nil {
 			t.Fatal(err)

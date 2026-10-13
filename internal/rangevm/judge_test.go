@@ -172,7 +172,7 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 	state := t.TempDir()
 	for _, name := range []string{"rate-burst", "rate-control-drop"} {
 		tr := trial(t, name)
-		res, err := check(t.Context(), image, t.TempDir(), state, tr.Name, trialLabel(tr),
+		res, err := check(t.Context(), image, t.TempDir(), state, tr.Name, TrialLabel(tr),
 			func(string, io.Writer) (Outcome, error) { return report(tr), nil },
 			func(o Outcome, _, _ string) (string, string) { return JudgeTrial(tr, o, cleanBuild, cleanBuild) },
 			func(o Outcome) map[string]uint64 { return Measures(tr, o) })

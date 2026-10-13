@@ -25,7 +25,7 @@ import (
 const EvidenceEvery = 24 * time.Hour
 
 // RuleVersion names the rules the runner's decisions follow, for its log (ENGINEERING.md 3).
-const RuleVersion = "adr-0011 v2.3"
+const RuleVersion = "adr-0011 v2.4"
 
 // maxKeptBytes bounds what one job keeps in its result directory: escaping at most quadruples the
 // serial log, output and Laurel records of the worst job, plus result.json. A trial's serial budget
@@ -56,9 +56,10 @@ func New(state, inbox, results, commit string, log *slog.Logger) *Runner {
 		confined: filterInForce}
 }
 
-func (r *Runner) cache() string      { return filepath.Join(r.State, "cache") }
-func (r *Runner) ledgerPath() string { return filepath.Join(r.State, "ledger.json") }
-func (r *Runner) imagePath() string  { return filepath.Join(r.State, "image") }
+func (r *Runner) cache() string          { return filepath.Join(r.State, "cache") }
+func (r *Runner) ledgerPath() string     { return filepath.Join(r.State, "ledger.json") }
+func (r *Runner) acceptancePath() string { return filepath.Join(r.State, "acceptance.json") }
+func (r *Runner) imagePath() string      { return filepath.Join(r.State, "image") }
 
 // Build builds the image of the runner's own commit from the object files in objects (ADR 0011,
 // point 2), records its path, and creates the ledger if there is none; an unreadable ledger stays
@@ -150,7 +151,89 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if l.Evidence.Due {
 		return r.evidence(ctx, &l, img, now)
 	}
-	return r.agentJob(ctx, &l, img, now)
+	return r.slot(ctx, &l, img, now)
+}
+
+// slot runs an acceptance batch and an agent job in turn; a batch also runs when no agent job is
+// admissible (ADR 0018, point 5). Acceptance never stops the runner: a suite it cannot read is
+// logged and skipped, and agent jobs run on.
+func (r *Runner) slot(ctx context.Context, l *Ledger, img image, now time.Time) error {
+	acc, err := LoadAcceptance(r.acceptancePath())
+	if err != nil {
+		r.Log.Error("acceptance skipped", "reason", rangevm.Printable(err.Error(), 300), "rule", RuleVersion)
+		_, err := r.agentJob(ctx, l, img, now)
+		return err
+	}
+	acc = acc.ForCommit(r.Commit)
+	_, pending := acc.Next()
+	if !acc.BatchTurn || !pending {
+		ran, err := r.agentJob(ctx, l, img, now)
+		if err != nil || !pending {
+			return err
+		}
+		if ran {
+			acc.BatchTurn = true
+			return SaveAcceptance(r.acceptancePath(), acc)
+		}
+	}
+	return r.batch(ctx, acc, img)
+}
+
+// batch runs the suite's next trials while their walls and setup fit one batch (ADR 0018, point 5),
+// then hands the next slot to an agent job. Each run is recorded in the suite and saved before its
+// result is written, so a MISS stands even if the result never reaches the disk. A run the runner's
+// stop cut short is not recorded: it shows nothing about the commit and runs again.
+func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
+	acc.BatchTurn = false
+	var errs []error
+	var planned time.Duration
+	fresh := ""
+	for ctx.Err() == nil {
+		tr, ok := acc.Next()
+		if !ok || planned+tr.Wall+rangejob.Setup > rangejob.Batch {
+			break
+		}
+		planned += tr.Wall + rangejob.Setup
+		info := &JobInfo{Name: tr.Name, Kind: rangejob.KindTrial, Trials: 1, Trial: tr.Name}
+		dir, id, err := r.begin(LabelAcceptance, tr.Name, img, info)
+		if err != nil {
+			errs = append(errs, err)
+			break
+		}
+		fresh = id
+		run, serial, runErr := r.trialRun(ctx, img, tr)
+		run.Label = rangevm.TrialLabel(tr)
+		if ctx.Err() == nil {
+			acc = acc.Record(tr, run.Label, run.Verdict, id)
+			runErr = errors.Join(runErr, SaveAcceptance(r.acceptancePath(), acc))
+		}
+		errs = append(errs, runErr, r.finish(dir, r.result(id, LabelAcceptance, img, info, []Run{run}), map[string][]byte{"serial.txt": serial}))
+		if runErr != nil {
+			break
+		}
+	}
+	errs = append(errs, SaveAcceptance(r.acceptancePath(), acc))
+	if fresh != "" {
+		var pins []string
+		for _, t := range acc.Trials {
+			if t.Miss != "" {
+				pins = append(pins, t.Miss)
+			}
+		}
+		errs = append(errs, prune(filepath.Join(r.Results, LabelAcceptance), KeepAcceptance, fresh, pins...))
+	}
+	return errors.Join(errs...)
+}
+
+// trialRun runs tr once with its table limits, judges it as a trial and keeps its measures.
+func (r *Runner) trialRun(ctx context.Context, img image, tr rangejob.Trial) (Run, []byte, error) {
+	lim := rangevm.TrialLimits(tr)
+	return r.boot(ctx, func(ctx context.Context, serial io.Writer) (rangevm.Outcome, error) {
+		return r.trial(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, lim)
+	}, func(o rangevm.Outcome) Run {
+		v, why := rangevm.JudgeTrial(tr, o, r.Commit, img.Commit)
+		return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
+	}, func(o rangevm.Outcome) map[string]uint64 { return rangevm.Measures(tr, o) })
 }
 
 // checkState refuses a state directory anyone but the runner could change: a build there runs the
@@ -317,10 +400,11 @@ func prune(dir string, keep int, fresh string, pins ...string) error {
 	return Prune(dir, keep-1, append(pins, fresh)...)
 }
 
-func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Time) error {
+// agentJob runs the next admissible inbox job; ran says whether one was taken.
+func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Time) (ran bool, err error) {
 	inbox, err := OpenInbox(r.Inbox)
 	if err != nil {
-		return fmt.Errorf("tick: %w", err)
+		return false, fmt.Errorf("tick: %w", err)
 	}
 	defer inbox.Close() //nolint:errcheck // read-only
 	job, ok, rejected, nextErr := Next(inbox, l, now)
@@ -330,13 +414,13 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 	// The ledger is on disk before the job runs: a crash or kill after this point never gives the
 	// job a second run or the agents their quota back.
 	if err := errors.Join(nextErr, SaveLedger(r.ledgerPath(), *l)); err != nil || !ok {
-		return err
+		return false, err
 	}
 	info := &JobInfo{Name: job.Name, Kind: job.Request.Kind, Trials: job.Request.Trials, Trial: job.Request.Trial,
 		Program: job.Request.Program, TimeoutS: job.Request.TimeoutS, ContentKey: ContentKey(job)}
 	switch job.Request.Kind {
 	case rangejob.KindRun:
-		return r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
+		return true, r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
 			return r.vm(ctx, img, nil, func(o rangevm.Outcome) Run {
 				v, why := r.selftest(o, r.Commit, img.Commit)
 				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
@@ -346,21 +430,15 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 		// An agent's trial is labelled agent like any inbox job; it never counts for acceptance.
 		tr, ok := rangejob.Lookup(job.Request.Trial)
 		if !ok {
-			return fmt.Errorf("tick: job %s names no trial of the table", job.Name)
+			return true, fmt.Errorf("tick: job %s names no trial of the table", job.Name)
 		}
-		lim := rangevm.TrialLimits(tr)
-		return r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
-			return r.boot(ctx, func(ctx context.Context, serial io.Writer) (rangevm.Outcome, error) {
-				return r.trial(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, lim)
-			}, func(o rangevm.Outcome) Run {
-				v, why := rangevm.JudgeTrial(tr, o, r.Commit, img.Commit)
-				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
-			}, func(o rangevm.Outcome) map[string]uint64 { return rangevm.Measures(tr, o) })
+		return true, r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
+			return r.trialRun(ctx, img, tr)
 		})
 	case rangejob.KindExec:
-		return r.execJob(ctx, img, info, job)
+		return true, r.execJob(ctx, img, info, job)
 	}
-	return fmt.Errorf("tick: job %s has no kind the runner knows", job.Name)
+	return true, fmt.Errorf("tick: job %s has no kind the runner knows", job.Name)
 }
 
 // logRejection logs a rejection once, as the ledger records it. The name is the agent's bytes; the
