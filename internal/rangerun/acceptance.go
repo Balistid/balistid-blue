@@ -24,9 +24,13 @@ const acceptanceSchema = 1
 // Acceptance is the suite of the runner's own commit (ADR 0018, point 6): what the runs of each
 // trial of the compiled table gave. Only the runner schedules these runs, for its own image; it is
 // never evidence and never stops the runner.
+//
+// BatchTurn says the next slot runs a batch before it offers an agent job (ADR 0018, point 5); a
+// new suite offers an agent job first, so agents do not wait a batch after every install.
 type Acceptance struct {
-	Commit string               `json:"commit"`
-	Trials map[string]TrialRuns `json:"trials"`
+	Commit    string               `json:"commit"`
+	Trials    map[string]TrialRuns `json:"trials"`
+	BatchTurn bool                 `json:"batch_turn"`
 }
 
 // TrialRuns counts a trial's runs. Valid runs gave a verdict that counts: PASS or MISS of a trial, the
@@ -43,6 +47,7 @@ type acceptanceFile struct {
 	SchemaVersion int                   `json:"schema_version"`
 	Commit        string                `json:"commit"`
 	Trials        *map[string]TrialRuns `json:"trials"`
+	BatchTurn     bool                  `json:"batch_turn"`
 }
 
 // ForCommit is a's suite if it is commit's, else an empty one: a new commit restarts the suite.
@@ -58,7 +63,7 @@ func (a Acceptance) ForCommit(commit string) Acceptance {
 // INVALID. A baseline run measures the sensor, never the collector (ADR 0018, point 4): its PASS
 // passes nothing and its MISS does not stand.
 func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Acceptance {
-	out := Acceptance{Commit: a.Commit, Trials: make(map[string]TrialRuns, len(a.Trials)+1)}
+	out := Acceptance{Commit: a.Commit, Trials: make(map[string]TrialRuns, len(a.Trials)+1), BatchTurn: a.BatchTurn}
 	for k, v := range a.Trials {
 		out.Trials[k] = v
 	}
@@ -150,7 +155,7 @@ func SaveAcceptance(path string, a Acceptance) error {
 	if trials == nil {
 		trials = map[string]TrialRuns{}
 	}
-	data, err := json.MarshalIndent(acceptanceFile{SchemaVersion: acceptanceSchema, Commit: a.Commit, Trials: &trials}, "", "  ")
+	data, err := json.MarshalIndent(acceptanceFile{SchemaVersion: acceptanceSchema, Commit: a.Commit, Trials: &trials, BatchTurn: a.BatchTurn}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("save acceptance: %w", err)
 	}
@@ -197,5 +202,5 @@ func decodeAcceptance(data []byte) (Acceptance, error) {
 			return Acceptance{}, errors.New("a miss is not a result id")
 		}
 	}
-	return Acceptance{Commit: f.Commit, Trials: *f.Trials}, nil
+	return Acceptance{Commit: f.Commit, Trials: *f.Trials, BatchTurn: f.BatchTurn}, nil
 }

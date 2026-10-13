@@ -95,6 +95,7 @@ TMPFILES = [
     ("d", "/var/lib/balistid/results", "0750", "balistid-runner", "balistid-agents", "-"),
     ("d", "/var/lib/balistid/results/agent", "2750", "balistid-runner", "balistid-agents", "-"),
     ("d", "/var/lib/balistid/results/evidence", "2750", "balistid-runner", "balistid-agents", "-"),
+    ("d", "/var/lib/balistid/results/acceptance", "2750", "balistid-runner", "balistid-agents", "-"),
 ]
 SYSUSERS = [
     ("u", "balistid-runner", "-", "Balistid Blue range runner"),

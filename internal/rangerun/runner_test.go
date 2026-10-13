@@ -726,7 +726,17 @@ func TestARejectionIsLoggedOnce(t *testing.T) {
 			if err := tr.Tick(t.Context()); err != nil || len(tr.vm.disks) != 0 {
 				t.Fatalf("tick %v, %d runs", err, len(tr.vm.disks))
 			}
-			line := log.String()
+			// With no admissible job the slot runs an acceptance batch, which logs its own results.
+			inboxLines := func() string {
+				var b strings.Builder
+				for _, l := range strings.SplitAfter(log.String(), "\n") {
+					if strings.Contains(l, `msg="inbox job"`) {
+						b.WriteString(l)
+					}
+				}
+				return b.String()
+			}
+			line := inboxLines()
 			if strings.Count(line, "\n") != 1 || !strings.Contains(line, "decision=rejected") ||
 				!strings.Contains(line, "job="+c.name+" ") || !strings.Contains(line, `reason="`+c.reason+`"`) ||
 				!strings.Contains(line, RuleVersion) || strings.ContainsRune(line, 0x1b) {
@@ -734,8 +744,8 @@ func TestARejectionIsLoggedOnce(t *testing.T) {
 			}
 			log.Reset()
 			tr.now = func() time.Time { return now.Add(time.Minute) }
-			if err := tr.Tick(t.Context()); err != nil || log.Len() != 0 {
-				t.Fatalf("second tick %v, log: %q", err, log.String())
+			if err := tr.Tick(t.Context()); err != nil || inboxLines() != "" {
+				t.Fatalf("second tick %v, log: %q", err, inboxLines())
 			}
 		})
 	}
@@ -1287,7 +1297,10 @@ func TestATrialMissIsTheJobVerdictAndNoFailure(t *testing.T) {
 	tr := newTestRunner(t, now, evidenceDone(now))
 	burst, _ := rangejob.Lookup("rate-burst")
 	missing := []int{0, 1, 0}
-	tr.vm.outcome = func(rangevm.Limits) rangevm.Outcome {
+	tr.vm.outcome = func(lim rangevm.Limits) rangevm.Outcome {
+		if lim.Trial != burst.Name || len(missing) == 0 {
+			return rangevm.Outcome{} // the acceptance batch of the next tick
+		}
 		m := missing[0]
 		missing = missing[1:]
 		return rateReport(burst, m)
@@ -1332,5 +1345,169 @@ func TestAnInvalidTrialKeepsItsMeasures(t *testing.T) {
 	res := tr.results(t, LabelAgent)
 	if len(res) != 1 || res[0].Verdict != rangevm.Invalid || res[0].Runs[0].Measures[rangevm.MeasureExitAfterFail] != 150000 {
 		t.Fatalf("agent results %+v", res)
+	}
+}
+
+// suiteOutcome reports a complete PASS of every rate trial; a failure trial reports nothing (INVALID).
+func suiteOutcome(lim rangevm.Limits) rangevm.Outcome {
+	if tr, ok := rangejob.Lookup(lim.Trial); ok && tr.Failure == "" {
+		return rateReport(tr, map[bool]int{false: 0, true: 1}[tr.Load.Drop])
+	}
+	return rangevm.Outcome{}
+}
+
+func (tr testRunner) acceptance(t *testing.T) Acceptance {
+	t.Helper()
+	a, err := LoadAcceptance(filepath.Join(tr.State, "acceptance.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// With no agent job a slot runs a batch: the suite's next trials in table order, as many as fit 30
+// minutes with their setup, each its own acceptance result with its trial label and measures.
+func TestASlotWithoutAJobRunsABatch(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var planned time.Duration
+	for _, lim := range tr.vm.trials {
+		planned += lim.Wall + rangejob.Setup
+	}
+	if len(tr.vm.trials) != 2 || tr.vm.trials[0].Trial != "rate-sustained" || planned > rangejob.Batch || len(tr.vm.disks) != 0 {
+		t.Fatalf("batch ran %+v (%s)", tr.vm.trials, planned)
+	}
+	res := tr.results(t, LabelAcceptance)
+	if len(res) != 2 || res[0].Runs[0].Label != rangevm.LabelBaseline || res[0].Verdict != rangevm.Pass ||
+		res[0].Runs[0].Measures[rangevm.FactStealTicks] != 7 || res[0].Job.Trial != "rate-sustained" {
+		t.Fatalf("acceptance results %+v", res)
+	}
+	if a := tr.acceptance(t); a.Commit != testCommit || a.Trials["rate-sustained"].Valid != 2 || a.BatchTurn {
+		t.Fatalf("suite %+v", a)
+	}
+	if ev, ag := tr.results(t, LabelEvidence), tr.results(t, LabelAgent); ev != nil || ag != nil {
+		t.Fatalf("a batch wrote evidence %+v or agent %+v", ev, ag)
+	}
+}
+
+// An agent job and a batch take turns; a batch runs when no agent job is admissible, and an agent's
+// trial job never touches the suite.
+func TestBatchesAndAgentJobsTakeTurns(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":1}`, nil)
+	tr.addJob(t, "job-2", `{"schema_version":1,"kind":"run","trials":1}`, nil)
+	slots := []string{}
+	for range 4 {
+		before := len(tr.vm.trials) + len(tr.vm.disks)
+		agents := len(tr.results(t, LabelAgent))
+		if err := tr.Tick(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case len(tr.results(t, LabelAgent)) > agents:
+			slots = append(slots, "agent")
+		case len(tr.vm.trials)+len(tr.vm.disks) > before:
+			slots = append(slots, "batch")
+		}
+	}
+	if want := []string{"agent", "batch", "agent", "batch"}; !slices.Equal(slots, want) {
+		t.Fatalf("slots %v, want %v", slots, want)
+	}
+	if a := tr.acceptance(t); a.Trials["rate-burst"].Valid > 0 && len(tr.results(t, LabelAcceptance)) < 3 {
+		t.Fatalf("the agent's rate-burst counted for the suite: %+v", a)
+	}
+}
+
+// A run the runner's stop cut short is not recorded; the suite runs it again.
+func TestAStoppedBatchRunIsNotRecorded(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	ctx, cancel := context.WithCancel(t.Context())
+	trial := tr.trial
+	tr.trial = func(c context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+		cancel()
+		return trial(c, base, parent, serial, lim)
+	}
+	if err := tr.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a := tr.acceptance(t); len(tr.vm.trials) != 1 || a.Trials["rate-sustained"] != (TrialRuns{}) {
+		t.Fatalf("%d runs, suite %+v", len(tr.vm.trials), a)
+	}
+	if res := tr.results(t, LabelAcceptance); len(res) != 1 || res[0].Verdict != rangevm.Invalid {
+		t.Fatalf("results %+v", res)
+	}
+}
+
+// The suite is saved before a run's result: a result that cannot be written loses nothing.
+func TestTheSuiteIsSavedBeforeTheResult(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	trial := tr.trial
+	tr.trial = func(c context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+		dirs, err := os.ReadDir(filepath.Join(tr.Results, LabelAcceptance))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dirs) != 1 { // only the first run's result is made unwritable
+			return trial(c, base, parent, serial, lim)
+		}
+		dir := filepath.Join(tr.Results, LabelAcceptance, dirs[0].Name())
+		if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // a directory needs its x bit
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // so TempDir can remove it
+		return trial(c, base, parent, serial, lim)
+	}
+	if err := tr.Tick(t.Context()); err == nil {
+		t.Fatal("a result that could not be written was not reported")
+	}
+	if a := tr.acceptance(t); a.Trials["rate-sustained"].Valid != 2 {
+		t.Fatalf("suite %+v", a)
+	}
+}
+
+// A suite of another commit restarts; one the runner cannot read never stops it, agent jobs run on.
+func TestTheSuiteNeverStopsTheRunner(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	path := filepath.Join(tr.State, "acceptance.json")
+	old := Acceptance{}.ForCommit(strings.Repeat("b", 40))
+	old.Trials["rate-sustained"] = TrialRuns{Valid: 2}
+	if err := SaveAcceptance(path, old); err != nil {
+		t.Fatal(err)
+	}
+	tr.vm.outcome = suiteOutcome
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if a := tr.acceptance(t); a.Commit != testCommit || tr.vm.trials[0].Trial != "rate-sustained" {
+		t.Fatalf("suite %+v, ran %+v", a, tr.vm.trials)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"run","trials":1}`, nil)
+	if err := tr.Tick(t.Context()); err != nil || len(tr.results(t, LabelAgent)) != 1 {
+		t.Fatalf("tick with a corrupt suite: %v", err)
+	}
+}
+
+// A batch keeps no more than one job may: maxKeptBytes bounds what the results need.
+func TestABatchFitsTheKeptBytes(t *testing.T) {
+	shortest := rangejob.Batch
+	for _, tr := range rangejob.Trials() {
+		shortest = min(shortest, tr.Wall+rangejob.Setup)
+	}
+	runs := int64(rangejob.Batch / shortest)
+	if kept := runs * (4*rangevm.SerialBudget + 1<<20); kept > maxKeptBytes {
+		t.Fatalf("a batch of %d runs keeps %d bytes, over %d", runs, kept, int64(maxKeptBytes))
 	}
 }
