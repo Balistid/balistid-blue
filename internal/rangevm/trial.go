@@ -164,7 +164,7 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	m[MeasureH], m[MeasureSynced] = o.Marks.H, o.Marks.Synced
 	after := func(key string, t time.Time) {
 		if d := t.Sub(o.Marks.Fail); !t.IsZero() && d >= 0 {
-			m[key] = uint64(d / time.Microsecond) //nolint:gosec // d is not negative
+			m[key] = uint64(d / time.Microsecond)
 		}
 	}
 	after(MeasureExitAfterFail, o.Marks.Exited)
