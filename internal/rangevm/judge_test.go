@@ -174,7 +174,8 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		tr := trial(t, name)
 		res, err := check(t.Context(), image, t.TempDir(), state, tr.Name, trialLabel(tr),
 			func(string, io.Writer) (Outcome, error) { return report(tr), nil },
-			func(o Outcome, _, _ string) (string, string) { return JudgeTrial(tr, o, cleanBuild, cleanBuild) })
+			func(o Outcome, _, _ string) (string, string) { return JudgeTrial(tr, o, cleanBuild, cleanBuild) },
+			func(o Outcome) map[string]uint64 { return Measures(tr, o) })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,6 +190,9 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		want := map[string]string{"rate-burst": LabelBaseline, "rate-control-drop": LabelControl}[name]
 		if stored.Trial != name || stored.Label != want || stored.Verdict != Pass {
 			t.Errorf("%s stored trial %q, label %q, verdict %q; want label %q", name, stored.Trial, stored.Label, stored.Verdict, want)
+		}
+		if stored.SchemaVersion != 2 || stored.Measures[FactStealTicks] != 100 || len(stored.Measures) != len(counts) {
+			t.Errorf("%s stored schema %d, measures %v", name, stored.SchemaVersion, stored.Measures)
 		}
 	}
 }

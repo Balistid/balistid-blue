@@ -5,9 +5,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"syscall"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -59,6 +61,14 @@ func run(ctx context.Context) int {
 			return 1
 		}
 		fmt.Printf("%s %s %s: %s (result %s)\n", tr.Name, res.Label, res.Verdict, res.Reason, res.ID)
+		if len(res.Measures) > 0 {
+			keys := slices.Sorted(maps.Keys(res.Measures))
+			fmt.Print("measures:")
+			for _, k := range keys {
+				fmt.Printf(" %s=%d", k, res.Measures[k])
+			}
+			fmt.Println()
+		}
 		if want := rangevm.ExpectedVerdict(tr); res.Verdict != want {
 			fmt.Printf("%s must give %s\n", tr.Name, want)
 			return 1
