@@ -207,6 +207,9 @@ type Outcome struct {
 	FirstBoot []Record
 	Invalid   string
 	Marks     Marks
+	// Host says the host could not start a process of the run (a pipe or exec failed): its INVALID
+	// tells nothing about the run.
+	Host bool
 }
 
 // ErrCleanup marks an error of Run after a run that ended: its Outcome stands, only the run
@@ -255,7 +258,7 @@ func boot(ctx context.Context, base, parent string, serial io.Writer, job []byte
 
 	var setup bytes.Buffer
 	if why := run(ctx, sandboxArgv(base, runDir, WriteCap(st.Size()), false, overlayArgv()...), setupTimeout, SerialBudget, &setup); why != "" {
-		return Outcome{Invalid: "overlay: " + why + ": " + Printable(strings.TrimSpace(setup.String()), setupShown)}, nil
+		return Outcome{Invalid: "overlay: " + why + ": " + Printable(strings.TrimSpace(setup.String()), setupShown), Host: hostFailure(why)}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, lim.Wall)
 	defer cancel()
@@ -274,7 +277,7 @@ func boot(ctx context.Context, base, parent string, serial io.Writer, job []byte
 			marks = mw.m
 		}
 		if why != "" {
-			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why, Marks: marks}, nil
+			return Outcome{FirstBoot: first, Invalid: bootName(phase) + why, Marks: marks, Host: hostFailure(why)}, nil
 		}
 		o := readResults(resultsPath)
 		o.Marks = marks
@@ -418,6 +421,7 @@ func sparseFile(path string, size int64) error {
 
 // runCommand runs argv with an empty environment and returns why the run is INVALID, or "" for a
 // clean exit. Output beyond budget or a run beyond timeout kills the process (ADR 0009, point 4).
+// A pipe or start failure is the host's, never the run's (hostFailure).
 func runCommand(ctx context.Context, argv []string, timeout time.Duration, budget int64, out io.Writer) string {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -458,6 +462,12 @@ func runCommand(ctx context.Context, argv []string, timeout time.Duration, budge
 		return "output: " + copyErr.Error()
 	}
 	return ""
+}
+
+// hostFailure says whether runCommand's reason is that the host could not start the process. Only
+// runCommand writes the reason, never the guest.
+func hostFailure(why string) bool {
+	return strings.HasPrefix(why, "pipe: ") || strings.HasPrefix(why, "start: ")
 }
 
 // capped writes at most left bytes to w and reports the rest as written, so the budget, not the
