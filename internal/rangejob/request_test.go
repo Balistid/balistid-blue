@@ -2,6 +2,7 @@ package rangejob
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -13,6 +14,12 @@ func TestParseRequestAccepts(t *testing.T) {
 		`{"kind":"run","trials":3,"schema_version":1}`: {SchemaVersion: 1, Kind: KindRun, Trials: 3},
 		` {"schema_version":1,"kind":"exec","program":"probe-1.sh","timeout_s":300} ` + "\n": {
 			SchemaVersion: 1, Kind: KindExec, Program: "probe-1.sh", TimeoutS: 300,
+		},
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":3}`: {
+			SchemaVersion: 1, Kind: KindTrial, Trial: "rate-burst", Trials: 3,
+		},
+		`{"trials":2,"trial":"rate-sustained","kind":"trial","schema_version":1}`: {
+			SchemaVersion: 1, Kind: KindTrial, Trial: "rate-sustained", Trials: 2,
 		},
 	}
 	full := `{"schema_version":1,"kind":"run","trials":1}`
@@ -51,6 +58,19 @@ func TestParseRequestRejects(t *testing.T) {
 		`{"schema_version":1,"kind":"run","trials":1}x`,
 		`{"schema_version":1,"kind":"run","trials":1,"x":{}}`,
 		`{"schema_version":1,"kind":"run","trials":[1]}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":0}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":4}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-sustained","trials":3}`,
+		`{"schema_version":1,"kind":"trial","trial":"reset-control-sync250","trials":2}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate","trials":1}`,
+		`{"schema_version":1,"kind":"trial","trial":"RATE-BURST","trials":1}`,
+		`{"schema_version":1,"kind":"trial","trial":"","trials":1}`,
+		`{"schema_version":1,"kind":"trial","trial":1,"trials":1}`,
+		`{"schema_version":1,"kind":"trial","trials":1}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst"}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":1,"timeout_s":10}`,
+		`{"schema_version":1,"kind":"trial","trial":"rate-burst","trial":"rate-sustained","trials":1}`,
+		`{"schema_version":1,"kind":"run","trials":1,"trial":"rate-burst"}`,
 		`{"schema_version":1,"kind":"exec","program":"p","timeout_s":0}`,
 		`{"schema_version":1,"kind":"exec","program":"p","timeout_s":301}`,
 		`{"schema_version":1,"kind":"exec","program":"p"}`,
@@ -129,4 +149,14 @@ func FuzzParseRequest(f *testing.F) {
 			t.Fatalf("accepted %q, but its re-encoding %s gives %+v, %v", in, data, again, err)
 		}
 	})
+}
+
+// Every trial of the table can be asked for up to its Count, and that many runs fit one batch.
+func TestEveryTrialFitsAJob(t *testing.T) {
+	for _, tr := range Trials() {
+		req := `{"schema_version":1,"kind":"trial","trial":"` + tr.Name + `","trials":` + strconv.Itoa(tr.Count) + `}`
+		if _, err := ParseRequest(strings.NewReader(req)); err != nil {
+			t.Errorf("%s: %v", tr.Name, err)
+		}
+	}
 }

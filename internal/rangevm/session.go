@@ -695,9 +695,8 @@ func trialLabel(tr rangejob.Trial) string {
 // CheckTrial runs trial tr of image once and stores its Result, named after the trial and labelled
 // baseline or control, and serial log as Check does.
 func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Trial) (Result, error) {
-	lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
 	return check(ctx, image, cache, state, tr.Name, trialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
-		return RunTrial(ctx, image, runs, serial, lim)
+		return RunTrial(ctx, image, runs, serial, TrialLimits(tr))
 	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) },
 		func(o Outcome) map[string]uint64 { return Measures(tr, o) })
 }

@@ -59,6 +59,7 @@ type JobInfo struct {
 	Name          string `json:"name"`
 	Kind          string `json:"kind"`
 	Trials        int    `json:"trials,omitempty"`
+	Trial         string `json:"trial,omitempty"`
 	Program       string `json:"program,omitempty"`
 	TimeoutS      int    `json:"timeout_s,omitempty"`
 	ContentKey    string `json:"content_key"`
@@ -87,6 +88,8 @@ type Run struct {
 	OutBytes     int    `json:"out_bytes,omitempty"`
 	OutTruncated bool   `json:"out_truncated,omitempty"`
 	LaurelBytes  int    `json:"laurel_bytes,omitempty"`
+	// Measures are a trial run's counts and timings (rangevm.Measures).
+	Measures map[string]uint64 `json:"measures,omitempty"`
 }
 
 // CurrentLimits are the limits of every run of this runner.
@@ -152,7 +155,7 @@ func WriteResult(dir string, r Result) error {
 	esc(128, &r.ID, &r.Label, &r.RunnerCommit, &r.ImageCommit, &r.ImageSHA256, &r.Verdict)
 	if r.Job != nil {
 		job := *r.Job
-		esc(128, &job.Name, &job.Kind, &job.Program, &job.ContentKey, &job.ProgramSHA256, &job.DiskSHA256)
+		esc(128, &job.Name, &job.Kind, &job.Trial, &job.Program, &job.ContentKey, &job.ProgramSHA256, &job.DiskSHA256)
 		r.Job = &job
 	}
 	r.Runs = slices.Clone(r.Runs) // the caller's runs stay as they were

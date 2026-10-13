@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -30,6 +31,8 @@ type fakeVM struct {
 	ledgers []Ledger
 	verdict string // what the self-test judge says
 	facts   func(disk []byte) []rangevm.Record
+	trials  []rangevm.Limits                     // the limits of each trial run
+	outcome func(rangevm.Limits) rangevm.Outcome // what a trial run reports
 }
 
 type testRunner struct {
@@ -84,6 +87,17 @@ func newTestRunner(t *testing.T, now time.Time, l Ledger) testRunner {
 			_, _ = serial.Write([]byte("boot\x1b[0m\n"))
 			if vm.facts != nil {
 				return rangevm.Outcome{Facts: vm.facts(disk)}, nil
+			}
+			return rangevm.Outcome{}, nil
+		},
+		trial: func(_ context.Context, base, _ string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+			if base != filepath.Join(images, "image.raw") {
+				t.Errorf("ran %s", base)
+			}
+			vm.trials = append(vm.trials, lim)
+			_, _ = serial.Write([]byte("trial\n"))
+			if vm.outcome != nil {
+				return vm.outcome(lim), nil
 			}
 			return rangevm.Outcome{}, nil
 		},
@@ -515,8 +529,10 @@ func TestAdmissionIsAskedForTheWorstCase(t *testing.T) {
 	if err := tr.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
+	// The failure trials' 64 MiB scratch disk raises the cap of each of their four files.
+	runs := max(3*uint64(rangevm.WriteCap(int64(len("image"))))+rangejob.DiskBytes, 4*64<<20) //nolint:gosec // a small constant
 	want := []DiskNeed{
-		{filepath.Join(tr.State, "cache", "runs"), 3*uint64(rangevm.WriteCap(int64(len("image")))) + rangejob.DiskBytes}, //nolint:gosec // a small constant
+		{filepath.Join(tr.State, "cache", "runs"), runs},
 		{tr.Results, maxKeptBytes},
 		{tr.State, 2 * MaxLedgerBytes},
 	}
@@ -1212,5 +1228,88 @@ func TestATickOutsideTheUnitRunsNothing(t *testing.T) {
 	err := New(d, d, d, testCommit, slog.New(slog.DiscardHandler)).Tick(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "confinement missing") {
 		t.Fatalf("Tick outside the unit: %v", err)
+	}
+}
+
+// rateReport is a complete report of a rate trial run with the given missing count.
+func rateReport(tr rangejob.Trial, missing int) rangevm.Outcome {
+	planned := strconv.Itoa(tr.Load.Rate * tr.Load.Seconds)
+	stored := strconv.Itoa(tr.Load.Rate*tr.Load.Seconds - missing)
+	values := [][2]string{
+		{rangevm.FactTrial, tr.Name}, {rangevm.FactPhase, "1"}, {rangevm.FactKernel, rangevm.TargetKernel},
+		{rangevm.FactGenerated, planned}, {rangevm.FactWindowMin, strconv.Itoa(tr.Load.Rate * 10)},
+		{rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"}, {rangevm.FactOverflowBefore, "no"},
+		{rangevm.FactOverflowAfter, "no"}, {rangevm.FactCPUTicks, "10000"}, {rangevm.FactStealTicks, "7"},
+		{rangevm.FactDrainCPU, "5000"}, {rangevm.FactDrainSteal, "3"}, {rangevm.FactFollow, "ok"},
+		{rangevm.FactStored, stored}, {rangevm.FactMissing, strconv.Itoa(missing)}, {rangevm.FactDuplicate, "0"}, {rangevm.FactOutside, "0"},
+	}
+	var o rangevm.Outcome
+	for _, v := range values {
+		o.Facts = append(o.Facts, rangevm.Record{Name: v[0], Value: v[1]})
+	}
+	return o
+}
+
+// An agent's trial job runs the named trial with its table limits, never the run or exec path, is
+// judged as a trial with its measures kept, and is labelled agent: it never becomes evidence.
+func TestTickRunsATrialJob(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	burst, _ := rangejob.Lookup("rate-burst")
+	tr.vm.outcome = func(rangevm.Limits) rangevm.Outcome { return rateReport(burst, 0) }
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":2}`, nil)
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.vm.disks) != 0 || len(tr.vm.trials) != 2 || tr.vm.trials[0] != rangevm.TrialLimits(burst) {
+		t.Fatalf("runs %v, trials %+v", tr.vm.disks, tr.vm.trials)
+	}
+	res := tr.results(t, LabelAgent)
+	if len(res) != 1 || res[0].Verdict != rangevm.Pass || len(res[0].Runs) != 2 || res[0].Job == nil ||
+		res[0].Job.Kind != rangejob.KindTrial || res[0].Job.Trial != "rate-burst" {
+		t.Fatalf("agent results %+v", res)
+	}
+	if m := res[0].Runs[1].Measures; m[rangevm.FactStealTicks] != 7 || m[rangevm.FactMissing] != 0 || len(m) == 0 {
+		t.Fatalf("measures %v", m)
+	}
+	if ev := tr.results(t, LabelEvidence); ev != nil {
+		t.Fatalf("an agent trial became evidence: %+v", ev)
+	}
+}
+
+// A MISS is the job's verdict over a PASS, and it never stops the runner: the ledger records no
+// failed evidence and the next tick runs.
+func TestATrialMissIsTheJobVerdictAndNoFailure(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	burst, _ := rangejob.Lookup("rate-burst")
+	missing := []int{0, 1, 0}
+	tr.vm.outcome = func(rangevm.Limits) rangevm.Outcome {
+		m := missing[0]
+		missing = missing[1:]
+		return rateReport(burst, m)
+	}
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"trial","trial":"rate-burst","trials":3}`, nil)
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if res := tr.results(t, LabelAgent); len(res) != 1 || res[0].Verdict != rangevm.Miss {
+		t.Fatalf("agent results %+v", res)
+	}
+	if l := tr.ledger(t); len(l.Evidence.Failed) != 0 {
+		t.Fatalf("a MISS was recorded as a failure: %+v", l.Evidence)
+	}
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatalf("the tick after a MISS: %v", err)
+	}
+}
+
+// maxKeptBytes counts SerialBudget per run, so no trial may keep a longer serial log.
+func TestTrialJobsFitTheKeptBytes(t *testing.T) {
+	for _, tr := range rangejob.Trials() {
+		if tr.Serial > rangevm.SerialBudget || tr.Count > rangejob.MaxTrials {
+			t.Errorf("%s keeps %d serial bytes in %d runs; maxKeptBytes counts %d in %d", tr.Name, tr.Serial, tr.Count,
+				rangevm.SerialBudget, rangejob.MaxTrials)
+		}
 	}
 }

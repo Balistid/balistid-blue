@@ -28,7 +28,8 @@ const EvidenceEvery = 24 * time.Hour
 const RuleVersion = "adr-0011 v2.3"
 
 // maxKeptBytes bounds what one job keeps in its result directory: escaping at most quadruples the
-// serial log, output and Laurel records of the worst job, plus result.json.
+// serial log, output and Laurel records of the worst job, plus result.json. A trial's serial budget
+// is at most SerialBudget, so a trial job keeps no more than a run job (TestTrialJobsFitTheKeptBytes).
 const maxKeptBytes = 4*(rangejob.MaxTrials*rangevm.SerialBudget+rangevm.JobOutCap+rangevm.JobLaurelCap) + 1<<20
 
 // Runner runs one range job per tick as its own user (ADR 0011). State holds its ledger, its
@@ -39,6 +40,7 @@ type Runner struct {
 
 	build    func(ctx context.Context, root, cache string, log io.Writer, commit string) (string, error)
 	run      func(ctx context.Context, base, parent string, serial io.Writer, job []byte) (rangevm.Outcome, error)
+	trial    func(ctx context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error)
 	selftest func(o rangevm.Outcome, launcher, image string) (verdict, reason string)
 	admit    func(ctx context.Context, needs []DiskNeed) error
 	watch    func(ctx context.Context) (context.Context, func())
@@ -50,7 +52,7 @@ type Runner struct {
 // New returns a runner with the real VM, admission and memory watch.
 func New(state, inbox, results, commit string, log *slog.Logger) *Runner {
 	return &Runner{State: state, Inbox: inbox, Results: results, Commit: commit, Log: log,
-		build: rangevm.BuildCommit, run: rangevm.Run, selftest: rangevm.JudgeSelftest, admit: Admit, watch: Watch, now: time.Now, owner: owner,
+		build: rangevm.BuildCommit, run: rangevm.Run, trial: rangevm.RunTrial, selftest: rangevm.JudgeSelftest, admit: Admit, watch: Watch, now: time.Now, owner: owner,
 		confined: filterInForce}
 }
 
@@ -130,8 +132,12 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tick: image: %w", err)
 	}
+	runs := 3*rangevm.WriteCap(st.Size()) + rangejob.DiskBytes
+	for _, tr := range rangejob.Trials() {
+		runs = max(runs, rangevm.TrialLimits(tr).DiskNeed(st.Size()))
+	}
 	needs := []DiskNeed{
-		{filepath.Join(r.cache(), "runs"), 3*uint64(rangevm.WriteCap(st.Size())) + rangejob.DiskBytes}, //nolint:gosec // a file size is not negative
+		{filepath.Join(r.cache(), "runs"), uint64(runs)}, //nolint:gosec // a file size is not negative
 		{r.Results, maxKeptBytes},
 		{r.State, 2 * MaxLedgerBytes},
 	}
@@ -326,11 +332,31 @@ func (r *Runner) agentJob(ctx context.Context, l *Ledger, img image, now time.Ti
 	if err := errors.Join(nextErr, SaveLedger(r.ledgerPath(), *l)); err != nil || !ok {
 		return err
 	}
-	info := &JobInfo{Name: job.Name, Kind: job.Request.Kind, Trials: job.Request.Trials, Program: job.Request.Program,
-		TimeoutS: job.Request.TimeoutS, ContentKey: ContentKey(job)}
+	info := &JobInfo{Name: job.Name, Kind: job.Request.Kind, Trials: job.Request.Trials, Trial: job.Request.Trial,
+		Program: job.Request.Program, TimeoutS: job.Request.TimeoutS, ContentKey: ContentKey(job)}
 	switch job.Request.Kind {
 	case rangejob.KindRun:
-		return r.runJob(ctx, img, info, job.Request.Trials)
+		return r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
+			return r.vm(ctx, img, nil, func(o rangevm.Outcome) Run {
+				v, why := r.selftest(o, r.Commit, img.Commit)
+				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
+			})
+		})
+	case rangejob.KindTrial:
+		// An agent's trial is labelled agent like any inbox job; it never counts for acceptance.
+		tr, ok := rangejob.Lookup(job.Request.Trial)
+		if !ok {
+			return fmt.Errorf("tick: job %s names no trial of the table", job.Name)
+		}
+		lim := rangevm.TrialLimits(tr)
+		return r.runJob(ctx, img, info, job.Request.Trials, func(ctx context.Context) (Run, []byte, error) {
+			return r.boot(ctx, func(ctx context.Context, serial io.Writer) (rangevm.Outcome, error) {
+				return r.trial(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, lim)
+			}, func(o rangevm.Outcome) Run {
+				v, why := rangevm.JudgeTrial(tr, o, r.Commit, img.Commit)
+				return Run{Verdict: v, Reason: why, GuestKernel: kernel(o), Measures: rangevm.Measures(tr, o)}
+			})
+		})
 	case rangejob.KindExec:
 		return r.execJob(ctx, img, info, job)
 	}
@@ -344,7 +370,8 @@ func (r *Runner) logRejection(rej Rejection) {
 		"reason", rangevm.Printable(rej.Reason, 200), "rule", RuleVersion)
 }
 
-func (r *Runner) runJob(ctx context.Context, img image, info *JobInfo, trials int) error {
+// runJob runs a job of n runs, each by once, and keeps every run's serial log.
+func (r *Runner) runJob(ctx context.Context, img image, info *JobInfo, trials int, once func(context.Context) (Run, []byte, error)) error {
 	dir, id, err := r.begin(LabelAgent, info.Name, img, info)
 	if err != nil {
 		return err
@@ -357,10 +384,7 @@ func (r *Runner) runJob(ctx context.Context, img image, info *JobInfo, trials in
 			runs = append(runs, Run{Verdict: rangevm.Invalid, Reason: "the runner was stopped"})
 			break
 		}
-		run, serial, err := r.vm(ctx, img, nil, func(o rangevm.Outcome) Run {
-			v, why := r.selftest(o, r.Commit, img.Commit)
-			return Run{Verdict: v, Reason: why, GuestKernel: kernel(o)}
-		})
+		run, serial, err := once(ctx)
 		runs, errs = append(runs, run), append(errs, err)
 		files[fmt.Sprintf("serial-%d.txt", i+1)] = serial
 	}
@@ -406,9 +430,16 @@ func (r *Runner) execJob(ctx context.Context, img image, info *JobInfo, job rang
 // vm runs img once under the memory watch and judges the outcome with judge. A run the watch
 // stopped, or one the VM could not start, is INVALID whatever the guest wrote.
 func (r *Runner) vm(ctx context.Context, img image, disk []byte, judge func(rangevm.Outcome) Run) (Run, []byte, error) {
+	return r.boot(ctx, func(ctx context.Context, serial io.Writer) (rangevm.Outcome, error) {
+		return r.run(ctx, img.Path, filepath.Join(r.cache(), "runs"), serial, disk)
+	}, judge)
+}
+
+// boot is vm for any way of booting the image: a run with an optional job disk, or a trial.
+func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer) (rangevm.Outcome, error), judge func(rangevm.Outcome) Run) (Run, []byte, error) {
 	var serial bytes.Buffer
 	watched, stop := r.watch(ctx)
-	o, err := r.run(watched, img.Path, filepath.Join(r.cache(), "runs"), &serial, disk)
+	o, err := start(watched, &serial)
 	stop()
 	cause := context.Cause(watched)
 	// A run directory left behind does not change what the run showed; it is still returned.
@@ -457,7 +488,7 @@ func (r *Runner) finish(dir string, res Result, files map[string][]byte) error {
 }
 
 // severity orders verdicts for a job of several runs: the job is its worst run.
-var severity = map[string]int{rangevm.Fail: 4, rangevm.Invalid: 3, rangevm.Unknown: 2, rangevm.Pass: 1, rangevm.Ran: 1}
+var severity = map[string]int{rangevm.Fail: 4, rangevm.Miss: 4, rangevm.Invalid: 3, rangevm.Unknown: 2, rangevm.Pass: 1, rangevm.Ran: 1}
 
 // result is a Result whose verdict is its worst run's; a verdict the runner does not know is
 // worse than any.

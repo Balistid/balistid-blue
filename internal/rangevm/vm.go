@@ -109,6 +109,11 @@ func (l Limits) check() error {
 // fileCap is the size limit prlimit gives every file QEMU writes in a run under l.
 func (l Limits) fileCap(baseSize int64) int64 { return max(WriteCap(baseSize), l.Scratch) }
 
+// TrialLimits are the limits a run of tr has.
+func TrialLimits(tr rangejob.Trial) Limits {
+	return Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
+}
+
 // DiskNeed is all a run under l can write in its run directory: a scratch disk is a fourth file and
 // raises the one per-file cap for all four (ADR 0011, point 6; ADR 0018, point 2).
 func (l Limits) DiskNeed(baseSize int64) int64 {
