@@ -186,7 +186,7 @@ func (r *Runner) slot(ctx context.Context, l *Ledger, img image, now time.Time) 
 // batch runs the suite's next trials while their walls and setup fit one batch (ADR 0018, point 5),
 // then hands the next slot to an agent job. Each run is recorded in the suite and saved before its
 // result is written, so a MISS stands even if the result never reaches the disk. A run the runner
-// stopped, or one the host stopped or could not start (memory watch, VM start), is not recorded:
+// stopped, or one the host stopped or could not start (memory watch, a process it could not start), is not recorded:
 // it shows nothing about the commit and runs again; its result says INVALID.
 func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 	acc.BatchTurn = false

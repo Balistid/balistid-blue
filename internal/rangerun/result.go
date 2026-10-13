@@ -98,7 +98,7 @@ type Run struct {
 	// counts and timings (rangevm.Measures).
 	Label    string            `json:"label,omitempty"`
 	Measures map[string]uint64 `json:"measures,omitempty"`
-	// host marks an INVALID the host caused (the memory watch, a VM that did not start), not the run.
+	// host marks an INVALID the host caused (the memory watch, a process it could not start), not the run.
 	host bool
 }
 
