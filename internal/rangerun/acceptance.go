@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"slices"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -35,15 +36,14 @@ type Acceptance struct {
 
 // TrialRuns counts a trial's runs. Valid runs gave a verdict that counts: PASS or MISS of a trial, the
 // expected verdict of a control. Passed are valid PASS runs that may pass a metric (not baseline).
-// Invalid counts every INVALID run, Strikes only those of runs that may decide the metric (neither
-// baseline nor control): only they can add up to a MISS. Miss is the result id of the MISS that
-// stands for the commit.
+// Invalid counts INVALID runs, a control's other verdict included. Miss is the result id of the
+// MISS that stands for the commit. Baseline says the trial's runs were baseline: they decide nothing.
 type TrialRuns struct {
-	Valid   int    `json:"valid"`
-	Passed  int    `json:"passed"`
-	Invalid int    `json:"invalid"`
-	Strikes int    `json:"strikes"`
-	Miss    string `json:"miss,omitempty"`
+	Valid    int    `json:"valid"`
+	Passed   int    `json:"passed"`
+	Invalid  int    `json:"invalid"`
+	Miss     string `json:"miss,omitempty"`
+	Baseline bool   `json:"baseline,omitempty"`
 }
 
 type acceptanceFile struct {
@@ -71,14 +71,12 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 		out.Trials[k] = v
 	}
 	r := out.Trials[tr.Name]
+	r.Baseline = r.Baseline || tr.Expect == "" && label == rangevm.LabelBaseline
 	switch {
 	case tr.Expect != "" && verdict == tr.Expect:
 		r.Valid = min(r.Valid+1, tr.Count)
 	case tr.Expect != "" || verdict != rangevm.Pass && verdict != rangevm.Miss:
 		r.Invalid = min(r.Invalid+1, maxInvalid)
-		if tr.Expect == "" && label != rangevm.LabelBaseline {
-			r.Strikes = min(r.Strikes+1, r.Invalid)
-		}
 	case verdict == rangevm.Pass:
 		r.Valid = min(r.Valid+1, tr.Count)
 		if label != rangevm.LabelBaseline {
@@ -90,47 +88,56 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 			r.Miss = id
 		}
 	}
-	// The run that makes the metric a MISS through its INVALID runs is the MISS's result.
-	if r.Miss == "" && r.Strikes > 0 && a.Verdict(tr.Metric) != rangevm.Miss {
-		out.Trials[tr.Name] = r
-		if out.Verdict(tr.Metric) == rangevm.Miss {
-			r.Miss = id
-		}
-	}
 	out.Trials[tr.Name] = r
 	return out
 }
 
-// Verdict is metric's verdict so far: MISS once a counting run missed or the INVALID runs that may
-// decide it outnumber its runs, PASS when every run of its trials is a valid PASS that may pass it and every control gave
-// its verdict, else "" (still open, or measured only by baseline runs).
+// decides says whether runs of tr, recorded as r, may decide its metric: neither a control nor baseline.
+func decides(tr rangejob.Trial, r TrialRuns) bool {
+	return tr.Expect == "" && !r.Baseline
+}
+
+// Verdict is metric's verdict so far (ADR 0021): MISS once a run that may decide it missed; INVALID
+// once such a trial or one of its controls had more INVALID runs than its Count; PASS when every run
+// that may decide it passed and every control gave its verdict; else "" (still open, or measured only
+// by baseline runs). INVALID runs never make a MISS.
 func (a Acceptance) Verdict(metric string) string {
-	runs, invalid, passed, complete := 0, 0, true, true
+	deciding, passed, complete, invalid := 0, true, true, false
 	for _, tr := range rangejob.Trials() {
 		if tr.Metric != metric {
 			continue
 		}
 		r := a.Trials[tr.Name]
-		invalid += r.Strikes
-		if tr.Expect != "" {
-			complete = complete && r.Valid >= tr.Count
-			continue
-		}
-		runs += tr.Count
-		if r.Miss != "" {
+		switch {
+		case decides(tr, r) && r.Miss != "":
 			return rangevm.Miss
+		case tr.Expect != "":
+			complete = complete && r.Valid >= tr.Count
+			invalid = invalid || r.Invalid > tr.Count
+		case decides(tr, r):
+			deciding++
+			passed = passed && r.Passed >= tr.Count
+			invalid = invalid || r.Invalid > tr.Count
 		}
-		passed = passed && r.Passed >= tr.Count
 	}
 	switch {
-	case runs == 0:
-		return ""
-	case invalid > runs:
-		return rangevm.Miss
-	case passed && complete:
+	case invalid:
+		return rangevm.Invalid
+	case deciding > 0 && passed && complete:
 		return rangevm.Pass
 	}
 	return ""
+}
+
+// Metrics are the metrics of the trial table, in table order.
+func Metrics() []string {
+	var out []string
+	for _, tr := range rangejob.Trials() {
+		if !slices.Contains(out, tr.Metric) {
+			out = append(out, tr.Metric)
+		}
+	}
+	return out
 }
 
 // Next is the next trial of the suite to run: the first in table order whose metric is undecided,
@@ -184,12 +191,19 @@ func SaveAcceptance(path string, a Acceptance) error {
 	return nil
 }
 
-// decodeAcceptance returns the suite in data only if it is one object of this schema and of a full
-// commit id; if that is commit, it must name only trials of the table, each within its counts, else
-// a new suite of commit is returned. Errors are fixed text.
+// decodeAcceptance returns commit's suite in data: a new one if data names another full commit id,
+// else data must be one object of this schema naming only trials of the table, each within its
+// counts. Errors are fixed text.
 func decodeAcceptance(data []byte, commit string) (Acceptance, error) {
 	if len(data) > MaxAcceptanceBytes {
 		return Acceptance{}, fmt.Errorf("over %d bytes", MaxAcceptanceBytes)
+	}
+	// Another commit's suite, of any schema a later runner may write, only restarts the suite.
+	var owner struct {
+		Commit string `json:"commit"`
+	}
+	if err := json.Unmarshal(data, &owner); err == nil && buildinfo.IsCommitID(owner.Commit) && owner.Commit != commit {
+		return Acceptance{}.ForCommit(commit), nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -207,18 +221,19 @@ func decodeAcceptance(data []byte, commit string) (Acceptance, error) {
 		return Acceptance{}, errors.New("a full commit id and trials are required")
 	}
 	if f.Commit != commit {
-		return Acceptance{}.ForCommit(commit), nil
+		return Acceptance{}, errors.New("the suite is of another commit")
 	}
 	for name, r := range *f.Trials {
 		tr, ok := rangejob.Lookup(name)
 		switch {
 		case !ok:
 			return Acceptance{}, errors.New("a trial is not in the table")
-		case r.Valid < 0 || r.Valid > tr.Count || r.Passed < 0 || r.Passed > r.Valid || r.Invalid < 0 || r.Invalid > maxInvalid ||
-			r.Strikes < 0 || r.Strikes > r.Invalid:
+		case r.Valid < 0 || r.Valid > tr.Count || r.Passed < 0 || r.Passed > r.Valid || r.Invalid < 0 || r.Invalid > maxInvalid:
 			return Acceptance{}, errors.New("a trial's counts are out of range")
-		case tr.Expect != "" && (r.Passed != 0 || r.Strikes != 0 || r.Miss != ""):
-			return Acceptance{}, errors.New("a control passed or missed a metric")
+		case (tr.Expect != "" || r.Baseline) && (r.Passed != 0 || r.Miss != ""):
+			return Acceptance{}, errors.New("a control or baseline passed or missed a metric")
+		case tr.Expect != "" && r.Baseline:
+			return Acceptance{}, errors.New("a control is baseline")
 		case r.Miss != "" && !resultName.MatchString(r.Miss):
 			return Acceptance{}, errors.New("a miss is not a result id")
 		}

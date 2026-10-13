@@ -189,6 +189,7 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 	var errs []error
 	var planned time.Duration
 	var ids []string
+	saved := true
 	for ctx.Err() == nil {
 		tr, ok := acc.Next()
 		if !ok || planned+tr.Wall+rangejob.Setup > rangejob.Batch {
@@ -211,8 +212,9 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 			next := acc.Record(tr, run.Label, run.Verdict, id)
 			if err := SaveAcceptance(r.acceptancePath(), next); err != nil {
 				// Unsaved, the run did not happen for the suite: its result says so and it runs again.
+				// A save can fail after its rename, so nothing is saved after it in this batch.
 				run.Verdict, run.Reason = rangevm.Invalid, "the acceptance suite could not be saved"
-				runErr = errors.Join(runErr, err)
+				runErr, saved = errors.Join(runErr, err), false
 				break
 			}
 			acc = next
@@ -222,10 +224,12 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 			break
 		}
 	}
-	errs = append(errs, SaveAcceptance(r.acceptancePath(), acc))
+	if saved {
+		errs = append(errs, SaveAcceptance(r.acceptancePath(), acc))
+	}
 	if len(ids) > 0 {
 		// Every result of this batch is kept whatever its name says (T22), and every MISS that stands.
-		pins := ids[:len(ids)-1]
+		pins := slices.Clone(ids[:len(ids)-1])
 		for _, t := range acc.Trials {
 			if t.Miss != "" {
 				pins = append(pins, t.Miss)
@@ -233,7 +237,7 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 		}
 		errs = append(errs, prune(filepath.Join(r.Results, LabelAcceptance), KeepAcceptance, ids[len(ids)-1], pins...))
 	}
-	for _, m := range []string{"sustained_rate", "burst_rate", "crash_loss_ms"} {
+	for _, m := range Metrics() {
 		r.Log.Info("acceptance", "commit", acc.Commit, "metric", m, "verdict", acc.Verdict(m), "rule", RuleVersion)
 	}
 	return errors.Join(errs...)

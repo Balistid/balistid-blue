@@ -1517,10 +1517,15 @@ func TestABatchFitsTheKeptBytes(t *testing.T) {
 	}
 }
 
-// The self-test goes first: while evidence is due no batch runs.
+// The self-test goes first: while evidence is due no batch runs, even on the batch's turn.
 func TestNoBatchWhileEvidenceIsDue(t *testing.T) {
 	tr := newTestRunner(t, time.Now(), Ledger{})
 	tr.vm.outcome = suiteOutcome
+	turn := Acceptance{}.ForCommit(testCommit)
+	turn.BatchTurn = true
+	if err := SaveAcceptance(filepath.Join(tr.State, "acceptance.json"), turn); err != nil {
+		t.Fatal(err)
+	}
 	if err := tr.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
