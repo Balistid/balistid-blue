@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -433,5 +434,35 @@ func TestTailRefusesARotationInsideTheStartingLine(t *testing.T) {
 	l.write(execLine("balistid-n-1"))
 	if got, err := readAll(t, &tail); err == nil {
 		t.Errorf("read %q across a rotation inside the starting line", got)
+	}
+}
+
+// The records counted as outside are kept, at most three and cut to 2000 bytes, so a run shows what
+// Laurel wrote; numbers above the generated count are listed as well.
+func TestFollowerKeepsWhatItCountedOutside(t *testing.T) {
+	l := newLaurel(t)
+	fl := NewFollower(l.path, rangejob.LoadExec, 0)
+	if err := fl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	long := execLine("balistid-n-" + strings.Repeat("9", 3000))
+	l.write(execLine("balistid-n-1"), execLine("balistid-n-07"), execLine("balistid-n-0"), long,
+		execLine("balistid-n-x"), execLine("balistid-n-2"), execLine("balistid-n-5"))
+	nums, err := fl.Finish(t.Context(), "balistid-canary-y", func(context.Context) error {
+		l.write(execLine("balistid-canary-y"))
+		return nil
+	}, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := fl.Outside()
+	if len(kept) != 3 || kept[0] != execLine("balistid-n-07") || kept[1] != execLine("balistid-n-0") || len(kept[2]) != 2000 {
+		t.Fatalf("kept %d records: %.80q", len(kept), kept)
+	}
+	if _, _, _, o := nums.Count(2); o != 5 {
+		t.Errorf("outside %d, want 5 (07, 0, the long one, x, 5)", o)
+	}
+	if above := nums.Above(2, 3); !slices.Equal(above, []uint64{5}) {
+		t.Errorf("above %v", above)
 	}
 }

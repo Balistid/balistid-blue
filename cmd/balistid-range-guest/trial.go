@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -95,6 +96,16 @@ func runTrial(ctx context.Context, name, phase string) error {
 		follow = followErr.Error()
 	} else {
 		stored, missing, duplicate, outside = nums.Count(generated)
+	}
+	if outside > 0 {
+		// Show what counted as outside: Laurel's log is gone after the run. Quoted, so a record cannot
+		// put a line of its own, such as a mark, on the console.
+		for _, rec := range fl.Outside() {
+			fmt.Printf("balistid-range-guest: outside record: %q\n", rec)
+		}
+		if nums != nil {
+			fmt.Printf("balistid-range-guest: outside numbers above %d: %v\n", generated, nums.Above(generated, 3))
+		}
 	}
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	add(rangevm.FactGenerated, u(generated))
