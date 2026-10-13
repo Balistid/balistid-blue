@@ -208,8 +208,14 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 		case ctx.Err() != nil:
 			run.Verdict, run.Reason = rangevm.Invalid, "the runner was stopped"
 		case !run.host:
-			acc = acc.Record(tr, run.Label, run.Verdict, id)
-			runErr = errors.Join(runErr, SaveAcceptance(r.acceptancePath(), acc))
+			next := acc.Record(tr, run.Label, run.Verdict, id)
+			if err := SaveAcceptance(r.acceptancePath(), next); err != nil {
+				// Unsaved, the run did not happen for the suite: its result says so and it runs again.
+				run.Verdict, run.Reason = rangevm.Invalid, "the acceptance suite could not be saved"
+				runErr = errors.Join(runErr, err)
+				break
+			}
+			acc = next
 		}
 		errs = append(errs, runErr, r.finish(dir, r.result(id, LabelAcceptance, img, info, []Run{run}), map[string][]byte{"serial.txt": serial}))
 		if runErr != nil {

@@ -90,6 +90,13 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 			r.Miss = id
 		}
 	}
+	// The run that makes the metric a MISS through its INVALID runs is the MISS's result.
+	if r.Miss == "" && r.Strikes > 0 && a.Verdict(tr.Metric) != rangevm.Miss {
+		out.Trials[tr.Name] = r
+		if out.Verdict(tr.Metric) == rangevm.Miss {
+			r.Miss = id
+		}
+	}
 	out.Trials[tr.Name] = r
 	return out
 }
