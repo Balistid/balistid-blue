@@ -1,9 +1,9 @@
 package rangerun
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -94,27 +94,6 @@ func TestAMissStandsAndStopsTheMetric(t *testing.T) {
 	}
 }
 
-// INVALID runs repeat; once they outnumber the metric's runs the metric is a MISS. A control that
-// gives the other verdict is INVALID, never a MISS of the metric.
-func TestInvalidRunsRepeatThenMiss(t *testing.T) {
-	burst := tableTrial(t, "rate-burst")
-	a := Acceptance{}.ForCommit(testCommit)
-	for i := range burst.Count {
-		a = a.Record(burst, counted, rangevm.Invalid, resultID)
-		if tr, ok := a.Next(); !ok || a.Verdict("burst_rate") != "" {
-			t.Fatalf("after %d INVALID: next %v %v, verdict %q", i+1, tr.Name, ok, a.Verdict("burst_rate"))
-		}
-	}
-	if a = a.Record(burst, counted, rangevm.Unknown, resultID); a.Verdict("burst_rate") != rangevm.Miss {
-		t.Fatalf("%d INVALID of %d runs: %q", a.Trials[burst.Name].Invalid, burst.Count, a.Verdict("burst_rate"))
-	}
-	drop := tableTrial(t, "rate-control-drop")
-	b := Acceptance{}.ForCommit(testCommit).Record(drop, rangevm.LabelControl, rangevm.Pass, resultID)
-	if r := b.Trials[drop.Name]; r.Invalid != 1 || r.Valid != 0 || r.Miss != "" {
-		t.Errorf("a control that passed instead of missing: %+v", r)
-	}
-}
-
 func TestANewCommitRestartsTheSuite(t *testing.T) {
 	a := Acceptance{}.ForCommit(testCommit).Record(tableTrial(t, "rate-sustained"), counted, rangevm.Miss, resultID)
 	if b := a.ForCommit(testCommit); b.Trials["rate-sustained"].Miss == "" {
@@ -163,7 +142,7 @@ func TestAcceptanceRoundTripsAndRefusesWhatItWouldNotWrite(t *testing.T) {
 		t.Error("saved a suite of no full commit")
 	}
 	// Another commit's suite is not checked against this table, which may have renamed its trials.
-	other := `{"schema_version":1,"commit":"` + strings.Repeat("b", 40) + `","trials":{"rate-old":{"valid":9,"passed":0,"invalid":0,"strikes":0}}}`
+	other := `{"schema_version":2,"commit":"` + strings.Repeat("b", 40) + `","trials":{"rate-old":{"valid":9}},"new":1}`
 	if err := os.WriteFile(path, []byte(other), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -172,58 +151,72 @@ func TestAcceptanceRoundTripsAndRefusesWhatItWouldNotWrite(t *testing.T) {
 	}
 }
 
-// Only INVALID runs that may decide a metric add up to its MISS: never a baseline's or a control's.
-func TestOnlyDecidingInvalidsMakeAMiss(t *testing.T) {
+// INVALID runs repeat, then the trial gives up and its metric is INVALID, never a MISS (ADR 0021):
+// a counting trial's and a control's alike. A control that gives the other verdict is INVALID.
+func TestInvalidRunsMakeAnInvalidMetricNeverAMiss(t *testing.T) {
 	burst, drop := tableTrial(t, "rate-burst"), tableTrial(t, "rate-control-drop")
+	a := Acceptance{}.ForCommit(testCommit)
+	for i := range burst.Count + 1 {
+		if v := a.Verdict("burst_rate"); v != "" {
+			t.Fatalf("after %d INVALID: %q", i, v)
+		}
+		a = a.Record(burst, counted, rangevm.Invalid, resultID)
+	}
+	if v, r := a.Verdict("burst_rate"), a.Trials[burst.Name]; v != rangevm.Invalid || r.Miss != "" {
+		t.Fatalf("verdict %q, runs %+v", v, r)
+	}
+	if tr, ok := a.Next(); ok && tr.Metric == "burst_rate" {
+		t.Errorf("an INVALID metric runs again: %s", tr.Name)
+	}
+	b := Acceptance{}.ForCommit(testCommit)
+	for range drop.Count + 1 {
+		b = b.Record(drop, rangevm.LabelControl, rangevm.Pass, resultID)
+	}
+	if v, r := b.Verdict("sustained_rate"), b.Trials[drop.Name]; v != rangevm.Invalid || r.Valid != 0 || r.Miss != "" {
+		t.Errorf("a control that passed instead of missing: %q, %+v", v, r)
+	}
+	// A MISS is never replaced by INVALID runs after it.
+	c := Acceptance{}.ForCommit(testCommit).Record(burst, counted, rangevm.Miss, resultID)
+	for range burst.Count + 1 {
+		c = c.Record(burst, counted, rangevm.Invalid, resultID)
+	}
+	if v := c.Verdict("burst_rate"); v != rangevm.Miss {
+		t.Errorf("INVALID replaced a MISS: %q", v)
+	}
+}
+
+// Baseline INVALID runs decide nothing either; the trial gives up so the suite ends.
+func TestBaselineInvalidsDecideNothing(t *testing.T) {
+	burst := tableTrial(t, "rate-burst")
 	a := Acceptance{}.ForCommit(testCommit)
 	for range 10 {
 		a = a.Record(burst, rangevm.LabelBaseline, rangevm.Invalid, resultID)
-		a = a.Record(drop, rangevm.LabelControl, rangevm.Invalid, resultID)
 	}
 	if v := a.Verdict("burst_rate"); v != "" {
 		t.Errorf("baseline INVALIDs decided burst_rate: %q", v)
 	}
-	if v := a.Verdict("sustained_rate"); v != "" {
-		t.Errorf("control INVALIDs decided sustained_rate: %q", v)
-	}
-	if r := a.Trials[burst.Name]; r.Invalid != 10 || r.Strikes != 0 {
-		t.Errorf("baseline runs %+v", r)
+	if tr, ok := a.Next(); ok && tr.Name == burst.Name {
+		t.Error("a baseline trial that cannot measure holds the suite")
 	}
 }
 
-// A trial that keeps coming out INVALID gives up after Count+1 tries, so the trials after it run.
-func TestATrialThatCannotMeasureGivesUp(t *testing.T) {
+// A control that cannot measure makes its metric INVALID, and the suite moves on to other metrics.
+func TestAControlThatCannotMeasureGivesUp(t *testing.T) {
 	sync := tableTrial(t, "reset-control-sync250")
 	a := Acceptance{}.ForCommit(testCommit)
-	for _, name := range []string{"rate-sustained", "rate-burst", "rate-control-drop"} {
-		tr := tableTrial(t, name)
-		for range tr.Count {
-			label, v := rangevm.LabelBaseline, rangevm.Pass
-			if tr.Expect != "" {
-				label, v = rangevm.LabelControl, tr.Expect
-			}
-			a = a.Record(tr, label, v, resultID)
-		}
-	}
-	for i := range sync.Count + 1 {
-		if next, ok := a.Next(); !ok || next.Name != sync.Name {
-			t.Fatalf("try %d: next %s", i+1, next.Name)
-		}
+	for range sync.Count + 1 {
 		a = a.Record(sync, rangevm.LabelControl, rangevm.Invalid, resultID)
 	}
-	if next, ok := a.Next(); !ok || next.Name == sync.Name {
-		t.Fatalf("after %d INVALID the suite still runs %s", sync.Count+1, next.Name)
+	if v := a.Verdict("crash_loss_ms"); v != rangevm.Invalid {
+		t.Fatalf("crash_loss_ms %q", v)
+	}
+	if tr, ok := a.Next(); !ok || tr.Metric == "crash_loss_ms" {
+		t.Fatalf("next %s %v", tr.Name, ok)
 	}
 }
 
-// A MISS made by INVALID runs stands with the result that made it, so retention keeps it.
-func TestAMissOfInvalidsKeepsItsResult(t *testing.T) {
-	burst := tableTrial(t, "rate-burst")
-	a := Acceptance{}.ForCommit(testCommit)
-	for i := range burst.Count + 1 {
-		a = a.Record(burst, counted, rangevm.Invalid, fmt.Sprintf("20261013T0900%02dZ-00000000", i))
-	}
-	if v, r := a.Verdict("burst_rate"), a.Trials[burst.Name]; v != rangevm.Miss || r.Miss != "20261013T090003Z-00000000" {
-		t.Fatalf("verdict %q, runs %+v", v, r)
+func TestMetricsAreTheTables(t *testing.T) {
+	if got := Metrics(); !slices.Equal(got, []string{"sustained_rate", "burst_rate", "crash_loss_ms"}) {
+		t.Errorf("metrics %v", got)
 	}
 }
