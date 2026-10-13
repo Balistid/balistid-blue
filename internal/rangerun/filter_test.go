@@ -59,7 +59,7 @@ func TestFilterInForceUnderARealFilter(t *testing.T) {
 		t.Fatalf("under the full filter: %s", out)
 	}
 	for i, d := range unitDenials {
-		if strings.Contains(masked, " "+d.name+" ") {
+		if slices.Contains(strings.Fields(masked), d.name) {
 			t.Logf("%s: the environment already denies it; not checked", d.name)
 			continue
 		}
