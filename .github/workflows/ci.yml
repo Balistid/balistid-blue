@@ -103,6 +103,8 @@ jobs:
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
       - name: Build and test as released (no cgo)
+        env:
+          BALISTID_REQUIRE_SECCOMP_TEST: "1" # the tick tripwire's seccomp test must run, not skip
         run: |
           go build ./...
           go test ./...
@@ -129,6 +131,8 @@ jobs:
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
       - name: Tests with the race detector (needs cgo)
+        env:
+          BALISTID_REQUIRE_SECCOMP_TEST: "1" # the tick tripwire's seccomp test must run, not skip
         run: CGO_ENABLED=1 go test -race ./...
 
   go-release:
