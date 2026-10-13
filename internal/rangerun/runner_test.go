@@ -1632,3 +1632,49 @@ func TestAnUnsavedRunIsInvalid(t *testing.T) {
 		t.Fatalf("suite %+v", a)
 	}
 }
+
+// An inbox the runner cannot read, which the agents can make so, never holds off acceptance.
+func TestAnUnreadableInboxDoesNotStopTheBatch(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	if err := os.Chmod(tr.Inbox, 0o700); err != nil { //nolint:gosec // a directory needs its x bit
+		t.Fatal(err)
+	}
+	if err := tr.Tick(t.Context()); err == nil || len(tr.vm.trials) == 0 {
+		t.Fatalf("tick %v, %d trials", err, len(tr.vm.trials))
+	}
+}
+
+// A run whose process the host could not start is the host's INVALID: not recorded, it runs again.
+func TestAHostStartFailureIsNotRecorded(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = func(rangevm.Limits) rangevm.Outcome {
+		return rangevm.Outcome{Invalid: "boot 1: start: no such file", Host: true}
+	}
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if a := tr.acceptance(t); len(tr.vm.trials) == 0 || a.Trials["rate-sustained"] != (TrialRuns{}) {
+		t.Fatalf("%d trials, suite %+v", len(tr.vm.trials), a)
+	}
+}
+
+// landed tells a save that failed after its rename, whose suite is on disk, from one that failed before.
+func TestLandedReadsTheSuiteOnDisk(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	a := Acceptance{}.ForCommit(testCommit)
+	a.Trials["rate-burst"] = TrialRuns{Valid: 1}
+	if tr.landed(a) {
+		t.Fatal("a suite never saved landed")
+	}
+	if err := SaveAcceptance(filepath.Join(tr.State, "acceptance.json"), a); err != nil {
+		t.Fatal(err)
+	}
+	b := a.Record(tableTrial(t, "rate-burst"), rangevm.LabelBaseline, rangevm.Pass, resultID)
+	if !tr.landed(a) || tr.landed(b) {
+		t.Fatal("landed does not compare with the disk")
+	}
+}

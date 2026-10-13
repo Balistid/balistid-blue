@@ -197,3 +197,19 @@ func TestRunCommandKeepsOutputWithinBudget(t *testing.T) {
 		t.Fatalf("output = %q", out.String())
 	}
 }
+
+// Only runCommand's own pipe and start failures are the host's.
+func TestHostFailureIsOnlyAStartFailure(t *testing.T) {
+	for why, want := range map[string]bool{
+		"start: fork/exec /usr/bin/qemu-system-x86_64: no such file or directory": true,
+		"pipe: too many open files": true,
+		"exit: exit status 1":       false,
+		"no exit within 5m0s":       false,
+		"":                          false,
+		"boot 1: start: x":          false,
+	} {
+		if got := hostFailure(why); got != want {
+			t.Errorf("hostFailure(%q) = %v", why, got)
+		}
+	}
+}

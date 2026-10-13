@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"syscall"
 	"time"
@@ -165,18 +166,21 @@ func (r *Runner) slot(ctx context.Context, l *Ledger, img image, now time.Time) 
 		return err
 	}
 	_, pending := acc.Next()
+	var jobErr error
 	if !acc.BatchTurn || !pending {
 		ran, err := r.agentJob(ctx, l, img, now)
-		if ran && pending {
+		switch {
+		case ran && pending:
 			// A job that failed still took its slot; the next one is the batch's.
 			acc.BatchTurn = true
 			return errors.Join(err, SaveAcceptance(r.acceptancePath(), acc))
-		}
-		if err != nil || !pending {
+		case !pending:
 			return err
 		}
+		// No job taken, also when the inbox cannot be read: an agent must not hold off acceptance.
+		jobErr = err
 	}
-	return r.batch(ctx, acc, img)
+	return errors.Join(jobErr, r.batch(ctx, acc, img))
 }
 
 // batch runs the suite's next trials while their walls and setup fit one batch (ADR 0018, point 5),
@@ -210,12 +214,13 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 			run.Verdict, run.Reason = rangevm.Invalid, "the runner was stopped"
 		case !run.host:
 			next := acc.Record(tr, run.Label, run.Verdict, id)
-			if err := SaveAcceptance(r.acceptancePath(), next); err != nil {
+			if err := SaveAcceptance(r.acceptancePath(), next); err != nil && !r.landed(next) {
 				// Unsaved, the run did not happen for the suite: its result says so and it runs again.
-				// A save can fail after its rename, so nothing is saved after it in this batch.
 				run.Verdict, run.Reason = rangevm.Invalid, "the acceptance suite could not be saved"
 				runErr, saved = errors.Join(runErr, err), false
 				break
+			} else if err != nil {
+				runErr = errors.Join(runErr, err) // it failed after its rename: the run stands
 			}
 			acc = next
 		}
@@ -241,6 +246,13 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 		r.Log.Info("acceptance", "commit", acc.Commit, "metric", m, "verdict", acc.Verdict(m), "rule", RuleVersion)
 	}
 	return errors.Join(errs...)
+}
+
+// landed says whether the suite on disk is want, as after a save that failed after its rename. A
+// suite that cannot be read is not.
+func (r *Runner) landed(want Acceptance) bool {
+	got, err := LoadAcceptance(r.acceptancePath(), r.Commit)
+	return err == nil && reflect.DeepEqual(got, want)
 }
 
 // trialRun runs tr once with its table limits, judges it as a trial and keeps its measures.
@@ -554,7 +566,7 @@ func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer
 	case errors.Is(cause, ErrMemoryReserve), errors.Is(cause, ErrMemoryUnknown):
 		run = Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error(), host: true}
 	case o.Invalid != "":
-		run = Run{Verdict: rangevm.Invalid, Reason: o.Invalid}
+		run = Run{Verdict: rangevm.Invalid, Reason: o.Invalid, host: o.Host}
 	default:
 		run = judge(o)
 	}

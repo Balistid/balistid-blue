@@ -381,3 +381,26 @@ func TestPrepareKeepsRunsErrorText(t *testing.T) {
 		t.Errorf("prepare = %v, want \"results disk: open …\"", err)
 	}
 }
+
+// A process the host could not start, the overlay's or QEMU's, makes the run the host's INVALID.
+func TestAStartFailureIsTheHosts(t *testing.T) {
+	lim := Limits{Trial: "rate-burst", Wall: time.Minute, Serial: 1 << 20, Boots: 1}
+	for name, failAt := range map[string]int{"overlay": 1, "boot": 2} {
+		calls := 0
+		o, _ := runFake(t, lim, func(context.Context, []string, time.Duration, int64, io.Writer) string {
+			if calls++; calls == failAt {
+				return "start: fork/exec: no such file or directory"
+			}
+			return ""
+		})
+		if !o.Host || o.Invalid == "" {
+			t.Errorf("%s: %+v", name, o)
+		}
+	}
+	o, _ := runFake(t, lim, func(context.Context, []string, time.Duration, int64, io.Writer) string {
+		return "exit: exit status 1"
+	})
+	if o.Host {
+		t.Errorf("an exit status is the host's: %+v", o)
+	}
+}
