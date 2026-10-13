@@ -1,7 +1,6 @@
 package rangerun
 
 import (
-	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,13 +12,13 @@ import (
 	"testing"
 )
 
-// requireFilterTest names the env variable CI sets: there a missing bwrap, or an environment that
+// requireFilterTest names the env variable CI sets: there a missing python3, or an environment that
 // masks every probed call, fails the test instead of skipping it, so the regression stays guarded.
 const requireFilterTest = "BALISTID_REQUIRE_SECCOMP_TEST"
 
 // filterChild names the env variable that makes the test binary a child that reports what
-// filterInForce says. The parent runs it under bwrap --seccomp with a filter denying the listed
-// syscall numbers with EPERM, as the tick unit's filter does (no unsafe: the filter is bytes).
+// filterInForce says. The parent runs it under a seccomp filter denying the listed syscall numbers
+// with EPERM, as the tick unit's filter does.
 const filterChild = "BALISTID_FILTER_CHILD"
 
 // unitDenials is what the tick unit denies, one call per clause of its SystemCallFilter=~ line and
@@ -82,67 +81,28 @@ func TestFilterInForceUnderARealFilter(t *testing.T) {
 }
 
 // child runs the test binary as a filter child: mode probe reports which calls already get EPERM;
-// mode filter runs filterInForce under a seccomp filter denying nrs, applied by bwrap.
+// mode filter runs filterInForce under a seccomp filter denying nrs, which tools/ci/seccomp_exec.py
+// installs before it execs the child (the filter is passed by pointer, and Go here may not use unsafe).
 func child(t *testing.T, mode string, nrs []string) string {
 	t.Helper()
-	bwrap, err := exec.LookPath("bwrap")
-	if err != nil {
-		if os.Getenv(requireFilterTest) != "" {
-			t.Fatalf("bwrap is not installed, and %s requires this test", requireFilterTest)
-		}
-		t.Skip("bwrap is not installed: the filter cannot be applied without unsafe")
-	}
 	argv := []string{os.Args[0], "-test.run=^TestFilterChild$"}
-	var extra []*os.File
 	if mode == "filter" {
-		prog := filepath.Join(t.TempDir(), "filter.bpf")
-		if err := os.WriteFile(prog, denyWithEPERM(t, nrs), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		f, err := os.Open(prog) //nolint:gosec // the test's own file
+		python, err := exec.LookPath("python3")
 		if err != nil {
-			t.Fatal(err)
+			if os.Getenv(requireFilterTest) != "" {
+				t.Fatalf("python3 is not installed, and %s requires this test", requireFilterTest)
+			}
+			t.Skip("python3 is not installed: the filter cannot be applied without unsafe")
 		}
-		defer f.Close() //nolint:errcheck // read-only
-		extra = []*os.File{f}
-		argv = append([]string{bwrap, "--dev-bind", "/", "/", "--seccomp", "3"}, argv...)
+		argv = append([]string{python, filepath.Join("..", "..", "tools", "ci", "seccomp_exec.py"), strings.Join(nrs, ",")}, argv...)
 	}
-	cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...) //nolint:gosec // bwrap and the test binary itself
+	cmd := exec.CommandContext(t.Context(), argv[0], argv[1:]...) //nolint:gosec // python3 and the test binary itself
 	cmd.Env = append(os.Environ(), filterChild+"="+mode)
-	cmd.ExtraFiles = extra
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("filter child %s: %v: %s", mode, err, out)
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// denyWithEPERM is a seccomp BPF program, as bytes of struct sock_filter, that answers the syscall
-// numbers nrs with EPERM and allows everything else.
-func denyWithEPERM(t *testing.T, nrs []string) []byte {
-	t.Helper()
-	const (
-		ldAbsW   = 0x20 // BPF_LD | BPF_W | BPF_ABS: A = seccomp_data.nr
-		jeqK     = 0x15 // BPF_JMP | BPF_JEQ | BPF_K
-		retK     = 0x06 // BPF_RET | BPF_K
-		retAllow = 0x7fff0000
-		retErrno = 0x00050000
-	)
-	ins := func(b []byte, code uint16, jt, jf uint8, k uint32) []byte {
-		b = binary.LittleEndian.AppendUint16(b, code)
-		b = append(b, jt, jf)
-		return binary.LittleEndian.AppendUint32(b, k)
-	}
-	prog := ins(nil, ldAbsW, 0, 0, 0)
-	for _, s := range nrs {
-		nr, err := strconv.ParseUint(s, 10, 32)
-		if err != nil {
-			t.Fatal(err)
-		}
-		prog = ins(prog, jeqK, 0, 1, uint32(nr))
-		prog = ins(prog, retK, 0, 0, retErrno|uint32(syscall.EPERM))
-	}
-	return ins(prog, retK, 0, 0, retAllow)
 }
 
 // TestFilterChild is the child's body; run on its own it does nothing.
