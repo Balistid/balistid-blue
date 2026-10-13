@@ -35,11 +35,14 @@ type Acceptance struct {
 
 // TrialRuns counts a trial's runs. Valid runs gave a verdict that counts: PASS or MISS of a trial, the
 // expected verdict of a control. Passed are valid PASS runs that may pass a metric (not baseline).
-// Miss is the result id of the MISS that stands for the commit.
+// Invalid counts every INVALID run, Strikes only those of runs that may decide the metric (neither
+// baseline nor control): only they can add up to a MISS. Miss is the result id of the MISS that
+// stands for the commit.
 type TrialRuns struct {
 	Valid   int    `json:"valid"`
 	Passed  int    `json:"passed"`
 	Invalid int    `json:"invalid"`
+	Strikes int    `json:"strikes"`
 	Miss    string `json:"miss,omitempty"`
 }
 
@@ -73,6 +76,9 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 		r.Valid = min(r.Valid+1, tr.Count)
 	case tr.Expect != "" || verdict != rangevm.Pass && verdict != rangevm.Miss:
 		r.Invalid = min(r.Invalid+1, maxInvalid)
+		if tr.Expect == "" && label != rangevm.LabelBaseline {
+			r.Strikes = min(r.Strikes+1, r.Invalid)
+		}
 	case verdict == rangevm.Pass:
 		r.Valid = min(r.Valid+1, tr.Count)
 		if label != rangevm.LabelBaseline {
@@ -88,8 +94,8 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 	return out
 }
 
-// Verdict is metric's verdict so far: MISS once a counting run missed or its INVALID runs outnumber
-// its runs, PASS when every run of its trials is a valid PASS that may pass it and every control gave
+// Verdict is metric's verdict so far: MISS once a counting run missed or the INVALID runs that may
+// decide it outnumber its runs, PASS when every run of its trials is a valid PASS that may pass it and every control gave
 // its verdict, else "" (still open, or measured only by baseline runs).
 func (a Acceptance) Verdict(metric string) string {
 	runs, invalid, passed, complete := 0, 0, true, true
@@ -98,7 +104,7 @@ func (a Acceptance) Verdict(metric string) string {
 			continue
 		}
 		r := a.Trials[tr.Name]
-		invalid += r.Invalid
+		invalid += r.Strikes
 		if tr.Expect != "" {
 			complete = complete && r.Valid >= tr.Count
 			continue
@@ -120,28 +126,31 @@ func (a Acceptance) Verdict(metric string) string {
 	return ""
 }
 
-// Next is the next trial of the suite to run: the first in table order whose metric is undecided and
-// that has fewer valid runs than its Count. ok is false when the suite has nothing left to run.
+// Next is the next trial of the suite to run: the first in table order whose metric is undecided,
+// that has fewer valid runs than its Count and no more INVALID runs than its Count, so a trial that
+// cannot measure gives up instead of holding every batch. ok is false when nothing is left to run.
 func (a Acceptance) Next() (tr rangejob.Trial, ok bool) {
 	for _, t := range rangejob.Trials() {
-		if a.Verdict(t.Metric) == "" && a.Trials[t.Name].Valid < t.Count {
+		if r := a.Trials[t.Name]; a.Verdict(t.Metric) == "" && r.Valid < t.Count && r.Invalid <= t.Count {
 			return t, true
 		}
 	}
 	return rangejob.Trial{}, false
 }
 
-// LoadAcceptance reads path as LoadLedger reads the ledger. A missing file is an empty suite of no
-// commit, so ForCommit starts one; anything else wrong is an error whose text never quotes the file.
-func LoadAcceptance(path string) (Acceptance, error) {
+// LoadAcceptance reads commit's suite from path as LoadLedger reads the ledger. A missing file, or
+// a well-formed one of another commit, starts a new suite: another commit's trials are not checked
+// against this table, which may have renamed them. Anything else wrong is an error whose text never
+// quotes the file.
+func LoadAcceptance(path, commit string) (Acceptance, error) {
 	data, err := readFile(path, MaxAcceptanceBytes)
 	if errors.Is(err, fs.ErrNotExist) {
-		return Acceptance{Trials: map[string]TrialRuns{}}, nil
+		return Acceptance{}.ForCommit(commit), nil
 	}
 	if err != nil {
 		return Acceptance{}, fmt.Errorf("acceptance: %w", err)
 	}
-	a, err := decodeAcceptance(data)
+	a, err := decodeAcceptance(data, commit)
 	if err != nil {
 		return Acceptance{}, fmt.Errorf("acceptance %s is corrupt: %w", path, err)
 	}
@@ -159,7 +168,7 @@ func SaveAcceptance(path string, a Acceptance) error {
 	if err != nil {
 		return fmt.Errorf("save acceptance: %w", err)
 	}
-	if _, err := decodeAcceptance(data); err != nil {
+	if _, err := decodeAcceptance(data, a.Commit); err != nil {
 		return fmt.Errorf("save acceptance %s: %w", path, err)
 	}
 	if err := rangevm.WriteFileAtomic(path, data, 0o600); err != nil {
@@ -168,9 +177,10 @@ func SaveAcceptance(path string, a Acceptance) error {
 	return nil
 }
 
-// decodeAcceptance returns the suite in data only if it is one object of this schema, of a full
-// commit id, naming only trials of the table, each within its counts. Errors are fixed text.
-func decodeAcceptance(data []byte) (Acceptance, error) {
+// decodeAcceptance returns the suite in data only if it is one object of this schema and of a full
+// commit id; if that is commit, it must name only trials of the table, each within its counts, else
+// a new suite of commit is returned. Errors are fixed text.
+func decodeAcceptance(data []byte, commit string) (Acceptance, error) {
 	if len(data) > MaxAcceptanceBytes {
 		return Acceptance{}, fmt.Errorf("over %d bytes", MaxAcceptanceBytes)
 	}
@@ -189,14 +199,18 @@ func decodeAcceptance(data []byte) (Acceptance, error) {
 	if !buildinfo.IsCommitID(f.Commit) || f.Trials == nil {
 		return Acceptance{}, errors.New("a full commit id and trials are required")
 	}
+	if f.Commit != commit {
+		return Acceptance{}.ForCommit(commit), nil
+	}
 	for name, r := range *f.Trials {
 		tr, ok := rangejob.Lookup(name)
 		switch {
 		case !ok:
 			return Acceptance{}, errors.New("a trial is not in the table")
-		case r.Valid < 0 || r.Valid > tr.Count || r.Passed < 0 || r.Passed > r.Valid || r.Invalid < 0 || r.Invalid > maxInvalid:
+		case r.Valid < 0 || r.Valid > tr.Count || r.Passed < 0 || r.Passed > r.Valid || r.Invalid < 0 || r.Invalid > maxInvalid ||
+			r.Strikes < 0 || r.Strikes > r.Invalid:
 			return Acceptance{}, errors.New("a trial's counts are out of range")
-		case tr.Expect != "" && (r.Passed != 0 || r.Miss != ""):
+		case tr.Expect != "" && (r.Passed != 0 || r.Strikes != 0 || r.Miss != ""):
 			return Acceptance{}, errors.New("a control passed or missed a metric")
 		case r.Miss != "" && !resultName.MatchString(r.Miss):
 			return Acceptance{}, errors.New("a miss is not a result id")

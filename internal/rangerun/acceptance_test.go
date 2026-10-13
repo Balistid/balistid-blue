@@ -127,14 +127,14 @@ func TestANewCommitRestartsTheSuite(t *testing.T) {
 
 func TestAcceptanceRoundTripsAndRefusesWhatItWouldNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "acceptance.json")
-	if a, err := LoadAcceptance(path); err != nil || a.Commit != "" || len(a.Trials) != 0 {
+	if a, err := LoadAcceptance(path, testCommit); err != nil || a.Commit != testCommit || len(a.Trials) != 0 {
 		t.Fatalf("missing file: %+v, %v", a, err)
 	}
 	a := Acceptance{}.ForCommit(testCommit).Record(tableTrial(t, "rate-sustained"), counted, rangevm.Miss, resultID)
 	if err := SaveAcceptance(path, a); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := LoadAcceptance(path); err != nil || got.Trials["rate-sustained"] != a.Trials["rate-sustained"] {
+	if got, err := LoadAcceptance(path, testCommit); err != nil || got.Trials["rate-sustained"] != a.Trials["rate-sustained"] {
 		t.Fatalf("loaded %+v, %v", got, err)
 	}
 	head := `{"schema_version":1,"commit":"` + testCommit + `","trials":`
@@ -154,11 +154,63 @@ func TestAcceptanceRoundTripsAndRefusesWhatItWouldNotWrite(t *testing.T) {
 		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := LoadAcceptance(path); err == nil || strings.Contains(err.Error(), "../x") {
+		if _, err := LoadAcceptance(path, testCommit); err == nil || strings.Contains(err.Error(), "../x") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if err := SaveAcceptance(path, Acceptance{Commit: "short"}); err == nil {
 		t.Error("saved a suite of no full commit")
+	}
+	// Another commit's suite is not checked against this table, which may have renamed its trials.
+	other := `{"schema_version":1,"commit":"` + strings.Repeat("b", 40) + `","trials":{"rate-old":{"valid":9,"passed":0,"invalid":0,"strikes":0}}}`
+	if err := os.WriteFile(path, []byte(other), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := LoadAcceptance(path, testCommit); err != nil || a.Commit != testCommit || len(a.Trials) != 0 {
+		t.Errorf("another commit's suite: %+v, %v", a, err)
+	}
+}
+
+// Only INVALID runs that may decide a metric add up to its MISS: never a baseline's or a control's.
+func TestOnlyDecidingInvalidsMakeAMiss(t *testing.T) {
+	burst, drop := tableTrial(t, "rate-burst"), tableTrial(t, "rate-control-drop")
+	a := Acceptance{}.ForCommit(testCommit)
+	for range 10 {
+		a = a.Record(burst, rangevm.LabelBaseline, rangevm.Invalid, resultID)
+		a = a.Record(drop, rangevm.LabelControl, rangevm.Invalid, resultID)
+	}
+	if v := a.Verdict("burst_rate"); v != "" {
+		t.Errorf("baseline INVALIDs decided burst_rate: %q", v)
+	}
+	if v := a.Verdict("sustained_rate"); v != "" {
+		t.Errorf("control INVALIDs decided sustained_rate: %q", v)
+	}
+	if r := a.Trials[burst.Name]; r.Invalid != 10 || r.Strikes != 0 {
+		t.Errorf("baseline runs %+v", r)
+	}
+}
+
+// A trial that keeps coming out INVALID gives up after Count+1 tries, so the trials after it run.
+func TestATrialThatCannotMeasureGivesUp(t *testing.T) {
+	sync := tableTrial(t, "reset-control-sync250")
+	a := Acceptance{}.ForCommit(testCommit)
+	for _, name := range []string{"rate-sustained", "rate-burst", "rate-control-drop"} {
+		tr := tableTrial(t, name)
+		for range tr.Count {
+			label, v := rangevm.LabelBaseline, rangevm.Pass
+			if tr.Expect != "" {
+				label, v = rangevm.LabelControl, tr.Expect
+			}
+			a = a.Record(tr, label, v, resultID)
+		}
+	}
+	for i := range sync.Count + 1 {
+		if next, ok := a.Next(); !ok || next.Name != sync.Name {
+			t.Fatalf("try %d: next %s", i+1, next.Name)
+		}
+		a = a.Record(sync, rangevm.LabelControl, rangevm.Invalid, resultID)
+	}
+	if next, ok := a.Next(); !ok || next.Name == sync.Name {
+		t.Fatalf("after %d INVALID the suite still runs %s", sync.Count+1, next.Name)
 	}
 }

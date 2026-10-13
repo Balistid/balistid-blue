@@ -1358,7 +1358,7 @@ func suiteOutcome(lim rangevm.Limits) rangevm.Outcome {
 
 func (tr testRunner) acceptance(t *testing.T) Acceptance {
 	t.Helper()
-	a, err := LoadAcceptance(filepath.Join(tr.State, "acceptance.json"))
+	a, err := LoadAcceptance(filepath.Join(tr.State, "acceptance.json"), testCommit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1428,11 +1428,14 @@ func TestBatchesAndAgentJobsTakeTurns(t *testing.T) {
 func TestAStoppedBatchRunIsNotRecorded(t *testing.T) {
 	now := time.Now()
 	tr := newTestRunner(t, now, evidenceDone(now))
+	// The stop comes as QEMU exits after a run that would PASS.
+	tr.vm.outcome = suiteOutcome
 	ctx, cancel := context.WithCancel(t.Context())
 	trial := tr.trial
 	tr.trial = func(c context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+		o, err := trial(c, base, parent, serial, lim)
 		cancel()
-		return trial(c, base, parent, serial, lim)
+		return o, err
 	}
 	if err := tr.Tick(ctx); err != nil {
 		t.Fatal(err)
@@ -1440,7 +1443,7 @@ func TestAStoppedBatchRunIsNotRecorded(t *testing.T) {
 	if a := tr.acceptance(t); len(tr.vm.trials) != 1 || a.Trials["rate-sustained"] != (TrialRuns{}) {
 		t.Fatalf("%d runs, suite %+v", len(tr.vm.trials), a)
 	}
-	if res := tr.results(t, LabelAcceptance); len(res) != 1 || res[0].Verdict != rangevm.Invalid {
+	if res := tr.results(t, LabelAcceptance); len(res) != 1 || res[0].Verdict != rangevm.Invalid || res[0].Reason != "the runner was stopped" {
 		t.Fatalf("results %+v", res)
 	}
 }
@@ -1500,14 +1503,98 @@ func TestTheSuiteNeverStopsTheRunner(t *testing.T) {
 	}
 }
 
-// A batch keeps no more than one job may: maxKeptBytes bounds what the results need.
+// A batch keeps no more than one job may: maxKeptBytes bounds what the results need. Each run keeps
+// its serial log of every boot, escaped up to 4x, and its result.json.
 func TestABatchFitsTheKeptBytes(t *testing.T) {
-	shortest := rangejob.Batch
+	shortest, worst := rangejob.Batch, int64(0)
 	for _, tr := range rangejob.Trials() {
 		shortest = min(shortest, tr.Wall+rangejob.Setup)
+		worst = max(worst, 4*int64(tr.Boots)*tr.Serial+1<<20)
 	}
 	runs := int64(rangejob.Batch / shortest)
-	if kept := runs * (4*rangevm.SerialBudget + 1<<20); kept > maxKeptBytes {
+	if kept := runs * worst; kept > maxKeptBytes {
 		t.Fatalf("a batch of %d runs keeps %d bytes, over %d", runs, kept, int64(maxKeptBytes))
+	}
+}
+
+// The self-test goes first: while evidence is due no batch runs.
+func TestNoBatchWhileEvidenceIsDue(t *testing.T) {
+	tr := newTestRunner(t, time.Now(), Ledger{})
+	tr.vm.outcome = suiteOutcome
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(tr.vm.trials) != 0 || len(tr.vm.disks) != 1 {
+		t.Fatalf("trials %+v, runs %d", tr.vm.trials, len(tr.vm.disks))
+	}
+}
+
+// An agent's trial job, even of a trial the suite still needs, never counts for it.
+func TestAnAgentTrialIsNotAcceptance(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	tr.addJob(t, "job-1", `{"schema_version":1,"kind":"trial","trial":"rate-sustained","trials":2}`, nil)
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if a := tr.acceptance(t); len(tr.vm.trials) != 2 || a.Trials["rate-sustained"] != (TrialRuns{}) || !a.BatchTurn {
+		t.Fatalf("%d trials, suite %+v", len(tr.vm.trials), a)
+	}
+}
+
+// Setup counts: after the two sustained runs, five 5 min trials with 1 min setup each fill a batch
+// (without setup a sixth would fit), and every run's record is on disk before the next run starts.
+func TestABatchCountsSetupAndSavesEachRun(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	a := Acceptance{}.ForCommit(testCommit)
+	a.Trials["rate-sustained"] = TrialRuns{Valid: 2}
+	if err := SaveAcceptance(filepath.Join(tr.State, "acceptance.json"), a); err != nil {
+		t.Fatal(err)
+	}
+	tr.vm.outcome = suiteOutcome
+	trial := tr.trial
+	tr.trial = func(c context.Context, base, parent string, serial io.Writer, lim rangevm.Limits) (rangevm.Outcome, error) {
+		saved := tr.acceptance(t)
+		done := 0
+		for _, r := range saved.Trials {
+			done += r.Valid + r.Invalid
+		}
+		if done != 2+len(tr.vm.trials) {
+			t.Errorf("run %d starts with %d runs on disk", len(tr.vm.trials)+1, done-2)
+		}
+		return trial(c, base, parent, serial, lim)
+	}
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var planned time.Duration
+	for _, lim := range tr.vm.trials {
+		planned += lim.Wall + rangejob.Setup
+	}
+	if len(tr.vm.trials) != 5 || planned > rangejob.Batch {
+		t.Fatalf("batch of %d runs, %s", len(tr.vm.trials), planned)
+	}
+}
+
+// A run the host stopped (the memory watch) is not recorded: the host's load never adds up to a MISS.
+func TestAHostStopIsNotRecorded(t *testing.T) {
+	now := time.Now()
+	tr := newTestRunner(t, now, evidenceDone(now))
+	tr.vm.outcome = suiteOutcome
+	tr.watch = func(ctx context.Context) (context.Context, func()) {
+		c, cancel := context.WithCancelCause(ctx)
+		cancel(ErrMemoryReserve)
+		return c, func() {}
+	}
+	if err := tr.Tick(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if a := tr.acceptance(t); len(tr.vm.trials) == 0 || a.Trials["rate-sustained"] != (TrialRuns{}) {
+		t.Fatalf("%d trials, suite %+v", len(tr.vm.trials), a)
+	}
+	if res := tr.results(t, LabelAcceptance); len(res) == 0 || res[0].Verdict != rangevm.Invalid {
+		t.Fatalf("results %+v", res)
 	}
 }
