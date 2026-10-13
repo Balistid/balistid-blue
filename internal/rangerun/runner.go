@@ -158,22 +158,22 @@ func (r *Runner) Tick(ctx context.Context) error {
 // admissible (ADR 0018, point 5). Acceptance never stops the runner: a suite it cannot read is
 // logged and skipped, and agent jobs run on.
 func (r *Runner) slot(ctx context.Context, l *Ledger, img image, now time.Time) error {
-	acc, err := LoadAcceptance(r.acceptancePath())
+	acc, err := LoadAcceptance(r.acceptancePath(), r.Commit)
 	if err != nil {
 		r.Log.Error("acceptance skipped", "reason", rangevm.Printable(err.Error(), 300), "rule", RuleVersion)
 		_, err := r.agentJob(ctx, l, img, now)
 		return err
 	}
-	acc = acc.ForCommit(r.Commit)
 	_, pending := acc.Next()
 	if !acc.BatchTurn || !pending {
 		ran, err := r.agentJob(ctx, l, img, now)
+		if ran && pending {
+			// A job that failed still took its slot; the next one is the batch's.
+			acc.BatchTurn = true
+			return errors.Join(err, SaveAcceptance(r.acceptancePath(), acc))
+		}
 		if err != nil || !pending {
 			return err
-		}
-		if ran {
-			acc.BatchTurn = true
-			return SaveAcceptance(r.acceptancePath(), acc)
 		}
 	}
 	return r.batch(ctx, acc, img)
@@ -181,13 +181,14 @@ func (r *Runner) slot(ctx context.Context, l *Ledger, img image, now time.Time) 
 
 // batch runs the suite's next trials while their walls and setup fit one batch (ADR 0018, point 5),
 // then hands the next slot to an agent job. Each run is recorded in the suite and saved before its
-// result is written, so a MISS stands even if the result never reaches the disk. A run the runner's
-// stop cut short is not recorded: it shows nothing about the commit and runs again.
+// result is written, so a MISS stands even if the result never reaches the disk. A run the runner
+// stopped, or one the host stopped or could not start (memory watch, VM start), is not recorded:
+// it shows nothing about the commit and runs again; its result says INVALID.
 func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 	acc.BatchTurn = false
 	var errs []error
 	var planned time.Duration
-	fresh := ""
+	var ids []string
 	for ctx.Err() == nil {
 		tr, ok := acc.Next()
 		if !ok || planned+tr.Wall+rangejob.Setup > rangejob.Batch {
@@ -200,10 +201,13 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 			errs = append(errs, err)
 			break
 		}
-		fresh = id
+		ids = append(ids, id)
 		run, serial, runErr := r.trialRun(ctx, img, tr)
 		run.Label = rangevm.TrialLabel(tr)
-		if ctx.Err() == nil {
+		switch {
+		case ctx.Err() != nil:
+			run.Verdict, run.Reason = rangevm.Invalid, "the runner was stopped"
+		case !run.host:
 			acc = acc.Record(tr, run.Label, run.Verdict, id)
 			runErr = errors.Join(runErr, SaveAcceptance(r.acceptancePath(), acc))
 		}
@@ -213,14 +217,18 @@ func (r *Runner) batch(ctx context.Context, acc Acceptance, img image) error {
 		}
 	}
 	errs = append(errs, SaveAcceptance(r.acceptancePath(), acc))
-	if fresh != "" {
-		var pins []string
+	if len(ids) > 0 {
+		// Every result of this batch is kept whatever its name says (T22), and every MISS that stands.
+		pins := ids[:len(ids)-1]
 		for _, t := range acc.Trials {
 			if t.Miss != "" {
 				pins = append(pins, t.Miss)
 			}
 		}
-		errs = append(errs, prune(filepath.Join(r.Results, LabelAcceptance), KeepAcceptance, fresh, pins...))
+		errs = append(errs, prune(filepath.Join(r.Results, LabelAcceptance), KeepAcceptance, ids[len(ids)-1], pins...))
+	}
+	for _, m := range []string{"sustained_rate", "burst_rate", "crash_loss_ms"} {
+		r.Log.Info("acceptance", "commit", acc.Commit, "metric", m, "verdict", acc.Verdict(m), "rule", RuleVersion)
 	}
 	return errors.Join(errs...)
 }
@@ -529,12 +537,12 @@ func (r *Runner) boot(ctx context.Context, start func(context.Context, io.Writer
 		cleanup, err = fmt.Errorf("run: %w", err), nil
 	}
 	if err != nil {
-		return Run{Verdict: rangevm.Invalid, Reason: "runner: " + err.Error()}, serial.Bytes(), fmt.Errorf("run: %w", err)
+		return Run{Verdict: rangevm.Invalid, Reason: "runner: " + err.Error(), host: true}, serial.Bytes(), fmt.Errorf("run: %w", err)
 	}
 	var run Run
 	switch {
 	case errors.Is(cause, ErrMemoryReserve), errors.Is(cause, ErrMemoryUnknown):
-		run = Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error()}
+		run = Run{Verdict: rangevm.Invalid, Reason: "stopped: " + cause.Error(), host: true}
 	case o.Invalid != "":
 		run = Run{Verdict: rangevm.Invalid, Reason: o.Invalid}
 	default:
