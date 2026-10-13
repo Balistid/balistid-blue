@@ -1679,9 +1679,9 @@ func TestLandedReadsTheSuiteOnDisk(t *testing.T) {
 	}
 }
 
-// filterInForce probes every clause the tick unit's SystemCallFilter=~ line names, and ptrace, so a
-// clause dropped from the unit, process_vm_writev included, stops the tick (Codex, #75 round 2).
-func TestEveryDeniedClauseHasAProbe(t *testing.T) {
+// deniedClauses are the clauses of the tick unit's SystemCallFilter=~ lines.
+func deniedClauses(t *testing.T) []string {
+	t.Helper()
 	unit, err := os.ReadFile(filepath.Join("..", "..", "deploy", "runner", "balistid-runner-tick.service"))
 	if err != nil {
 		t.Fatal(err)
@@ -1695,6 +1695,13 @@ func TestEveryDeniedClauseHasAProbe(t *testing.T) {
 	if len(denied) == 0 {
 		t.Fatal("the unit has no SystemCallFilter=~ line")
 	}
+	return denied
+}
+
+// filterInForce probes every clause the tick unit's SystemCallFilter=~ line names, and ptrace, so a
+// clause dropped from the unit, process_vm_writev included, stops the tick (Codex, #75 round 2).
+func TestEveryDeniedClauseHasAProbe(t *testing.T) {
+	denied := deniedClauses(t)
 	var clauses []string
 	for _, p := range filterProbes() {
 		clauses = append(clauses, p.clause)
