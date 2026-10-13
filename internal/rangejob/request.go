@@ -12,6 +12,7 @@ import (
 	"io"
 	"regexp"
 	"slices"
+	"time"
 )
 
 // RequestFile is the request's name in a job directory; a program cannot take it.
@@ -26,8 +27,9 @@ const (
 
 // Job kinds (ADR 0011, point 4).
 const (
-	KindRun  = "run"
-	KindExec = "exec"
+	KindRun   = "run"
+	KindExec  = "exec"
+	KindTrial = "trial"
 )
 
 const schemaVersion = 1
@@ -42,14 +44,16 @@ type Request struct {
 	SchemaVersion int    `json:"schema_version"`
 	Kind          string `json:"kind"`
 	Trials        int    `json:"trials,omitempty"`
+	Trial         string `json:"trial,omitempty"`
 	Program       string `json:"program,omitempty"`
 	TimeoutS      int    `json:"timeout_s,omitempty"`
 }
 
 // The exact keys of each kind: a key from the other kind is refused even at its zero value.
 var kindKeys = map[string][]string{
-	KindRun:  {"kind", "schema_version", "trials"},
-	KindExec: {"kind", "program", "schema_version", "timeout_s"},
+	KindRun:   {"kind", "schema_version", "trials"},
+	KindExec:  {"kind", "program", "schema_version", "timeout_s"},
+	KindTrial: {"kind", "schema_version", "trial", "trials"},
 }
 
 // ParseRequest reads at most MaxRequestBytes+1 bytes from r and returns the request only if it is
@@ -75,7 +79,7 @@ func ParseRequest(r io.Reader) (Request, error) {
 	}
 	want, ok := kindKeys[req.Kind]
 	if !ok {
-		return Request{}, errors.New("kind must be run or exec")
+		return Request{}, errors.New("kind must be run, exec or trial")
 	}
 	slices.Sort(keys)
 	if !slices.Equal(keys, want) {
@@ -92,6 +96,15 @@ func ParseRequest(r io.Reader) (Request, error) {
 		}
 		if req.TimeoutS < 1 || req.TimeoutS > MaxTimeoutS {
 			return Request{}, fmt.Errorf("timeout_s must be 1 to %d", MaxTimeoutS)
+		}
+	case KindTrial:
+		tr, ok := Lookup(req.Trial)
+		if !ok {
+			return Request{}, errors.New("trial must name a trial of the table")
+		}
+		// A job is one tick: its runs and their setup fit one batch (ADR 0018, point 5).
+		if req.Trials < 1 || req.Trials > tr.Count || time.Duration(req.Trials)*(tr.Wall+Setup) > Batch {
+			return Request{}, fmt.Errorf("trials must be 1 to %d for this trial", tr.Count)
 		}
 	}
 	return req, nil
