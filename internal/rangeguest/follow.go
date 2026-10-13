@@ -27,6 +27,10 @@ const (
 	sysPtrace      = 101 // x86-64
 	// MaxNumber caps what a reader keeps; higher numbers count as outside the generated set.
 	MaxNumber = 1 << 24
+	// keptOutside is how many records counted as outside a reader keeps, each cut to keptBytes, so a
+	// run that counts one shows what Laurel wrote; the log is gone after the run.
+	keptOutside = 3
+	keptBytes   = 2000
 	// generations is how far back a rotated log is looked for: deploy/laurel/config.toml keeps 10.
 	generations = 10
 )
@@ -54,6 +58,19 @@ func (n *Numbers) Add(seq uint64) {
 		return
 	}
 	n.bits[w] |= 1 << (seq % 64)
+}
+
+// Above returns at most max numbers of the set above generated, lowest first: they count as outside.
+func (n *Numbers) Above(generated uint64, max int) []uint64 {
+	var out []uint64
+	for w := (generated + 1) / 64; w < uint64(len(n.bits)) && len(out) < max; w++ {
+		for b := uint64(0); b < 64 && len(out) < max; b++ {
+			if seq := w*64 + b; seq > generated && n.bits[w]&(1<<b) != 0 {
+				out = append(out, seq)
+			}
+		}
+	}
+	return out
 }
 
 // Count compares the set with 1..generated: stored once, missing, repeated, and outside the set.
@@ -89,6 +106,8 @@ type Follower struct {
 	err     error
 	stop    chan struct{}
 	stopped chan struct{}
+	// outside keeps the first records counted as outside the set, cut to keptBytes.
+	outside []string
 }
 
 // NewFollower follows the Laurel log at path for events of the load kind; skip, if not 0, is one
@@ -108,6 +127,13 @@ func (fl *Follower) Start() error {
 	fl.stop, fl.stopped = make(chan struct{}), make(chan struct{})
 	go fl.follow()
 	return nil
+}
+
+// Outside returns the first records the reader counted as outside the set, cut to 2000 bytes.
+func (fl *Follower) Outside() []string {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	return slices.Clone(fl.outside)
 }
 
 // Finish runs mark, which must exec /usr/bin/true with barrier as an argument, and returns the
@@ -171,7 +197,11 @@ func (fl *Follower) follow() {
 			continue
 		}
 		fl.mu.Lock()
+		before := fl.nums.outside
 		fl.record(line)
+		if fl.nums.outside > before && len(fl.outside) < keptOutside {
+			fl.outside = append(fl.outside, string(line[:min(len(line), keptBytes)]))
+		}
 		seen := fl.seen
 		fl.mu.Unlock()
 		if seen {
