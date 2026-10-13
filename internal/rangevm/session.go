@@ -32,7 +32,7 @@ const (
 	keepResults  = 100
 	maxManifest  = 8 << 20
 	stampLayout  = "20060102T150405Z"
-	resultSchema = 1
+	resultSchema = 2
 )
 
 // sourceDateEpoch is the SourceDateEpoch of range/mkosi.conf, so the Laurel package, like the rest
@@ -61,19 +61,20 @@ var proxyEnv = []string{"http_proxy", "https_proxy", "no_proxy", "all_proxy", "H
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
 type Result struct {
-	SchemaVersion  int             `json:"schema_version"`
-	ID             string          `json:"id"`
-	RangeCommit    string          `json:"range_commit"`
-	LauncherCommit string          `json:"launcher_commit"`
-	Image          string          `json:"image"`
-	ImageSHA256    string          `json:"image_sha256"`
-	TargetKernel   string          `json:"target_kernel"`
-	GuestKernel    string          `json:"guest_kernel"`
-	Trial          string          `json:"trial,omitempty"`
-	Label          string          `json:"label,omitempty"`
-	Verdict        string          `json:"verdict"`
-	Reason         string          `json:"reason"`
-	Manifest       json.RawMessage `json:"manifest"`
+	SchemaVersion  int               `json:"schema_version"`
+	ID             string            `json:"id"`
+	RangeCommit    string            `json:"range_commit"`
+	LauncherCommit string            `json:"launcher_commit"`
+	Image          string            `json:"image"`
+	ImageSHA256    string            `json:"image_sha256"`
+	TargetKernel   string            `json:"target_kernel"`
+	GuestKernel    string            `json:"guest_kernel"`
+	Trial          string            `json:"trial,omitempty"`
+	Label          string            `json:"label,omitempty"`
+	Verdict        string            `json:"verdict"`
+	Reason         string            `json:"reason"`
+	Measures       map[string]uint64 `json:"measures,omitempty"`
+	Manifest       json.RawMessage   `json:"manifest"`
 }
 
 // Build builds the image of the commit the launcher was built from, read from the object store of
@@ -671,7 +672,7 @@ func cleanRevision(settings []debug.BuildSetting) string {
 func Check(ctx context.Context, image, cache, state string) (Result, error) {
 	return check(ctx, image, cache, state, "", "", func(runs string, serial io.Writer) (Outcome, error) {
 		return Run(ctx, image, runs, serial, nil)
-	}, JudgeSelftest)
+	}, JudgeSelftest, nil)
 }
 
 // LabelBaseline marks a trial result read from Laurel's log, not the collector's store: it measures
@@ -697,12 +698,14 @@ func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Tri
 	lim := Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
 	return check(ctx, image, cache, state, tr.Name, trialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
 		return RunTrial(ctx, image, runs, serial, lim)
-	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) })
+	}, func(o Outcome, launcher, image string) (string, string) { return JudgeTrial(tr, o, launcher, image) },
+		func(o Outcome) map[string]uint64 { return Measures(tr, o) })
 }
 
-// check runs boot once under the cache lock and stores the verdict judge gives it with the serial log.
+// check runs boot once under the cache lock and stores the verdict judge gives it, with what
+// measure (nil for none) reads from the run, and the serial log.
 func check(ctx context.Context, image, cache, state, trial, label string, boot func(runs string, serial io.Writer) (Outcome, error),
-	judge func(o Outcome, launcher, image string) (verdict, reason string)) (res Result, err error) {
+	judge func(o Outcome, launcher, image string) (verdict, reason string), measure func(Outcome) map[string]uint64) (res Result, err error) {
 	held, err := Lock(cache)
 	if err != nil {
 		return Result{}, err
@@ -753,6 +756,9 @@ func check(ctx context.Context, image, cache, state, trial, label string, boot f
 		}
 	}
 	res.Verdict, res.Reason = judge(outcome, res.LauncherCommit, img.Commit)
+	if measure != nil {
+		res.Measures = measure(outcome)
+	}
 	data, err := json.MarshalIndent(res, "", "  ")
 	if err != nil {
 		return Result{}, fmt.Errorf("encode result: %w", err)

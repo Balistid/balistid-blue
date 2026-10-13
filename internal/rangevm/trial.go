@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -123,6 +124,52 @@ func ExpectedVerdict(tr rangejob.Trial) string {
 		return tr.Expect
 	}
 	return Pass
+}
+
+// Measures of a trial run, kept beside its verdict so a margin can be read, not only a threshold
+// that held: the guest's counts that are reported exactly once as plain numbers, and of a failure
+// trial the host's marks and how long after the fail mark QEMU exited or the kill mark came.
+const (
+	MeasureH               = "h"
+	MeasureSynced          = "synced"
+	MeasureExitAfterFail   = "exit_after_fail_us"
+	MeasureKilledAfterFail = "killed_after_fail_us"
+)
+
+// Measures returns the measures of a run of tr; a count missing, repeated or not a plain number is
+// left out, never guessed (T30).
+func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
+	names := counts
+	if tr.Failure != "" {
+		names = []string{FactStoredPrefix, FactStoredCount}
+	}
+	m := map[string]uint64{}
+	for _, name := range names {
+		var values []string
+		for _, r := range o.Facts {
+			if r.Name == name {
+				values = append(values, r.Value)
+			}
+		}
+		if len(values) != 1 {
+			continue
+		}
+		if v, err := plainNumber(values[0]); err == nil {
+			m[name] = v
+		}
+	}
+	if tr.Failure == "" || o.Marks.Fail.IsZero() {
+		return m
+	}
+	m[MeasureH], m[MeasureSynced] = o.Marks.H, o.Marks.Synced
+	after := func(key string, t time.Time) {
+		if d := t.Sub(o.Marks.Fail); !t.IsZero() && d >= 0 {
+			m[key] = uint64(d / time.Microsecond) //nolint:gosec // d is not negative
+		}
+	}
+	after(MeasureExitAfterFail, o.Marks.Exited)
+	after(MeasureKilledAfterFail, o.Marks.Killed)
+	return m
 }
 
 // Facts of a failure trial (ADR 0018, point 3): after a reset the second boot reports the scratch
