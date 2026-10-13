@@ -13,6 +13,10 @@ import (
 	"testing"
 )
 
+// requireFilterTest names the env variable CI sets: there a missing bwrap, or an environment that
+// masks every probed call, fails the test instead of skipping it, so the regression stays guarded.
+const requireFilterTest = "BALISTID_REQUIRE_SECCOMP_TEST"
+
 // filterChild names the env variable that makes the test binary a child that reports what
 // filterInForce says. The parent runs it under bwrap --seccomp with a filter denying the listed
 // syscall numbers with EPERM, as the tick unit's filter does (no unsafe: the filter is bytes).
@@ -58,11 +62,18 @@ func TestFilterInForceUnderARealFilter(t *testing.T) {
 	if out := child(t, "filter", all); out != "ok" {
 		t.Fatalf("under the full filter: %s", out)
 	}
+	checked := 0
+	defer func() {
+		if checked == 0 && !t.Failed() {
+			t.Fatal("every probed call is already denied here: no missing denial could be checked")
+		}
+	}()
 	for i, d := range unitDenials {
 		if slices.Contains(strings.Fields(masked), d.name) {
 			t.Logf("%s: the environment already denies it; not checked", d.name)
 			continue
 		}
+		checked++
 		rest := slices.Delete(slices.Clone(all), i, i+1)
 		if out := child(t, "filter", rest); out == "ok" {
 			t.Errorf("a filter without %s: filterInForce passed", d.name)
@@ -76,6 +87,9 @@ func child(t *testing.T, mode string, nrs []string) string {
 	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
+		if os.Getenv(requireFilterTest) != "" {
+			t.Fatalf("bwrap is not installed, and %s requires this test", requireFilterTest)
+		}
 		t.Skip("bwrap is not installed: the filter cannot be applied without unsafe")
 	}
 	argv := []string{os.Args[0], "-test.run=^TestFilterChild$"}
