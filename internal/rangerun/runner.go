@@ -283,16 +283,7 @@ func (r *Runner) checkState() error {
 // takes out of its allowlist, and ptrace, which no allowed group holds; with these arguments the
 // kernel alone never answers EPERM.
 func filterInForce() error {
-	probes := []struct {
-		name string
-		args [7]uintptr // trap number, then its arguments
-	}{
-		{"keyctl", [7]uintptr{syscall.SYS_KEYCTL, 0, 0xfffffffd}},                  // GET_KEYRING_ID of the session keyring (-3)
-		{"io_setup", [7]uintptr{syscall.SYS_IO_SETUP, 1, 0}},                       // EFAULT alone
-		{"process_vm_readv", [7]uintptr{310, uintptr(os.Getpid()), 0, 0, 0, 0, 1}}, // x86-64; EINVAL alone (flags)
-		{"ptrace", [7]uintptr{syscall.SYS_PTRACE, 2, 0x7fffffff}},                  // PEEKDATA of no process: ESRCH alone
-	}
-	for _, p := range probes {
+	for _, p := range filterProbes() {
 		a := p.args
 		_, _, errno := syscall.Syscall6(a[0], a[1], a[2], a[3], a[4], a[5], a[6])
 		if err := deniedByFilter(p.name, errno); err != nil {
@@ -300,6 +291,26 @@ func filterInForce() error {
 		}
 	}
 	return nil
+}
+
+// filterProbe is a call the tick unit's filter must answer with EPERM: clause is what the unit's
+// SystemCallFilter=~ line names to deny it, "" for ptrace, which no allowed group holds.
+type filterProbe struct {
+	clause, name string
+	args         [7]uintptr // trap number, then its arguments
+}
+
+// filterProbes are the probes of filterInForce, one per clause of the unit's deny line
+// (TestEveryDeniedClauseHasAProbe).
+func filterProbes() []filterProbe {
+	pid := uintptr(os.Getpid())
+	return []filterProbe{
+		{"@keyring", "keyctl", [7]uintptr{syscall.SYS_KEYCTL, 0, 0xfffffffd}},           // GET_KEYRING_ID of the session keyring (-3)
+		{"@aio", "io_setup", [7]uintptr{syscall.SYS_IO_SETUP, 1, 0}},                    // EFAULT alone
+		{"process_vm_readv", "process_vm_readv", [7]uintptr{310, pid, 0, 0, 0, 0, 1}},   // x86-64; EINVAL alone (flags)
+		{"process_vm_writev", "process_vm_writev", [7]uintptr{311, pid, 0, 0, 0, 0, 1}}, // x86-64; EINVAL alone (flags)
+		{"", "ptrace", [7]uintptr{syscall.SYS_PTRACE, 2, 0x7fffffff}},                   // PEEKDATA of no process: ESRCH alone
+	}
 }
 
 // deniedByFilter accepts only EPERM, which none of the probes gets from the kernel alone.
