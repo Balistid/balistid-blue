@@ -271,6 +271,7 @@ func (r *rig) settle() {
 			if r.last.up {
 				select { // the probe a newly opened store sends, unless its syscall is stuck
 				case <-r.touched:
+					r.probeReturned()
 				case <-time.After(200 * time.Millisecond):
 				}
 			}
@@ -304,11 +305,20 @@ func probed(r *rig) uint64 {
 	r.t.Helper()
 	select {
 	case n := <-r.touched:
+		r.probeReturned()
 		return n
 	case <-time.After(5 * time.Second):
 		r.t.Fatal("no probe sent")
 		return 0
 	}
+}
+
+// probeReturned waits until the probe goroutine that just reported its touch has returned. The touch
+// seam reports before the goroutine gives back the canary's in-flight token, and until it does a new
+// probe sends no syscall, so a test that goes on at once may miss its next probe.
+func (r *rig) probeReturned() {
+	r.t.Helper()
+	until(r.t, func() bool { return len(r.w.Canary.inFlight) == 0 })
 }
 
 func TestStartedRecordAndStoreOpen(t *testing.T) {
@@ -737,6 +747,7 @@ func latestProbe(r *rig) uint64 {
 	for {
 		select {
 		case m := <-r.touched:
+			r.probeReturned()
 			n = m
 		case <-time.After(100 * time.Millisecond):
 			return n
@@ -789,6 +800,7 @@ func TestReopenedStoreNeedsANewProbe(t *testing.T) {
 	r.step(time.Second)
 	r.st.set(func(s *fakeStore) { s.failFlush = false })
 	r.step(ReopenEvery) // the round's probe goes out; the reopen waits for its slot
+	probed(r)           // and returns, or the reopened store's probe would wait for the next round
 	r.advance(time.Second)
 	r.opens <- nil
 	for range 50 {
