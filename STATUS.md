@@ -16,8 +16,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- Collector hardening: `ReadSeals` refuses what `Open` refuses; loss records never give way in the health
-  queue; stats carry `lost` (ADR 0017); flaky canary tests wait for the probe goroutine.
+- Collector hardening (#111): `ReadSeals` refuses what `Open` refuses; loss records never give way in the health
+  queue; stats carry `lost`; loss records a failed Close hands back reach the journal while the store is down.
 - Collector CP2 core merged (#97) after Opus critic and Codex review.
 - Runner (ADR 0018-0021): trial limits (#99), rate trials (#100), failure trials with host-stamped marks (#101),
   measures beside each verdict (#102), inbox `trial` jobs (#103), the acceptance suite in its own slot (#104).
