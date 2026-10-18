@@ -662,6 +662,57 @@ func TestHealthRecordsWaitingForTheStoreAreBounded(t *testing.T) {
 	}
 }
 
+// While the store takes no health record, the queue gives way, but never a loss record: a loss that
+// comes while one waits adds up in pending, and every loss is stored once the store takes them again.
+func TestLossRecordsNeverGiveWayInTheQueue(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.step(0) // the loss record waits for the store
+	for i := range maxNotes + 10 {
+		if i == maxNotes/2 {
+			r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 22, noon, []byte("dropped")))
+		}
+		r.step(statsEvery)
+	}
+	if r.last.waiting > maxNotes {
+		t.Fatalf("%d health records waiting", r.last.waiting)
+	}
+	r.st.set(func(s *fakeStore) { s.rejectNote = false })
+	for range 3 {
+		r.step(0)
+	}
+	var seqs []float64
+	for _, l := range r.st.kinds("lost") {
+		seqs = append(seqs, l["first_seq"].(float64))
+	}
+	if fmt.Sprint(seqs) != "[21 22]" {
+		t.Fatalf("committed loss records start at %v, want [21 22]", seqs)
+	}
+	r.step(statsEvery)
+	stats := r.st.kinds("stats")
+	if last := stats[len(stats)-1]; last["lost"] != 2.0 || last["lost_health"].(float64) < 10 {
+		t.Fatalf("last stats record %v", last)
+	}
+}
+
+// The stats record counts every record lost since start (ADR 0017, point 5).
+func TestStatsRecordCountsLosses(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.w.Losses.Add(StageFraming, rawrecord.New(0, "laurel", 22, noon, []byte("dropped")))
+	r.step(statsEvery)
+	r.step(0)
+	stats := r.st.kinds("stats")
+	if len(stats) != 1 || stats[0]["lost"] != 2.0 || stats[0]["lost_health"] != 0.0 {
+		t.Fatalf("stats records %v", stats)
+	}
+}
+
 // enrichedCanaryLine is shaped as Laurel writes it with enrich and translate on (deploy/laurel): the
 // "PID" and "PPID" objects and "UID" name next to the numbers they enrich.
 func enrichedCanaryLine(serial int, n uint64, uid, pid int, key string) string {
