@@ -226,7 +226,8 @@ func (w *Writer) step(ctx context.Context) {
 	w.writeNotes()
 	if w.st == nil && now.Sub(w.lastJournal) >= time.Minute {
 		w.lastJournal = now
-		w.Log.Warn("store down, draining and counting", "reason", w.down, "lost", w.pending)
+		w.Log.Warn("store down, draining and counting", "reason", w.down, "lost", w.pending,
+			"lost_records_waiting", w.waitingLosses())
 	}
 	if w.st == nil && !w.opening && !now.Before(w.nextOpen) {
 		w.startOpen(ctx)
@@ -373,6 +374,18 @@ func (w *Writer) lossWaiting() bool {
 	return slices.ContainsFunc(w.notes, func(n note) bool { return n.loss })
 }
 
+// waitingLosses returns the loss records waiting for the store, which a failed Close may have handed
+// back: while the store is down, the journal is where they leave the collector (ADR 0017, point 7).
+func (w *Writer) waitingLosses() []string {
+	var out []string
+	for _, n := range w.notes {
+		if n.loss {
+			out = append(out, string(n.b))
+		}
+	}
+	return out
+}
+
 func (w *Writer) addPending(stage Stage, l Loss) {
 	w.lost += l.Count
 	p, ok := w.pending[stage]
@@ -493,6 +506,9 @@ func (w *Writer) shutdown(ctx context.Context) error {
 			w.Losses.Add(StageShutdown, r)
 		}
 		w.Log.Warn("stopped with the store down", "lost", w.Losses.Take(), "pending", w.pending)
+		for _, n := range w.notes {
+			w.Log.Warn("health record not stored at stop", "record", string(n.b))
+		}
 		return nil
 	}
 	w.connections(w.Now(), false)

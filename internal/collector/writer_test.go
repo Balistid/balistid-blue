@@ -777,6 +777,51 @@ func TestRequeueBoundGivesWayToLossRecordsLast(t *testing.T) {
 	}
 }
 
+// journal is a log sink the writer's goroutine and the test share.
+type journal struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (j *journal) Write(p []byte) (int, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.b.Write(p)
+}
+
+func (j *journal) String() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.b.String()
+}
+
+// A loss record that a failed Close handed back reaches the journal each minute while the store is down,
+// and again at a stop with the store still down (ADR 0017, point 7).
+func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.step(0) // the loss record is handed to the store
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.step(0) // Flush and Close fail: the record comes back, the store is down
+	r.step(time.Minute)
+	minute := strings.Count(j.String(), "first_seq")
+	if minute == 0 {
+		t.Fatalf("no loss record in the journal while the store is down:\n%s", j)
+	}
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	if n := strings.Count(j.String(), "first_seq"); n <= minute {
+		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
+	}
+}
+
 // The stats record counts every record lost since start (ADR 0017, point 5).
 func TestStatsRecordCountsLosses(t *testing.T) {
 	r := newRig(t)
