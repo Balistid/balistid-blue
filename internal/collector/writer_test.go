@@ -708,6 +708,75 @@ func TestLossRecordsNeverGiveWayInTheQueue(t *testing.T) {
 	}
 }
 
+// A flood of losses while the store takes no health record adds up in pending: once the store takes
+// records again, the loss records it gets account for every loss.
+func TestLossFloodIsSummedNotDropped(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	seq := uint64(100)
+	for range 2 * maxNotes {
+		for _, stage := range []Stage{StageQueue, StageFraming, StageStore} {
+			seq++
+			r.w.Losses.Add(stage, rawrecord.New(0, "laurel", seq, noon, []byte("dropped")))
+		}
+		r.step(statsEvery)
+	}
+	r.st.set(func(s *fakeStore) { s.rejectNote = false })
+	for range 4 {
+		r.step(0)
+	}
+	var sum float64
+	for _, l := range r.st.kinds("lost") {
+		sum += l["count"].(float64)
+	}
+	if want := float64(seq - 100); sum != want {
+		t.Fatalf("loss records count %v of %v losses", sum, want)
+	}
+}
+
+// At stop, a loss summed in pending while an earlier loss record waited gets its own record.
+func TestStopStoresLossesSummedBehindAWaitingRecord(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.step(0) // its record waits for the store
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 22, noon, []byte("dropped")))
+	r.step(0) // pending, behind the waiting record
+	r.st.set(func(s *fakeStore) { s.rejectNote = false })
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	var seqs []float64
+	for _, l := range r.st.kinds("lost") {
+		seqs = append(seqs, l["first_seq"].(float64))
+	}
+	if fmt.Sprint(seqs) != "[21 22]" {
+		t.Fatalf("loss records stored at stop start at %v, want [21 22]", seqs)
+	}
+}
+
+// The queue stays bounded: other records give way first, loss records only to newer loss records.
+func TestRequeueBoundGivesWayToLossRecordsLast(t *testing.T) {
+	w := &Writer{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	w.requeue(nil, note{b: []byte("loss 0"), loss: true}, note{b: []byte("other")})
+	for i := range maxNotes - 1 {
+		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), loss: true})
+	}
+	if len(w.notes) != maxNotes || w.lostNotes != 1 || string(w.notes[0].b) != "loss 0" {
+		t.Fatalf("%d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
+	}
+	w.requeue(nil, note{b: []byte("loss 128"), loss: true})
+	if len(w.notes) != maxNotes || w.lostNotes != 2 || string(w.notes[0].b) != "loss 1" {
+		t.Fatalf("only loss records: %d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
+	}
+}
+
 // The stats record counts every record lost since start (ADR 0017, point 5).
 func TestStatsRecordCountsLosses(t *testing.T) {
 	r := newRig(t)
