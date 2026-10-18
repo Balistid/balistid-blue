@@ -143,7 +143,7 @@ type Writer struct {
 	inflight    []note // handed to the store, not yet committed: sent again if the store fails
 	capped      Loss   // dropped at the cap by the store, its loss record not yet committed
 	noteSeq     uint64 // numbers every health record, so one sent twice after a failure is seen as one
-	lost        uint64 // records counted lost since start, for the stats record
+	lost        uint64 // records the collector counted lost since start (ADR 0016); the store's own cap drops are in its loss records
 	lostNotes   uint64 // health records given way in the queue since start
 }
 
@@ -365,10 +365,10 @@ func (w *Writer) losses(stop bool) {
 	}
 }
 
-// lossWaiting reports whether a loss record is waiting for the store or for its commit.
+// lossWaiting reports whether a loss record is waiting for the store. One handed over is committed or
+// back among the notes by now: the tick's flush comes first.
 func (w *Writer) lossWaiting() bool {
-	isLoss := func(n note) bool { return n.loss }
-	return slices.ContainsFunc(w.notes, isLoss) || slices.ContainsFunc(w.inflight, isLoss)
+	return slices.ContainsFunc(w.notes, func(n note) bool { return n.loss })
 }
 
 func (w *Writer) addPending(stage Stage, l Loss) {
