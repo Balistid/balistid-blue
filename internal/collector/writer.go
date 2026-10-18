@@ -143,8 +143,10 @@ type Writer struct {
 	inflight    []note // handed to the store, not yet committed: sent again if the store fails
 	capped      Loss   // dropped at the cap by the store, its loss record not yet committed
 	noteSeq     uint64 // numbers every health record, so one sent twice after a failure is seen as one
-	lost        uint64 // records the collector counted lost since start (ADR 0016); the store's own cap drops are in its loss records
-	lostNotes   uint64 // health records given way in the queue since start
+	// lost counts records the collector counted lost since start (ADR 0016), including cap drops whose
+	// store loss record a failed Close lost; cap drops the store committed are only in its own loss records.
+	lost      uint64
+	lostNotes uint64 // health records given way in the queue since start
 }
 
 // note is an encoded health record; loss marks a "lost" record, which never gives way in the queue.
