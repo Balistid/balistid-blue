@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-13 by claude/opus-5.5
+Updated: 2026-10-19 by claude/opus-5.5
 
 ## Where we are
 
@@ -16,6 +16,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
+- Collector hardening: `ReadSeals` refuses what `Open` refuses; loss records never give way in the health
+  queue; stats carry `lost` (ADR 0017); flaky canary tests wait for the probe goroutine.
 - Collector CP2 core merged (#97) after Opus critic and Codex review.
 - Runner (ADR 0018-0021): trial limits (#99), rate trials (#100), failure trials with host-stamped marks (#101),
   measures beside each verdict (#102), inbox `trial` jobs (#103), the acceptance suite in its own slot (#104).
@@ -27,7 +29,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
    counted a record outside the generated set (13 Oct); #106 shows the record when it happens again.
 2. Collector CP3, owned: `*.socket` gate, go_gate for the SQLite modules, units, sysusers, tmpfiles; then the Laurel
    spike and B4 (collector and store reader in the image, its trials in the table).
-3. Store: `ReadSeals` does not check that indexed shards exist or refuse foreign files, as `Open` does.
 ## Open decisions (maintainer)
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - Runner: a VM setup error fails the tick (exit 1) on purpose (maintainer, 13 Oct): a broken host shows in systemd.
