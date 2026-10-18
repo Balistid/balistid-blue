@@ -175,9 +175,11 @@ const indexCheckEvery = 4096
 
 // ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
 // checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
-// the collector stopped. A shard file the index does not list, or any shard sidecar, makes it fail with
-// ErrUnindexed, along with the seals it did list: Open would recover that shard, a reader would silently miss it. A dir that is
-// missing, not a directory or a symlink is an error, not an empty store.
+// the collector stopped. It holds dir to the rules Open does: an entry that does not belong in the store,
+// or an indexed shard that is not there, is an error. A shard file the index does not list, or any shard
+// sidecar, makes it fail with ErrUnindexed, along with the seals it did list: Open would recover that
+// shard, a reader would silently miss it. A dir that is missing, not a directory or a symlink is an
+// error, not an empty store.
 func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	st, err := os.Lstat(dir)
 	if err != nil {
@@ -194,21 +196,65 @@ func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	listed := make(map[string]bool, len(seals))
-	for _, l := range seals {
-		listed[l.Name] = true
+	c, err := classify(entries, seals)
+	if err != nil {
+		return nil, err
 	}
-	var missing []string
-	for _, e := range entries {
-		// A sealed shard has no sidecar: a -wal, -shm or -journal file, never listed, holds data no seal covers.
-		if name := e.Name(); shardName.MatchString(sidecarOf(name)) && !listed[name] {
-			missing = append(missing, name)
-		}
+	if len(c.missing) > 0 {
+		return nil, fmt.Errorf("store: indexed shards missing: %v", c.missing)
 	}
-	if torn || len(missing) > 0 {
-		return seals, fmt.Errorf("%w: %v (torn last line: %v)", ErrUnindexed, missing, torn)
+	// A sealed shard has no sidecar: a -wal, -shm or -journal file, never listed, holds data no seal covers.
+	if unindexed := slices.Concat(c.pending, c.sidecars, c.beside); torn || len(unindexed) > 0 {
+		slices.Sort(unindexed)
+		return seals, fmt.Errorf("%w: %v (torn last line: %v)", ErrUnindexed, unindexed, torn)
 	}
 	return seals, nil
+}
+
+// layout is a store directory sorted by what Open must do with each entry.
+type layout struct {
+	pending  []string // shards the index does not list, in seq order: Open recovers them
+	sidecars []string // sidecars of shards the index does not list
+	beside   []string // sidecars of indexed shards, which a sealed shard never has
+	missing  []string // indexed shards that are not in the directory
+}
+
+// classify checks every entry of a store directory against its index: the index and reserve are regular
+// files, every other entry is a shard or a shard's sidecar, and lost+found, which a filesystem root has,
+// is the one directory allowed. Anything else is refused. Open and ReadSeals share it, so a reader
+// accepts no directory the collector would refuse.
+func classify(list []os.DirEntry, seals []Seal) (layout, error) {
+	indexed := make(map[string]bool, len(seals))
+	for _, l := range seals {
+		indexed[l.Name] = true
+	}
+	var c layout
+	present := map[string]bool{}
+	for _, e := range list {
+		name, base := e.Name(), sidecarOf(e.Name())
+		switch {
+		case name == "lost+found" && e.IsDir():
+		case !e.Type().IsRegular():
+			return layout{}, fmt.Errorf("store: %s is not a regular file", name)
+		case name == indexName || name == indexName+".tmp" || name == reserveName || name == reserveName+".tmp":
+		case !shardName.MatchString(base):
+			return layout{}, fmt.Errorf("store: %s does not belong in the store", name)
+		case indexed[base] && base != name:
+			c.beside = append(c.beside, name)
+		case indexed[base]:
+			present[name] = true
+		case base == name:
+			c.pending = append(c.pending, name)
+		default:
+			c.sidecars = append(c.sidecars, name)
+		}
+	}
+	for _, l := range seals {
+		if !present[l.Name] {
+			c.missing = append(c.missing, l.Name)
+		}
+	}
+	return c, nil // the caller's ReadDir sorts by name, and names are zero-padded seq
 }
 
 // readSeals parses the index of dir. A last line without its newline is a torn append: it is left out
@@ -284,38 +330,22 @@ func nextAfter(seals []Seal) uint64 {
 	return seals[len(seals)-1].Last + 1
 }
 
-// scan checks every entry of dir: the index and reserve are regular files, indexed shards exist without
-// sidecars, other shards are returned for recovery in seq order with at most one sidecar suffix each,
-// and anything else is refused. lost+found, which a filesystem root has, is the one directory allowed.
+// scan checks every entry of dir (classify): indexed shards exist without sidecars, and other shards are
+// returned for recovery in seq order with at most one sidecar suffix each.
 func (s *Store) scan() ([]string, error) {
-	entries, err := os.ReadDir(s.dir)
+	list, err := os.ReadDir(s.dir)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	indexed := map[string]bool{}
-	for _, l := range s.seals {
-		indexed[l.Name] = true
+	c, err := classify(list, s.seals)
+	if err != nil {
+		return nil, err
 	}
-	var pending, sidecars []string
-	for _, e := range entries {
-		name, base := e.Name(), sidecarOf(e.Name())
-		switch {
-		case name == "lost+found" && e.IsDir():
-		case !e.Type().IsRegular():
-			return nil, fmt.Errorf("store: %s is not a regular file", name)
-		case name == indexName || name == indexName+".tmp" || name == reserveName || name == reserveName+".tmp":
-		case !shardName.MatchString(base):
-			return nil, fmt.Errorf("store: %s does not belong in the store", name)
-		case indexed[base] && base != name:
-			return nil, fmt.Errorf("store: %s beside a sealed shard", name)
-		case indexed[base]:
-		case base == name:
-			pending = append(pending, name)
-		default:
-			sidecars = append(sidecars, name)
-		}
+	if len(c.beside) > 0 {
+		return nil, fmt.Errorf("store: %s beside a sealed shard", c.beside[0])
 	}
-	for _, name := range sidecars { // a WAL without its shard may hold committed records
+	pending := c.pending
+	for _, name := range c.sidecars { // a WAL without its shard may hold committed records
 		if !slices.Contains(pending, sidecarOf(name)) {
 			return nil, fmt.Errorf("store: %s without its shard", name)
 		}

@@ -930,6 +930,56 @@ func TestReadSealsRefusesShardsMissingFromTheIndex(t *testing.T) {
 	}
 }
 
+// ReadSeals holds the directory to Open's rules: an entry Open refuses, such as an unindexed shard
+// renamed out of the shard pattern, is an error, not a store a reader may trust.
+func TestReadSealsRefusesForeignEntries(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	shard, err := os.ReadFile(filepath.Join(dir, want[0].Name)) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, plant := range map[string]func(string) error{
+		"backup.db":  func(p string) error { return os.WriteFile(p, shard, 0o600) },
+		"seals.bak":  func(p string) error { return os.WriteFile(p, []byte("x"), 0o600) },
+		"link":       func(p string) error { return os.Symlink(want[0].Name, p) },
+		"sub":        func(p string) error { return os.Mkdir(p, 0o700) },
+		"0.db-wal-x": func(p string) error { return os.WriteFile(p, []byte("x"), 0o600) },
+	} {
+		p := filepath.Join(dir, name)
+		if err := plant(p); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadSeals(t.Context(), dir)
+		if err == nil || errors.Is(err, ErrUnindexed) || got != nil || !strings.Contains(err.Error(), name) {
+			t.Fatalf("%s: ReadSeals = %v, %v; want a refusal naming it", name, got, err)
+		}
+		if s, err := Open(t.Context(), dir, small); err == nil {
+			closeStore(t, s)
+			t.Fatalf("%s: Open accepted what ReadSeals refused", name)
+		}
+		if err := os.RemoveAll(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ReadSeals(t.Context(), dir); err != nil {
+		t.Fatalf("after removing every foreign entry: %v", err)
+	}
+}
+
+// An indexed shard that is gone fails at once, not later in shard.Read.
+func TestReadSealsRefusesAMissingIndexedShard(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	if err := os.Remove(filepath.Join(dir, want[1].Name)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSeals(t.Context(), dir)
+	if err == nil || errors.Is(err, ErrUnindexed) || got != nil || !strings.Contains(err.Error(), want[1].Name) {
+		t.Fatalf("ReadSeals = %v, %v; want a refusal naming %s", got, err, want[1].Name)
+	}
+}
+
 func TestReadSealsRefusesMalformedLine(t *testing.T) {
 	dir := t.TempDir()
 	sealedThree(t, dir)
