@@ -175,8 +175,8 @@ const indexCheckEvery = 4096
 
 // ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
 // checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
-// the collector stopped. It holds dir to the rules Open does: an entry that does not belong in the store,
-// or an indexed shard that is not there, is an error. A shard file the index does not list, or any shard
+// the collector stopped. It holds the entries of dir to the rules Open does (classify): an entry that
+// does not belong in the store, or an indexed shard that is not there, is an error. A shard file the index does not list, or any shard
 // sidecar, makes it fail with ErrUnindexed, along with the seals it did list: Open would recover that
 // shard, a reader would silently miss it. A dir that is missing, not a directory or a symlink is an
 // error, not an empty store.
@@ -222,7 +222,7 @@ type layout struct {
 // classify checks every entry of a store directory against its index: the index and reserve are regular
 // files, every other entry is a shard or a shard's sidecar, and lost+found, which a filesystem root has,
 // is the one directory allowed. Anything else is refused. Open and ReadSeals share it, so a reader
-// accepts no directory the collector would refuse.
+// accepts no entry that the collector refuses as foreign.
 func classify(list []os.DirEntry, seals []Seal) (layout, error) {
 	indexed := make(map[string]bool, len(seals))
 	for _, l := range seals {
@@ -350,7 +350,10 @@ func (s *Store) scan() ([]string, error) {
 			return nil, fmt.Errorf("store: %s without its shard", name)
 		}
 	}
-	for _, l := range s.seals { // a missing indexed shard fails here
+	if len(c.missing) > 0 {
+		return nil, fmt.Errorf("store: indexed shards missing: %v", c.missing)
+	}
+	for _, l := range s.seals {
 		n, err := allocated(filepath.Join(s.dir, l.Name))
 		if err != nil {
 			return nil, err
