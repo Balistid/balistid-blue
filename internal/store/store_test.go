@@ -940,7 +940,7 @@ func TestReadSealsRefusesForeignEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, plant := range map[string]func(string) error{
-		"backup.db":  func(p string) error { return os.WriteFile(p, shard, 0o600) },
+		"backup.db":  func(p string) error { return os.WriteFile(p, shard, 0o600) }, //nolint:gosec // test temp dir
 		"seals.bak":  func(p string) error { return os.WriteFile(p, []byte("x"), 0o600) },
 		"link":       func(p string) error { return os.Symlink(want[0].Name, p) },
 		"sub":        func(p string) error { return os.Mkdir(p, 0o700) },
