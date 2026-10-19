@@ -5,7 +5,8 @@
 packages whose files changed, plus every package that imports them (transitively, or from its tests).
 On those it runs gofmt -l, go vet, golangci-lint run --new-from-rev and go test. The environment is the
 one of the go-static and go-test jobs in .github/workflows/ci.yml (job env, and the step env of
-go-test), plus GOENV=off so no go.env file changes it and CI=true as on GitHub; every other GO*/CGO_*
+go-test), plus GOENV=off so no go.env file changes it and CI=true as on GitHub (unset, with a note, where unix
+sockets are denied, so the socket tests skip in a sandbox); every other GO*/CGO_*
 variable is dropped. gofmt also gets every changed .go file, whether or not go list sees its package.
 Versions are compared with the pins in ci.yml: golangci-lint must match (FAIL); go is compared without
 a distribution suffix such as -X:nodwarf5, and a difference is a WARN. go test runs under RLIMIT_AS
@@ -23,8 +24,10 @@ import re
 import resource
 import shutil
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -119,14 +122,29 @@ def read_ci(text: str) -> dict:
     return {"pins": pins, "jobs": jobs, "ci_only": [label for label, mark in CI_ONLY if mark in text]}
 
 
-def ci_env(base: dict[str, str], job_env: dict[str, str]) -> dict[str, str]:
+def ci_env(base: dict[str, str], job_env: dict[str, str], sockets: bool = True) -> dict[str, str]:
     env = {k: v for k, v in base.items()
            if not k.startswith(("GO", "CGO_")) or k in KEPT_GO_VARS}
     env.update(job_env)
     env["GOENV"] = "off"
-    # GitHub sets CI=true in every step; tests turn some local skips into failures on it.
-    env["CI"] = "true"
+    # GitHub sets CI=true in every step; tests turn some local skips into failures on it. Where
+    # unix sockets are denied (an agent sandbox) CI stays unset, so the socket tests skip here.
+    if sockets:
+        env["CI"] = "true"
+    else:
+        env.pop("CI", None)
     return env
+
+
+def unix_sockets_allowed() -> bool:
+    """Whether this process may bind an AF_UNIX socket, which the collector tests need."""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+                sock.bind(os.path.join(tmp, "probe.sock"))
+        except OSError:
+            return False
+    return True
 
 
 def go_version_warning(goversion: str, pin: str) -> str | None:
@@ -266,8 +284,12 @@ def checks(args: argparse.Namespace, state: dict) -> None:
         problems.append(f"ci.yml: {err}")
         return
     state["labels"] = ci["ci_only"]
-    static_env = ci_env(os.environ, ci["jobs"][STATIC_JOB][0])
-    test_env = ci_env(os.environ, {**ci["jobs"][TEST_JOB][0], **ci["jobs"][TEST_JOB][1]})
+    sockets = unix_sockets_allowed()
+    if not sockets:
+        print("sandbox: unix sockets denied, socket tests run only in CI")
+        state["labels"] = [*state["labels"], "unix-socket-tests"]
+    static_env = ci_env(os.environ, ci["jobs"][STATIC_JOB][0], sockets)
+    test_env = ci_env(os.environ, {**ci["jobs"][TEST_JOB][0], **ci["jobs"][TEST_JOB][1]}, sockets)
     dropped = sorted(k for k in os.environ
                      if k.startswith(("GO", "CGO_")) and k not in KEPT_GO_VARS and k not in static_env)
     shown = ("GO", "CGO_", "BALISTID_", "CI")
