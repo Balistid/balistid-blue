@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import io
 import os
 import re
 import resource
@@ -208,7 +209,8 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: int,
         cap = limit_as if hard == resource.RLIM_INFINITY else min(limit_as, hard)
         resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
     try:
-        proc = subprocess.Popen(cmd, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, encoding="utf-8", errors="replace",
+                                stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, start_new_session=True,
                                 preexec_fn=limit if limit_as else None)
     except (OSError, subprocess.SubprocessError) as err:
@@ -232,8 +234,9 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: int,
 
 
 def git(repo: Path, *args: str) -> str:
+    """Git output as str; surrogateescape keeps any path byte, so a path still names its file."""
     return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True,
-                          text=True).stdout
+                          encoding="utf-8", errors="surrogateescape").stdout
 
 
 def changed_paths(repo: Path, base: str) -> list[str]:
@@ -256,20 +259,14 @@ def find_golangci(explicit: str | None, env: dict[str, str], gopath: str) -> str
     return absolute(shutil.which("golangci-lint", path=str(Path(gopath) / "bin")))
 
 
-def fast(args: argparse.Namespace) -> int:
-    state = {"start": time.monotonic(), "head": "unknown", "dirty": "unknown", "labels": [],
-             "problems": []}
-    try:
-        checks(args, state)
-    except (subprocess.CalledProcessError, OSError) as err:
-        detail = (getattr(err, "stderr", None) or "").strip()
-        state["problems"].append(f"{err}{': ' + detail if detail else ''}")
+def report(state: dict, reason: str | None = None) -> int:
     for p in state["problems"]:
         print(f"FAIL {p}")
-    print(f"CHECK fast {'FAIL' if state['problems'] else 'PASS'} head={state['head']} "
-          f"dirty={state['dirty']} {time.monotonic() - state['start']:.0f}s; "
-          f"CI also: {', '.join(state['labels']) or 'nothing'}")
-    return 1 if state["problems"] else 0
+    failed = bool(state["problems"] or reason)
+    print(f"CHECK fast {'FAIL' if failed else 'PASS'} head={state['head']} dirty={state['dirty']} "
+          f"{time.monotonic() - state['start']:.0f}s{f' reason={reason}' if reason else ''}; "
+          f"CI also: {', '.join(state['labels']) or 'nothing'}", flush=True)
+    return 1 if failed else 0
 
 
 def checks(args: argparse.Namespace, state: dict) -> None:
@@ -364,7 +361,8 @@ def checks(args: argparse.Namespace, state: dict) -> None:
     go_files = {f for f in changed if f.endswith(".go") and (repo / f).is_file()}
     go_files |= {str(f.relative_to(repo)) for d in dirs for f in (repo / d).glob("*.go")}
     if args.all:
-        go_files |= {f for f in git(repo, "ls-files", "-z", "--", "*.go").split("\0") if f}
+        go_files |= {f for f in git(repo, "ls-files", "-z", "--", "*.go").split("\0")
+                     if f and (repo / f).is_file()}
     if go_files:
         gofmt(problems, go, sorted(go_files), repo, static_env, args.timeout)
     if not dirs:
@@ -409,7 +407,19 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--all", action="store_true", help="check every package, not only touched ones")
     f.add_argument("--golangci-lint", help="path of the golangci-lint binary to use")
     f.add_argument("--timeout", type=int, default=900, help="seconds per step (default 900)")
-    return fast(parser.parse_args(argv))
+    args = parser.parse_args(argv)
+    state = {"start": time.monotonic(), "head": "unknown", "dirty": "unknown", "labels": [],
+             "problems": []}
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(errors="backslashreplace")
+    # The one error boundary: whatever breaks, the last line is still the verdict, and it fails.
+    try:
+        checks(args, state)
+    except Exception as err:
+        detail = str(getattr(err, "stderr", None) or "").strip()
+        state["problems"].append(f"{type(err).__name__}: {err}{': ' + detail if detail else ''}")
+        return report(state, type(err).__name__)
+    return report(state)
 
 
 if __name__ == "__main__":
