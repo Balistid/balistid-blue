@@ -7,7 +7,8 @@ modsum:    a module fetched with `go mod download -json` has the pinned h1 hash.
 same:      two release builds are byte-identical.
 owned:     every package the range binaries, the runner and the client compile, and the paths that go into the range image,
            is in the main module and code-owned (ADR 0011): an agent change there would run on
-           the host or in the evidence image, so it waits for the maintainer.
+           the host or in the evidence image, so it waits for the maintainer. A package from another
+           module passes only if that module, at that version and not replaced, is in ALLOWED_MODULES.
 """
 
 from __future__ import annotations
@@ -53,6 +54,18 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
 # image inputs of session.go (imageFiles, range/, packaging/); change together with ci.yml.
 OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid")
 OWNED_PATHS = ("range", "deploy", "packaging")
+# The store's whole compiled closure (SQLite without cgo, ADR 0003), exactly as go.mod requires it; a
+# module bump moves this list in the same code-owned change. Go checks each module's h1 against go.sum.
+ALLOWED_MODULES = frozenset({
+    "github.com/dustin/go-humanize@v1.0.1",
+    "github.com/google/uuid@v1.6.0",
+    "github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "golang.org/x/sys@v0.48.0",
+    "modernc.org/libc@v1.77.1",
+    "modernc.org/mathutil@v1.7.1",
+    "modernc.org/memory@v1.12.1",
+    "modernc.org/sqlite@v1.60.1",
+})
 MAINTAINER = "@Jvc0n"
 # Every line is an anchored plain path owned by the maintainer alone. GitHub lets a later line take
 # an owner away (a glob, a child path, an empty or invalid owner, an inline comment); refusing all of
@@ -97,6 +110,14 @@ def go_list_packages(text: str) -> list[dict]:
         packages.append(pkg)
 
 
+def allowed_module(path: str, module: dict) -> bool:
+    """A package of a listed module, at its listed version and not replaced."""
+    mod = module.get("Path", "")
+    return (module.get("Main") is not True and "Replace" not in module and bool(mod)
+            and f"{mod}@{module.get('Version')}" in ALLOWED_MODULES
+            and (path == mod or path.startswith(mod + "/")))
+
+
 def owned_problems(deps_json: str, codeowners: str, go_mod: str) -> list[str]:
     rules, problems = codeowners_rules(codeowners)
     module_path = go_module(go_mod)
@@ -112,6 +133,8 @@ def owned_problems(deps_json: str, codeowners: str, go_mod: str) -> list[str]:
         if pkg.get("Standard") is True:
             continue
         module = pkg.get("Module") or {}
+        if allowed_module(path, module):
+            continue
         main_module = module.get("Path") == module_path and module.get("Main") is True
         if not main_module or not path.startswith(module_path + "/"):
             problems.append(f"{path}: package from outside the main module")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -348,6 +349,10 @@ class RepositoryMapTest(unittest.TestCase):
         self.assertEqual(self.budget(map_readme(self.files).replace("## Repository map", "## Map")), 1)
 
 
+# The collector's socket unit as deployed (ADR 0016): it must pass the gate's line grammar.
+SOCKET_UNIT = (Path(__file__).resolve().parents[3] / "deploy/collector/balistid-collector.socket").read_text()
+
+
 class GoLayoutTest(unittest.TestCase):
     """ADR 0003: the Go and deployment layout, and the files gitleaks would skip."""
 
@@ -381,6 +386,10 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/runner/balistid-runner-build.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.timer": "[Timer]\n",
+            "deploy/collector/sysusers.conf": "u x -\n",
+            "deploy/collector/tmpfiles.conf": "d /x 0700 x x -\n",
+            "deploy/collector/balistid-collector.service": "[Service]\n",
+            "deploy/collector/balistid-collector.socket": SOCKET_UNIT,
             "range/mkosi.conf": "[Distribution]\n",
             "range/balistid-range-guest.service": "[Unit]\n",
         }, 0)
@@ -396,7 +405,9 @@ class GoLayoutTest(unittest.TestCase):
                      "range/mkosi.conf.d/x.conf", "range/x.timer", "range/x.service",
                      "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf",
                      "deploy/runner/other.conf", "deploy/runner/balistid-runner.service",
-                     "deploy/runner/balistid-runner-tick.socket", "deploy/runner/sub/tmpfiles.conf"):
+                     "deploy/runner/balistid-runner-tick.socket", "deploy/runner/sub/tmpfiles.conf",
+                     "deploy/collector/other.socket", "deploy/collector/other.conf",
+                     "deploy/collector/sub/balistid-collector.socket"):
             with self.subTest(name=name):
                 self.assert_budget({name: "x\n"}, 1)
 
@@ -419,6 +430,22 @@ class GoLayoutTest(unittest.TestCase):
                      GO_SUM_LINE[:-2] + "=", "# comment"):
             with self.subTest(line=line):
                 self.assert_budget({"go.sum": GO_SUM_LINE + "\n" + line + "\n"}, 1)
+
+    def test_socket_unit_other_than_pinned_fails(self):
+        path = "deploy/collector/balistid-collector.socket"
+        self.assert_budget({path: SOCKET_UNIT}, 0)
+        for content in (SOCKET_UNIT + "\n", SOCKET_UNIT + "Description=api key AbCd\n", SOCKET_UNIT[:-1],
+                        SOCKET_UNIT.replace("0660", "0666"), ""):
+            with self.subTest(content=content[-30:]):
+                self.assert_budget({path: content}, 1)
+
+    def test_control_byte_in_a_root_installed_file_fails(self):
+        for name in ("deploy/collector/tmpfiles.conf", "deploy/runner/balistid-runner-tick.service",
+                     "deploy/audit/balistid.rules", "range/mkosi.conf", "packaging/laurel/PKGBUILD"):
+            for byte in ("\x00", "\r", "\x1b"):
+                with self.subTest(name=name, byte=byte):
+                    self.assert_budget({name: f"# x{byte}User=root\n"}, 1)
+        self.assert_budget({"deploy/collector/tmpfiles.conf": "# x\tdirs\n"}, 0)
 
     def test_non_ascii_go_mod_fails(self):
         self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
@@ -607,6 +634,33 @@ class OwnedDepsTest(unittest.TestCase):
                      "/a/../range/ @Jvc0n", "/ @Jvc0n"):
             with self.subTest(line=line):
                 self.assertTrue(self.problems(owners=self.OWNERS + line + "\n"))
+
+    SQLITE = {"Path": "modernc.org/sqlite", "Version": "v1.60.1"}
+
+    def test_listed_module_at_its_version_passes(self):
+        deps = self.deps({"ImportPath": "modernc.org/sqlite", "Module": self.SQLITE},
+                         {"ImportPath": "modernc.org/sqlite/lib", "Module": self.SQLITE})
+        self.assertEqual(self.problems(deps=deps), [])
+
+    def test_module_off_the_list_fails(self):
+        cases = [{"ImportPath": "modernc.org/sqlite", "Module": {**self.SQLITE, "Version": "v1.60.2"}},
+                 {"ImportPath": "modernc.org/sqlite", "Module": {"Path": "modernc.org/sqlite"}},
+                 {"ImportPath": "example.com/x", "Module": {"Path": "example.com/x", "Version": "v1.0.0"}},
+                 {"ImportPath": "modernc.org/sqlite",
+                  "Module": {**self.SQLITE, "Replace": {"Path": "example.com/fork", "Version": "v1.0.0"}}},
+                 {"ImportPath": "modernc.org/sqlite", "Module": {**self.SQLITE, "Main": True}},
+                 {"ImportPath": "modernc.org/sqlite-evil/x", "Module": self.SQLITE},
+                 {"ImportPath": "example.com/x", "Module": self.SQLITE},
+                 {"ImportPath": "modernc.org/sqlite"}]
+        for pkg in cases:
+            with self.subTest(pkg=pkg):
+                self.assertTrue(self.problems(deps=self.deps(pkg)))
+
+    def test_allowed_modules_are_what_go_mod_requires(self):
+        root = Path(__file__).resolve().parents[3]
+        go_mod = (root / "go.mod").read_text()
+        required = {f"{m}@{v}" for m, v in re.findall(r"^\s*(?:require )?(\S+) (v\S+)", go_mod, re.M)}
+        self.assertEqual(go_gate.ALLOWED_MODULES - required, set())
 
     # The binaries root installs are in the gate, and CI lists exactly the gate's roots (ADR 0011).
     def test_gate_roots_match_ci(self):

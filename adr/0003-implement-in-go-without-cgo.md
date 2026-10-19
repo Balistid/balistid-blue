@@ -30,8 +30,9 @@ reports `go1.27.1-X:nodwarf5`, a different build from upstream's. The maintainer
    `internal/<pkg>/<sub>/*.go`; `testdata/*.json` and `*.jsonl` under those directories;
    `packaging/<name>/PKGBUILD`; `deploy/audit/*.rules`; `deploy/auditd/auditd.conf`;
    `deploy/laurel/config.toml`; `deploy/systemd/*.service`, `*.timer`. Each pattern ships with a
-   positive and a negative test. Nothing else is admitted by this ADR. `*.socket` was dropped because
-   gitleaks skips that suffix; `go.mod` and `go.sum`, which it also skips, must match a line grammar.
+   positive and a negative test. Nothing else is admitted by this ADR. gitleaks skips `*.socket`,
+   `go.mod` and `go.sum`, so each is admitted only by exact path: `go.mod` and `go.sum` must match a
+   line grammar, the collector's `deploy/collector/balistid-collector.socket` (ADR 0016) its pinned sha256.
 
 ## Alternatives considered
 

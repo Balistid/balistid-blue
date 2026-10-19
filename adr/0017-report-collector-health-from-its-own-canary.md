@@ -1,7 +1,7 @@
 # 0017 — Report the collector's health from its own canary
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-11
+- Date: 2026-10-11, amended 2026-10-19 (exec denied by mount, not by syscall filter)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -21,8 +21,9 @@ the kernel backlog is full (ADR 0016), so a canary writer can hang. Laurel re-ex
    when the writer stores a record with that key, the collector's uid and pid, `success=yes` and a PATH basename `c-<n>`;
    leftover `c-*` files are removed at start.
 3. The writer checks deadlines on its own tick: a probe not seen within 30 s is a miss whether or not its goroutine
-   returned; two misses set UNKNOWN. A late record for an old probe does not count. No exec, so the unit can deny
-   `execve` (T18); shutdown does not wait for the canary goroutine, which holds no store state.
+   returned; two misses set UNKNOWN. A late record for an old probe does not count. No exec (T18): systemd
+   needs `execve` to start the binary, so the unit makes nothing else executable (`NoExecPaths=` on `/`
+   and on each path it can write) and filters `execveat` and `memfd_create`; shutdown does not wait for the canary goroutine, which holds no store state.
 4. Every EOF from Laurel sets UNKNOWN until a probe is seen over the next connection; every connection, the first
    included, sends a probe at once.
    Every connection is a health record with Laurel's pid and its cause: collector start, a new pid (Laurel restarted),
