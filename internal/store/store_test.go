@@ -967,6 +967,26 @@ func TestReadSealsRefusesForeignEntries(t *testing.T) {
 	}
 }
 
+// A directory others can write is not one only the collector wrote: Open refuses it, so does a reader.
+func TestReadSealsRefusesADirectoryOthersCanWrite(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	for _, mode := range []os.FileMode{0o770, 0o707} {
+		if err := os.Chmod(dir, mode); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := ReadSeals(t.Context(), dir); err == nil || got != nil {
+			t.Fatalf("%o: ReadSeals = %v, %v; want a refusal", mode, got, err)
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // a directory: 0700 is owner only
+		t.Fatal(err)
+	}
+	if got, err := ReadSeals(t.Context(), dir); err != nil || len(got) != len(want) {
+		t.Fatalf("0700: ReadSeals = %v, %v", got, err)
+	}
+}
+
 // An indexed shard that is gone fails at once, not later in shard.Read.
 func TestReadSealsRefusesAMissingIndexedShard(t *testing.T) {
 	dir := t.TempDir()

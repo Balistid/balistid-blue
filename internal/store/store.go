@@ -174,8 +174,8 @@ const maxIndexBytes = 16 << 20
 const indexCheckEvery = 4096
 
 // ReadSeals returns the seal index of dir, oldest first, without opening the store: it writes nothing and
-// checks no ownership, so a reader such as the range guest finds the sealed shards for shard.Read after
-// the collector stopped. It holds the entries of dir to the rules Open does (classify): an entry that
+// checks no owner, so a reader such as the range guest finds the sealed shards for shard.Read after the
+// collector stopped; a dir that group or others can write is refused, as Open refuses it. It holds the entries of dir to the rules Open does (classify): an entry that
 // does not belong in the store, or an indexed shard that is not there, is an error. A shard file the
 // index does not list, or any shard sidecar, makes it fail with ErrUnindexed, along with the seals it did
 // list: Open recovers such a shard or refuses the directory; a reader would silently miss it either way.
@@ -187,6 +187,9 @@ func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	}
 	if !st.IsDir() {
 		return nil, fmt.Errorf("store: %s is not a directory", dir)
+	}
+	if st.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("store: %s can be written by others than its owner", dir)
 	}
 	seals, torn, err := readSeals(ctx, dir)
 	if err != nil {
