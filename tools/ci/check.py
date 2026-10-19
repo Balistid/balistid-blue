@@ -5,7 +5,8 @@
 packages whose files changed, plus every package that imports them (transitively, or from its tests).
 On those it runs gofmt -l, go vet, golangci-lint run --new-from-rev and go test. The environment is the
 one of the go-static and go-test jobs in .github/workflows/ci.yml (job env, and the step env of
-go-test), plus GOENV=off so no go.env file changes it; every other GO*/CGO_* variable is dropped.
+go-test), plus GOENV=off so no go.env file changes it and CI=true as on GitHub; every other GO*/CGO_*
+variable is dropped. gofmt also gets every changed .go file, whether or not go list sees its package.
 Versions are compared with the pins in ci.yml: golangci-lint must match (FAIL); go is compared without
 a distribution suffix such as -X:nodwarf5, and a difference is a WARN. go test runs under RLIMIT_AS
 and a timeout and never fuzzes (seed corpora only). The last line is the verdict and names the checks
@@ -39,21 +40,31 @@ KEPT_GO_VARS = {"GOPATH", "GOCACHE", "GOMODCACHE", "GOTMPDIR", "GOLANGCI_LINT_CA
 # A change to one of these can change the result of every package.
 WHOLE_MODULE = {"go.mod", "go.sum", "go.work", "go.work.sum", ".golangci.yml", CI_YML}
 # Paths no Go build or test reads. Any other path outside a package dir selects the whole module,
-# because tests read deploy/, range/ and acceptance/ files.
-NO_GO = ("*.md", "tools/ci/*", "githooks/*", ".github/*", "LICENSE", ".gitignore", ".editorconfig",
+# because tests read deploy/, range/, acceptance/ and tools/ci/ files.
+NO_GO = ("*.md", "githooks/*", ".github/*", "LICENSE", ".gitignore", ".editorconfig",
          ".gitattributes", ".gitleaks.toml", "zizmor.yml")
-# (label, text in ci.yml that shows CI runs it); check.py runs none of these.
+# (label, text in ci.yml that shows CI runs it); check.py runs none of these. Covers every job.
 CI_ONLY = (
+    ("toolchain", "go_gate.py toolchain"),
+    ("build", "go build ./..."),
     ("race", "test -race"),
     ("tidy", "go mod tidy"),
     ("verify", "go mod verify"),
     ("owned", "go_gate.py owned"),
     ("cgo", "CgoFiles"),
     ("vuln", "govulncheck"),
-    ("repro", "go_gate.py same"),
     ("lint-all", "golangci-lint run ./..."),
+    ("repro", "go_gate.py same"),
+    ("selftest", "unittest discover"),
+    ("docs-budget", "docs_budget.py"),
+    ("pin-check", "--config zizmor.yml"),
+    ("commit-lint", "commit_lint.py"),
+    ("secrets", 'gitleaks" git'),
+    ("workflow-lint", 'actionlint" -color'),
 )
 AS_LIMIT = 4 << 30
+# Seconds to read what is left after a timeout; a descendant outside the group may hold the pipe.
+DRAIN_SECONDS = 5
 # Bounds memory: up to TEST_PROCS test binaries run at once, each capped by AS_LIMIT.
 TEST_PROCS = 4
 TEST_PARALLEL = 2
@@ -113,6 +124,8 @@ def ci_env(base: dict[str, str], job_env: dict[str, str]) -> dict[str, str]:
            if not k.startswith(("GO", "CGO_")) or k in KEPT_GO_VARS}
     env.update(job_env)
     env["GOENV"] = "off"
+    # GitHub sets CI=true in every step; tests turn some local skips into failures on it.
+    env["CI"] = "true"
     return env
 
 
@@ -125,8 +138,8 @@ def go_version_warning(goversion: str, pin: str) -> str | None:
 
 
 def golangci_problem(version_output: str, pin: str) -> str | None:
-    m = re.search(r"has version v?(\d+\.\d+\.\d+)\b", version_output)
-    if m and m[1] == pin:
+    m = re.search(r"has version (\S+)", version_output)
+    if m and re.fullmatch(r"v?(\d+\.\d+\.\d+)", m[1]) and m[1].lstrip("v") == pin:
         return None
     found = m[1] if m else f"of unknown version ({version_output.strip()[:80]!r})"
     return (f"golangci-lint {found} is not the CI pin {pin}: install v{pin} (the release tarball "
@@ -185,8 +198,17 @@ def run(cmd: list[str], cwd: Path, env: dict[str, str], timeout: int,
     try:
         out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            out, _ = proc.communicate(timeout=DRAIN_SECONDS)
+        except subprocess.TimeoutExpired as err:
+            partial = err.output or b""
+            out = partial.decode("utf-8", "replace") if isinstance(partial, bytes) else partial
+            proc.stdout.close()
+            proc.wait()
         return None, f"{out}\ntimed out after {timeout}s"
     return proc.returncode, out
 
@@ -202,60 +224,75 @@ def changed_paths(repo: Path, base: str) -> list[str]:
     return sorted({p for p in tracked + untracked if p})
 
 
+def absolute(path: str | None) -> str | None:
+    """One absolute path, so the file hashed is the file run whatever the cwd of either."""
+    return str(Path(path).resolve()) if path else None
+
+
 def find_golangci(explicit: str | None, env: dict[str, str], gopath: str) -> str | None:
     if explicit:
-        return explicit
+        return absolute(explicit)
     on_path = shutil.which("golangci-lint", path=env.get("PATH"))
     if on_path or not gopath:
-        return on_path
-    return shutil.which("golangci-lint", path=str(Path(gopath) / "bin"))
+        return absolute(on_path)
+    return absolute(shutil.which("golangci-lint", path=str(Path(gopath) / "bin")))
 
 
 def fast(args: argparse.Namespace) -> int:
-    start = time.monotonic()
-    repo = Path(git(args.repo, "rev-parse", "--show-toplevel").strip())
-    head = git(repo, "rev-parse", "HEAD").strip()
-    dirty = sum(1 for r in git(repo, "status", "--porcelain=v1", "-z", "-uall", "--no-renames")
-                .split("\0") if r)
-    problems: list[str] = []
-    labels: list[str] = []
+    state = {"start": time.monotonic(), "head": "unknown", "dirty": "unknown", "labels": [],
+             "problems": []}
+    try:
+        checks(args, state)
+    except (subprocess.CalledProcessError, OSError) as err:
+        detail = (getattr(err, "stderr", None) or "").strip()
+        state["problems"].append(f"{err}{': ' + detail if detail else ''}")
+    for p in state["problems"]:
+        print(f"FAIL {p}")
+    print(f"CHECK fast {'FAIL' if state['problems'] else 'PASS'} head={state['head']} "
+          f"dirty={state['dirty']} {time.monotonic() - state['start']:.0f}s; "
+          f"CI also: {', '.join(state['labels']) or 'nothing'}")
+    return 1 if state["problems"] else 0
 
-    def verdict() -> int:
-        state = "FAIL" if problems else "PASS"
-        for p in problems:
-            print(f"FAIL {p}")
-        extra = ", ".join(labels) or "nothing"
-        print(f"CHECK fast {state} head={head[:12]} dirty={dirty} "
-              f"{time.monotonic() - start:.0f}s; CI also: {extra}")
-        return 1 if problems else 0
 
+def checks(args: argparse.Namespace, state: dict) -> None:
+    problems: list[str] = state["problems"]
+    repo = Path(git(args.repo, "rev-parse", "--show-toplevel").strip()).resolve()
+    state["head"] = git(repo, "rev-parse", "HEAD").strip()[:12]
+    state["dirty"] = str(sum(1 for r in git(repo, "status", "--porcelain=v1", "-z", "-uall",
+                                            "--no-renames").split("\0") if r))
     try:
         ci = read_ci((repo / CI_YML).read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
         problems.append(f"ci.yml: {err}")
-        return verdict()
-    labels = ci["ci_only"]
+        return
+    state["labels"] = ci["ci_only"]
     static_env = ci_env(os.environ, ci["jobs"][STATIC_JOB][0])
     test_env = ci_env(os.environ, {**ci["jobs"][TEST_JOB][0], **ci["jobs"][TEST_JOB][1]})
     dropped = sorted(k for k in os.environ
                      if k.startswith(("GO", "CGO_")) and k not in KEPT_GO_VARS and k not in static_env)
-    print("env (static):", " ".join(f"{k}={static_env[k]}" for k in sorted(static_env)
-                                    if k.startswith(("GO", "CGO_"))))
-    print("env (test):  ", " ".join(f"{k}={test_env[k]}" for k in sorted(test_env)
-                                    if k.startswith(("GO", "CGO_", "BALISTID_"))))
+    shown = ("GO", "CGO_", "BALISTID_", "CI")
+    print("env (static):", " ".join(f"{k}={v}" for k, v in sorted(static_env.items()) if k.startswith(shown)))
+    print("env (test):  ", " ".join(f"{k}={v}" for k, v in sorted(test_env.items()) if k.startswith(shown)))
     if dropped:
         print("env dropped: ", " ".join(dropped))
 
     pins = ci["pins"]
-    rc, goversion = run(["go", "env", "GOVERSION"], repo, static_env, 60)
+    go = absolute(shutil.which("go", path=static_env.get("PATH")))
+    if not go:
+        problems.append(f"go not found on PATH: install go{pins['GO_VERSION']}")
+        return
+    rc, goversion = run([go, "env", "GOVERSION"], repo, static_env, 60)
     if rc != 0:
-        problems.append(f"go: cannot read its version: {goversion.strip()}")
-        return verdict()
+        problems.append(f"{go} env GOVERSION (exit {rc}): {goversion.strip()}")
+        return
     goversion = goversion.strip()
     warning = go_version_warning(goversion, pins["GO_VERSION"])
     print(f"WARN {warning}" if warning else
-          f"go: {goversion} (pin go{pins['GO_VERSION']}; a distribution suffix is ignored)")
-    _, gopath = run(["go", "env", "GOPATH"], repo, static_env, 60)
+          f"go: {go} {goversion} (pin go{pins['GO_VERSION']}; a distribution suffix is ignored)")
+    rc, gopath = run([go, "env", "GOPATH"], repo, static_env, 60)
+    if rc != 0:
+        problems.append(f"{go} env GOPATH (exit {rc}): {gopath.strip()}")
+        gopath = ""
     golangci = find_golangci(args.golangci_lint, static_env, gopath.strip())
     lint_ok = False
     if not golangci:
@@ -267,8 +304,9 @@ def fast(args: argparse.Namespace) -> int:
         except OSError as err:
             digest = f"unreadable ({err})"
         print(f"golangci-lint: {golangci} sha256={digest} (ci.yml pins the release tarball)")
-        _, out = run([golangci, "version"], repo, static_env, 60)
-        lint_problem = golangci_problem(out, pins["GOLANGCI_VERSION"])
+        rc, out = run([golangci, "version"], repo, static_env, 60)
+        lint_problem = (golangci_problem(out, pins["GOLANGCI_VERSION"]) if rc == 0
+                        else f"{golangci} version (exit {rc}): {out.strip()[:200]}")
         problems += [lint_problem] if lint_problem else []
         lint_ok = lint_problem is None
 
@@ -276,48 +314,59 @@ def fast(args: argparse.Namespace) -> int:
         base = git(repo, "merge-base", args.base, "HEAD").strip()
     except subprocess.CalledProcessError:
         problems.append(f"no merge base with {args.base}: run git fetch origin")
-        return verdict()
-    rc, listing = run(["go", "list", "-e", "-json=ImportPath,Dir,Imports,TestImports,XTestImports",
+        return
+    changed = changed_paths(repo, base)
+    rc, listing = run([go, "list", "-e", "-json=ImportPath,Dir,Imports,TestImports,XTestImports",
                        "./..."], repo, static_env, args.timeout)
+    packages: list[dict] = []
     if rc != 0:
         problems.append(f"go list: {listing.strip()}")
-        return verdict()
-    try:
-        packages = go_gate.go_list_packages(listing)
-        for p in packages:
-            p["Dir"] = Path(p["Dir"]).resolve().relative_to(repo.resolve()).as_posix()
-    except (KeyError, TypeError, ValueError) as err:
-        problems.append(f"go list: unusable output ({err})")
-        return verdict()
+    else:
+        try:
+            packages = go_gate.go_list_packages(listing)
+            for p in packages:
+                p["Dir"] = Path(p["Dir"]).resolve().relative_to(repo).as_posix()
+        except (KeyError, TypeError, ValueError) as err:
+            problems.append(f"go list: unusable output ({err})")
+            packages = []
     if args.all:
         selected, why = {p["ImportPath"] for p in packages}, "--all"
     else:
-        selected, why = select_packages(changed_paths(repo, base), packages)
+        selected, why = select_packages(changed, packages)
         if len(selected) < len(packages):
-            labels = ["all-packages", *labels]
+            state["labels"] = ["all-packages", *state["labels"]]
     dirs = sorted(p["Dir"] for p in packages if p["ImportPath"] in selected)
     print(f"base: {args.base} merge-base {base[:12]}; packages: {len(dirs)} of {len(packages)} ({why})")
+
+    # Changed files count even where go list sees no package (a build constraint excludes them all).
+    go_files = {f for f in changed if f.endswith(".go") and (repo / f).is_file()}
+    go_files |= {str(f.relative_to(repo)) for d in dirs for f in (repo / d).glob("*.go")}
+    if args.all:
+        go_files |= {f for f in git(repo, "ls-files", "-z", "--", "*.go").split("\0") if f}
+    if go_files:
+        gofmt(problems, go, sorted(go_files), repo, static_env, args.timeout)
     if not dirs:
-        return verdict()
+        return
     imports = sorted(selected)
-    go_files = sorted(str(f.relative_to(repo)) for d in dirs for f in (repo / d).glob("*.go"))
-    # gofmt of the same toolchain as go, as in CI, not whichever comes first on PATH.
-    rc, goroot = run(["go", "env", "GOROOT"], repo, static_env, 60)
-    if rc != 0 or not goroot.strip():
-        problems.append(f"go env GOROOT: {goroot.strip()}")
-    else:
-        rc, out = run([str(Path(goroot.strip()) / "bin" / "gofmt"), "-l", *go_files],
-                      repo, static_env, args.timeout)
-        step(problems, "gofmt -l", rc, out, unformatted=bool(out.strip()))
-    step(problems, "go vet", *run(["go", "vet", *imports], repo, static_env, args.timeout))
+    step(problems, "go vet", *run([go, "vet", *imports], repo, static_env, args.timeout))
     if lint_ok:
         lint_args = [f"./{d}" if d != "." else "." for d in dirs]
         step(problems, "golangci-lint", *run([golangci, "run", f"--new-from-rev={base}", *lint_args],
                                              repo, static_env, args.timeout))
     step(problems, "go test", *run(
-        ["go", "test", f"-timeout={args.timeout}s", f"-p={TEST_PROCS}", f"-parallel={TEST_PARALLEL}",
+        [go, "test", f"-timeout={args.timeout}s", f"-p={TEST_PROCS}", f"-parallel={TEST_PARALLEL}",
          *imports], repo, test_env, args.timeout + 60, limit_as=AS_LIMIT))
-    return verdict()
+
+
+def gofmt(problems: list[str], go: str, files: list[str], repo: Path, env: dict[str, str],
+          timeout: int) -> None:
+    """gofmt of the same toolchain as go, as in CI, not whichever comes first on PATH."""
+    rc, goroot = run([go, "env", "GOROOT"], repo, env, 60)
+    if rc != 0 or not goroot.strip():
+        problems.append(f"{go} env GOROOT (exit {rc}): {goroot.strip()}")
+        return
+    rc, out = run([str(Path(goroot.strip()) / "bin" / "gofmt"), "-l", *files], repo, env, timeout)
+    step(problems, "gofmt -l", rc, out, unformatted=bool(out.strip()))
 
 
 def step(problems: list[str], name: str, rc: int | None, out: str, unformatted: bool = False) -> None:
