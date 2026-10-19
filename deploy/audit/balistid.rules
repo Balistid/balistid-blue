@@ -1,4 +1,5 @@
 ## Balistid Blue floor-0 audit rules (ADR 0004). Installed only by balistid-install.
+## version: adr-0004-v1 (the collector's -rule-version names it in its started record)
 ## -f 1 logs a failure instead of panicking; -r 0 so no rate limit drops records at the kernel. The
 ## backlog is a starting value; step 9.3 measures burst_rate against it.
 -D

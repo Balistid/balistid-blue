@@ -1,0 +1,16 @@
+[Unit]
+Description=Balistid Blue collector: the socket Laurel writes to
+DefaultDependencies=no
+After=systemd-sysusers.service
+Before=sockets.target auditd.service shutdown.target
+Conflicts=shutdown.target
+
+[Socket]
+ListenStream=/run/balistid/collector.sock
+Accept=no
+SocketGroup=_laurel
+SocketMode=0660
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

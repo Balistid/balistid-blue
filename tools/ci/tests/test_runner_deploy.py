@@ -105,7 +105,10 @@ SYSUSERS = [
 
 def parse_unit(text: str) -> dict[str, dict[str, list[str]]]:
     """Sections of a unit file, each mapping a directive to all its values in order. Continuation
-    lines are refused, so no directive can hide on the next line."""
+    lines are refused, so no directive can hide on the next line, and so are control bytes: systemd ends
+    a line at a NUL, which splitlines() does not, so a directive could hide inside a comment."""
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        raise ValueError("control byte in a unit file")
     sections: dict[str, dict[str, list[str]]] = {}
     current = None
     for number, line in enumerate(text.splitlines(), 1):
@@ -141,6 +144,8 @@ def service_problems(name: str, text: str) -> list[str]:
 
 def lines(name: str) -> list[list[str]]:
     text = (RUNNER / name).read_text()
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
+        raise ValueError(f"{name}: control byte")
     return [shlex.split(line) for line in text.splitlines()
             if line.strip() and not line.lstrip().startswith("#")]
 
@@ -239,6 +244,11 @@ class ServiceCheckTest(unittest.TestCase):
     def test_install_section_fails(self):
         enabled = self.text() + "[Install]\nWantedBy=multi-user.target\n"
         self.assertTrue(service_problems(self.NAME, enabled))
+
+    def test_control_byte_is_refused(self):
+        for byte in ("\x00", "\r", "\x0b", "\x1b"):
+            with self.subTest(byte=byte), self.assertRaises(ValueError):
+                parse_unit(f"[Service]\n# x{byte}User=root\n")
 
     def test_continuation_line_is_refused(self):
         with self.assertRaises(ValueError):

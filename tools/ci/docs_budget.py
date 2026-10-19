@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import re
 import subprocess
 import sys
@@ -79,6 +80,11 @@ LAYOUT: tuple[str, ...] = (
     "deploy/runner/balistid-runner-tick.service",
     "deploy/runner/balistid-runner-tick.timer",
     "deploy/runner/install",
+    # Collector, by exact name (ADR 0016, 0017).
+    "deploy/collector/sysusers.conf",
+    "deploy/collector/tmpfiles.conf",
+    "deploy/collector/balistid-collector.service",
+    "deploy/collector/balistid-collector.socket",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
     "range/balistid-range-guest.service",
@@ -94,14 +100,16 @@ EXACT_SEGMENTS = {
 }
 DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FILE_RE = re.compile(
-    r"^[a-z0-9][a-z0-9_-]*(?:\.(?:md|py|yml|toml|go|mod|sum|json|jsonl|rules|conf|service|timer))?$"
+    r"^[a-z0-9][a-z0-9_-]*(?:\.(?:md|py|yml|toml|go|mod|sum|json|jsonl|rules|conf|service|socket|timer))?$"
 )
 
 # Path patterns that the default config of the pinned gitleaks (v8.30.1, config/gitleaks.toml)
 # exempts from scanning, minus those the name grammar already blocks (dot or uppercase segments,
-# dotted directory names) and with every vendor/ path folded into one pattern. A tracked path matching one is refused, except go.mod and go.sum at the
-# root, whose whole content must instead match a strict grammar (CONTENT_GRAMMAR), so nothing can
-# hide in them. Update this list together with GITLEAKS_VERSION in ci.yml.
+# dotted directory names) and with every vendor/ path folded into one pattern. A tracked path matching
+# one is refused, except go.mod and go.sum at the root, whose whole content must instead match a strict
+# grammar (CONTENT_GRAMMAR), and the collector's socket unit, whose content is pinned (PINNED), so nothing
+# can hide in them.
+# Update this list together with GITLEAKS_VERSION in ci.yml.
 GITLEAKS_SKIPPED = tuple(re.compile(p) for p in (
     r"gitleaks\.toml",
     r"(?i)\.(?:bmp|gif|jpe?g|png|svg|tiff?)$",
@@ -134,6 +142,16 @@ CONTENT_GRAMMAR = {
         rf"(?: // indirect)?|\)|)$"
     ),
 }
+
+# Files gitleaks skips that no grammar can make safe: their content is pinned, so any change is a change
+# here, in code-owned tools/ci (ADR 0003, point 4).
+PINNED = {
+    "deploy/collector/balistid-collector.socket": "79d6b3020d547eb7d4ca361afed2b52099583a5d48253d914d7c0890e85f6305",
+}
+# Files root installs (units, rules, the range image, packages): a NUL or another control byte makes
+# systemd, auditd or a shell read a line the tests and the review do not see, and git shows a binary diff.
+ROOT_INSTALLED = ("deploy/", "range/", "packaging/")
+CONTROL_BYTE = re.compile(rb"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def content_violation(path: str, data: bytes) -> str | None:
@@ -269,13 +287,21 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
             continue
         # .gitleaks.toml is skipped by gitleaks itself; that risk is accepted in ADR 0001 (code-owned).
         if path != ".gitleaks.toml" and any(p.search(path) for p in GITLEAKS_SKIPPED):
-            if path not in CONTENT_GRAMMAR:
+            if path in PINNED:
+                if hashlib.sha256(blob(repo, sha)).hexdigest() != PINNED[path]:
+                    violations.append(f"{path}: content differs from its pinned sha256")
+                    continue
+            elif path not in CONTENT_GRAMMAR:
                 violations.append(f"{path}: gitleaks would skip this path")
                 continue
-            problem = content_violation(path, blob(repo, sha))
-            if problem:
-                violations.append(f"{path}: {problem}")
-                continue
+            else:
+                problem = content_violation(path, blob(repo, sha))
+                if problem:
+                    violations.append(f"{path}: {problem}")
+                    continue
+        if path.startswith(ROOT_INSTALLED) and CONTROL_BYTE.search(blob(repo, sha)):
+            violations.append(f"{path}: control byte in a file root installs")
+            continue
         cap = doc_cap(path)
         if cap is None:
             if not any(matches(path, pattern) for pattern in LAYOUT):

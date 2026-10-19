@@ -1,0 +1,70 @@
+# Takes Laurel's records over balistid-collector.socket and stores them as evidence (ADR 0016, 0017).
+# The socket (no comments: its content grammar admits none, ADR 0003) is /run/balistid/collector.sock,
+# root:_laurel 0660, so only Laurel connects; the collector checks the peer's uid as well.
+[Unit]
+Description=Balistid Blue collector: Laurel's records into the raw store
+# Early boot: up before auditd so Laurel finds the socket, down after everything else at shutdown.
+DefaultDependencies=no
+Requires=balistid-collector.socket
+After=balistid-collector.socket local-fs.target systemd-tmpfiles-setup.service systemd-sysusers.service
+Before=auditd.service shutdown.target
+Conflicts=shutdown.target
+# A recorder never gives up restarting; a failure shows as UNKNOWN health and in the journal.
+StartLimitIntervalSec=0
+
+[Service]
+# READY=1 once the reader runs; WATCHDOG=1 on every writer tick (250 ms), also while the store is down.
+Type=notify
+WatchdogSec=10s
+Restart=always
+RestartSec=1s
+User=balistid-collector
+Group=balistid-collector
+ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v1
+# Open and the canary refuse a directory anyone but the collector could write.
+StateDirectory=balistid/collector
+StateDirectoryMode=0700
+UMask=0077
+# rss_mib (512 MiB for all of floor 0): the binary's own 192 MiB heap limit, the 64 MiB queue twice
+# while it drains, SQLite's pages and /tmp, with room. No swap.
+MemoryMax=384M
+MemorySwapMax=0
+# No exec (ADR 0017, point 3; T18): systemd needs execve to start the binary, so a syscall filter
+# cannot deny it; nothing but the binary is executable, and the other ways in are filtered. The
+# mounts systemd adds for the unit skip the noexec of /, so each writable one is listed too.
+NoExecPaths=/ /var/lib/balistid/collector /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-collector
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+# What PrivateTmp=yes becomes without the default dependencies; said so it is not a surprise.
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# No ProcSubset=pid: the started record reads /proc/sys/kernel/random/boot_id.
+ProtectProc=invisible
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+# Started at boot, not by Laurel's first connection: health is UNKNOWN until Laurel connects, and it
+# shows (ADR 0017, point 4).
+[Install]
+WantedBy=sysinit.target
