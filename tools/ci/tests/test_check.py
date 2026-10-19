@@ -27,7 +27,8 @@ CI_TEXT = (ROOT / check.CI_YML).read_text(encoding="utf-8")
 PINS = check.read_ci(CI_TEXT)["pins"]
 MODULE = "example.com/m"
 SANDBOX_LINE = "sandbox: unix sockets denied, socket tests run only in CI"
-LAST_LINE = re.compile(r"^CHECK fast (PASS|FAIL) head=([0-9a-f]{12}|unknown) dirty=(\d+|unknown) \d+s; CI also: \S.*$")
+LAST_LINE = re.compile(r"^CHECK fast (PASS|FAIL) head=([0-9a-f]{12}|unknown) dirty=(\d+|unknown) "
+                       r"\d+s(?: reason=\w+)?; CI also: \S.*$")
 GIT_ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -102,6 +103,9 @@ elif args[0] == "test":
     pkgs = [a for a in args[1:] if not a.startswith("-")]
     if has("TEST_HANG", pkgs):
         time.sleep(60)
+    if has("BYTE_OUT", pkgs):
+        sys.stdout.buffer.write(b"--- FAIL: \xff\n")
+        sys.exit(1)
     sys.exit(1 if has("TEST_DEFECT", pkgs) else 0)
 else:
     sys.exit(f"stub: unexpected {args}")
@@ -453,6 +457,46 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(rc, 1, lines)
             self.assertRegex(lines[-1], r"^CHECK fast FAIL head=unknown dirty=unknown ")
             self.assertTrue(any(line.startswith("FAIL ") for line in lines[:-1]), lines)
+    def test_non_utf8_tool_output_still_ends_in_the_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            box.write("c/c.go", "package c\n\n// BYTE_OUT\n")
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertIn("FAIL go test", lines)
+            self.assertIn("--- FAIL: \ufffd", lines)
+
+    def test_non_utf8_file_name_from_git_still_ends_in_the_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            name = "c/" + os.fsdecode(b"\xff") + ".go"
+            box.write(name, "package c\n\n// VET_DEFECT\n")
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertIn("FAIL go vet", lines)
+            self.assertIn(name, box.calls("gofmt")[0]["args"])
+
+    def test_all_skips_deleted_files_as_ci_does(self):
+        for stage in (False, True):
+            with self.subTest(staged=stage), tempfile.TemporaryDirectory() as tmp:
+                box = Sandbox(tmp)
+                (box.repo / "c" / "c.go").unlink()
+                if stage:
+                    git(box.repo, "add", "-A")
+                rc, lines = box.run("--all")
+                self.assertEqual(rc, 0, lines)
+                self.assertNotIn("c/c.go", box.calls("gofmt")[0]["args"])
+
+    def test_any_exception_ends_in_a_failing_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            out = StringIO()
+            with mock.patch.object(check, "checks", side_effect=RuntimeError("boom")), redirect_stdout(out):
+                rc = check.main(["fast", "--repo", str(box.repo)])
+            lines = out.getvalue().strip().splitlines()
+            self.assertEqual(rc, 1)
+            self.assertIn("FAIL RuntimeError: boom", lines)
+            self.assertRegex(lines[-1], r"^CHECK fast FAIL head=unknown dirty=unknown \d+s reason=RuntimeError; ")
 
 
 class ReadCiTest(unittest.TestCase):
