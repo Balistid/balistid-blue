@@ -1,5 +1,5 @@
 # Takes Laurel's records over balistid-collector.socket and stores them as evidence (ADR 0016, 0017).
-# The socket (no comments: its content grammar admits none, ADR 0003) is /run/balistid/collector.sock,
+# The socket (pinned by sha256 in tools/ci/docs_budget.py, ADR 0003) is /run/balistid/collector.sock,
 # root:_laurel 0660, so only Laurel connects; the collector checks the peer's uid as well.
 [Unit]
 Description=Balistid Blue collector: Laurel's records into the raw store

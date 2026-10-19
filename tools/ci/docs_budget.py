@@ -143,15 +143,24 @@ CONTENT_GRAMMAR = {
     ),
 }
 
-# Files gitleaks skips that no grammar can make safe: their content is pinned, so any change is a change
-# here, in code-owned tools/ci (ADR 0003, point 4).
+# Files gitleaks skips that no grammar can make safe: every reviewed version is pinned, so any change is a
+# change here, in code-owned tools/ci (ADR 0003, point 4), and --range still passes the older commits.
 PINNED = {
-    "deploy/collector/balistid-collector.socket": "79d6b3020d547eb7d4ca361afed2b52099583a5d48253d914d7c0890e85f6305",
+    "deploy/collector/balistid-collector.socket": {"79d6b3020d547eb7d4ca361afed2b52099583a5d48253d914d7c0890e85f6305"},
 }
-# Files root installs (units, rules, the range image, packages): a NUL or another control byte makes
-# systemd, auditd or a shell read a line the tests and the review do not see, and git shows a binary diff.
+# Files root installs (units, rules, the range image, packages): every line is tabs and printable ASCII,
+# at most 200 bytes. Anything else (a NUL, U+2028, a no-break space, a line over systemd's limit) lets
+# systemd, auditd or a shell read a line the tests and the review read differently. An allowlist (R7).
 ROOT_INSTALLED = ("deploy/", "range/", "packaging/")
-CONTROL_BYTE = re.compile(rb"[\x00-\x08\x0b-\x1f\x7f]")
+ROOT_INSTALLED_LINE = re.compile(rb"[\t\x20-\x7e]{0,200}")
+
+
+def unreadable_line(data: bytes) -> int | None:
+    """The first line of a root-installed file outside ROOT_INSTALLED_LINE, or None."""
+    for number, line in enumerate(data.split(b"\n"), 1):
+        if not ROOT_INSTALLED_LINE.fullmatch(line):
+            return number
+    return None
 
 
 def content_violation(path: str, data: bytes) -> str | None:
@@ -288,7 +297,7 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
         # .gitleaks.toml is skipped by gitleaks itself; that risk is accepted in ADR 0001 (code-owned).
         if path != ".gitleaks.toml" and any(p.search(path) for p in GITLEAKS_SKIPPED):
             if path in PINNED:
-                if hashlib.sha256(blob(repo, sha)).hexdigest() != PINNED[path]:
+                if hashlib.sha256(blob(repo, sha)).hexdigest() not in PINNED[path]:
                     violations.append(f"{path}: content differs from its pinned sha256")
                     continue
             elif path not in CONTENT_GRAMMAR:
@@ -299,8 +308,8 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
                 if problem:
                     violations.append(f"{path}: {problem}")
                     continue
-        if path.startswith(ROOT_INSTALLED) and CONTROL_BYTE.search(blob(repo, sha)):
-            violations.append(f"{path}: control byte in a file root installs")
+        if path.startswith(ROOT_INSTALLED) and (number := unreadable_line(blob(repo, sha))):
+            violations.append(f"{path}: line {number} is not tabs and printable ASCII of at most 200 bytes")
             continue
         cap = doc_cap(path)
         if cap is None:

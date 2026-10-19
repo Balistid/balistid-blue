@@ -10,10 +10,13 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import sys
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "tools" / "ci"))
+import docs_budget  # noqa: E402
 RUNNER = REPO / "deploy" / "runner"
 BINARY = "/usr/local/lib/balistid/balistid-runner"
 STATE = "/var/lib/balistid-runner"
@@ -105,10 +108,10 @@ SYSUSERS = [
 
 def parse_unit(text: str) -> dict[str, dict[str, list[str]]]:
     """Sections of a unit file, each mapping a directive to all its values in order. Continuation
-    lines are refused, so no directive can hide on the next line, and so are control bytes: systemd ends
-    a line at a NUL, which splitlines() does not, so a directive could hide inside a comment."""
-    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
-        raise ValueError("control byte in a unit file")
+    lines are refused, so no directive can hide on the next line, and so is any line outside the gate's
+    allowlist: Python splits and strips at characters systemd does not (U+2028, NUL, no-break space)."""
+    if number := docs_budget.unreadable_line(text.encode()):
+        raise ValueError(f"line {number}: outside the root-installed line allowlist")
     sections: dict[str, dict[str, list[str]]] = {}
     current = None
     for number, line in enumerate(text.splitlines(), 1):
@@ -144,8 +147,9 @@ def service_problems(name: str, text: str) -> list[str]:
 
 def lines(name: str) -> list[list[str]]:
     text = (RUNNER / name).read_text()
-    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
-        raise ValueError(f"{name}: control byte")
+    # systemd-tmpfiles and -sysusers expand C escapes and % specifiers, which shlex does not.
+    if docs_budget.unreadable_line(text.encode()) or "\\" in text or "%" in text:
+        raise ValueError(f"{name}: a line the tests would read differently from systemd")
     return [shlex.split(line) for line in text.splitlines()
             if line.strip() and not line.lstrip().startswith("#")]
 
@@ -245,10 +249,12 @@ class ServiceCheckTest(unittest.TestCase):
         enabled = self.text() + "[Install]\nWantedBy=multi-user.target\n"
         self.assertTrue(service_problems(self.NAME, enabled))
 
-    def test_control_byte_is_refused(self):
-        for byte in ("\x00", "\r", "\x0b", "\x1b"):
-            with self.subTest(byte=byte), self.assertRaises(ValueError):
-                parse_unit(f"[Service]\n# x{byte}User=root\n")
+    def test_line_outside_the_allowlist_is_refused(self):
+        for line in ("# x\x00User=root", "# x\rUser=root", "# x\u2028User=root", "# x\x85User=root",
+                     "NoNewPrivileges=yes\u00a0", "# " + "x" * 199):
+            with self.subTest(line=line[:12]), self.assertRaises(ValueError):
+                parse_unit(f"[Service]\n{line}\n")
+        self.assertEqual(parse_unit("[Service]\n# " + "x" * 198 + "\n"), {"Service": {}})
 
     def test_continuation_line_is_refused(self):
         with self.assertRaises(ValueError):
