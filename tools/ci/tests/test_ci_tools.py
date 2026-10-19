@@ -644,6 +644,8 @@ class OwnedDepsTest(unittest.TestCase):
         self.assertEqual(self.problems(deps=deps), [])
 
     def test_module_off_the_list_fails(self):
+        listed = {"ImportPath": "modernc.org/sqlite", "Module": self.SQLITE}
+        self.assertEqual(self.problems(deps=self.deps(listed)), [])  # the variants below differ in one thing
         cases = [{"ImportPath": "modernc.org/sqlite", "Module": {**self.SQLITE, "Version": "v1.60.2"}},
                  {"ImportPath": "modernc.org/sqlite", "Module": {"Path": "modernc.org/sqlite"}},
                  {"ImportPath": "example.com/x", "Module": {"Path": "example.com/x", "Version": "v1.0.0"}},
