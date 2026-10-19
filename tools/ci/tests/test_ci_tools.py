@@ -443,10 +443,11 @@ class GoLayoutTest(unittest.TestCase):
         for name in ("deploy/collector/tmpfiles.conf", "deploy/runner/balistid-runner-tick.service",
                      "deploy/audit/balistid.rules", "range/mkosi.conf", "packaging/laurel/PKGBUILD"):
             for line in ("# x\x00User=root", "# x\rUser=root", "# x\x1bUser=root", "# c\u2028NoNewPrivileges=yes",
-                         "# c\x85NoNewPrivileges=yes", "NoNewPrivileges=yes\u00a0", "\ufeff[Service]", "# " + "x" * 199):
+                         "# c\x85NoNewPrivileges=yes", "NoNewPrivileges=yes\u00a0", "\ufeff[Service]", "# " + "x" * 199,
+                         "-k balistid-exec\tx"):
                 with self.subTest(name=name, line=line[:12]):
                     self.assert_budget({name: line + "\n"}, 1)
-        self.assert_budget({"deploy/collector/tmpfiles.conf": "# x\tdirs " + "x" * 190 + "\n"}, 0)
+        self.assert_budget({"deploy/collector/tmpfiles.conf": "# x dirs " + "x" * 190 + "\n"}, 0)
 
     def test_non_ascii_go_mod_fails(self):
         self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
