@@ -12,7 +12,10 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -23,6 +26,7 @@ CHECK = ROOT / "tools" / "ci" / "check.py"
 CI_TEXT = (ROOT / check.CI_YML).read_text(encoding="utf-8")
 PINS = check.read_ci(CI_TEXT)["pins"]
 MODULE = "example.com/m"
+SANDBOX_LINE = "sandbox: unix sockets denied, socket tests run only in CI"
 LAST_LINE = re.compile(r"^CHECK fast (PASS|FAIL) head=([0-9a-f]{12}|unknown) dirty=(\d+|unknown) \d+s; CI also: \S.*$")
 GIT_ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -157,9 +161,24 @@ class Sandbox:
         (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
         (self.repo / path).write_text(text)
 
+    def env(self) -> dict[str, str]:
+        return {**GIT_ENV, "PATH": f"{self.bin}:{GIT_ENV['PATH']}", "GOEXPERIMENT": "arenas",
+                "GOFLAGS": "-mod=mod", "CGO_ENABLED": "1", "CI": "false"}
+
+    def run_in_process(self, *extra: str, sockets: bool) -> tuple[int, list[str]]:
+        """check.py in this process, with the AF_UNIX probe answered by a mock socket."""
+        fake = mock.MagicMock() if sockets else mock.Mock(side_effect=PermissionError(1, "denied"))
+        out = StringIO()
+        with mock.patch.dict(os.environ, self.env(), clear=True), \
+                mock.patch.object(check.socket, "socket", fake), redirect_stdout(out):
+            rc = check.main(["fast", "--repo", str(self.repo), *extra])
+        fake.assert_called_once_with(check.socket.AF_UNIX, check.socket.SOCK_STREAM)
+        lines = out.getvalue().strip().splitlines()
+        self.assert_last_line(lines, subprocess.CompletedProcess([], rc, out.getvalue(), ""))
+        return rc, lines
+
     def run(self, *extra: str, cwd: Path | None = None, repo: Path | None = None) -> tuple[int, list[str]]:
-        env = {**GIT_ENV, "PATH": f"{self.bin}:{GIT_ENV['PATH']}", "GOEXPERIMENT": "arenas",
-               "GOFLAGS": "-mod=mod", "CGO_ENABLED": "1", "CI": "false"}
+        env = self.env()
         proc = subprocess.run([sys.executable, str(CHECK), "fast", "--repo", str(repo or self.repo), *extra],
                               capture_output=True, text=True, env=env, timeout=120, cwd=cwd)
         lines = proc.stdout.strip().splitlines()
@@ -278,7 +297,7 @@ class EndToEndTest(unittest.TestCase):
     def test_environment_comes_from_ci_yml(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = Sandbox(tmp)
-            rc, lines = box.run("--all")
+            rc, lines = box.run_in_process("--all", sockets=True)
             self.assertEqual(rc, 0, lines)
             test_call = box.calls("go", "test")[0]
             vet_call = box.calls("go", "vet")[0]
@@ -293,6 +312,20 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(test_call["env"].get("BALISTID_REQUIRE_SECCOMP_TEST"), "1")
             self.assertNotIn("BALISTID_REQUIRE_SECCOMP_TEST", vet_call["env"])
             self.assertIn("env dropped:  GOEXPERIMENT", lines)
+            self.assertNotIn("unix-socket-tests", lines[-1])
+            self.assertNotIn(SANDBOX_LINE, lines)
+
+    def test_denied_unix_sockets_leave_ci_unset_and_say_so(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            rc, lines = box.run_in_process("--all", sockets=False)
+            self.assertEqual(rc, 0, lines)
+            for call in (box.calls("go", "test")[0], box.calls("go", "vet")[0]):
+                # The inherited CI=false is dropped as well: the repository tests skip on "not true".
+                self.assertNotIn("CI", call["env"])
+                self.assertEqual(call["env"]["GOFLAGS"], "-mod=readonly")
+            self.assertIn(SANDBOX_LINE, lines)
+            self.assertRegex(lines[-1], r"; CI also: .*\bunix-socket-tests\b")
 
     def test_go_test_runs_under_the_memory_limit_and_without_fuzzing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -534,6 +567,19 @@ class RunTest(unittest.TestCase):
         rc, out = check.run(["/nonexistent/go"], Path("."), dict(os.environ), timeout=5)
         self.assertIsNone(rc)
         self.assertIn("cannot start", out)
+
+
+class SocketProbeTest(unittest.TestCase):
+    def test_probe_follows_the_socket_call(self):
+        with mock.patch.object(check.socket, "socket", mock.MagicMock()):
+            self.assertTrue(check.unix_sockets_allowed())
+        with mock.patch.object(check.socket, "socket", side_effect=PermissionError(1, "denied")):
+            self.assertFalse(check.unix_sockets_allowed())
+
+    def test_ci_env_sets_ci_only_with_sockets(self):
+        base = {"PATH": "/usr/bin", "CI": "false"}
+        self.assertEqual(check.ci_env(base, {}, True)["CI"], "true")
+        self.assertNotIn("CI", check.ci_env(base, {}, False))
 
 
 class HooksTest(unittest.TestCase):
