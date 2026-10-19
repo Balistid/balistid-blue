@@ -33,6 +33,7 @@ type fakeStore struct {
 	sealThenFail             bool          // the next Append seals, committing what came before, then fails
 	block                    chan struct{} // Append waits on it when set
 	onFlush                  func()        // runs inside Flush, as a slow commit would
+	noteCap                  int           // NoteHealth refuses past this many queued, as the store's 64; 0 is none
 	closed                   int
 }
 
@@ -103,7 +104,7 @@ func (s *fakeStore) commit() {
 func (s *fakeStore) NoteHealth(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.rejectNote {
+	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap {
 		return errors.New("64 health records queued")
 	}
 	var m map[string]any
@@ -819,6 +820,28 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r.done <- nil
 	if n := strings.Count(j.String(), "first_seq"); n <= minute {
 		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
+	}
+}
+
+// At stop the store takes only so many health records: a loss record goes before a backlog.
+func TestStopStoresLossRecordsFirst(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	for range 80 {
+		r.step(statsEvery)
+	}
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.step(0)
+	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	if lost := r.st.kinds("lost"); len(lost) != 1 || lost[0]["first_seq"] != 21.0 {
+		t.Fatalf("loss records stored at stop: %v", lost)
 	}
 }
 
