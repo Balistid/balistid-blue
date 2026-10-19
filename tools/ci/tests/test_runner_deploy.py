@@ -109,7 +109,8 @@ SYSUSERS = [
 def parse_unit(text: str) -> dict[str, dict[str, list[str]]]:
     """Sections of a unit file, each mapping a directive to all its values in order. Continuation
     lines are refused, so no directive can hide on the next line, and so is any line outside the gate's
-    allowlist: Python splits and strips at characters systemd does not (U+2028, NUL, no-break space)."""
+    allowlist: Python and systemd end lines at different characters (U+2028 and U+0085 only Python, NUL
+    only systemd) and strip different spaces."""
     if number := docs_budget.unreadable_line(text.encode()):
         raise ValueError(f"line {number}: outside the root-installed line allowlist")
     sections: dict[str, dict[str, list[str]]] = {}

@@ -148,11 +148,11 @@ CONTENT_GRAMMAR = {
 PINNED = {
     "deploy/collector/balistid-collector.socket": {"79d6b3020d547eb7d4ca361afed2b52099583a5d48253d914d7c0890e85f6305"},
 }
-# Files root installs (units, rules, the range image, packages): every line is tabs and printable ASCII,
+# Files root installs (units, rules, the range image, packages): every line is printable ASCII, no tab,
 # at most 200 bytes. Anything else (a NUL, U+2028, a no-break space, a line over systemd's limit) lets
 # systemd, auditd or a shell read a line the tests and the review read differently. An allowlist (R7).
 ROOT_INSTALLED = ("deploy/", "range/", "packaging/")
-ROOT_INSTALLED_LINE = re.compile(rb"[\t\x20-\x7e]{0,200}")
+ROOT_INSTALLED_LINE = re.compile(rb"[\x20-\x7e]{0,200}")
 
 
 def unreadable_line(data: bytes) -> int | None:
@@ -309,7 +309,7 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
                     violations.append(f"{path}: {problem}")
                     continue
         if path.startswith(ROOT_INSTALLED) and (number := unreadable_line(blob(repo, sha))):
-            violations.append(f"{path}: line {number} is not tabs and printable ASCII of at most 200 bytes")
+            violations.append(f"{path}: line {number} is not printable ASCII of at most 200 bytes")
             continue
         cap = doc_cap(path)
         if cap is None:

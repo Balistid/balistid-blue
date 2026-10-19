@@ -168,7 +168,7 @@ class CollectorDeployTest(unittest.TestCase):
             next(p.name for p in (REPO / "adr").iterdir() if p.name.startswith("0016-"))).read_text())
 
     def test_rule_version_names_the_installed_rules(self):
-        argv = shlex.split(SERVICE["ExecStart"])
+        argv = shlex.split(deployed_service()["ExecStart"][0])
         version = argv[argv.index("-rule-version") + 1]
         rules = (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
         self.assertEqual([l for l in rules if l.startswith("## version: ")],
