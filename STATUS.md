@@ -12,13 +12,13 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799 (evidence PASS; #107 waits for the next install); trial table, failure trials, agent `trial` jobs, acceptance slot (#99-#104); trials are baseline until the collector joins the image |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main` (#56, #63) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main` (#71, #72), hard cap |
-| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94, core #97; no units (CP3), not in an image (B4) |
+| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | store side #94, core #97, hardening #111-#113; units (CP3), not installed or in an image (B4) |
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - Collector hardening (#111): `ReadSeals` refuses what `Open` refuses; loss records never give way in the health
   queue; stats carry `lost`; loss records a failed Close hands back reach the journal while the store is down.
-- Collector CP2 core merged (#97) after Opus critic and Codex review.
+- Collector CP3: `deploy/collector/` units (exposure 0.8), socket pinned, ASCII-only root-installed files; CP2 #97.
 - Runner (ADR 0018-0021): trial limits (#99), rate trials (#100), failure trials with host-stamped marks (#101),
   measures beside each verdict (#102), inbox `trial` jobs (#103), the acceptance suite in its own slot (#104).
   ADR 0021: repeated INVALID runs make a metric INVALID, never a MISS. KVM check on 9daa33a: every trial gave its
@@ -27,8 +27,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Next step
 1. Runner: done until the collector joins the image; install #107 with the next runner change. One baseline run
    counted a record outside the generated set (13 Oct); #106 shows the record when it happens again.
-2. Collector CP3, owned: `*.socket` gate, go_gate for the SQLite modules, units, sysusers, tmpfiles; then the Laurel
-   spike and B4 (collector and store reader in the image, its trials in the table).
+2. Collector: A7 review of store, shard, collector, cmd, then their CODEOWNERS and go_gate roots (nothing installs
+   before); B4: canary rule, collector and store reader in the image, its trials in the table (Laurel checked there).
 ## Open decisions (maintainer)
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - Runner: a VM setup error fails the tick (exit 1) on purpose (maintainer, 13 Oct): a broken host shows in systemd.
