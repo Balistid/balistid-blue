@@ -12,7 +12,7 @@ import shlex
 import unittest
 from pathlib import Path
 
-from test_runner_deploy import parse_unit
+from test_runner_deploy import docs_budget, parse_unit
 
 REPO = Path(__file__).resolve().parents[3]
 COLLECTOR = REPO / "deploy" / "collector"
@@ -122,10 +122,11 @@ def unit_problems(name: str, text: str) -> list[str]:
     return problems
 
 
-def lines(name: str) -> list[tuple[str, ...]]:
-    text = (COLLECTOR / name).read_text()
-    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text):
-        raise ValueError(f"{name}: control byte")
+def lines(name: str, text: str | None = None) -> list[tuple[str, ...]]:
+    text = (COLLECTOR / name).read_text() if text is None else text
+    # systemd-tmpfiles and -sysusers expand C escapes and % specifiers, which shlex does not.
+    if docs_budget.unreadable_line(text.encode()) or "\\" in text or "%" in text:
+        raise ValueError(f"{name}: a line the tests would read differently from systemd")
     return [tuple(shlex.split(line)) for line in text.splitlines()
             if line.strip() and not line.lstrip().startswith("#")]
 
@@ -171,6 +172,13 @@ class CollectorDeployTest(unittest.TestCase):
 
     def test_sysusers(self):
         self.assertEqual(lines("sysusers.conf"), SYSUSERS)
+
+    def test_lines_systemd_would_read_differently_are_refused(self):
+        tmpfiles = (COLLECTOR / "tmpfiles.conf").read_text()
+        for planted in (tmpfiles.replace("/canary", "/c\\anary"), tmpfiles.replace("/store", "/%h"),
+                        tmpfiles + "# c\u2028d /var/lib/x 0777 root root -\n", tmpfiles.replace("0700", "0700\u00a0", 1)):
+            with self.subTest(planted=planted[-40:]), self.assertRaises(ValueError):
+                lines("tmpfiles.conf", planted)
 
 
 class UnitCheckTest(unittest.TestCase):

@@ -349,7 +349,7 @@ class RepositoryMapTest(unittest.TestCase):
         self.assertEqual(self.budget(map_readme(self.files).replace("## Repository map", "## Map")), 1)
 
 
-# The collector's socket unit as deployed (ADR 0016): it must pass the gate's line grammar.
+# The collector's socket unit as deployed (ADR 0016): its sha256 is pinned in docs_budget (ADR 0003).
 SOCKET_UNIT = (Path(__file__).resolve().parents[3] / "deploy/collector/balistid-collector.socket").read_text()
 
 
@@ -439,13 +439,14 @@ class GoLayoutTest(unittest.TestCase):
             with self.subTest(content=content[-30:]):
                 self.assert_budget({path: content}, 1)
 
-    def test_control_byte_in_a_root_installed_file_fails(self):
+    def test_line_outside_the_allowlist_in_a_root_installed_file_fails(self):
         for name in ("deploy/collector/tmpfiles.conf", "deploy/runner/balistid-runner-tick.service",
                      "deploy/audit/balistid.rules", "range/mkosi.conf", "packaging/laurel/PKGBUILD"):
-            for byte in ("\x00", "\r", "\x1b"):
-                with self.subTest(name=name, byte=byte):
-                    self.assert_budget({name: f"# x{byte}User=root\n"}, 1)
-        self.assert_budget({"deploy/collector/tmpfiles.conf": "# x\tdirs\n"}, 0)
+            for line in ("# x\x00User=root", "# x\rUser=root", "# x\x1bUser=root", "# c\u2028NoNewPrivileges=yes",
+                         "# c\x85NoNewPrivileges=yes", "NoNewPrivileges=yes\u00a0", "\ufeff[Service]", "# " + "x" * 199):
+                with self.subTest(name=name, line=line[:12]):
+                    self.assert_budget({name: line + "\n"}, 1)
+        self.assert_budget({"deploy/collector/tmpfiles.conf": "# x\tdirs " + "x" * 190 + "\n"}, 0)
 
     def test_non_ascii_go_mod_fails(self):
         self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
