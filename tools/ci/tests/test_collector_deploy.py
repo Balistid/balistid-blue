@@ -131,6 +131,11 @@ def lines(name: str, text: str | None = None) -> list[tuple[str, ...]]:
             if line.strip() and not line.lstrip().startswith("#")]
 
 
+def deployed_service() -> dict[str, list[str]]:
+    """The [Service] section of the unit as committed, not the expected values above."""
+    return parse_unit((COLLECTOR / "balistid-collector.service").read_text())["Service"]
+
+
 class CollectorDeployTest(unittest.TestCase):
     def test_exact_file_set(self):
         self.assertEqual({p.name for p in COLLECTOR.iterdir()}, FILES)
@@ -143,7 +148,8 @@ class CollectorDeployTest(unittest.TestCase):
     def test_exec_start_takes_the_collectors_own_flags_and_defaults(self):
         main = (REPO / "cmd" / "balistid-collector" / "main.go").read_text()
         defaults = dict(re.findall(r'flag\.String\("([a-z-]+)", "([^"]*)"', main))
-        argv = shlex.split(SERVICE["ExecStart"])
+        [exec_start] = deployed_service()["ExecStart"]
+        argv = shlex.split(exec_start)
         self.assertEqual(argv[0], BINARY)
         self.assertEqual(argv[1::2], [f"-{f}" for f in defaults])
         given = dict(zip((a[1:] for a in argv[1::2]), argv[2::2]))
@@ -151,12 +157,13 @@ class CollectorDeployTest(unittest.TestCase):
             self.assertEqual(given[flag], defaults[flag], flag)
 
     def test_paths_agree_across_files(self):
-        argv = shlex.split(SERVICE["ExecStart"])
-        dirs = [entry[1] for entry in TMPFILES]
+        service = deployed_service()
+        argv = shlex.split(service["ExecStart"][0])
+        dirs = [entry[1] for entry in lines("tmpfiles.conf")]
         for flag in ("-store", "-canary"):
             self.assertIn(argv[argv.index(flag) + 1], dirs)
-        self.assertEqual(STATE, "/var/lib/" + SERVICE["StateDirectory"])
-        self.assertEqual(SERVICE["ExecPaths"], argv[0])
+        self.assertEqual(STATE, "/var/lib/" + service["StateDirectory"][0])
+        self.assertEqual(service["ExecPaths"], [argv[0]])
         self.assertIn(SOCKET_PATH, (REPO / "adr").joinpath(
             next(p.name for p in (REPO / "adr").iterdir() if p.name.startswith("0016-"))).read_text())
 
