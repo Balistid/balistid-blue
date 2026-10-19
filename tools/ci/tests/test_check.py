@@ -23,7 +23,7 @@ CHECK = ROOT / "tools" / "ci" / "check.py"
 CI_TEXT = (ROOT / check.CI_YML).read_text(encoding="utf-8")
 PINS = check.read_ci(CI_TEXT)["pins"]
 MODULE = "example.com/m"
-LAST_LINE = re.compile(r"^CHECK fast (PASS|FAIL) head=[0-9a-f]{12} dirty=\d+ \d+s; CI also: \S.*$")
+LAST_LINE = re.compile(r"^CHECK fast (PASS|FAIL) head=([0-9a-f]{12}|unknown) dirty=(\d+|unknown) \d+s; CI also: \S.*$")
 GIT_ENV = {
     "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     "GIT_CONFIG_GLOBAL": os.devnull,
@@ -41,8 +41,8 @@ from pathlib import Path
 cfg = json.loads((Path(__file__).parent / "stub.json").read_text())
 name, args = Path(sys.argv[0]).name, sys.argv[1:]
 with open(cfg["log"], "a") as log:
-    env = {k: v for k, v in os.environ.items() if k.startswith(("GO", "CGO_", "BALISTID_"))}
-    log.write(json.dumps({"tool": name, "args": args, "env": env,
+    env = {k: v for k, v in os.environ.items() if k.startswith(("GO", "CGO_", "BALISTID_")) or k == "CI"}
+    log.write(json.dumps({"tool": name, "self": sys.argv[0], "args": args, "env": env,
                           "as": resource.getrlimit(resource.RLIMIT_AS)[0]}) + "\n")
 module = cfg["module"]
 
@@ -50,7 +50,8 @@ def pkg_dirs():
     out = []
     for d, subdirs, files in os.walk("."):
         subdirs[:] = sorted(s for s in subdirs if s not in ("testdata", ".git"))
-        if any(f.endswith(".go") for f in files):
+        built = [f for f in files if f.endswith(".go") and "//go:build ignore" not in Path(d, f).read_text()]
+        if built:
             out.append(os.path.normpath(d))
     return sorted(out)
 
@@ -74,15 +75,19 @@ if name == "gofmt":
 elif name == "golangci-lint":
     if args == ["version"]:
         print(f"golangci-lint has version {cfg['lint_version']} built with go1.27.2 from (unknown)")
+        sys.exit(cfg["lint_rc"])
     else:
         sys.exit(1 if has("LINT_DEFECT", [a for a in args if not a.startswith("-")]) else 0)
 elif args[:2] == ["env", "GOVERSION"]:
     print(cfg["goversion"])
 elif args[:2] == ["env", "GOPATH"]:
     print(cfg["gopath"])
+    sys.exit(cfg["gopath_rc"])
 elif args[:2] == ["env", "GOROOT"]:
     print(cfg["goroot"])
 elif args[0] == "list":
+    if cfg.get("list_rc"):
+        sys.exit("stub: go list failed")
     for d in pkg_dirs():
         path = module if d == "." else f"{module}/{d}"
         print(json.dumps({"ImportPath": path, "Dir": os.path.abspath(d),
@@ -121,7 +126,8 @@ class Sandbox:
     """A Go module on a main branch that origin/main points at, and the stub toolchain."""
 
     def __init__(self, tmp: str, lint_version: str = PINS["GOLANGCI_VERSION"],
-                 goversion: str = f"go{PINS['GO_VERSION']}", lint_on_path: bool = True):
+                 goversion: str = f"go{PINS['GO_VERSION']}", lint_on_path: bool = True,
+                 lint_rc: int = 0, gopath_rc: int = 0):
         base = Path(tmp)
         self.repo, self.bin, self.log = base / "repo", base / "bin", base / "log.jsonl"
         goroot, gopath = base / "goroot", base / "gopath"
@@ -135,7 +141,8 @@ class Sandbox:
             tool.chmod(0o755)
             (tool.parent / "stub.json").write_text(json.dumps({
                 "log": str(self.log), "module": MODULE, "lint_version": lint_version,
-                "goversion": goversion, "goroot": str(goroot), "gopath": str(gopath)}))
+                "goversion": goversion, "goroot": str(goroot), "gopath": str(gopath),
+                "lint_rc": lint_rc, "gopath_rc": gopath_rc}))
         git(self.repo, "init", "-q", "-b", "main")
         (self.repo / ".github" / "workflows").mkdir(parents=True)
         (self.repo / check.CI_YML).write_text(CI_TEXT)
@@ -150,11 +157,11 @@ class Sandbox:
         (self.repo / path).parent.mkdir(parents=True, exist_ok=True)
         (self.repo / path).write_text(text)
 
-    def run(self, *extra: str) -> tuple[int, list[str]]:
+    def run(self, *extra: str, cwd: Path | None = None, repo: Path | None = None) -> tuple[int, list[str]]:
         env = {**GIT_ENV, "PATH": f"{self.bin}:{GIT_ENV['PATH']}", "GOEXPERIMENT": "arenas",
-               "GOFLAGS": "-mod=mod", "CGO_ENABLED": "1"}
-        proc = subprocess.run([sys.executable, str(CHECK), "fast", "--repo", str(self.repo), *extra],
-                              capture_output=True, text=True, env=env, timeout=120)
+               "GOFLAGS": "-mod=mod", "CGO_ENABLED": "1", "CI": "false"}
+        proc = subprocess.run([sys.executable, str(CHECK), "fast", "--repo", str(repo or self.repo), *extra],
+                              capture_output=True, text=True, env=env, timeout=120, cwd=cwd)
         lines = proc.stdout.strip().splitlines()
         self.assert_last_line(lines, proc)
         return proc.returncode, lines
@@ -257,9 +264,10 @@ class EndToEndTest(unittest.TestCase):
             rc, lines = box.run()
             self.assertEqual(rc, 0, lines)
             self.assertEqual(box.calls("go", "test"), [])
+            self.assertEqual(box.calls("gofmt"), [])
 
     def test_unknown_path_or_module_file_selects_everything(self):
-        for path in ("deploy/x.conf", "go.mod", ".golangci.yml", "range/new.conf"):
+        for path in ("deploy/x.conf", "go.mod", ".golangci.yml", "range/new.conf", "tools/ci/seccomp_exec.py"):
             with self.subTest(path), tempfile.TemporaryDirectory() as tmp:
                 box = Sandbox(tmp)
                 text = (box.repo / path).read_text() if (box.repo / path).exists() else ""
@@ -275,6 +283,7 @@ class EndToEndTest(unittest.TestCase):
             test_call = box.calls("go", "test")[0]
             vet_call = box.calls("go", "vet")[0]
             for call in (test_call, vet_call):
+                self.assertEqual(call["env"]["CI"], "true")
                 self.assertEqual(call["env"]["GOFLAGS"], "-mod=readonly")
                 self.assertEqual(call["env"]["GOWORK"], "off")
                 self.assertEqual(call["env"]["GOTOOLCHAIN"], "local")
@@ -338,6 +347,80 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(rc, 1, lines)
             self.assertTrue(any("git fetch origin" in line for line in lines), lines)
 
+    def test_failed_version_query_fails_even_with_the_pinned_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp, lint_rc=23)
+            git(box.repo, "switch", "-q", "main")
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertTrue(any("version (exit 23)" in line for line in lines), lines)
+            self.assertEqual(box.calls("golangci-lint", "run"), [])
+
+    def test_prerelease_golangci_is_not_the_release(self):
+        for suffix in ("-rc.1", "-dev", "+dirty"):
+            with self.subTest(suffix), tempfile.TemporaryDirectory() as tmp:
+                box = Sandbox(tmp, lint_version=PINS["GOLANGCI_VERSION"] + suffix)
+                git(box.repo, "switch", "-q", "main")
+                rc, lines = box.run()
+                self.assertEqual(rc, 1, lines)
+
+    def test_failed_gopath_query_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp, gopath_rc=1)
+            git(box.repo, "switch", "-q", "main")
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertTrue(any("env GOPATH (exit 1)" in line for line in lines), lines)
+
+    def test_changed_file_of_a_build_excluded_package_is_formatted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            box.write("x/ex.go", "//go:build ignore\n\npackage x\n\n// FMT_DEFECT\n")
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertIn("FAIL gofmt -l", lines)
+            self.assertIn("x/ex.go", box.calls("gofmt")[0]["args"])
+
+    def test_changed_go_file_is_formatted_when_no_package_is_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = Sandbox(tmp)
+            # go list fails here, so no package is selected; the file is still formatted.
+            box.write("c/c.go", "package c\n\n// FMT_DEFECT\n")
+            stub = box.bin / "stub.json"
+            cfg = json.loads(stub.read_text())
+            stub.write_text(json.dumps({**cfg, "list_rc": 1}))
+            rc, lines = box.run()
+            self.assertEqual(rc, 1, lines)
+            self.assertIn("FAIL gofmt -l", lines)
+            self.assertEqual(box.calls("go", "test"), [])
+
+    def test_relative_golangci_path_is_one_file_for_hash_and_run(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as caller:
+            box = Sandbox(tmp)
+            real = Path(caller) / "lint" / "golangci-lint"
+            real.parent.mkdir()
+            real.write_text((box.bin / "go").read_text())
+            real.chmod(0o755)
+            (real.parent / "stub.json").write_text((box.bin / "stub.json").read_text())
+            # A decoy at the same relative path under the repository must never run.
+            box.write("lint/golangci-lint", "#!/bin/sh\nexit 0\n")
+            (box.repo / "lint" / "golangci-lint").chmod(0o755)
+            (box.repo / "lint" / "stub.json").write_text((box.bin / "stub.json").read_text())
+            rc, lines = box.run("--golangci-lint", "lint/golangci-lint", cwd=Path(caller))
+            self.assertEqual(rc, 0, lines)
+            shown = next(line for line in lines if line.startswith("golangci-lint: "))
+            self.assertIn(f"golangci-lint: {real.resolve()} sha256=", shown)
+            ran = {c["self"] for c in box.calls("golangci-lint")}
+            self.assertEqual(ran, {str(real.resolve())})
+
+    def test_git_failure_still_prints_the_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as plain:
+            box = Sandbox(tmp)
+            rc, lines = box.run(repo=Path(plain))
+            self.assertEqual(rc, 1, lines)
+            self.assertRegex(lines[-1], r"^CHECK fast FAIL head=unknown dirty=unknown ")
+            self.assertTrue(any(line.startswith("FAIL ") for line in lines[:-1]), lines)
+
 
 class ReadCiTest(unittest.TestCase):
     def test_reads_pins_and_env_of_the_real_workflow(self):
@@ -350,6 +433,16 @@ class ReadCiTest(unittest.TestCase):
             self.assertEqual(env["GOTOOLCHAIN"], "local")
         self.assertEqual(ci["jobs"][check.TEST_JOB][1], {"BALISTID_REQUIRE_SECCOMP_TEST": "1"})
         self.assertEqual(ci["ci_only"], [label for label, _ in check.CI_ONLY])
+
+    def test_every_job_is_known(self):
+        # A new job may run a check check.py does not; this test makes CI_ONLY be reviewed then.
+        jobs = re.findall(r"^  ([a-z0-9-]+):$", CI_TEXT.split("\njobs:\n", 1)[1], re.MULTILINE)
+        self.assertEqual(jobs, ["go-static", "go-test", "go-race", "go-release", "selftest",
+                                "docs-budget", "pin-check", "commit-lint", "secrets", "workflow-lint"])
+        labels = check.read_ci(CI_TEXT)["ci_only"]
+        for label in ("toolchain", "build", "selftest", "docs-budget", "pin-check", "commit-lint",
+                      "secrets", "workflow-lint"):
+            self.assertIn(label, labels)
 
     def test_missing_value_fails_closed(self):
         for needle in ('  GOLANGCI_VERSION: "', "      GOTOOLCHAIN: local"):
@@ -383,6 +476,8 @@ class VersionTest(unittest.TestCase):
         self.assertIn("2.14.1", check.golangci_problem(out.replace("2.14.0", "2.14.1", 1), "2.14.0"))
         self.assertIn("unknown version", check.golangci_problem("garbage", "2.14.0"))
         self.assertIsNotNone(check.golangci_problem(out.replace("2.14.0", "2.14.01", 1), "2.14.0"))
+        for suffix in ("-rc.1", "-dev", "+dirty", "-0.20261019"):
+            self.assertIsNotNone(check.golangci_problem(out.replace("2.14.0", "2.14.0" + suffix, 1), "2.14.0"))
 
 
 class SelectTest(unittest.TestCase):
@@ -408,8 +503,10 @@ class SelectTest(unittest.TestCase):
         self.assertIn("gone/old.go", why)
 
     def test_non_go_paths(self):
-        self.assertEqual(check.select_packages(["tools/ci/x.py", "adr/README.md", ".github/CODEOWNERS"],
+        self.assertEqual(check.select_packages(["adr/README.md", ".github/CODEOWNERS", "githooks/pre-commit"],
                                                self.PKGS)[0], set())
+        # Go tests run tools/ci/seccomp_exec.py.
+        self.assertEqual(len(check.select_packages(["tools/ci/seccomp_exec.py"], self.PKGS)[0]), len(self.PKGS))
         self.assertEqual(len(check.select_packages([check.CI_YML], self.PKGS)[0]), len(self.PKGS))
         self.assertEqual(len(check.select_packages(["acceptance/0.toml"], self.PKGS)[0]), len(self.PKGS))
 
@@ -422,6 +519,16 @@ class RunTest(unittest.TestCase):
         self.assertIsNone(rc)
         self.assertIn("timed out after 1s", out)
         self.assertLess(time.monotonic() - start, 30)
+
+    def test_timeout_does_not_wait_for_a_detached_descendant(self):
+        start = time.monotonic()
+        code = ("import subprocess, time; subprocess.Popen(['sleep', '20'], start_new_session=True); "
+                "time.sleep(60)")
+        rc, out = check.run([sys.executable, "-c", code], Path("."), dict(os.environ), timeout=1)
+        self.assertIsNone(rc)
+        self.assertIn("timed out after 1s", out)
+        # The descendant sleeps 20 s; waiting for it to close the pipe would exceed this.
+        self.assertLess(time.monotonic() - start, 15)
 
     def test_missing_binary_is_not_a_pass(self):
         rc, out = check.run(["/nonexistent/go"], Path("."), dict(os.environ), timeout=5)
