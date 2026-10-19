@@ -514,6 +514,17 @@ func (w *Writer) shutdown(ctx context.Context) error {
 	w.connections(w.Now(), false)
 	w.losses(true)
 	w.note(map[string]any{"kind": "stopping"})
+	// The store takes a bounded number of health records and this is the last hand-over: loss records go
+	// first, so a backlog gives way in the journal rather than a loss. Each record keeps its note_seq.
+	slices.SortStableFunc(w.notes, func(a, b note) int {
+		if a.loss == b.loss {
+			return 0
+		}
+		if a.loss {
+			return -1
+		}
+		return 1
+	})
 	w.writeNotes()
 	for _, n := range w.notes {
 		w.Log.Warn("health record not stored at stop", "record", string(n.b))
