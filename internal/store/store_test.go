@@ -822,6 +822,51 @@ func TestQueuedHealthRecordsCountAgainstTheFreeSpace(t *testing.T) {
 	}
 }
 
+func TestAWaitingLossRecordCountsAgainstTheFreeSpace(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	size := int64(rawrecord.New(0, "laurel", 7, noon, []byte("b")).EncodedLen())
+	s.dropped, s.firstDrop, s.lastDrop = 1, noon, noon // a drop Flush has not counted yet
+	fullFilesystem(t, s, shard.WALMaxBytes+2*size+admitSlack+2*(512+ownSlack)-1)
+	if add(t, s, noon, "b") {
+		t.Fatal("a record was admitted into space the waiting loss record, written first, will take")
+	}
+}
+
+func TestALowerHeadroomAfterAReopenStillDrops(t *testing.T) {
+	// A release that lowers the headroom leaves a reserve larger than it: what the reserve "gave" is then
+	// negative and must not count as free space.
+	dir := t.TempDir()
+	big := Limits{Cap: small.Cap, ShardMax: small.ShardMax, Headroom: shard.WALMaxBytes + 256*LossChunk}
+	closeStore(t, open(t, dir, big))
+	s := open(t, dir, Limits{Cap: small.Cap, ShardMax: small.ShardMax, Headroom: shard.WALMaxBytes + LossChunk})
+	fullFilesystem(t, s, 0)
+	if add(t, s, noon, "a") {
+		t.Fatal("a record was stored on a full filesystem after a reopen with a lower headroom")
+	}
+}
+
+func TestChunksFreedForTheCapNeedNoFilesystemSpace(t *testing.T) {
+	// Past the cap with ample free space, a chunk freed for the cap is not a filesystem that kept its
+	// blocks: the store must not go UNKNOWN for it.
+	dir := t.TempDir()
+	lim := Limits{Cap: shard.WALMaxBytes + 128<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 64*LossChunk}
+	s := open(t, dir, lim)
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+	}
+	atTheCap(s)
+	s.avail = func() (int64, error) { return 1 << 40, nil } // and a filesystem that never shows freed blocks
+	for i := range 20 {
+		add(t, s, noon+int64(i), "dropped")
+		if _, err := s.Flush(t.Context()); err != nil {
+			t.Fatalf("flush %d past the cap: %v", i, err)
+		}
+	}
+}
+
 func TestUncommittedRecordsCountAgainstTheFreeSpace(t *testing.T) {
 	s := open(t, t.TempDir(), small)
 	add(t, s, noon, "a")
@@ -846,8 +891,9 @@ func TestFreeBytesIsWhatTheFilesystemHas(t *testing.T) {
 	if serr := syscall.Statfs(dir, &st); serr != nil {
 		t.Fatal(serr)
 	}
-	if err != nil || n <= 0 || n > int64(st.Blocks)*st.Bsize { //nolint:gosec // a test filesystem's size
-		t.Fatalf("freeBytes %d, %v; filesystem of %d bytes", n, err, int64(st.Blocks)*st.Bsize) //nolint:gosec // as above
+	size := int64(st.Blocks) * int64(st.Frsize) //nolint:gosec,unconvert // a test filesystem's size; types differ by architecture
+	if err != nil || n <= 0 || n > size {
+		t.Fatalf("freeBytes %d, %v; filesystem of %d bytes", n, err, size)
 	}
 	if _, err := freeBytes(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("freeBytes of a missing directory")
