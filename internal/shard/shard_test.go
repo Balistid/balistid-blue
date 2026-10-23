@@ -1013,9 +1013,13 @@ func TestTheWALStaysWithinItsBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var pages, size int
+	var pages, size, sync int
 	if err := w.db.QueryRowContext(t.Context(), "PRAGMA wal_autocheckpoint").Scan(&pages); err != nil || pages != checkpointPages {
 		t.Fatalf("wal_autocheckpoint = %d, %v", pages, err)
+	}
+	// FULL fsyncs the WAL at every commit; kill -9 tests cannot see a missing fsync, so it is checked here (T24).
+	if err := w.db.QueryRowContext(t.Context(), "PRAGMA synchronous").Scan(&sync); err != nil || sync != 2 {
+		t.Fatalf("synchronous = %d, %v; want 2 (FULL)", sync, err)
 	}
 	if err := w.db.QueryRowContext(t.Context(), "PRAGMA page_size").Scan(&size); err != nil || size != pageSize {
 		t.Fatalf("page_size = %d, %v", size, err)

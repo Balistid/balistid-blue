@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1046,7 +1047,13 @@ func TestReadSealsWritesNothing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			fmt.Fprintln(&b, e.Name(), info.Size(), info.Mode(), info.ModTime().UnixNano())
+			st, _ := info.Sys().(*syscall.Stat_t)
+			data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // test temp dir
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Content and ctime too: a chmod, fsync or reseal changes them, not the size or mtime.
+			fmt.Fprintln(&b, e.Name(), info.Size(), info.Mode(), info.ModTime().UnixNano(), st.Ctim, sha256.Sum256(data))
 		}
 		return b.String()
 	}
@@ -1060,6 +1067,57 @@ func TestReadSealsWritesNothing(t *testing.T) {
 	}
 	if after := listing(); after != before {
 		t.Fatalf("ReadSeals changed the directory:\n%s\nwas\n%s", after, before)
+	}
+}
+
+func TestFilesOthersCouldTouchAreRefused(t *testing.T) {
+	for _, mode := range []os.FileMode{0o666, 0o644, 0o460} {
+		dir := t.TempDir()
+		seals := sealedThree(t, dir)
+		if err := os.Chmod(filepath.Join(dir, seals[1].Name), mode); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadSeals(t.Context(), dir); err == nil {
+			t.Fatalf("ReadSeals accepted a shard of mode %o", mode)
+		}
+		if _, err := Open(t.Context(), dir, small); err == nil {
+			t.Fatalf("Open accepted a shard of mode %o", mode)
+		}
+	}
+}
+
+func TestAnEmptyShardGoesWithItsJournal(t *testing.T) {
+	dir := t.TempDir()
+	name := filepath.Join(dir, "00000000000000000001.db")
+	if _, err := shard.Create(t.Context(), name); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name+"-journal", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // the first Open removes the empty shard, the second must not trip on what it left
+		s, err := Open(t.Context(), dir, small)
+		if err != nil {
+			t.Fatal(err)
+		}
+		closeStore(t, s)
+	}
+}
+
+func TestTheIndexStaysWithinWhatItsReaderTakes(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	onDay(s, 1)
+	add(t, s, noon+day, "b") // seals day 0: the index exists, so the next seal appends a line
+	full := Seal{Name: strings.Repeat("0", 20) + ".db"}
+	line := int64(len(full.line()))
+	s.seals = slices.Repeat([]Seal{full}, int((maxIndexBytes-int64(len(indexHeader)))/line)) // one more line passes the cap
+	if _, err := s.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "its reader takes") {
+		t.Fatalf("a seal past the index cap: %v", err)
+	}
+	if _, _, err := readSeals(t.Context(), dir); err != nil {
+		t.Fatalf("the index on disk must stay readable: %v", err)
 	}
 }
 
