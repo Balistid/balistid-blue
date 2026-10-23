@@ -493,15 +493,26 @@ func (s *Store) appendLine(l Seal) error {
 }
 
 // room runs write, and once more if the filesystem was full, after freeing enough of the reserve for
-// need bytes (one chunk at least).
+// need bytes (one chunk at least). A chunk that gives the filesystem no space stops it, as in putOwn.
 func (s *Store) room(need int64, write func() error) error {
 	err := write()
 	if !errors.Is(err, syscall.ENOSPC) {
 		return err
 	}
 	for freed := int64(0); freed < max(need, 1); freed += LossChunk {
+		before, ferr := s.fsRoom()
+		if ferr != nil {
+			return errors.Join(err, s.fail(ferr))
+		}
 		if ferr := s.free(); ferr != nil {
 			return errors.Join(err, ferr)
+		}
+		after, ferr := s.fsRoom()
+		if ferr == nil && after <= before {
+			ferr = errors.New("freeing the reserve gave the filesystem no space")
+		}
+		if ferr != nil {
+			return errors.Join(err, s.fail(ferr))
 		}
 	}
 	return write()

@@ -869,6 +869,17 @@ func TestChunksFreedForTheCapNeedNoFilesystemSpace(t *testing.T) {
 	}
 }
 
+func TestAnIndexWriteThatFreesNothingStopsAtOnce(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	s.avail = func() (int64, error) { return 0, nil } // truncated blocks never come back
+	err := s.room(4*LossChunk, func() error { return syscall.ENOSPC })
+	st, serr := os.Stat(filepath.Join(dir, reserveName))
+	if err == nil || !strings.Contains(err.Error(), "no space") || serr != nil || st.Size() != small.Headroom-LossChunk || s.Health() == "" {
+		t.Fatalf("room: %v; reserve %d of %d bytes (%v); health %q", err, st.Size(), small.Headroom, serr, s.Health())
+	}
+}
+
 func TestUncommittedRecordsCountAgainstTheFreeSpace(t *testing.T) {
 	s := open(t, t.TempDir(), small)
 	add(t, s, noon, "a")
