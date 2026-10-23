@@ -40,7 +40,7 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
    index with shards present means recovering every shard, never trusting one.
 7. The next seq on Open is one past the highest seq in the index and the recovered shards. A `.db`
    name other than 20 digits at most 2^63-1 makes Open fail.
-8. The reserved headroom also covers index lines, and own records when the filesystem runs short before the cap: free space (statfs, what the collector's uid may allocate) is a second cap that drops new records (T10). Recovery short of space makes Open fail (point 5).
+8. The reserved headroom also covers index lines, and own records when the filesystem runs short before the cap: free space (statfs f_bavail; quotas are not seen) is a second cap that drops new records, and what the reserve gave back is kept for own records (T10). Recovery short of space makes Open fail (point 5).
 
 ## Alternatives considered
 

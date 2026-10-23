@@ -96,6 +96,7 @@ type Store struct {
 	sealLost    bool // a seal failed: what the shard held since its last commit may be gone
 	now         func() time.Time
 	avail       func() (int64, error) // what the filesystem lets the collector allocate (a test seam)
+	given       int64                 // what the reserve gave back: Headroom less its size, kept for own records
 	crashAt     func(string)          // a test seam: crash tests kill the process at these named points
 }
 
@@ -555,6 +556,7 @@ func (s *Store) free() error {
 	if err := os.Truncate(path, st.Size()-LossChunk); err != nil {
 		return s.fail(err)
 	}
+	s.given += LossChunk
 	return nil
 }
 
@@ -605,8 +607,10 @@ func (s *Store) Append(ctx context.Context, r rawrecord.Record) (bool, []Seal, e
 	if err != nil {
 		return false, nil, s.fail(err)
 	}
-	// A full filesystem drops like the cap: another writer can fill it first (T10).
-	if need := shard.WALMaxBytes + 2*size + admitSlack; used+need > s.lim.Cap || need > free { // dropped before any rotation
+	// A full filesystem drops like the cap: another writer can fill it first (T10). What the reserve gave
+	// back is kept for the store's own records, so a sensor record never spends it, and the own records
+	// written before it (Flush's queue) must fit too.
+	if need := shard.WALMaxBytes + 2*size + admitSlack; used+need > s.lim.Cap || need+s.queuedBytes() > free-s.given { // dropped before any rotation
 		if s.dropped == 0 {
 			s.firstDrop = received
 		}
@@ -733,9 +737,9 @@ func (s *Store) flush(ctx context.Context) error {
 }
 
 // putOwn stores one of the store's own records. Past the cap or on a full filesystem it is paid for out
-// of the reserve: past the cap, what the reserve file has already given back (Headroom less its size, so
-// a restart forgets nothing) must cover the overrun; on a full filesystem, the free space must hold the
-// record. Until both hold another chunk is freed, and a used-up reserve makes the store UNKNOWN.
+// of the reserve: past the cap, what the reserve has already given back must cover the overrun; on a
+// full filesystem, the free space must hold the record. Until both hold another chunk is freed; a
+// used-up reserve, or a chunk that gives the filesystem nothing back, makes the store UNKNOWN.
 func (s *Store) putOwn(ctx context.Context, provider string, data []byte, received int64) error {
 	used, err := s.used()
 	if err != nil {
@@ -743,27 +747,36 @@ func (s *Store) putOwn(ctx context.Context, provider string, data []byte, receiv
 	}
 	// The record's two copies, a split page and a checkpoint it may trigger.
 	need := shard.WALMaxBytes + 2*int64(len(data)) + 2*ownSlack
+	freedFor, before := false, int64(0) // whether the last chunk was freed for the filesystem, and its room then
 	for {
 		free, err := s.fsRoom()
 		if err != nil {
 			return s.fail(err)
 		}
-		covered := true
-		if over := used + need - s.lim.Cap; over > 0 {
-			st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
-			if err != nil {
-				return s.fail(err)
-			}
-			covered = over <= s.lim.Headroom-st.Size()
+		if freedFor && free <= before {
+			return s.fail(errors.New("freeing the reserve gave the filesystem no space"))
 		}
-		if covered && need <= free {
+		if over := used + need - s.lim.Cap; (over <= 0 || over <= s.given) && need <= free {
 			break
 		}
+		freedFor, before = need > free, free
 		if err := s.free(); err != nil {
 			return err
 		}
 	}
 	return s.put(ctx, rawrecord.New(s.next, provider, 0, received, data))
+}
+
+// queuedBytes is what the own records waiting for Flush can allocate: a loss record and the health records.
+func (s *Store) queuedBytes() int64 {
+	n := int64(0)
+	if s.dropped > 0 {
+		n = 2 * (512 + ownSlack)
+	}
+	for _, h := range s.health {
+		n += 2 * (int64(len(h)) + ownSlack)
+	}
+	return n
 }
 
 // fsRoom is what the filesystem can still take besides the records not yet committed: free space is a
@@ -779,16 +792,26 @@ func (s *Store) fsRoom() (int64, error) {
 	return free, nil
 }
 
-// freeBytes is what the collector's uid may still allocate on the filesystem of dir (statfs f_bavail).
+// freeBytes is the space the filesystem of dir leaves to unprivileged users (statfs f_bavail, in
+// f_frsize units); quotas are not seen.
 func freeBytes(dir string) (int64, error) {
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	err := syscall.Statfs(dir, &st)
+	for errors.Is(err, syscall.EINTR) {
+		err = syscall.Statfs(dir, &st)
+	}
+	if err != nil {
 		return 0, fmt.Errorf("statfs: %w", err)
 	}
-	if st.Bsize <= 0 {
-		return 0, fmt.Errorf("statfs: block size %d", st.Bsize)
+	// The Statfs_t field types differ between architectures, so the conversions stay.
+	unit := int64(st.Frsize) //nolint:unconvert // int32 on 386 and arm
+	if unit <= 0 {
+		unit = int64(st.Bsize) //nolint:unconvert // as above
 	}
-	return int64(min(st.Bavail, uint64(math.MaxInt64/st.Bsize))) * st.Bsize, nil //nolint:gosec // bounded by MaxInt64 / Bsize
+	if unit <= 0 {
+		return 0, fmt.Errorf("statfs: block size %d", unit)
+	}
+	return int64(min(uint64(st.Bavail), uint64(math.MaxInt64)/uint64(unit))) * unit, nil //nolint:gosec,unconvert // bounded by MaxInt64 / unit; types differ by architecture
 }
 
 func (s *Store) put(ctx context.Context, r rawrecord.Record) error {
@@ -882,6 +905,7 @@ func (s *Store) reserve() error {
 		if st.Mode&syscall.S_IFMT != syscall.S_IFREG || st.Size < LossChunk || st.Blocks*512 < st.Size {
 			return fmt.Errorf("reserve: %d bytes, %d allocated: not a reserve for one more record", st.Size, st.Blocks*512)
 		}
+		s.given = s.lim.Headroom - st.Size // a restart forgets nothing the reserve gave
 		return nil
 	}
 	tmp := path + ".tmp"
