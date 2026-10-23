@@ -1097,12 +1097,20 @@ func TestAnOpenThatCannotIndexItsRecoveryWritesNothing(t *testing.T) {
 	dir := flushedThenCrashed(t, s) // a shard for Open to recover
 	t.Cleanup(func() { indexCap = maxIndexBytes })
 	indexCap = int64(len(indexHeader)) + maxLineBytes // room for the recovered shard, not its health record's
-	entries := func() int {
+	entries := func() string { // every name and content: no shard, health record or index line written
 		e, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return len(e)
+		var b strings.Builder
+		for _, f := range e {
+			data, err := os.ReadFile(filepath.Join(dir, f.Name())) //nolint:gosec // test temp dir
+			if err != nil {
+				t.Fatal(err)
+			}
+			fmt.Fprintln(&b, f.Name(), sha256.Sum256(data))
+		}
+		return b.String()
 	}
 	before := entries()
 	for range 3 { // the collector retries Open: each must leave the directory as it found it
@@ -1111,7 +1119,7 @@ func TestAnOpenThatCannotIndexItsRecoveryWritesNothing(t *testing.T) {
 		}
 	}
 	if after := entries(); after != before {
-		t.Fatalf("failed Opens left %d entries, %d before", after, before)
+		t.Fatalf("failed Opens changed the store:\n%s\nwas\n%s", after, before)
 	}
 }
 

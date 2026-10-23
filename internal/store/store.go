@@ -130,8 +130,9 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if len(s.seals) > 0 {
 		s.next = s.seals[len(s.seals)-1].Last + 1
 	}
-	// Recovery indexes every pending shard and one more for its health record: refused before any write
-	// when the index could not take them, or each retried Open would seal another shard and fail again.
+	// Recovery indexes the pending shards, and the shard holding its health record is the next to seal:
+	// refused before any write when the index could not take them all (a deliberate upper bound), or
+	// each retried Open would seal another shard and fail again.
 	if n := indexBytes(s.seals) + int64(len(pending)+1)*maxLineBytes; len(pending) > 0 && n > indexCap {
 		return nil, fmt.Errorf("store: index: recovering %d shards could take %d bytes, past the %d its reader takes", len(pending), n, indexCap)
 	}
