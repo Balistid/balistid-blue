@@ -130,6 +130,11 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if len(s.seals) > 0 {
 		s.next = s.seals[len(s.seals)-1].Last + 1
 	}
+	// Recovery indexes every pending shard and one more for its health record: refused before any write
+	// when the index could not take them, or each retried Open would seal another shard and fail again.
+	if n := indexBytes(s.seals) + int64(len(pending)+1)*maxLineBytes; len(pending) > 0 && n > indexCap {
+		return nil, fmt.Errorf("store: index: recovering %d shards could take %d bytes, past the %d its reader takes", len(pending), n, indexCap)
+	}
 	indexed := len(s.seals)
 	if err := s.recover(ctx, pending); err != nil {
 		return nil, err
@@ -169,6 +174,12 @@ var ErrUnindexed = errors.New("store: shards missing from the index")
 // maxIndexBytes bounds the index read into memory: about 128 bytes a seal, so over 100000 shards,
 // years of daily shards at the cap. A larger index is refused, not read.
 const maxIndexBytes = 16 << 20
+
+// indexCap is what the writers let the index grow to: what its reader takes (a test lowers it).
+var indexCap int64 = maxIndexBytes
+
+// maxLineBytes is the longest index line: the widest name and seq numbers.
+var maxLineBytes = int64(len(Seal{Name: fmt.Sprintf("%020d.db", 0), First: math.MaxUint64, Last: math.MaxUint64}.line()))
 
 // indexCheckEvery is how many index lines are parsed between checks of ctx.
 const indexCheckEvery = 4096
@@ -262,8 +273,8 @@ func classify(list []os.DirEntry, seals []Seal) (layout, error) {
 	return c, nil // the caller's ReadDir sorts by name, and names are zero-padded seq
 }
 
-// ownerOnly is true for a file the store could have written: its group may read a sealed shard
-// (balistid-normalize, ADR 0007), nobody else may touch it.
+// ownerOnly is true for a file whose mode only the owner can write and only the group may read (a sealed
+// shard, for balistid-normalize, ADR 0007). It checks the mode, not the owner: hygiene, not a T1 control.
 func ownerOnly(e os.DirEntry) bool {
 	info, err := e.Info()
 	return err == nil && info.Mode().Perm()&0o027 == 0
@@ -453,8 +464,8 @@ func (s *Store) writeIndex(seals []Seal) error {
 	for _, l := range seals {
 		b.WriteString(l.line())
 	}
-	if b.Len() > maxIndexBytes {
-		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", b.Len(), maxIndexBytes)
+	if int64(b.Len()) > indexCap {
+		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", b.Len(), indexCap)
 	}
 	tmp := filepath.Join(s.dir, indexName+".tmp")
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // the collector's own directory
@@ -475,8 +486,8 @@ func (s *Store) writeIndex(seals []Seal) error {
 // filesystem is full it frees a chunk of the reserve (point 8) and writes the index whole instead, so a
 // short append never stays in it.
 func (s *Store) appendIndex(l Seal) error {
-	if n := indexBytes(s.seals) + int64(len(l.line())); n > maxIndexBytes {
-		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", n, maxIndexBytes)
+	if n := indexBytes(s.seals) + int64(len(l.line())); n > indexCap {
+		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", n, indexCap)
 	}
 	err := s.appendLine(l)
 	if errors.Is(err, syscall.ENOSPC) {
