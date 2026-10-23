@@ -673,6 +673,101 @@ func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
 	}
 }
 
+// fullFilesystem makes the filesystem of s hold base free bytes besides what the reserve gave back, as
+// when another writer fills it below the cap: truncating the reserve frees its blocks.
+func fullFilesystem(t *testing.T, s *Store, base int64) {
+	t.Helper()
+	s.avail = func() (int64, error) {
+		st, err := os.Stat(filepath.Join(s.dir, reserveName))
+		if err != nil {
+			return 0, err
+		}
+		return base + s.lim.Headroom - st.Size(), nil
+	}
+}
+
+func TestAFullFilesystemBelowTheCapDropsAndCounts(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	if !add(t, s, noon, "a") {
+		t.Fatal("a record with room was dropped")
+	}
+	fullFilesystem(t, s, 0)
+	if add(t, s, noon+1, "b") || add(t, s, noon+2, "c") {
+		t.Fatal("a record was stored on a full filesystem below the cap")
+	}
+	if _, err := s.Flush(t.Context()); err != nil || s.Health() != "" {
+		t.Fatalf("flush on a full filesystem: %v, health %q; the reserve pays for the loss record", err, s.Health())
+	}
+	st, err := os.Stat(filepath.Join(dir, reserveName))
+	if err != nil || st.Size() >= small.Headroom {
+		t.Fatalf("reserve %d of %d bytes (%v): the loss record must be paid out of it", st.Size(), small.Headroom, err)
+	}
+	closeStore(t, s)
+	got := readAll(t, dir)
+	var loss struct{ Dropped uint64 }
+	if len(got) != 2 || got[1].Provider != LossProvider || json.Unmarshal(got[1].Data, &loss) != nil || loss.Dropped != 2 {
+		t.Fatalf("records %+v; want the stored record and a loss record of 2 drops", got)
+	}
+}
+
+func TestOwnRecordsOnAFullFilesystemSpendTheReserveThenUnknown(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	fullFilesystem(t, s, 0)
+	reserve := func() int64 {
+		st, err := os.Stat(filepath.Join(dir, reserveName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.Size()
+	}
+	losses, last := 0, reserve()
+	for i := 0; s.Health() == ""; i++ {
+		if i > 10000 {
+			t.Fatal("the reserve was never used up")
+		}
+		if add(t, s, noon+int64(i), "dropped") {
+			t.Fatalf("record %d was stored on a full filesystem below the cap", i)
+		}
+		_, err := s.Flush(t.Context())
+		if s.Health() != "" {
+			if !strings.Contains(err.Error(), "used up") {
+				t.Fatalf("the store failed with %v, not a used-up reserve", err)
+			}
+			break
+		}
+		if err != nil {
+			t.Fatalf("flush %d: %v", i, err)
+		}
+		if now := reserve(); now > last || last-now > shard.WALMaxBytes+2*LossChunk {
+			t.Fatalf("reserve went from %d to %d bytes for one loss record", last, now)
+		} else {
+			last = now
+		}
+		losses++
+	}
+	if losses < 2 {
+		t.Fatalf("%d loss records before the reserve ran out", losses)
+	}
+}
+
+func TestFreeBytesIsWhatTheFilesystemHas(t *testing.T) {
+	dir := t.TempDir()
+	n, err := freeBytes(dir)
+	var st syscall.Statfs_t
+	if serr := syscall.Statfs(dir, &st); serr != nil {
+		t.Fatal(serr)
+	}
+	if err != nil || n <= 0 || n > int64(st.Blocks)*st.Bsize { //nolint:gosec // a test filesystem's size
+		t.Fatalf("freeBytes %d, %v; filesystem of %d bytes", n, err, int64(st.Blocks)*st.Bsize) //nolint:gosec // as above
+	}
+	if _, err := freeBytes(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("freeBytes of a missing directory")
+	}
+}
+
 func TestFlushSealsTheShardOfAnEndedDayWhileDropping(t *testing.T) {
 	s := open(t, t.TempDir(), Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 16*LossChunk})
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {

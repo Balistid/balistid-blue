@@ -1,7 +1,7 @@
 # 0013 — Keep a seal index beside the shards and flush losses from the collector
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-09, amended 2026-10-10 (torn-write loss in commits, crash_loss_ms)
+- Date: 2026-10-09, amended 2026-10-10 (torn-write loss in commits, crash_loss_ms), 2026-10-24 (full filesystem)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -40,7 +40,7 @@ at-least-once delivery to it with de-duplication and leaves the mechanism to thi
    index with shards present means recovering every shard, never trusting one.
 7. The next seq on Open is one past the highest seq in the index and the recovered shards. A `.db`
    name other than 20 digits at most 2^63-1 makes Open fail.
-8. The reserved headroom also covers index lines; recovery short of space makes Open fail (point 5).
+8. The reserved headroom also covers index lines, and own records when the filesystem runs short before the cap: free space (statfs, what the collector's uid may allocate) is a second cap that drops new records (T10). Recovery short of space makes Open fail (point 5).
 
 ## Alternatives considered
 
