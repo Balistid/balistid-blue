@@ -610,7 +610,7 @@ func (s *Store) Append(ctx context.Context, r rawrecord.Record) (bool, []Seal, e
 	// A full filesystem drops like the cap: another writer can fill it first (T10). What the reserve gave
 	// back is kept for the store's own records, so a sensor record never spends it, and the own records
 	// written before it (Flush's queue) must fit too.
-	if need := shard.WALMaxBytes + 2*size + admitSlack; used+need > s.lim.Cap || need+s.queuedBytes() > free-s.given { // dropped before any rotation
+	if need := shard.WALMaxBytes + 2*size + admitSlack; used+need > s.lim.Cap || need+s.queuedBytes() > free-max(s.given, 0) { // dropped before any rotation
 		if s.dropped == 0 {
 			s.firstDrop = received
 		}
