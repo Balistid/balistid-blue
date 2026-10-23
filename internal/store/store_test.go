@@ -755,7 +755,9 @@ func TestOwnRecordsOnAFullFilesystemSpendTheReserveThenUnknown(t *testing.T) {
 		if f < 0 {
 			t.Fatalf("after %d loss records and a seal (%d) the store allocated %d bytes the filesystem did not have", losses, len(sealed), -f)
 		}
-		if s.Health() == "" && f < shard.WALMaxBytes { // the next checkpoint or seal must still fit
+		// The next checkpoint or seal must still fit. A record and a new shard round to whole blocks on disk,
+		// which the 1 MiB of b-tree slack in WALMaxBytes absorbs: allow admitSlack of it.
+		if s.Health() == "" && f < shard.WALMaxBytes-admitSlack {
 			t.Fatalf("after %d loss records only %d bytes are free, less than a checkpoint", losses, f)
 		}
 		if s.Health() != "" {
