@@ -95,7 +95,8 @@ type Store struct {
 	unknown     string
 	sealLost    bool // a seal failed: what the shard held since its last commit may be gone
 	now         func() time.Time
-	crashAt     func(string) // a test seam: crash tests kill the process at these named points
+	avail       func() (int64, error) // what the filesystem lets the collector allocate (a test seam)
+	crashAt     func(string)          // a test seam: crash tests kill the process at these named points
 }
 
 // Open uses dir, owned by the collector. It trusts a shard only through its index line, recovers any
@@ -118,7 +119,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if st.Mode&syscall.S_IFMT != syscall.S_IFDIR || int(st.Uid) != os.Getuid() || st.Mode&0o022 != 0 {
 		return nil, fmt.Errorf("store: %s is not a directory of this user that only it can write", dir)
 	}
-	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt}
+	s := &Store{dir: dir, lim: lim, next: 1, now: time.Now, crashAt: crashAt, avail: func() (int64, error) { return freeBytes(dir) }}
 	var err error
 	if s.seals, s.torn, err = readSeals(ctx, dir); err != nil {
 		return nil, err
@@ -573,7 +574,12 @@ func (s *Store) Append(ctx context.Context, r rawrecord.Record) (bool, []Seal, e
 	if err != nil {
 		return false, nil, s.fail(err)
 	}
-	if used+shard.WALMaxBytes+2*size+admitSlack > s.lim.Cap { // dropped before any rotation
+	free, err := s.fsRoom()
+	if err != nil {
+		return false, nil, s.fail(err)
+	}
+	// A full filesystem drops like the cap: another writer can fill it first (T10).
+	if need := shard.WALMaxBytes + 2*size + admitSlack; used+need > s.lim.Cap || need > free { // dropped before any rotation
 		if s.dropped == 0 {
 			s.firstDrop = received
 		}
@@ -699,28 +705,63 @@ func (s *Store) flush(ctx context.Context) error {
 	return nil
 }
 
-// putOwn stores one of the store's own records. Past the cap it is paid for out of the reserve: what
-// the reserve file has already given back (Headroom less its size, so a restart forgets nothing) must
-// cover the overrun, or another chunk is freed first.
+// putOwn stores one of the store's own records. Past the cap or on a full filesystem it is paid for out
+// of the reserve: past the cap, what the reserve file has already given back (Headroom less its size, so
+// a restart forgets nothing) must cover the overrun; on a full filesystem, the free space must hold the
+// record. Until both hold another chunk is freed, and a used-up reserve makes the store UNKNOWN.
 func (s *Store) putOwn(ctx context.Context, provider string, data []byte, received int64) error {
 	used, err := s.used()
 	if err != nil {
 		return s.fail(err)
 	}
-	// The record's two copies, a split page and a checkpoint it may trigger, past the cap, must be
-	// covered by what the reserve gave.
-	if over := used + shard.WALMaxBytes + 2*int64(len(data)) + 2*ownSlack - s.lim.Cap; over > 0 {
-		st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+	// The record's two copies, a split page and a checkpoint it may trigger.
+	need := shard.WALMaxBytes + 2*int64(len(data)) + 2*ownSlack
+	for {
+		free, err := s.fsRoom()
 		if err != nil {
 			return s.fail(err)
 		}
-		for released := s.lim.Headroom - st.Size(); over > released; released += LossChunk {
-			if err := s.free(); err != nil {
-				return err
+		covered := true
+		if over := used + need - s.lim.Cap; over > 0 {
+			st, err := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+			if err != nil {
+				return s.fail(err)
 			}
+			covered = over <= s.lim.Headroom-st.Size()
+		}
+		if covered && need <= free {
+			break
+		}
+		if err := s.free(); err != nil {
+			return err
 		}
 	}
 	return s.put(ctx, rawrecord.New(s.next, provider, 0, received, data))
+}
+
+// fsRoom is what the filesystem can still take besides the records not yet committed: free space is a
+// second cap, which another writer on the same filesystem can reach before the store's own (T10).
+func (s *Store) fsRoom() (int64, error) {
+	free, err := s.avail()
+	if err != nil {
+		return 0, err
+	}
+	if s.cur != nil {
+		free -= s.cur.Pending()
+	}
+	return free, nil
+}
+
+// freeBytes is what the collector's uid may still allocate on the filesystem of dir (statfs f_bavail).
+func freeBytes(dir string) (int64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, fmt.Errorf("statfs: %w", err)
+	}
+	if st.Bsize <= 0 {
+		return 0, fmt.Errorf("statfs: block size %d", st.Bsize)
+	}
+	return int64(min(st.Bavail, uint64(math.MaxInt64/st.Bsize))) * st.Bsize, nil //nolint:gosec // bounded by MaxInt64 / Bsize
 }
 
 func (s *Store) put(ctx context.Context, r rawrecord.Record) error {

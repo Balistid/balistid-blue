@@ -36,5 +36,5 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - `test_release.py` bootstrap cleanup removes every `/tmp/balistid-install.*`, also other runs'.
 - Does `systemd_exposure` (2.5) cover the runner? Install skips .wants/.requires (root-only).
 - R2 signing keys; before floor 0's host install: x32 mitigation, io_uring.
-- Store: a full filesystem under the cap needs a range test (`headroom_gib`); index format for deleted shards.
+- Store: a full filesystem drops and pays losses from the reserve (ADR 0013 p8); `headroom_gib` range fill test still due.
 - shellcheck in CI is unpinned (`.github/workflows/ci.yml:336`), against R14; a workflow change is the maintainer's.
