@@ -1072,17 +1072,61 @@ func TestReadSealsWritesNothing(t *testing.T) {
 
 func TestFilesOthersCouldTouchAreRefused(t *testing.T) {
 	for _, mode := range []os.FileMode{0o666, 0o644, 0o460} {
-		dir := t.TempDir()
-		seals := sealedThree(t, dir)
-		if err := os.Chmod(filepath.Join(dir, seals[1].Name), mode); err != nil {
+		for _, file := range []string{"shard", indexName, reserveName} {
+			dir := t.TempDir()
+			seals := sealedThree(t, dir)
+			if file == "shard" {
+				file = seals[1].Name
+			}
+			if err := os.Chmod(filepath.Join(dir, file), mode); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReadSeals(t.Context(), dir); err == nil {
+				t.Fatalf("ReadSeals accepted %s of mode %o", file, mode)
+			}
+			if _, err := Open(t.Context(), dir, small); err == nil {
+				t.Fatalf("Open accepted %s of mode %o", file, mode)
+			}
+		}
+	}
+}
+
+func TestAnOpenThatCannotIndexItsRecoveryWritesNothing(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	dir := flushedThenCrashed(t, s) // a shard for Open to recover
+	t.Cleanup(func() { indexCap = maxIndexBytes })
+	indexCap = int64(len(indexHeader)) + maxLineBytes // room for the recovered shard, not its health record's
+	entries := func() int {
+		e, err := os.ReadDir(dir)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ReadSeals(t.Context(), dir); err == nil {
-			t.Fatalf("ReadSeals accepted a shard of mode %o", mode)
+		return len(e)
+	}
+	before := entries()
+	for range 3 { // the collector retries Open: each must leave the directory as it found it
+		if _, err := Open(t.Context(), dir, small); err == nil || !strings.Contains(err.Error(), "reader takes") {
+			t.Fatalf("Open with an index at its cap: %v", err)
 		}
-		if _, err := Open(t.Context(), dir, small); err == nil {
-			t.Fatalf("Open accepted a shard of mode %o", mode)
-		}
+	}
+	if after := entries(); after != before {
+		t.Fatalf("failed Opens left %d entries, %d before", after, before)
+	}
+}
+
+func TestWriteIndexStopsAtTheCap(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	index := filepath.Join(dir, indexName)
+	before, _ := os.ReadFile(index) //nolint:gosec // test temp dir
+	t.Cleanup(func() { indexCap = maxIndexBytes })
+	indexCap = int64(len(indexHeader))
+	if err := s.writeIndex([]Seal{{Name: fmt.Sprintf("%020d.db", 1)}}); err == nil {
+		t.Fatal("writeIndex wrote an index past its cap")
+	}
+	if after, _ := os.ReadFile(index); !bytes.Equal(after, before) { //nolint:gosec // test temp dir
+		t.Fatal("a refused writeIndex changed the index")
 	}
 }
 
@@ -1116,8 +1160,8 @@ func TestTheIndexStaysWithinWhatItsReaderTakes(t *testing.T) {
 	if _, err := s.Close(t.Context()); err == nil || !strings.Contains(err.Error(), "its reader takes") {
 		t.Fatalf("a seal past the index cap: %v", err)
 	}
-	if _, _, err := readSeals(t.Context(), dir); err != nil {
-		t.Fatalf("the index on disk must stay readable: %v", err)
+	if seals, _, err := readSeals(t.Context(), dir); err != nil || len(seals) != 1 {
+		t.Fatalf("the index on disk must stay readable with its one seal: %d seals, %v", len(seals), err)
 	}
 }
 
