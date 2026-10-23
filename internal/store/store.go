@@ -235,6 +235,8 @@ func classify(list []os.DirEntry, seals []Seal) (layout, error) {
 		case name == "lost+found" && e.IsDir():
 		case !e.Type().IsRegular():
 			return layout{}, fmt.Errorf("store: %s is not a regular file", name)
+		case !ownerOnly(e):
+			return layout{}, fmt.Errorf("store: %s can be written by its group or read by others", name)
 		case name == indexName || name == indexName+".tmp" || name == reserveName || name == reserveName+".tmp":
 		case !shardName.MatchString(base):
 			return layout{}, fmt.Errorf("store: %s does not belong in the store", name)
@@ -258,6 +260,13 @@ func classify(list []os.DirEntry, seals []Seal) (layout, error) {
 		return layout{}, fmt.Errorf("store: indexed shards missing: %v", missing)
 	}
 	return c, nil // the caller's ReadDir sorts by name, and names are zero-padded seq
+}
+
+// ownerOnly is true for a file the store could have written: its group may read a sealed shard
+// (balistid-normalize, ADR 0007), nobody else may touch it.
+func ownerOnly(e os.DirEntry) bool {
+	info, err := e.Info()
+	return err == nil && info.Mode().Perm()&0o027 == 0
 }
 
 // readSeals parses the index of dir. A last line without its newline is a torn append: it is left out
@@ -428,7 +437,7 @@ func (s *Store) recover(ctx context.Context, pending []string) error {
 }
 
 func (s *Store) remove(path string) error {
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+	for _, p := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("store: %w", err)
 		}
@@ -443,6 +452,9 @@ func (s *Store) writeIndex(seals []Seal) error {
 	b.WriteString(indexHeader)
 	for _, l := range seals {
 		b.WriteString(l.line())
+	}
+	if b.Len() > maxIndexBytes {
+		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", b.Len(), maxIndexBytes)
 	}
 	tmp := filepath.Join(s.dir, indexName+".tmp")
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // the collector's own directory
@@ -463,6 +475,9 @@ func (s *Store) writeIndex(seals []Seal) error {
 // filesystem is full it frees a chunk of the reserve (point 8) and writes the index whole instead, so a
 // short append never stays in it.
 func (s *Store) appendIndex(l Seal) error {
+	if n := indexBytes(s.seals) + int64(len(l.line())); n > maxIndexBytes {
+		return fmt.Errorf("store: index: %d bytes would pass the %d its reader takes", n, maxIndexBytes)
+	}
 	err := s.appendLine(l)
 	if errors.Is(err, syscall.ENOSPC) {
 		all := append(slices.Clone(s.seals), l)
