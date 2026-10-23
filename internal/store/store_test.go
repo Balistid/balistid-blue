@@ -672,16 +672,40 @@ func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
 	}
 }
 
-// fullFilesystem makes the filesystem of s hold base free bytes besides what the reserve gave back, as
-// when another writer fills it below the cap: truncating the reserve frees its blocks.
-func fullFilesystem(t *testing.T, s *Store, base int64) {
+// fullFilesystem gives s a filesystem of fixed size that another writer has filled, leaving base bytes
+// free: what the store's files allocate comes out of it, and truncating the reserve gives its blocks
+// back. It returns the free space, which a store that never hits SQLITE_FULL keeps at zero or more.
+func fullFilesystem(t *testing.T, s *Store, base int64) func() int64 {
 	t.Helper()
-	s.avail = func() (int64, error) {
-		st, err := os.Stat(filepath.Join(s.dir, reserveName))
+	held := func() (int64, error) {
+		entries, err := os.ReadDir(s.dir)
 		if err != nil {
 			return 0, err
 		}
-		return base + s.lim.Headroom - st.Size(), nil
+		n := int64(0)
+		for _, e := range entries {
+			b, err := allocated(filepath.Join(s.dir, e.Name()))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return 0, err
+			}
+			n += b
+		}
+		return n, nil
+	}
+	start, err := held()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.avail = func() (int64, error) {
+		n, err := held()
+		return start + base - n, err
+	}
+	return func() int64 {
+		free, err := s.avail()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return free
 	}
 }
 
@@ -711,26 +735,29 @@ func TestAFullFilesystemBelowTheCapDropsAndCounts(t *testing.T) {
 }
 
 func TestOwnRecordsOnAFullFilesystemSpendTheReserveThenUnknown(t *testing.T) {
+	// A cap far above the filesystem: only the full filesystem makes the store spend the reserve. Small
+	// shards seal often, and each seal's checkpoint must fit in what the reserve gave.
 	dir := t.TempDir()
-	s := open(t, dir, small)
+	lim := Limits{Cap: 1 << 40, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + 16*LossChunk}
+	s := open(t, dir, lim)
 	add(t, s, noon, "a")
-	fullFilesystem(t, s, 0)
-	reserve := func() int64 {
-		st, err := os.Stat(filepath.Join(dir, reserveName))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return st.Size()
-	}
-	losses, last := 0, reserve()
-	for i := 0; s.Health() == ""; i++ {
-		if i > 10000 {
+	free := fullFilesystem(t, s, 0)
+	losses := 0
+	for i := 0; ; i++ {
+		if i > 100000 {
 			t.Fatal("the reserve was never used up")
 		}
 		if add(t, s, noon+int64(i), "dropped") {
 			t.Fatalf("record %d was stored on a full filesystem below the cap", i)
 		}
-		_, err := s.Flush(t.Context())
+		sealed, err := s.Flush(t.Context())
+		f := free()
+		if f < 0 {
+			t.Fatalf("after %d loss records and a seal (%d) the store allocated %d bytes the filesystem did not have", losses, len(sealed), -f)
+		}
+		if s.Health() == "" && f < shard.WALMaxBytes { // the next checkpoint or seal must still fit
+			t.Fatalf("after %d loss records only %d bytes are free, less than a checkpoint", losses, f)
+		}
 		if s.Health() != "" {
 			if !strings.Contains(err.Error(), "used up") {
 				t.Fatalf("the store failed with %v, not a used-up reserve", err)
@@ -740,15 +767,75 @@ func TestOwnRecordsOnAFullFilesystemSpendTheReserveThenUnknown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("flush %d: %v", i, err)
 		}
-		if now := reserve(); now > last || last-now > shard.WALMaxBytes+2*LossChunk {
-			t.Fatalf("reserve went from %d to %d bytes for one loss record", last, now)
-		} else {
-			last = now
-		}
 		losses++
 	}
-	if losses < 2 {
+	if losses < 100 {
 		t.Fatalf("%d loss records before the reserve ran out", losses)
+	}
+}
+
+func TestSensorRecordsNeverSpendWhatTheReserveGave(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	fullFilesystem(t, s, 30000)
+	for i := range 50 {
+		if add(t, s, noon+int64(i), "b") {
+			t.Fatalf("record %d was stored in space the reserve gave for loss records", i)
+		}
+		if _, err := s.Flush(t.Context()); err != nil {
+			t.Fatalf("flush %d: %v", i, err)
+		}
+	}
+}
+
+func TestAReserveThatFreesNothingFailsAtOnce(t *testing.T) {
+	// A filesystem that does not give truncated blocks back (a snapshot holds them) must not drain the
+	// whole reserve for one loss record.
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	s.avail = func() (int64, error) { return 0, nil }
+	add(t, s, noon+1, "b")
+	_, err := s.Flush(t.Context())
+	st, serr := os.Stat(filepath.Join(dir, reserveName))
+	if err == nil || !strings.Contains(err.Error(), "no space") || serr != nil || st.Size() != small.Headroom-LossChunk {
+		t.Fatalf("flush: %v; reserve %d of %d bytes (%v)", err, st.Size(), small.Headroom, serr)
+	}
+}
+
+func TestQueuedHealthRecordsCountAgainstTheFreeSpace(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	health := []byte(`{"schema_version":1,"note":"` + strings.Repeat("h", maxHealthBytes-64) + `"}`)
+	for range maxHealthQueued {
+		if err := s.NoteHealth(health); err != nil {
+			t.Fatal(err)
+		}
+	}
+	size := int64(rawrecord.New(0, "laurel", 7, noon, []byte("b")).EncodedLen())
+	fullFilesystem(t, s, shard.WALMaxBytes+2*size+admitSlack+4<<10)
+	if add(t, s, noon, "b") {
+		t.Fatal("a record was admitted into space the queued health records, written first, will take")
+	}
+}
+
+func TestUncommittedRecordsCountAgainstTheFreeSpace(t *testing.T) {
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "a")
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	data := strings.Repeat("x", 4<<10)
+	size := int64(rawrecord.New(0, "laurel", 7, noon, []byte(data)).EncodedLen())
+	fullFilesystem(t, s, shard.WALMaxBytes+2*size+admitSlack+6<<10)
+	if !add(t, s, noon, data) {
+		t.Fatal("a record that fits was dropped")
+	}
+	if add(t, s, noon, data) {
+		t.Fatal("a second record was admitted into space the first, not yet committed, will take")
 	}
 }
 
