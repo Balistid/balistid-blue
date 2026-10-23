@@ -1097,7 +1097,8 @@ func TestAnOpenThatCannotIndexItsRecoveryWritesNothing(t *testing.T) {
 	dir := flushedThenCrashed(t, s) // a shard for Open to recover
 	t.Cleanup(func() { indexCap = maxIndexBytes })
 	indexCap = int64(len(indexHeader)) + maxLineBytes // room for the recovered shard, not its health record's
-	entries := func() string { // every name and content: no shard, health record or index line written
+	// Every name and content: no shard, health record or index line may be written.
+	entries := func() string {
 		e, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)
