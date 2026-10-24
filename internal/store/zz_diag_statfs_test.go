@@ -55,4 +55,5 @@ func TestDiagStatfsAfterTruncate(t *testing.T) {
 	_ = d.Close()
 	_ = f.Close()
 	fmt.Printf("::warning title=statfs-diag::%s\n", out)
+	t.Fail() // so go test ./... prints the line
 }
