@@ -468,7 +468,8 @@ func TestStartRestartReexecToldApart(t *testing.T) {
 		l.Disconnected(nil)
 	}
 	l.Disconnected(errors.New("connection reset"))
-	c, connected := l.take()
+	_, connected := l.check(time.Now())
+	c := l.take(time.Now())
 	if fmt.Sprint(c.causes) != "map[collector-start:1 eof:3 laurel-restart:1 read-error:1 reconnect:1]" || connected {
 		t.Fatalf("causes %v, connected %v", c.causes, connected)
 	}
@@ -485,7 +486,7 @@ func TestLinksCountEveryChangeBetweenTwoTicks(t *testing.T) {
 		l.Connected(100 + pid)
 		l.Disconnected(nil)
 	}
-	c, _ := l.take()
+	c := l.take(time.Now())
 	var listed uint64
 	for _, m := range c.pids {
 		for _, n := range m {
