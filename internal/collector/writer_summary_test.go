@@ -56,7 +56,7 @@ func TestReconnectFloodWhileDownIsOneSummary(t *testing.T) {
 	r.settle()
 	for i := range 600 {
 		r.w.Links.Connected(100 + i)
-		r.w.Links.Disconnected()
+		r.w.Links.Disconnected(nil)
 		if i%20 == 0 { // 40 events a tick: more than Links keeps between two ticks
 			r.step(time.Second)
 		}
@@ -65,6 +65,62 @@ func TestReconnectFloodWhileDownIsOneSummary(t *testing.T) {
 	conns := r.st.kinds("connection")
 	if len(conns) != 1 || conns[0]["count"] != 1200.0 || conns[0]["laurel_pid"] != 699.0 || conns[0]["cause"] != "eof" {
 		t.Fatalf("%d connection records, first %v", len(conns), conns[:min(len(conns), 1)])
+	}
+	var causes, listed float64
+	for _, n := range conns[0]["causes"].(map[string]any) {
+		causes += n.(float64)
+	}
+	for _, m := range conns[0]["pids"].(map[string]any) {
+		for _, n := range m.(map[string]any) {
+			listed += n.(float64)
+		}
+	}
+	if causes != 1200 || listed+conns[0]["pids_dropped"].(float64) != 1200 {
+		t.Fatalf("causes count %v, pids count %v and %v dropped, of 1200 events", causes, listed, conns[0]["pids_dropped"])
+	}
+}
+
+// Every pid of the connections between two ticks is in the summary (ADR 0017, point 4).
+func TestConnectionSummaryNamesEveryPid(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	for _, pid := range []int{10, 20, 30} {
+		connect(r, pid)
+		r.w.Links.Disconnected(nil)
+	}
+	r.step(0)
+	r.step(0)
+	conns := r.st.kinds("connection")
+	if len(conns) != 1 || fmt.Sprint(conns[0]["pids"]) != "map[collector-start:map[10:1] eof:map[10:1 20:1 30:1] laurel-restart:map[20:1 30:1]]" {
+		t.Fatalf("connection records %v", conns)
+	}
+}
+
+// At stop, events counted while an earlier summary waited get their own summary, and summaries go to
+// the store before other records. A refusal without an error keeps the error of one before it.
+func TestStopStoresEverySummaryBeforeOtherRecords(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	connect(r, 77)
+	r.w.Refusals.add(r.clock(), 1233, nil)
+	r.step(statsEvery) // both summaries wait for the store
+	r.w.Links.Disconnected(nil)
+	r.w.Refusals.add(r.clock(), 1234, errors.New("peer gone"))
+	for range 80 {
+		r.step(statsEvery) // counted behind the waiting summaries, which 80 records follow
+	}
+	r.w.Refusals.add(r.clock(), 1235, nil) // taken at stop
+	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
+	if err := stopRig(r); err != nil {
+		t.Fatal(err)
+	}
+	conns, seqs := once(r.st, "connection")
+	refused := r.st.kinds("refused")
+	if conns != 2 || seqs != 2 || len(refused) != 2 || refused[1]["count"] != 2.0 || refused[1]["last_error"] != "peer gone" {
+		t.Fatalf("connection records count %v in %d, refused %v", conns, seqs, refused)
 	}
 }
 
@@ -79,7 +135,7 @@ func TestFlappingStoreLosesAndDoublesNothing(t *testing.T) {
 	const cycles = 200
 	for c := range cycles {
 		r.w.Links.Connected(500 + c)
-		r.w.Links.Disconnected()
+		r.w.Links.Disconnected(nil)
 		r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", uint64(1000+c), noon, []byte("dropped")))
 		if c%100 == 99 {
 			r.step(0) // committed this time, and the new events handed over
@@ -138,7 +194,7 @@ func TestJournalBoundedUnderFlood(t *testing.T) {
 			}
 			events += 20
 			if tick%2 == 1 { // a health record every tick, which gives way in the end
-				r.w.Links.Disconnected()
+				r.w.Links.Disconnected(nil)
 				events++
 			}
 			r.step(time.Second)
