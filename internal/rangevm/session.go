@@ -83,7 +83,24 @@ type Result struct {
 // never runs in root and nothing in its object store is trusted: the tools build from an export of
 // the commit verified object by object (ADR 0010). Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
-	return buildCommit(ctx, root, cache, log, launcherCommit(), fetchTimeout)
+	return buildCommit(ctx, root, cache, log, launcherCommit(), defaultBuild())
+}
+
+// moduleProxy is the only place the image build fetches Go modules from: the Go module mirror,
+// without `direct`, so no version control tool runs for a module. Under -mod=readonly a module is
+// used only if it matches the go.sum of the verified export, and GONOSUMDB, GOPRIVATE and
+// GOINSECURE are never set, so the proxy decides whether the build gets a module, never which bytes.
+const moduleProxy = "https://proxy.golang.org"
+
+// buildConfig is what a build takes besides its inputs. Tests shorten the copy limit or serve
+// modules from a local proxy; Build and BuildCommit use defaultBuild.
+type buildConfig struct {
+	copyTimeout time.Duration
+	proxy       string
+}
+
+func defaultBuild() buildConfig {
+	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -94,11 +111,11 @@ func BuildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if !buildinfo.IsCommitID(commit) {
 		return "", errors.New("commit is not 40 lower-case hex digits")
 	}
-	return buildCommit(ctx, root, cache, log, commit, fetchTimeout)
+	return buildCommit(ctx, root, cache, log, commit, defaultBuild())
 }
 
-// buildCommit is Build for a given commit and copy time limit.
-func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, copyTimeout time.Duration) (image string, err error) {
+// buildCommit is Build for a given commit and configuration.
+func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, cfg buildConfig) (image string, err error) {
 	held, err := Lock(cache)
 	if err != nil {
 		return "", err
@@ -109,24 +126,24 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
-	for _, d := range stageDirs {
-		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
-			return "", fmt.Errorf("staging directory: %w", err)
-		}
+	if err := prepareStage(stage); err != nil {
+		return "", err
 	}
-	tool := newTool(ctx, stage, log)
+	tool := newTool(ctx, stage, cfg.proxy, log)
 	src := filepath.Join(stage, "src")
 	if commit == "" {
 		return "", errors.New("launcher is not a clean VCS build of a commit (go run, -buildvcs=false or uncommitted changes)")
 	}
 	// Reading root's object store and git's work on it are bounded in time; it takes well under a
 	// second today.
-	fetchCtx, cancel := context.WithTimeout(ctx, copyTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, cfg.copyTimeout)
 	defer cancel()
-	if err := fetchAndExport(fetchCtx, newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
+	if err := fetchAndExport(fetchCtx, newTool(fetchCtx, stage, cfg.proxy, log), root, stage, commit, defaultLimits()); err != nil {
 		return "", err
 	}
 
+	// go build reads go.mod and go.sum from the export, never from root; the modules they name are
+	// fetched from cfg.proxy into the stage's empty module cache and checked against that go.sum.
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
 	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
 	if err := goBuild.Run(); err != nil {
@@ -180,6 +197,25 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 
 // stageDirs are created in every build's stage before any tool runs.
 var stageDirs = []string{"home", "src", "src-pkg", "build", "log", "pkg", "tmp", "mkosi-workspace", "mkosi-pkgcache"}
+
+// prepareStage creates stageDirs in stage and turns the go command's telemetry off in the stage's
+// HOME. Left at its default, go starts a detached sidecar that outlives the build and writes below
+// HOME while the stage is being removed.
+func prepareStage(stage string) error {
+	for _, d := range stageDirs {
+		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
+			return fmt.Errorf("staging directory: %w", err)
+		}
+	}
+	telemetry := filepath.Join(stage, "home", ".config", "go", "telemetry")
+	if err := os.MkdirAll(telemetry, 0o700); err != nil {
+		return fmt.Errorf("staging directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off\n"), 0o600); err != nil {
+		return fmt.Errorf("staging directory: %w", err)
+	}
+	return nil
+}
 
 // mkosiCommand builds the image from the export in stage into built. mkosi's defaults are /var/tmp
 // for the workspace (shared on the host for the maintainer, T34) and, at a system uid, /var/cache
@@ -599,8 +635,8 @@ func (c *cappedWriter) Write(p []byte) (int, error) {
 // newTool returns the constructor for every program Build runs. Each gets toolEnv, never the
 // caller's environment: GOFLAGS=-toolexec, GOROOT, a go.env file, a git config or a build cache that
 // an agent at the same uid can write would otherwise decide what is built (T34).
-func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
-	env := toolEnv(stage)
+func newTool(ctx context.Context, stage, proxy string, log io.Writer) toolFunc {
+	env := toolEnv(stage, proxy)
 	return func(dir, path string, args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // absolute binaries, fixed argv
 		cmd.Dir = dir
@@ -613,7 +649,9 @@ func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
 // toolEnv is the whole environment of the tools Build runs: fixed values with caches and temporary
 // files inside stage, plus the proxy settings, which choose the network path and not what is built.
 // Git looks for no repository above the stage, which sits inside the maintainer's home repository.
-func toolEnv(stage string) []string {
+// Modules come only from proxy (moduleProxy outside tests) into an empty cache in the stage, and
+// only as go.sum names them: -mod=readonly never adds a sum, and nothing exempts a module from it.
+func toolEnv(stage, proxy string) []string {
 	home := filepath.Join(stage, "home")
 	env := []string{
 		"PATH=/usr/bin",
@@ -624,7 +662,7 @@ func toolEnv(stage string) []string {
 		"GOENV=off",
 		"GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"),
-		"GOPROXY=off",
+		"GOPROXY=" + proxy,
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
 		"GOFLAGS=-mod=readonly -buildvcs=false",
