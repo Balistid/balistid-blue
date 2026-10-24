@@ -88,8 +88,10 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 
 // moduleProxy is the only place the image build fetches Go modules from: the Go module mirror,
 // without `direct`, so no version control tool runs for a module. Under -mod=readonly a module is
-// used only if it matches the go.sum of the verified export, and GONOSUMDB, GOPRIVATE and
-// GOINSECURE are never set, so the proxy decides whether the build gets a module, never which bytes.
+// used only if it matches the go.sum of the verified export; GOSUMDB stays sum.golang.org,
+// GONOSUMDB, GOPRIVATE and GOINSECURE are never set, and a replace to a path, which go reads
+// without go.sum, is refused before the build (refusePathReplace). So the proxy decides whether
+// the build gets a module, never which bytes.
 const moduleProxy = "https://proxy.golang.org"
 
 // buildConfig is what a build takes besides its inputs. Tests shorten the copy limit or serve
@@ -144,6 +146,9 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 
 	// go build reads go.mod and go.sum from the export, never from root; the modules they name are
 	// fetched from cfg.proxy into the stage's empty module cache and checked against that go.sum.
+	if err := refusePathReplace(tool, src); err != nil {
+		return "", err
+	}
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
 	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
 	if err := goBuild.Run(); err != nil {
@@ -193,6 +198,36 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("store image: %w", err)
 	}
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
+}
+
+// maxGoModJSON caps what `go mod edit -json` may print for the export's go.mod.
+const maxGoModJSON = 1 << 20
+
+// refusePathReplace fails when the go.mod in src replaces a module with a directory (a replacement
+// without a version): go builds that module from the file system, inside the export or anywhere on
+// the host, and checks no go.sum line for it (ADR 0022 point 4). A replacement by a module version
+// still comes from the proxy and must match go.sum, so it stays allowed.
+func refusePathReplace(tool toolFunc, src string) error {
+	var out bytes.Buffer
+	cmd := tool(src, "/usr/bin/go", "mod", "edit", "-json")
+	cmd.Stdout = &cappedWriter{w: &out, left: maxGoModJSON}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	var mod struct {
+		Replace []struct {
+			Old, New struct{ Path, Version string }
+		}
+	}
+	if err := json.Unmarshal(out.Bytes(), &mod); err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	for _, r := range mod.Replace {
+		if r.New.Version == "" {
+			return fmt.Errorf("go.mod replaces %s with the path %s, whose source go.sum does not check: a replace to a path is refused", r.Old.Path, r.New.Path)
+		}
+	}
+	return nil
 }
 
 // stageDirs are created in every build's stage before any tool runs.
@@ -650,7 +685,9 @@ func newTool(ctx context.Context, stage, proxy string, log io.Writer) toolFunc {
 // files inside stage, plus the proxy settings, which choose the network path and not what is built.
 // Git looks for no repository above the stage, which sits inside the maintainer's home repository.
 // Modules come only from proxy (moduleProxy outside tests) into an empty cache in the stage, and
-// only as go.sum names them: -mod=readonly never adds a sum, and nothing exempts a module from it.
+// only as go.sum names them: -mod=readonly never adds a sum, GOSUMDB is never off and no
+// GONOSUMDB, GOPRIVATE or GOINSECURE exempts a module. The one other exemption, a replace to a
+// path, buildCommit refuses before go build (refusePathReplace).
 func toolEnv(stage, proxy string) []string {
 	home := filepath.Join(stage, "home")
 	env := []string{
@@ -663,6 +700,7 @@ func toolEnv(stage, proxy string) []string {
 		"GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"),
 		"GOPROXY=" + proxy,
+		"GOSUMDB=sum.golang.org",
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
 		"GOFLAGS=-mod=readonly -buildvcs=false",
