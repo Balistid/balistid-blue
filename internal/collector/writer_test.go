@@ -1260,3 +1260,23 @@ func TestACommitBeforeAFailureIsNotCountedAgain(t *testing.T) {
 		}
 	}
 }
+
+// An event between a tick's check and its summary's take is stamped by the take and still probed by
+// the next check, which does not stamp the counts the take emptied.
+func TestEventBetweenCheckAndTakeKeepsItsTimesAndProbe(t *testing.T) {
+	l := &Links{}
+	at := func(s int) time.Time { return time.Unix(0, noon).Add(time.Duration(s) * time.Second) }
+	l.check(at(0))
+	l.Connected(1) // after the check, before the take
+	if c := l.take(at(1)); c.count != 1 || c.firstAt != at(1).UnixNano() || c.lastAt != at(1).UnixNano() {
+		t.Fatalf("taken %d events, first_at %d, last_at %d", c.count, c.firstAt, c.lastAt)
+	}
+	if changed, connected := l.check(at(2)); !changed || !connected {
+		t.Fatalf("the next check saw changed %v, connected %v: the new connection gets no probe", changed, connected)
+	}
+	l.Disconnected(nil)
+	l.check(at(3))
+	if c := l.take(at(4)); c.count != 1 || c.firstAt != at(3).UnixNano() || c.lastAt != at(3).UnixNano() {
+		t.Fatalf("taken %d events, first_at %v, last_at %v, want both at %v", c.count, c.firstAt, c.lastAt, at(3).UnixNano())
+	}
+}
