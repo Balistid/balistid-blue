@@ -612,7 +612,7 @@ func TestNoteHealthIsStoredByFlush(t *testing.T) {
 	if err := s.NoteHealth([]byte(`{"schema_version":1,"sensor":"UNKNOWN"}`)); err != nil {
 		t.Fatal(err)
 	}
-	for _, bad := range [][]byte{make([]byte, maxHealthBytes+1), []byte("not json"), []byte(`{"sensor":"OK"}`)} {
+	for _, bad := range [][]byte{make([]byte, MaxHealthBytes+1), []byte("not json"), []byte(`{"sensor":"OK"}`)} {
 		if err := s.NoteHealth(bad); err == nil {
 			t.Fatalf("health record %.20q was queued", bad)
 		}
@@ -814,7 +814,7 @@ func TestQueuedHealthRecordsCountAgainstTheFreeSpace(t *testing.T) {
 	if _, err := s.Flush(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	health := []byte(`{"schema_version":1,"note":"` + strings.Repeat("h", maxHealthBytes-64) + `"}`)
+	health := []byte(`{"schema_version":1,"note":"` + strings.Repeat("h", MaxHealthBytes-64) + `"}`)
 	for range maxHealthQueued {
 		if err := s.NoteHealth(health); err != nil {
 			t.Fatal(err)

@@ -1,11 +1,13 @@
 package collector
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -33,7 +35,8 @@ const (
 	lagBudget    = time.Second
 	healthSchema = 1
 	// maxNotes bounds health records waiting for the store: those handed over but not committed (the
-	// store queues at most 64) and as many again; older ones give way and are counted.
+	// store queues at most 64) and as many again; older ones give way and are counted, except loss and
+	// summary records, of which at most one per stage or kind waits.
 	maxNotes = 128
 )
 
@@ -92,7 +95,8 @@ func (l *Links) Disconnected() {
 }
 
 func (l *Links) add(e linkEvent) {
-	if len(l.events) == maxLinkEvents {
+	if len(l.events) == maxLinkEvents { // the newest stays, so the summary names the last pid and cause
+		l.events[maxLinkEvents-1] = e
 		l.dropped++
 		return
 	}
@@ -145,14 +149,39 @@ type Writer struct {
 	noteSeq     uint64 // numbers every health record, so one sent twice after a failure is seen as one
 	// lost counts records the collector counted lost since start (ADR 0016), including cap drops whose
 	// store loss record a failed Close lost; cap drops the store committed are only in its own loss records.
-	lost      uint64
-	lostNotes uint64 // health records given way in the queue since start
+	lost          uint64
+	lostNotes     uint64 // health records given way in the queue or too large for the store, since start
+	journaledLost uint64 // lostNotes when the journal last said so
+	noteErr       error  // why the store last refused a health record, for the journal
+	conns, refuse tally  // connection events and refusals not yet in a summary record
 }
 
-// note is an encoded health record; loss marks a "lost" record, which never gives way in the queue.
+// note is an encoded health record. Loss and summary records never give way in the queue; n is what
+// they count (losses or events), which the journal reports instead of the record.
 type note struct {
-	b    []byte
-	loss bool
+	b     []byte
+	kind  string
+	stage Stage // of a loss record
+	n     uint64
+}
+
+func (n note) keep() bool { return n.kind == "lost" || n.kind == "connection" || n.kind == "refused" }
+
+// tally sums one kind of event into one summary record per tick, so a flood or a long store outage
+// costs one record and none has to give way.
+type tally struct {
+	kind            string
+	count           uint64
+	firstAt, lastAt int64
+	last            map[string]any    // the newest event's fields
+	causes          map[string]uint64 // connections per cause
+}
+
+func (t *tally) add(n uint64, first, last int64, fields map[string]any) {
+	if t.count == 0 {
+		t.firstAt = first
+	}
+	t.count, t.lastAt, t.last = t.count+n, last, fields
 }
 
 type openResult struct {
@@ -164,6 +193,7 @@ type openResult struct {
 // left and closes the store. tick drives every periodic step.
 func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan struct{}) error {
 	w.pending, w.down, w.opened = map[Stage]Loss{}, "starting", make(chan openResult, 1)
+	w.conns, w.refuse = tally{kind: "connection"}, tally{kind: "refused"}
 	now := w.Now()
 	w.lastStats, w.lastJournal, w.lastRound, w.health = now, now, now, "UNKNOWN starting"
 	w.note(map[string]any{"kind": "started", "info": w.Started})
@@ -222,12 +252,14 @@ func (w *Writer) step(ctx context.Context) {
 	if now.Sub(w.lastStats) >= statsEvery {
 		w.stats(now)
 	}
+	w.summaries(false)
 	w.setHealth()
 	w.writeNotes()
-	if w.st == nil && now.Sub(w.lastJournal) >= time.Minute {
-		w.lastJournal = now
-		w.Log.Warn("store down, draining and counting", "reason", w.down, "lost", w.pending,
-			"lost_records_waiting", w.waitingLosses())
+	// While the store is down, the journal is where losses leave the collector (ADR 0017, point 7).
+	if (w.st == nil || len(w.notes) > 0 || w.lostNotes != w.journaledLost) && now.Sub(w.lastJournal) >= time.Minute {
+		w.Log.Warn("health records wait for the store, counting", "store_down", w.down, "lost", w.pending,
+			"waiting", w.backlog(slices.Concat(w.inflight, w.notes)), "health_given_way", w.lostNotes, "refused_by_store", w.noteErr)
+		w.lastJournal, w.journaledLost, w.noteErr = now, w.lostNotes, nil
 	}
 	if w.st == nil && !w.opening && !now.Before(w.nextOpen) {
 		w.startOpen(ctx)
@@ -303,11 +335,13 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.Log.Error("store failed", "reason", reason, "err", err)
 	// Close commits what the store held, or fails saying it is lost (store.Close): only then is it
 	// counted and handed to the next store, so nothing committed is counted twice.
-	if _, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr == nil {
+	if sealed, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr == nil {
 		w.committed()
 	} else {
+		// A seal that comes with the error holds every record; drops at the cap after the last record and
+		// the health records may be missing from it, so they count as lost at most and are sent again.
 		w.Log.Error("store close failed", "err", cerr)
-		if w.batch.Count > 0 {
+		if len(sealed) == 0 && w.batch.Count > 0 {
 			w.addPending(StageStore, w.batch)
 		}
 		if w.capped.Count > 0 {
@@ -319,14 +353,19 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
 
-// connections notes every connection change and, with probe, sends a probe over a new connection at once.
+// connections counts every connection change and, with probe, sends a probe over a new connection at once.
 func (w *Writer) connections(now time.Time, probe bool) {
 	events, dropped, connected := w.Links.take()
+	at := now.UnixNano()
 	for _, e := range events {
-		w.note(map[string]any{"kind": "connection", "laurel_pid": e.pid, "cause": e.cause})
+		w.conns.add(1, at, at, map[string]any{"laurel_pid": e.pid, "cause": e.cause})
+		if w.conns.causes == nil {
+			w.conns.causes = map[string]uint64{}
+		}
+		w.conns.causes[e.cause]++
 	}
 	if dropped > 0 {
-		w.note(map[string]any{"kind": "connection", "dropped_events": dropped})
+		w.conns.add(uint64(dropped), at, at, w.conns.last)
 	}
 	switch {
 	case !connected:
@@ -371,19 +410,46 @@ func (w *Writer) losses(stop bool) {
 // lossWaiting reports whether a loss record is waiting for the store. One handed over is committed or
 // back among the notes by now: the tick's flush comes first.
 func (w *Writer) lossWaiting() bool {
-	return slices.ContainsFunc(w.notes, func(n note) bool { return n.loss })
+	return slices.ContainsFunc(w.notes, func(n note) bool { return n.kind == "lost" })
 }
 
-// waitingLosses returns the loss records waiting for the store, which a failed Close may have handed
-// back: while the store is down, the journal is where they leave the collector (ADR 0017, point 7).
-func (w *Writer) waitingLosses() []string {
-	var out []string
-	for _, n := range w.notes {
-		if n.loss {
-			out = append(out, string(n.b))
+// summaries turns each tally into one summary record while the store is up and no earlier one of its
+// kind waits for its commit. One that waits is sent again unchanged, never merged, so its note_seq
+// stays the one it may already be stored under. At stop every tally gets its record.
+func (w *Writer) summaries(stop bool) {
+	for _, t := range []*tally{&w.conns, &w.refuse} {
+		waiting := func(n note) bool { return n.kind == t.kind }
+		if t.count == 0 || w.st == nil || !stop && (slices.ContainsFunc(w.notes, waiting) || slices.ContainsFunc(w.inflight, waiting)) {
+			continue
+		}
+		f := map[string]any{"kind": t.kind, "count": t.count, "first_at": t.firstAt, "last_at": t.lastAt}
+		maps.Copy(f, t.last)
+		if t.causes != nil {
+			f["causes"] = t.causes
+		}
+		w.note(f)
+		*t = tally{kind: t.kind}
+	}
+}
+
+// backlog counts, per kind, the events not yet in a summary and the records in notes: the losses a
+// loss record counts (per stage), the events a summary counts, one for any other record. The journal
+// gets these counts, never a record.
+func (w *Writer) backlog(notes []note) map[string]uint64 {
+	b := map[string]uint64{}
+	for _, t := range []*tally{&w.conns, &w.refuse} {
+		if t.count > 0 {
+			b[t.kind] += t.count
 		}
 	}
-	return out
+	for _, n := range notes {
+		k := n.kind
+		if n.stage != "" {
+			k += "_" + string(n.stage)
+		}
+		b[k] += n.n
+	}
+	return b
 }
 
 func (w *Writer) addPending(stage Stage, l Loss) {
@@ -406,9 +472,13 @@ func (w *Writer) stats(now time.Time) {
 		"malformed": c.Malformed, "lost": w.lost, "lost_health": w.lostNotes, "queue_high_water": w.Queue.HighWater(),
 		"max_lag_ms": w.maxLag.Milliseconds()})
 	w.maxLag = 0
+	w.refusals()
+}
+
+// refusals moves the acceptor's count into the writer's tally, for the next summary record.
+func (w *Writer) refusals() {
 	if r := w.Refusals.Take(); r.Count > 0 {
-		w.note(map[string]any{"kind": "refused", "count": r.Count, "first_at": r.First, "last_at": r.Last,
-			"last_uid": r.LastUID, "last_error": r.LastError})
+		w.refuse.add(r.Count, r.First, r.Last, map[string]any{"last_uid": r.LastUID, "last_error": r.LastError})
 	}
 }
 
@@ -449,16 +519,27 @@ func (w *Writer) note(fields map[string]any) {
 	fields["at"] = w.Now().UnixNano()
 	fields["note_seq"] = w.noteSeq
 	b, err := json.Marshal(fields)
+	kind, _ := fields["kind"].(string)
 	if err != nil {
-		w.Log.Error("health record not encoded", "err", err)
+		w.Log.Error("health record not encoded", "kind", kind, "err", err)
 		return
 	}
-	w.requeue(nil, note{b, fields["kind"] == "lost"})
+	if len(b) > store.MaxHealthBytes { // the store refuses it: waiting would block every record after it
+		w.lostNotes++
+		w.Log.Error("health record too large for the store", "kind", kind, "bytes", len(b))
+		return
+	}
+	n := note{b: b, kind: kind, n: 1}
+	n.stage, _ = fields["stage"].(Stage)
+	if c, ok := fields["count"].(uint64); ok {
+		n.n = c
+	}
+	w.requeue(nil, n)
 }
 
 // requeue puts health records back ahead of those waiting, oldest first, and then appends more; past
-// maxNotes the oldest give way, counted and logged. A loss record gives way only to other loss records,
-// which losses keeps from filling the queue.
+// maxNotes the oldest give way, counted. Loss and summary records give way only to each other, and
+// losses and summaries keep them from filling the queue.
 func (w *Writer) requeue(first []note, more ...note) {
 	w.notes = append(append(append([]note(nil), first...), w.notes...), more...)
 	over := len(w.notes) - maxNotes
@@ -466,10 +547,9 @@ func (w *Writer) requeue(first []note, more ...note) {
 		return
 	}
 	w.lostNotes += uint64(over)
-	w.Log.Warn("health records dropped while the store cannot take them", "dropped", w.lostNotes)
 	keep := w.notes[:0]
 	for _, n := range w.notes {
-		if over > 0 && !n.loss {
+		if over > 0 && !n.keep() {
 			over--
 			continue
 		}
@@ -478,14 +558,15 @@ func (w *Writer) requeue(first []note, more ...note) {
 	w.notes = keep[over:]
 }
 
-// writeNotes hands health records to the store; the store keeps at most 64, so the rest wait.
+// writeNotes hands health records to the store; the store keeps at most 64, so the rest wait, which the
+// journal says once a minute (step).
 func (w *Writer) writeNotes() {
 	if w.st == nil {
 		return
 	}
 	for len(w.notes) > 0 {
 		if err := w.st.NoteHealth(w.notes[0].b); err != nil {
-			w.Log.Warn("health record waits", "err", err)
+			w.noteErr = err
 			return
 		}
 		w.inflight = append(w.inflight, w.notes[0])
@@ -500,41 +581,47 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.cancelOpen() // the open goroutine is the writer's: stop it and wait for it
 		w.openDone(<-w.opened)
 	}
+	up := w.st != nil
 	w.appendQueued(ctx)
+	w.connections(w.Now(), false)
+	w.refusals()
+	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it
 	if w.st == nil {
 		for _, r := range w.Queue.Drain() {
 			w.Losses.Add(StageShutdown, r)
 		}
-		w.Log.Warn("stopped with the store down", "lost", w.Losses.Take(), "pending", w.pending)
-		for _, n := range w.notes {
-			w.Log.Warn("health record not stored at stop", "record", string(n.b))
+		w.Log.Warn("stopped with the store down", "lost", w.Losses.Take(), "pending", w.pending,
+			"not_stored", w.backlog(w.notes))
+		if up {
+			return errors.New("collector: the store failed at stop")
 		}
 		return nil
 	}
-	w.connections(w.Now(), false)
 	w.losses(true)
+	w.summaries(true)
 	w.note(map[string]any{"kind": "stopping"})
 	// The store takes a bounded number of health records and this is the last hand-over: loss records go
-	// first, so a backlog gives way in the journal rather than a loss. Each record keeps its note_seq.
-	slices.SortStableFunc(w.notes, func(a, b note) int {
-		if a.loss == b.loss {
+	// first, then summaries, so a backlog gives way in the journal rather than a loss. Each keeps its note_seq.
+	rank := func(n note) int {
+		switch {
+		case n.kind == "lost":
 			return 0
+		case n.keep():
+			return 1
 		}
-		if a.loss {
-			return -1
-		}
-		return 1
-	})
-	w.writeNotes()
-	for _, n := range w.notes {
-		w.Log.Warn("health record not stored at stop", "record", string(n.b))
+		return 2
 	}
-	if _, err := w.st.Close(ctx); err != nil {
-		w.Log.Error("store close failed at stop: these may be lost", "records", w.batch, "cap_dropped", w.capped,
-			"health_records", len(w.inflight), "err", err)
-		for _, n := range w.inflight {
-			w.Log.Warn("health record not committed at stop", "record", string(n.b))
+	slices.SortStableFunc(w.notes, func(a, b note) int { return cmp.Compare(rank(a), rank(b)) })
+	w.writeNotes()
+	if len(w.notes) > 0 {
+		w.Log.Warn("health records not stored at stop", "not_stored", w.backlog(w.notes))
+	}
+	if sealed, err := w.st.Close(ctx); err != nil {
+		if len(sealed) > 0 { // the seal holds every record; what it may not hold is below
+			w.batch = Loss{}
 		}
+		w.Log.Error("store close failed at stop: these may be lost", "records", w.batch, "cap_dropped", w.capped,
+			"health_records", w.backlog(w.inflight), "err", err)
 		return fmt.Errorf("collector: close store: %w", err)
 	}
 	return nil
