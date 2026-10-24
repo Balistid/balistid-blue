@@ -34,6 +34,8 @@ type fakeStore struct {
 	block                    chan struct{} // Append waits on it when set
 	onFlush                  func()        // runs inside Flush, as a slow commit would
 	noteCap                  int           // NoteHealth refuses past this many queued, as the store's 64; 0 is none
+	flushErr                 bool          // Flush fails and keeps what it holds, for Close
+	closeSealErr             bool          // the next Close commits what it holds, then fails with the seal
 	closed                   int
 }
 
@@ -82,6 +84,9 @@ func (s *fakeStore) Flush(context.Context) ([]store.Seal, error) {
 		s.lose()
 		return nil, errors.New("fsync failed")
 	}
+	if s.flushErr {
+		return nil, errors.New("flush failed")
+	}
 	s.commit()
 	if s.commitThenFail {
 		s.commitThenFail = false
@@ -104,8 +109,8 @@ func (s *fakeStore) commit() {
 func (s *fakeStore) NoteHealth(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap {
-		return errors.New("64 health records queued")
+	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap || len(b) > store.MaxHealthBytes {
+		return errors.New("64 health records queued or too large")
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
@@ -126,6 +131,10 @@ func (s *fakeStore) Close(context.Context) ([]store.Seal, error) {
 		return nil, errors.New("close failed")
 	}
 	s.commit()
+	if s.closeSealErr {
+		s.closeSealErr = false
+		return []store.Seal{{Name: "00000000000000000002.db"}}, errors.New("sealed, but the flush before failed")
+	}
 	return nil, nil
 }
 
@@ -456,21 +465,37 @@ func TestStartRestartReexecToldApart(t *testing.T) {
 	l := &Links{}
 	for _, pid := range []int{10, 10, 11} {
 		l.Connected(pid)
-		l.Disconnected()
+		l.Disconnected(nil)
 	}
-	events, dropped, connected := l.take()
-	var causes []string
-	for _, e := range events {
-		causes = append(causes, e.cause)
+	l.Disconnected(errors.New("connection reset"))
+	_, connected := l.check(time.Now())
+	c := l.take(time.Now())
+	if fmt.Sprint(c.causes) != "map[collector-start:1 eof:3 laurel-restart:1 read-error:1 reconnect:1]" || connected {
+		t.Fatalf("causes %v, connected %v", c.causes, connected)
 	}
-	if strings.Join(causes, " ") != "collector-start eof reconnect eof laurel-restart eof" || dropped != 0 || connected {
-		t.Fatalf("causes %v, dropped %d, connected %v", causes, dropped, connected)
+	if fmt.Sprint(c.pids["eof"]) != "map[10:2 11:1]" || c.lastPID != 11 || c.lastCause != "read-error" {
+		t.Fatalf("pids %v, last %d %s", c.pids, c.lastPID, c.lastCause)
 	}
-	for range maxLinkEvents + 3 {
-		l.Connected(12)
+}
+
+// More connection changes between two ticks than pids kept are all counted, by cause.
+func TestLinksCountEveryChangeBetweenTwoTicks(t *testing.T) {
+	l := &Links{}
+	const pairs = 3 * maxLinkPIDs
+	for pid := range pairs {
+		l.Connected(100 + pid)
+		l.Disconnected(nil)
 	}
-	if events, dropped, _ := l.take(); len(events) != maxLinkEvents || dropped != 3 {
-		t.Fatalf("kept %d events, dropped %d", len(events), dropped)
+	c := l.take(time.Now())
+	var listed uint64
+	for _, m := range c.pids {
+		for _, n := range m {
+			listed += n
+		}
+	}
+	if c.causes["laurel-restart"] != pairs-1 || c.causes["eof"] != pairs || listed+c.pidsDropped != 2*pairs ||
+		len(c.pids["eof"]) != maxLinkPIDs || c.lastPID != 100+pairs-1 {
+		t.Fatalf("causes %v, %d listed, %d dropped, %d eof pids, last %d", c.causes, listed, c.pidsDropped, len(c.pids["eof"]), c.lastPID)
 	}
 }
 
@@ -490,7 +515,7 @@ func TestEOFUnknownUntilProbeOnTheNextConnection(t *testing.T) {
 	if health(r) != "OK" {
 		t.Fatalf("health %q after the probe was stored", health(r))
 	}
-	r.w.Links.Disconnected()
+	r.w.Links.Disconnected(nil)
 	r.step(0)
 	if health(r) != "UNKNOWN laurel-disconnected" {
 		t.Fatalf("health %q after EOF", health(r))
@@ -765,14 +790,14 @@ func TestStopStoresLossesSummedBehindAWaitingRecord(t *testing.T) {
 // The queue stays bounded: other records give way first, loss records only to newer loss records.
 func TestRequeueBoundGivesWayToLossRecordsLast(t *testing.T) {
 	w := &Writer{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	w.requeue(nil, note{b: []byte("loss 0"), loss: true}, note{b: []byte("other")})
+	w.requeue(nil, note{b: []byte("loss 0"), kind: "lost"}, note{b: []byte("other")})
 	for i := range maxNotes - 1 {
-		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), loss: true})
+		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), kind: "lost"})
 	}
 	if len(w.notes) != maxNotes || w.lostNotes != 1 || string(w.notes[0].b) != "loss 0" {
 		t.Fatalf("%d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
-	w.requeue(nil, note{b: []byte("loss 128"), loss: true})
+	w.requeue(nil, note{b: []byte("loss 128"), kind: "lost"})
 	if len(w.notes) != maxNotes || w.lostNotes != 2 || string(w.notes[0].b) != "loss 1" {
 		t.Fatalf("only loss records: %d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
@@ -809,7 +834,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0) // Flush and Close fail: the record comes back, the store is down
 	r.step(time.Minute)
-	minute := strings.Count(j.String(), "first_seq")
+	minute := strings.Count(j.String(), "lost_waiting=\"map[queue:[{Count:1 Bytes:7 FirstSeq:21 LastSeq:21")
 	if minute == 0 {
 		t.Fatalf("no loss record in the journal while the store is down:\n%s", j)
 	}
@@ -818,7 +843,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.done <- nil
-	if n := strings.Count(j.String(), "first_seq"); n <= minute {
+	if n := strings.Count(j.String(), "lost_not_stored=\"map[queue:[{Count:1 Bytes:7 FirstSeq:21 LastSeq:21"); n == 0 {
 		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
 	}
 }
@@ -1019,7 +1044,7 @@ func TestStoppedCanaryRecordsTurnUnknown(t *testing.T) {
 // reopenAfterFailure lets the failed store's writer open a working one.
 func reopenAfterFailure(r *rig) {
 	r.t.Helper()
-	r.st.set(func(s *fakeStore) { s.failFlush, s.failClose = false, false })
+	r.st.set(func(s *fakeStore) { s.failFlush, s.failClose, s.flushErr, s.closeSealErr = false, false, false, false })
 	r.opens <- nil
 	r.step(ReopenEvery)
 	for range 50 {
@@ -1142,7 +1167,7 @@ func TestCloseFailureAtStopIsReported(t *testing.T) {
 	r.done <- nil
 	mu.Lock()
 	defer mu.Unlock()
-	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "Count:1") {
+	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "stopping:1") {
 		t.Fatalf("Run = %v, log:\n%s", err, log.String())
 	}
 }
@@ -1233,5 +1258,25 @@ func TestACommitBeforeAFailureIsNotCountedAgain(t *testing.T) {
 				t.Fatalf("%s: health record %v committed %d times", name, seq, n)
 			}
 		}
+	}
+}
+
+// An event between a tick's check and its summary's take is stamped by the take and still probed by
+// the next check, which does not stamp the counts the take emptied.
+func TestEventBetweenCheckAndTakeKeepsItsTimesAndProbe(t *testing.T) {
+	l := &Links{}
+	at := func(s int) time.Time { return time.Unix(0, noon).Add(time.Duration(s) * time.Second) }
+	l.check(at(0))
+	l.Connected(1) // after the check, before the take
+	if c := l.take(at(1)); c.count != 1 || c.firstAt != at(1).UnixNano() || c.lastAt != at(1).UnixNano() {
+		t.Fatalf("taken %d events, first_at %d, last_at %d", c.count, c.firstAt, c.lastAt)
+	}
+	if changed, connected := l.check(at(2)); !changed || !connected {
+		t.Fatalf("the next check saw changed %v, connected %v: the new connection gets no probe", changed, connected)
+	}
+	l.Disconnected(nil)
+	l.check(at(3))
+	if c := l.take(at(4)); c.count != 1 || c.firstAt != at(3).UnixNano() || c.lastAt != at(3).UnixNano() {
+		t.Fatalf("taken %d events, first_at %v, last_at %v, want both at %v", c.count, c.firstAt, c.lastAt, at(3).UnixNano())
 	}
 }
