@@ -217,7 +217,15 @@ func requireExportModule(goTool toolFunc, src string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("read go.mod: %w", err)
 	}
-	if got, want := strings.TrimSuffix(out.String(), "\n"), filepath.Join(src, "go.mod"); got != want {
+	// go names the module file under the real path of its working directory (goEnv sets no PWD),
+	// and the cache may be reached through a symbolic link, so the export's file is compared by its
+	// real path too. A missing go.mod in the export fails here.
+	got := strings.TrimSuffix(out.String(), "\n")
+	want, err := filepath.EvalSymlinks(filepath.Join(src, "go.mod"))
+	if err != nil {
+		return fmt.Errorf("read go.mod: go in the export uses the module file %q, not the export's own: %w", got, err)
+	}
+	if got != want {
 		return fmt.Errorf("read go.mod: go in the export uses the module file %q, not the export's own", got)
 	}
 	return nil

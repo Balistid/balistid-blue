@@ -34,9 +34,9 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
    no symlink, submodule, `..` or `.git`. Every file is created (never opened if it exists) with mode
    0644 or 0755. Pack size, listing size, entry count, file size, export size, path length and depth
    are capped (R5).
-4. Every tool runs in the export with one fixed environment, caches in the build directory,
-   `-buildvcs=false` and no git repository above it (the build directory sits inside the
-   maintainer's home repository).
+4. Every tool runs in the export with one fixed environment (go also without the caller's proxy variables, and only
+   with the export's own go.mod; amended by ADR 0022), caches in the build directory,
+   `-buildvcs=false` and no git repository above it (the build directory sits inside the maintainer's home repository).
 
 ## Alternatives considered
 
