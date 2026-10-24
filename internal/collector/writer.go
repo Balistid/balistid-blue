@@ -128,7 +128,7 @@ func (l *Links) check(at time.Time) (bool, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	changed := l.changed
-	if changed {
+	if changed && l.counts.count > 0 { // a take since then left nothing to mark
 		l.mark(at)
 	}
 	l.changed = false
