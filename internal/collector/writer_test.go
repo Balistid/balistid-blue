@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1149,7 +1150,7 @@ func TestCloseFailureAtStopIsReported(t *testing.T) {
 	r.st.mu.Lock()
 	committed := len(r.st.committed)
 	r.st.mu.Unlock()
-	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || committed != 1 && !strings.Contains(log.String(), "Count:1") {
+	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || committed != 1 || !strings.Contains(log.String(), `records="{Count:0`) {
 		t.Fatalf("Run = %v, %d committed, log:\n%s", err, committed, log.String())
 	}
 }
@@ -1164,11 +1165,54 @@ func TestAFlushFailureAtStopIsReported(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.push(event(51, ""))
 	time.Sleep(50 * time.Millisecond)
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped"))) // counted at stop
 	close(r.stop)
 	err := <-r.done
 	r.done <- nil
-	if err == nil || !strings.Contains(j.String(), "may be lost") || !strings.Contains(j.String(), "Count:1") {
-		t.Fatalf("Run = %v, log:\n%s", err, j.String())
+	if err == nil || !strings.Contains(err.Error(), "store failed at stop") || !strings.Contains(j.String(), `kind\":\"lost\"`) {
+		t.Fatalf("Run = %v; the loss counted at stop must reach the journal, log:\n%s", err, j.String())
+	}
+}
+
+func TestLossRecordsOutlastConnectionRecordsInAFullQueue(t *testing.T) {
+	w := &Writer{Log: slog.New(slog.NewTextHandler(&journal{}, nil))}
+	w.notes = append(w.notes, note{b: []byte(`{"kind":"lost"}`), loss: true})
+	for range maxNotes {
+		w.requeue(nil, note{b: []byte(`{"kind":"connection"}`), conn: true})
+	}
+	if !w.lossWaiting() {
+		t.Fatal("a loss record gave way to connection records")
+	}
+	w.requeue(nil, note{b: []byte(`{"kind":"stats"}`)})
+	if slices.ContainsFunc(w.notes, func(n note) bool { return !n.conn && !n.loss }) || !w.lossWaiting() {
+		t.Fatal("an ordinary record must give way first, in a queue of connection and loss records")
+	}
+}
+
+func TestARefusalOutlastsAReconnectFlood(t *testing.T) {
+	r := newRig(t)
+	r.start(errors.New("no disk"))
+	r.settle()
+	for pid := range maxNotes + 2 {
+		connect(r, 2000+pid)
+		r.step(0)
+	}
+	r.w.Refusals.add(time.Unix(0, noon), 4343, errors.New("peer refused"))
+	r.step(statsEvery)
+	r.opens <- nil
+	r.step(ReopenEvery)
+	r.settle()
+	for range 4 {
+		r.step(0)
+	}
+	found := false
+	for _, n := range r.st.kinds("refused") {
+		if n["last_uid"] == float64(4343) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the refusal of uid 4343 gave way to reconnect records")
 	}
 }
 
@@ -1303,6 +1347,10 @@ func TestConnectionRecordsThatMustGiveWayReachTheJournal(t *testing.T) {
 	}
 	if !strings.Contains(j.String(), `laurel_pid\":1000`) {
 		t.Fatal("the oldest reconnect gave way without a trace in the journal")
+	}
+	r.step(time.Minute)
+	if !strings.Contains(j.String(), "connection_records_waiting") {
+		t.Fatal("the minute journal line does not list the waiting connection records")
 	}
 }
 

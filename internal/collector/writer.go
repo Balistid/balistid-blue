@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -150,7 +151,8 @@ type Writer struct {
 }
 
 // note is an encoded health record. In a full queue a "lost" record gives way last and a "connection"
-// record (a reconnect is a loss the collector cannot count, T25) before it; either goes to the journal then.
+// or "refused" record before it (a reconnect is a loss the collector cannot count, T25; a refusal names
+// the peer, T2); either goes to the journal then. conn marks both of those.
 type note struct {
 	b    []byte
 	loss bool
@@ -472,7 +474,7 @@ func (w *Writer) note(fields map[string]any) {
 		w.Log.Warn("health record too large for the store, kept here only", "record", string(b))
 		return
 	}
-	w.requeue(nil, note{b, fields["kind"] == "lost", fields["kind"] == "connection"})
+	w.requeue(nil, note{b, fields["kind"] == "lost", fields["kind"] == "connection" || fields["kind"] == "refused"})
 }
 
 // requeue puts health records back ahead of those waiting, oldest first, and then appends more; past
@@ -485,14 +487,14 @@ func (w *Writer) requeue(first []note, more ...note) {
 		return
 	}
 	w.lostNotes += uint64(over)
-	w.Log.Warn("health records dropped while the store cannot take them", "dropped", w.lostNotes)
+	var kept []string // what gave way of rank 1 or more: the journal is its only copy now
 	for rank := 0; over > 0; rank++ {
 		keep := w.notes[:0]
 		for _, n := range w.notes {
 			if over > 0 && n.rank() == rank {
 				over--
 				if rank > 0 {
-					w.Log.Warn("health record given way, kept here only", "record", string(n.b))
+					kept = append(kept, string(n.b))
 				}
 				continue
 			}
@@ -500,6 +502,7 @@ func (w *Writer) requeue(first []note, more ...note) {
 		}
 		w.notes = keep
 	}
+	w.Log.Warn("health records dropped while the store cannot take them", "dropped", w.lostNotes, "records", kept)
 }
 
 // writeNotes hands health records to the store; the store keeps at most 64, so the rest wait.
@@ -525,6 +528,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.openDone(<-w.opened)
 	}
 	w.appendQueued(ctx)
+	w.connections(w.Now(), false) // a reconnect since the last tick is noted, the store up or down
 	if w.st == nil {
 		for _, r := range w.Queue.Drain() {
 			w.Losses.Add(StageShutdown, r)
@@ -535,20 +539,12 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		}
 		return nil
 	}
-	w.connections(w.Now(), false)
 	w.losses(true)
 	w.note(map[string]any{"kind": "stopping"})
 	// The store takes a bounded number of health records and this is the last hand-over: loss records go
-	// first, so a backlog gives way in the journal rather than a loss. Each record keeps its note_seq.
-	slices.SortStableFunc(w.notes, func(a, b note) int {
-		if a.loss == b.loss {
-			return 0
-		}
-		if a.loss {
-			return -1
-		}
-		return 1
-	})
+	// first, then connection and refusal records, so a backlog gives way in the journal rather than a
+	// loss. Each record keeps its note_seq.
+	slices.SortStableFunc(w.notes, func(a, b note) int { return cmp.Compare(b.rank(), a.rank()) })
 	w.flush(ctx)     // the store's own queue may be full of notes handed over earlier: commit them first
 	if w.st == nil { // the flush failed and fail() closed the store, counting what it had not committed
 		w.Log.Error("store failed at stop: these may be lost", "pending", w.pending)
