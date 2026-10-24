@@ -1449,6 +1449,21 @@ func TestBuildDoesNotRefuseAVersionReplace(t *testing.T) {
 	}
 }
 
+// A cache reached through a symbolic link (a linked ~/.cache or XDG_CACHE_HOME) builds: go names
+// the export's go.mod by its real path, and the module check accepts that spelling.
+func TestBuildThroughASymlinkedCache(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	cache := filepath.Join(t.TempDir(), "cache")
+	if err := os.Symlink(t.TempDir(), cache); err != nil {
+		t.Fatal(err)
+	}
+	log, err := buildInCache(t, cache, root, commit, fileProxy(t, zipped))
+	if err == nil || !strings.Contains(err.Error(), "image file") {
+		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
 // T34: an export without a go.mod would make go use one above the stage, which an agent at the
 // same uid can plant, and compile host files into the guest. The build refuses it before go build
 // runs; the planted package does not compile, so a go build that ran fails the guest build instead.
