@@ -49,67 +49,47 @@ type Store interface {
 	Close(ctx context.Context) ([]store.Seal, error)
 }
 
-// maxLinkPIDs bounds the distinct pids kept per cause between two summary records; the events of
-// further pids are counted in pidsDropped.
+// maxLinkPIDs bounds the distinct pids kept per cause until a summary record takes the counts; the
+// events of further pids are counted in pidsDropped.
 const maxLinkPIDs = 16
 
-// linkCounts counts connection events per cause and per pid (ADR 0017, point 4), so a flood between
-// two summary records is counted whole in bounded memory.
+// linkCounts counts connection events per cause and per pid (ADR 0017, point 4) until a summary
+// record takes them, so a flood or a long store outage is counted whole in bounded memory.
 type linkCounts struct {
-	causes      map[string]uint64
-	pids        map[string]map[int]uint64
-	pidsDropped uint64
-	lastPID     int
-	lastCause   string
+	count           uint64
+	firstAt, lastAt int64 // the ticks that first and last saw an event
+	causes          map[string]uint64
+	pids            map[string]map[int]uint64
+	pidsDropped     uint64
+	lastPID         int
+	lastCause       string
 }
 
-func (c *linkCounts) add(cause string, pid int, n uint64) {
+func (c *linkCounts) add(cause string, pid int) {
 	if c.causes == nil {
-		c.causes = map[string]uint64{}
+		c.causes, c.pids = map[string]uint64{}, map[string]map[int]uint64{}
 	}
-	c.causes[cause] += n
-	c.addPID(cause, pid, n)
+	c.count++
+	c.causes[cause]++
 	c.lastPID, c.lastCause = pid, cause
-}
-
-func (c *linkCounts) addPID(cause string, pid int, n uint64) {
-	if c.pids == nil {
-		c.pids = map[string]map[int]uint64{}
-	}
 	m := c.pids[cause]
 	if m == nil {
 		m = map[int]uint64{}
 		c.pids[cause] = m
 	}
 	if _, ok := m[pid]; ok || len(m) < maxLinkPIDs {
-		m[pid] += n
+		m[pid]++
 		return
 	}
-	c.pidsDropped += n
+	c.pidsDropped++
 }
 
-// merge adds o, counted later, to c.
-func (c *linkCounts) merge(o linkCounts) {
-	if c.causes == nil {
-		c.causes = map[string]uint64{}
-	}
-	for cause, n := range o.causes {
-		c.causes[cause] += n
-	}
-	for cause, m := range o.pids {
-		for pid, n := range m {
-			c.addPID(cause, pid, n)
-		}
-	}
-	c.pidsDropped += o.pidsDropped
-	c.lastPID, c.lastCause = o.lastPID, o.lastCause
-}
-
-// Links tracks Laurel's connections as the reader sees them, for the writer's health records; every
-// change is counted until the writer takes it, so two changes between ticks are both recorded.
+// Links tracks Laurel's connections as the reader sees them, for the writer's health records: it counts
+// every change until a summary record takes the counts, and says each tick whether one happened.
 type Links struct {
 	mu        sync.Mutex
 	counts    linkCounts
+	changed   bool // since the last check
 	connected bool
 	started   bool
 	lastPID   int
@@ -127,29 +107,58 @@ func (l *Links) Connected(pid int) {
 	case pid != l.lastPID:
 		cause = "laurel-restart"
 	}
-	l.started, l.connected, l.lastPID = true, true, pid
-	l.counts.add(cause, pid, 1)
+	l.started, l.connected, l.lastPID, l.changed = true, true, pid, true
+	l.counts.add(cause, pid)
 }
 
 // Disconnected records the end of the connection being read: EOF, or the read error that ended it.
 func (l *Links) Disconnected(err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.connected = false
 	cause := "eof"
 	if err != nil {
 		cause = "read-error"
 	}
-	l.counts.add(cause, l.lastPID, 1)
+	l.connected, l.changed = false, true
+	l.counts.add(cause, l.lastPID)
 }
 
-// take returns the counts since the last take and whether a connection is open.
-func (l *Links) take() (linkCounts, bool) {
+// check reports whether a connection changed since the last check, which at marks, and whether one is open.
+func (l *Links) check(at time.Time) (bool, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	changed := l.changed
+	if changed {
+		l.mark(at)
+	}
+	l.changed = false
+	return changed, l.connected
+}
+
+func (l *Links) mark(at time.Time) {
+	if l.counts.firstAt == 0 {
+		l.counts.firstAt = at.UnixNano()
+	}
+	l.counts.lastAt = at.UnixNano()
+}
+
+// waiting returns how many events the counts hold.
+func (l *Links) waiting() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.counts.count
+}
+
+// take returns the counts for a summary record at and starts them afresh.
+func (l *Links) take(at time.Time) linkCounts {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.changed { // events after the last check, which still gets to probe for them
+		l.mark(at)
+	}
 	c := l.counts
 	l.counts = linkCounts{}
-	return c, l.connected
+	return c
 }
 
 // Writer owns the store (ADR 0013): it is the only goroutine that calls it. It appends what the reader
@@ -193,7 +202,7 @@ type Writer struct {
 	lostNotes     uint64 // health records given way in the queue or too large for the store, since start
 	journaledLost uint64 // lostNotes when the journal last said so
 	noteErr       error  // why the store last refused a health record, for the journal
-	conns, refuse tally  // connection events and refusals not yet in a summary record
+	refuse        tally  // refusals not yet in a summary record
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what
@@ -208,14 +217,12 @@ type note struct {
 
 func (n note) keep() bool { return n.kind == "lost" || n.kind == "connection" || n.kind == "refused" }
 
-// tally sums one kind of event into one summary record per tick, so a flood or a long store outage
-// costs one record and none has to give way.
+// tally sums refusals into one summary record per tick, so a flood or a long store outage costs one
+// record and none has to give way.
 type tally struct {
-	kind            string
 	count           uint64
 	firstAt, lastAt int64
-	last            map[string]any // refusals: the newest uid and error
-	links           linkCounts     // connections
+	last            map[string]any // the newest uid and error
 }
 
 func (t *tally) add(n uint64, first, last int64, fields map[string]any) {
@@ -234,7 +241,6 @@ type openResult struct {
 // left and closes the store. tick drives every periodic step.
 func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan struct{}) error {
 	w.pending, w.down, w.opened = map[Stage]Loss{}, "starting", make(chan openResult, 1)
-	w.conns, w.refuse = tally{kind: "connection"}, tally{kind: "refused"}
 	now := w.Now()
 	w.lastStats, w.lastJournal, w.lastRound, w.health = now, now, now, "UNKNOWN starting"
 	w.note(map[string]any{"kind": "started", "info": w.Started})
@@ -395,22 +401,13 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
 
-// connections counts every connection change and, with probe, sends a probe over a new connection at once.
+// connections follows the connection state and, with probe, sends a probe over a new connection at once.
 func (w *Writer) connections(now time.Time, probe bool) {
-	c, connected := w.Links.take()
-	var n uint64
-	for _, k := range c.causes {
-		n += k
-	}
-	if n > 0 {
-		at := now.UnixNano()
-		w.conns.add(n, at, at, nil)
-		w.conns.links.merge(c)
-	}
+	changed, connected := w.Links.check(now)
 	switch {
 	case !connected:
 		w.connectedAt = time.Time{}
-	case n > 0: // a new connection: only a probe sent after it proves it
+	case changed: // a new connection: only a probe sent after it proves it
 		w.connectedAt = now
 		if probe {
 			w.Canary.Probe(now, false)
@@ -456,22 +453,25 @@ func (w *Writer) lossWaiting() bool {
 	return slices.ContainsFunc(w.notes, func(n note) bool { return n.kind == "lost" })
 }
 
-// summaries turns each tally into one summary record while the store is up and no earlier one of its
-// kind waits for its commit. One that waits is sent again unchanged, never merged, so its note_seq
-// stays the one it may already be stored under. At stop every tally gets its record.
+// summaries turns the connection counts and the refusal tally into one summary record each while the
+// store is up and no earlier one of its kind waits for its commit. One that waits is sent again
+// unchanged, never merged, so its note_seq stays the one it may already be stored under; the counts
+// keep adding up meanwhile. At stop each gets its record.
 func (w *Writer) summaries(stop bool) {
-	for _, t := range []*tally{&w.conns, &w.refuse} {
-		// One handed over is committed or back among the notes by now: the tick's flush comes first.
-		if t.count == 0 || w.st == nil || !stop && slices.ContainsFunc(w.notes, func(n note) bool { return n.kind == t.kind }) {
-			continue
-		}
-		f := map[string]any{"kind": t.kind, "count": t.count, "first_at": t.firstAt, "last_at": t.lastAt}
+	// One handed over is committed or back among the notes by now: the tick's flush comes first.
+	free := func(kind string) bool {
+		return w.st != nil && (stop || !slices.ContainsFunc(w.notes, func(n note) bool { return n.kind == kind }))
+	}
+	if w.Links.waiting() > 0 && free("connection") {
+		c := w.Links.take(w.Now())
+		w.note(map[string]any{"kind": "connection", "count": c.count, "first_at": c.firstAt, "last_at": c.lastAt,
+			"causes": c.causes, "pids": c.pids, "pids_dropped": c.pidsDropped, "laurel_pid": c.lastPID, "cause": c.lastCause})
+	}
+	if t := w.refuse; t.count > 0 && free("refused") {
+		f := map[string]any{"kind": "refused", "count": t.count, "first_at": t.firstAt, "last_at": t.lastAt}
 		maps.Copy(f, t.last)
-		if c := t.links; c.causes != nil {
-			f["causes"], f["pids"], f["pids_dropped"], f["laurel_pid"], f["cause"] = c.causes, c.pids, c.pidsDropped, c.lastPID, c.lastCause
-		}
 		w.note(f)
-		*t = tally{kind: t.kind}
+		w.refuse = tally{}
 	}
 }
 
@@ -480,10 +480,11 @@ func (w *Writer) summaries(stop bool) {
 // per stage the loss of every loss record among notes (ADR 0017, point 7).
 func (w *Writer) backlog(notes []note) (map[string]uint64, map[Stage][]Loss) {
 	counts, losses := map[string]uint64{}, map[Stage][]Loss{}
-	for _, t := range []*tally{&w.conns, &w.refuse} {
-		if t.count > 0 {
-			counts[t.kind] += t.count
-		}
+	if n := w.Links.waiting(); n > 0 {
+		counts["connection"] = n
+	}
+	if w.refuse.count > 0 {
+		counts["refused"] = w.refuse.count
 	}
 	for _, n := range notes {
 		if n.kind == "lost" {

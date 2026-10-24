@@ -220,7 +220,7 @@ func TestReadOneCountsHowTheConnectionEnded(t *testing.T) {
 		if name == "read fails" {
 			want = "map[collector-start:1 read-error:1]"
 		}
-		if c, _ := links.take(); fmt.Sprint(c.causes) != want {
+		if c := links.take(time.Now()); fmt.Sprint(c.causes) != want {
 			t.Fatalf("%s: causes %v, want %s", name, c.causes, want)
 		}
 	}

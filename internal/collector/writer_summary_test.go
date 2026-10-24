@@ -338,3 +338,38 @@ func TestStopJournalsTheLossRecordsNotStored(t *testing.T) {
 		}
 	}
 }
+
+// While a summary waits, the counts for the next one add up across ticks under one bound: a pid already
+// listed keeps its own count however many other pids came in the same tick.
+func TestListedPidKeepsItsCountAcrossTicks(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	connect(r, 7)
+	r.step(0) // its summary waits for the store
+	connect(r, 1)
+	r.w.Links.Disconnected(nil)
+	r.step(0)
+	for pid := 100; pid < 100+maxLinkPIDs; pid++ {
+		connect(r, pid)
+		r.w.Links.Disconnected(nil)
+	}
+	connect(r, 1)
+	r.w.Links.Disconnected(nil)
+	r.step(0)
+	r.st.set(func(s *fakeStore) { s.rejectNote = false })
+	r.step(0) // the waiting summary is handed over
+	r.step(0) // and committed; the next one is handed over
+	r.step(0)
+	conns := r.st.kinds("connection")
+	if len(conns) != 2 {
+		t.Fatalf("connection records %v", conns)
+	}
+	c := conns[1]
+	pids := c["pids"].(map[string]any)
+	eof, restart := pids["eof"].(map[string]any), pids["laurel-restart"].(map[string]any)
+	if c["count"] != 36.0 || eof["1"] != 2.0 || restart["1"] != 2.0 || c["pids_dropped"] != 2.0 || len(eof) != maxLinkPIDs {
+		t.Fatalf("summary %v", c)
+	}
+}
