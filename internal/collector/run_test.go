@@ -76,7 +76,7 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 	if n := len(st.appended) + len(st.committed); n != 50 || st.closed != 1 || len(st.kinds("stopping")) != 1 {
 		t.Fatalf("stored %d of 50 lines, closed %d", n, st.closed)
 	}
-	if conns := st.kinds("connection"); len(conns) == 0 || conns[0]["cause"] != "collector-start" {
+	if conns := st.kinds("connection"); len(conns) == 0 || conns[0]["causes"].(map[string]any)["collector-start"] != 1.0 {
 		t.Fatalf("connection records %v", conns)
 	}
 }

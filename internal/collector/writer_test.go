@@ -34,6 +34,8 @@ type fakeStore struct {
 	block                    chan struct{} // Append waits on it when set
 	onFlush                  func()        // runs inside Flush, as a slow commit would
 	noteCap                  int           // NoteHealth refuses past this many queued, as the store's 64; 0 is none
+	flushErr                 bool          // Flush fails and keeps what it holds, for Close
+	closeSealErr             bool          // the next Close commits what it holds, then fails with the seal
 	closed                   int
 }
 
@@ -82,6 +84,9 @@ func (s *fakeStore) Flush(context.Context) ([]store.Seal, error) {
 		s.lose()
 		return nil, errors.New("fsync failed")
 	}
+	if s.flushErr {
+		return nil, errors.New("flush failed")
+	}
 	s.commit()
 	if s.commitThenFail {
 		s.commitThenFail = false
@@ -104,8 +109,8 @@ func (s *fakeStore) commit() {
 func (s *fakeStore) NoteHealth(b []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap {
-		return errors.New("64 health records queued")
+	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap || len(b) > store.MaxHealthBytes {
+		return errors.New("64 health records queued or too large")
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
@@ -126,6 +131,10 @@ func (s *fakeStore) Close(context.Context) ([]store.Seal, error) {
 		return nil, errors.New("close failed")
 	}
 	s.commit()
+	if s.closeSealErr {
+		s.closeSealErr = false
+		return []store.Seal{{Name: "00000000000000000002.db"}}, errors.New("sealed, but the flush before failed")
+	}
 	return nil, nil
 }
 
@@ -765,14 +774,14 @@ func TestStopStoresLossesSummedBehindAWaitingRecord(t *testing.T) {
 // The queue stays bounded: other records give way first, loss records only to newer loss records.
 func TestRequeueBoundGivesWayToLossRecordsLast(t *testing.T) {
 	w := &Writer{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	w.requeue(nil, note{b: []byte("loss 0"), loss: true}, note{b: []byte("other")})
+	w.requeue(nil, note{b: []byte("loss 0"), kind: "lost"}, note{b: []byte("other")})
 	for i := range maxNotes - 1 {
-		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), loss: true})
+		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), kind: "lost"})
 	}
 	if len(w.notes) != maxNotes || w.lostNotes != 1 || string(w.notes[0].b) != "loss 0" {
 		t.Fatalf("%d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
-	w.requeue(nil, note{b: []byte("loss 128"), loss: true})
+	w.requeue(nil, note{b: []byte("loss 128"), kind: "lost"})
 	if len(w.notes) != maxNotes || w.lostNotes != 2 || string(w.notes[0].b) != "loss 1" {
 		t.Fatalf("only loss records: %d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
@@ -809,7 +818,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0) // Flush and Close fail: the record comes back, the store is down
 	r.step(time.Minute)
-	minute := strings.Count(j.String(), "first_seq")
+	minute := strings.Count(j.String(), "lost_queue:1")
 	if minute == 0 {
 		t.Fatalf("no loss record in the journal while the store is down:\n%s", j)
 	}
@@ -818,7 +827,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.done <- nil
-	if n := strings.Count(j.String(), "first_seq"); n <= minute {
+	if n := strings.Count(j.String(), "lost_queue:1"); n <= minute {
 		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
 	}
 }
@@ -1019,7 +1028,7 @@ func TestStoppedCanaryRecordsTurnUnknown(t *testing.T) {
 // reopenAfterFailure lets the failed store's writer open a working one.
 func reopenAfterFailure(r *rig) {
 	r.t.Helper()
-	r.st.set(func(s *fakeStore) { s.failFlush, s.failClose = false, false })
+	r.st.set(func(s *fakeStore) { s.failFlush, s.failClose, s.flushErr, s.closeSealErr = false, false, false, false })
 	r.opens <- nil
 	r.step(ReopenEvery)
 	for range 50 {
@@ -1142,7 +1151,7 @@ func TestCloseFailureAtStopIsReported(t *testing.T) {
 	r.done <- nil
 	mu.Lock()
 	defer mu.Unlock()
-	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "Count:1") {
+	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "stopping:1") {
 		t.Fatalf("Run = %v, log:\n%s", err, log.String())
 	}
 }
