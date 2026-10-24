@@ -208,6 +208,7 @@ func TestAUsedUpReserveIsUnknownAndCloseStillSeals(t *testing.T) {
 	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + LossChunk})
 	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
 	} // one drop waits for its loss record
+	fullFilesystem(t, s, 0)                        // the real one moves with other tests' writes
 	for i := 0; i < 200 && s.Health() == ""; i++ { // a full filesystem takes the reserve chunk by chunk
 		_ = s.room(0, func() error { return syscall.ENOSPC })
 	}
@@ -657,6 +658,7 @@ func TestOpenRefusesNamesAndTypesThatDoNotBelong(t *testing.T) {
 func TestAFullFilesystemFreesAChunkOfTheReserveOnce(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, small)
+	fullFilesystem(t, s, 0) // not the real one: other tests' writes move its free space between two statfs
 	calls := 0
 	err := s.room(0, func() error {
 		if calls++; calls == 1 {
