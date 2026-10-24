@@ -186,3 +186,42 @@ func TestNotify(t *testing.T) {
 		t.Fatalf("without NOTIFY_SOCKET: %v", err)
 	}
 }
+
+// A connection's end is counted by how it ended: EOF and the stop deadline as eof, a failed read as
+// read-error.
+func TestReadOneCountsHowTheConnectionEnded(t *testing.T) {
+	for name, end := range map[string]func(cancel context.CancelFunc, server *net.UnixConn, client net.Conn){
+		"stop with Laurel idle": func(cancel context.CancelFunc, _ *net.UnixConn, _ net.Conn) { cancel() },
+		"Laurel closes": func(_ context.CancelFunc, _ *net.UnixConn, client net.Conn) {
+			if _, err := fmt.Fprintln(client, event(1, "")); err != nil {
+				t.Error(err)
+			}
+			_ = client.Close()
+		},
+		"read fails": func(_ context.CancelFunc, server *net.UnixConn, _ net.Conn) { _ = server.Close() },
+	} {
+		server, client := pair(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		links, done := &Links{}, make(chan struct{})
+		go func() {
+			defer close(done)
+			readOne(ctx, NewReader(NewQueue(1<<20, &Losses{}), time.Now), links, Conn{UnixConn: server, Peer: Peer{PID: 42}},
+				slog.New(slog.NewTextHandler(io.Discard, nil)))
+		}()
+		time.Sleep(20 * time.Millisecond) // the reader waits in its read
+		end(cancel, server, client)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: readOne did not return", name)
+		}
+		cancel()
+		want := "map[collector-start:1 eof:1]"
+		if name == "read fails" {
+			want = "map[collector-start:1 read-error:1]"
+		}
+		if c, _ := links.take(); fmt.Sprint(c.causes) != want {
+			t.Fatalf("%s: causes %v, want %s", name, c.causes, want)
+		}
+	}
+}

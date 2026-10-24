@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -314,5 +315,26 @@ func TestStopFlushFailureIsReported(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.flushErr = true })
 	if err := stopRig(r); err == nil || !strings.Contains(j.String(), "stopped with the store down") || !strings.Contains(j.String(), "Count:1") {
 		t.Fatalf("Run = %v, journal:\n%s", err, j)
+	}
+}
+
+// At stop with the store up, the journal names every loss record the store did not take or Close may
+// have lost, with its range.
+func TestStopJournalsTheLossRecordsNotStored(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.w.Losses.Add(StageFraming, rawrecord.New(0, "laurel", 22, noon, []byte("dropped")))
+	r.st.set(func(s *fakeStore) { s.noteCap, s.failClose = 1, true }) // one loss record handed over, then lost
+	if err := stopRig(r); err == nil {
+		t.Fatal("a failed Close at stop was not reported")
+	}
+	for _, field := range []string{"lost_not_stored", "lost_records"} {
+		if !regexp.MustCompile(field + `="map\[(queue|framing):\[\{Count:1 Bytes:7 FirstSeq:2[12] LastSeq:2[12] `).MatchString(j.String()) {
+			t.Fatalf("no loss record in %s:\n%s", field, j)
+		}
 	}
 }
