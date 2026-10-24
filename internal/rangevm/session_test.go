@@ -1,15 +1,18 @@
 package rangevm
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/zlib"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -331,16 +334,23 @@ func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
 	stage := t.TempDir() // before TMPDIR changes below
 	for k, v := range map[string]string{"GOFLAGS": "-toolexec=/tmp/x", "GOROOT": "/tmp/goroot", "GOCACHE": "/tmp/cache",
 		"LD_PRELOAD": "/tmp/x.so", "GIT_DIR": "/tmp/repo", "TMPDIR": "/tmp/shared", "XDG_CACHE_HOME": "/tmp/cache",
-		"https_proxy": "http://proxy:3128"} {
+		"GOPROXY": "http://evil,direct", "GOMODCACHE": "/tmp/mod", "GONOSUMDB": "*", "GOPRIVATE": "*", "GOINSECURE": "*",
+		"GOSUMDB": "off", "GOVCS": "*:all", "https_proxy": "http://proxy:3128", "HTTPS_PROXY": "http://proxy:3129"} {
 		t.Setenv(k, v)
 	}
 	home := filepath.Join(stage, "home")
-	want := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	// The mirror alone, spelled out so a change of moduleProxy fails here too.
+	goWant := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CEILING_DIRECTORIES=" + stage, "GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"),
-		"GOMODCACHE=" + filepath.Join(home, "gomod"), "GOPROXY=off", "GOTOOLCHAIN=local", "GOWORK=off",
-		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0", "TMPDIR=" + filepath.Join(stage, "tmp"),
-		"https_proxy=http://proxy:3128"}
-	cmd := newTool(t.Context(), stage, io.Discard)("/", "/usr/bin/true")
+		"GOMODCACHE=" + filepath.Join(home, "gomod"), "GOPROXY=https://proxy.golang.org", "GOSUMDB=sum.golang.org", "GOTOOLCHAIN=local", "GOWORK=off",
+		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0", "TMPDIR=" + filepath.Join(stage, "tmp")}
+	// go gets no proxy variable; makepkg and mkosi keep the caller's, which choose their network path.
+	cmd := newGoTool(t.Context(), stage, defaultBuild().proxy, io.Discard)("/", "/usr/bin/true")
+	if !slices.Equal(cmd.Env, goWant) {
+		t.Fatalf("go environment\n got %q\nwant %q", cmd.Env, goWant)
+	}
+	want := append(slices.Clone(goWant), "https_proxy=http://proxy:3128", "HTTPS_PROXY=http://proxy:3129")
+	cmd = newTool(t.Context(), stage, defaultBuild().proxy, io.Discard)("/", "/usr/bin/true")
 	if !slices.Equal(cmd.Env, want) {
 		t.Fatalf("tool environment\n got %q\nwant %q", cmd.Env, want)
 	}
@@ -385,7 +395,7 @@ func exportOf(t *testing.T, root, commit string) (string, error) {
 func exportWith(t *testing.T, root, commit string, lim limits) (string, error) {
 	t.Helper()
 	stage := stageFor(t)
-	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, commit, lim)
+	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, moduleProxy, io.Discard), root, stage, commit, lim)
 	return filepath.Join(stage, "src"), err
 }
 
@@ -491,10 +501,7 @@ func TestCappedReaderAndWriter(t *testing.T) {
 // The stage lies inside the maintainer's home repository; with the tool environment go build must
 // not stamp (and so not run git status in) the enclosing repository.
 func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
-	// Build runs /usr/bin/go; on a host whose /usr/bin/go is another Go (the CI runner's), skip.
-	if out, err := exec.CommandContext(t.Context(), "/usr/bin/go", "env", "GOVERSION").Output(); err != nil || strings.TrimSpace(string(out)) != runtime.Version() {
-		t.Skipf("/usr/bin/go is not this Go (%q, %v)", out, err)
-	}
+	requireHostGo(t)
 	outer := t.TempDir()
 	if out, err := exec.CommandContext(t.Context(), "/usr/bin/git", "init", "-q", outer).CombinedOutput(); err != nil { //nolint:gosec // test temp repository
 		t.Fatalf("git init: %v %s", err, out)
@@ -511,7 +518,7 @@ func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tool := newTool(t.Context(), stage, io.Discard)
+	tool := newGoTool(t.Context(), stage, moduleProxy, io.Discard)
 	build := tool(src, "/usr/bin/go", "build", "-o", filepath.Join(stage, "bin"), ".")
 	build.Env = append(build.Env, "GOCACHE="+goCache(t)) // a warm cache keeps the test fast
 	if err := build.Run(); err != nil {
@@ -523,6 +530,15 @@ func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
 	}
 	if strings.Contains(string(out), "vcs.") {
 		t.Fatalf("guest build stamped the enclosing repository:\n%s", out)
+	}
+}
+
+// requireHostGo skips the test unless /usr/bin/go, which Build runs, is this Go (the CI runner's is
+// another).
+func requireHostGo(t *testing.T) {
+	t.Helper()
+	if out, err := exec.CommandContext(t.Context(), "/usr/bin/go", "env", "GOVERSION").Output(); err != nil || strings.TrimSpace(string(out)) != runtime.Version() {
+		t.Skipf("/usr/bin/go is not this Go (%q, %v)", out, err)
 	}
 }
 
@@ -621,7 +637,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(stage, "src", "range", "mkosi.conf")); err != nil {
 		t.Fatal(err)
 	}
-	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits())
+	err := fetchAndExport(t.Context(), newTool(t.Context(), stage, moduleProxy, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits())
 	if err == nil || !strings.Contains(err.Error(), "export range/mkosi.conf") {
 		t.Fatalf("export = %v, want a refusal of the existing link", err)
 	}
@@ -635,7 +651,7 @@ func TestExportCreatesEveryFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stage, "src", "range", "mkosi.conf"), []byte("planted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits()); err == nil {
+	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, moduleProxy, io.Discard), root, stage, git("rev-parse", "HEAD"), defaultLimits()); err == nil {
 		t.Fatal("export overwrote an existing file")
 	}
 }
@@ -766,7 +782,7 @@ func TestCopyEndsWhenPackObjectsFails(t *testing.T) {
 // Build bounds the copy with its own deadline, whatever the caller's context.
 func TestBuildCopyHasATimeLimit(t *testing.T) {
 	root, git := testRepo(t)
-	_, err := buildCommit(t.Context(), root, t.TempDir(), io.Discard, git("rev-parse", "HEAD"), time.Nanosecond)
+	_, err := buildCommit(t.Context(), root, t.TempDir(), io.Discard, git("rev-parse", "HEAD"), buildConfig{copyTimeout: time.Nanosecond, proxy: moduleProxy})
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("buildCommit with an expired copy limit = %v, want a deadline error", err)
 	}
@@ -816,7 +832,7 @@ func exportLogged(t *testing.T, ctx context.Context, root, stage, commit string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = fetchAndExport(ctx, newTool(ctx, stage, f), root, stage, commit, defaultLimits())
+	err = fetchAndExport(ctx, newTool(ctx, stage, moduleProxy, f), root, stage, commit, defaultLimits())
 	if cerr := f.Close(); cerr != nil {
 		t.Fatal(cerr)
 	}
@@ -878,7 +894,7 @@ func TestObjectStoreLimit(t *testing.T) {
 
 // An object header can claim gigabytes; git on the stage repositories allocates under a limit.
 func TestStageGitRunsUnderAMemoryLimit(t *testing.T) {
-	cmd := stageGit(newTool(t.Context(), t.TempDir(), io.Discard), "/x", "rev-list")
+	cmd := stageGit(newTool(t.Context(), t.TempDir(), moduleProxy, io.Discard), "/x", "rev-list")
 	if want := []string{"/usr/bin/prlimit", "--data=" + strconv.Itoa(gitMemory), "--", "/usr/bin/git", "--git-dir=/x", "rev-list"}; !slices.Equal(cmd.Args, want) {
 		t.Fatalf("argv %q, want %q", cmd.Args, want)
 	}
@@ -926,7 +942,7 @@ func TestForeignRepositoryIsNotCopied(t *testing.T) {
 		t.Fatal(err)
 	}
 	stage := stageFor(t)
-	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, io.Discard), root, stage, head, defaultLimits()); err == nil {
+	if err := fetchAndExport(t.Context(), newTool(t.Context(), stage, moduleProxy, io.Discard), root, stage, head, defaultLimits()); err == nil {
 		t.Fatal("exported through a .git link to another repository")
 	}
 	copied, _ := filepath.Glob(filepath.Join(stage, "reader", "objects", "??", "*"))
@@ -1007,8 +1023,8 @@ func TestBuildCommitRefusesANonCommitFirst(t *testing.T) {
 // maps one uid, so a killed build leaves only files the next Lock can remove.
 func TestBuildKeepsMkosiDirectoriesInTheStage(t *testing.T) {
 	stage, built := t.TempDir(), t.TempDir()
-	cmd := mkosiCommand(newTool(t.Context(), stage, io.Discard), stage, built)
-	if want := append(toolEnv(stage), "MKOSI_FORCE_USERNS_FALLBACK=1"); !slices.Equal(cmd.Env, want) {
+	cmd := mkosiCommand(newTool(t.Context(), stage, moduleProxy, io.Discard), stage, built)
+	if want := append(toolEnv(stage, moduleProxy), "MKOSI_FORCE_USERNS_FALLBACK=1"); !slices.Equal(cmd.Env, want) {
 		t.Errorf("mkosi environment\n got %q\nwant %q", cmd.Env, want)
 	}
 	if cmd.Path != "/usr/bin/mkosi" || cmd.Dir != filepath.Join(stage, "src") {
@@ -1046,7 +1062,7 @@ func TestBuildKeepsMkosiDirectoriesInTheStage(t *testing.T) {
 		}
 	}
 	tmp := ""
-	for _, kv := range toolEnv(stage) {
+	for _, kv := range toolEnv(stage, moduleProxy) {
 		if v, ok := strings.CutPrefix(kv, "TMPDIR="); ok {
 			tmp = v
 		}
@@ -1191,8 +1207,8 @@ func TestOpenDirsReturnsItsErrors(t *testing.T) {
 }
 
 // BuildCommit builds the commit it is given, not HEAD and not the launcher's: an older commit of
-// the repository exports and reaches the guest build (which this test repository cannot pass), and
-// a commit missing from it does not.
+// the repository exports and reaches the first step after the copy, reading its go.mod (which this
+// test repository lacks), and a commit missing from it does not.
 func TestBuildCommitBuildsTheNamedCommit(t *testing.T) {
 	root, git := testRepo(t)
 	old := git("rev-parse", "HEAD")
@@ -1201,12 +1217,299 @@ func TestBuildCommitBuildsTheNamedCommit(t *testing.T) {
 	}
 	git("commit", "-q", "-am", "y")
 	_, err := BuildCommit(t.Context(), root, t.TempDir(), io.Discard, old)
-	if err == nil || !strings.Contains(err.Error(), "build guest program") {
-		t.Fatalf("BuildCommit(older commit) = %v, want it to reach the guest build", err)
+	if err == nil || !strings.Contains(err.Error(), "read go.mod") {
+		t.Fatalf("BuildCommit(older commit) = %v, want it to reach the go.mod check", err)
 	}
 	_, err = BuildCommit(t.Context(), root, t.TempDir(), io.Discard, strings.Repeat("ab", 20))
-	if err == nil || strings.Contains(err.Error(), "build guest program") {
+	if err == nil || strings.Contains(err.Error(), "read go.mod") {
 		t.Fatalf("BuildCommit(missing commit) = %v, want the copy to refuse it", err)
+	}
+}
+
+// The module the tests' file:// proxy serves.
+const (
+	fixturePath    = "example.com/fixture"
+	fixtureVersion = "v1.0.0"
+	fixtureMod     = "module " + fixturePath + "\n\ngo 1.24\n"
+	fixtureSource  = "package fixture\n\nconst X = 1\n"
+)
+
+// fixtureZip is the content of the fixture's module zip, by the names go.sum hashes.
+func fixtureZip(source string) map[string]string {
+	prefix := fixturePath + "@" + fixtureVersion + "/"
+	return map[string]string{prefix + "go.mod": fixtureMod, prefix + "fixture.go": source}
+}
+
+// h1 is the hash a go.sum line carries (dirhash.Hash1 of golang.org/x/mod): SHA-256 over the
+// sorted "sha256  name" lines of the files.
+func h1(files map[string]string) string {
+	sum := sha256.New()
+	for _, name := range slices.Sorted(maps.Keys(files)) {
+		_, _ = fmt.Fprintf(sum, "%x  %s\n", sha256.Sum256([]byte(files[name])), name) // a hash never fails a write
+	}
+	return "h1:" + base64.StdEncoding.EncodeToString(sum.Sum(nil))
+}
+
+// fixtureSum is the fixture's go.sum: its go.mod line and, unless modOnly, the line of a zip of zipped.
+func fixtureSum(zipped map[string]string, modOnly bool) string {
+	sum := fixturePath + " " + fixtureVersion + "/go.mod " + h1(map[string]string{"go.mod": fixtureMod}) + "\n"
+	if !modOnly {
+		sum += fixturePath + " " + fixtureVersion + " " + h1(zipped) + "\n"
+	}
+	return sum
+}
+
+// fileProxy lays out a GOPROXY directory that serves the fixture with zipped as its zip and
+// returns its file:// URL: modules come from it without any network.
+func fileProxy(t *testing.T, zipped map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range slices.Sorted(maps.Keys(zipped)) {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(w, zipped[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	v := filepath.Join(dir, fixturePath, "@v")
+	if err := os.MkdirAll(v, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{
+		"list":                   fixtureVersion + "\n",
+		fixtureVersion + ".info": `{"Version":"` + fixtureVersion + `","Time":"2026-01-01T00:00:00Z"}`,
+		fixtureVersion + ".mod":  fixtureMod,
+		fixtureVersion + ".zip":  buf.String(),
+	} {
+		if err := os.WriteFile(filepath.Join(v, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return "file://" + dir
+}
+
+// moduleRepo is testRepo with a guest program that imports the fixture and goSum as its go.sum.
+func moduleRepo(t *testing.T, goSum string) (root, commit string) {
+	t.Helper()
+	return replacingRepo(t, goSum, "", nil)
+}
+
+// replacingRepo is moduleRepo with replace as a replace directive in go.mod (none when empty) and
+// files added to the commit.
+func replacingRepo(t *testing.T, goSum, replace string, files map[string]string) (root, commit string) {
+	t.Helper()
+	root, git := testRepo(t)
+	goMod := "module m\n\ngo 1.24\n\nrequire " + fixturePath + " " + fixtureVersion + "\n"
+	if replace != "" {
+		goMod += "\nreplace " + replace + "\n"
+	}
+	all := map[string]string{
+		"go.mod":                           goMod,
+		"go.sum":                           goSum,
+		"cmd/balistid-range-guest/main.go": "package main\n\nimport \"" + fixturePath + "\"\n\nfunc main() { _ = fixture.X }\n",
+	}
+	maps.Copy(all, files)
+	for name, body := range all {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "module")
+	return root, git("rev-parse", "HEAD")
+}
+
+// buildWithProxy runs buildCommit with modules from proxy and a file as its log (see exportLogged)
+// and returns the log and the error. go leaves its module cache read-only; the stage holding it
+// must still be removed.
+func buildWithProxy(t *testing.T, root, commit, proxy string) (string, error) {
+	t.Helper()
+	return buildInCache(t, t.TempDir(), root, commit, proxy)
+}
+
+// buildInCache is buildWithProxy with cache as the build cache, which holds the stage.
+func buildInCache(t *testing.T, cache, root, commit, proxy string) (string, error) {
+	t.Helper()
+	requireHostGo(t)
+	f, err := os.CreateTemp(t.TempDir(), "log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildCommit(t.Context(), root, cache, f, commit, buildConfig{copyTimeout: fetchTimeout, proxy: proxy})
+	if cerr := f.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	data, rerr := os.ReadFile(f.Name())
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	for _, n := range names(t, cache) {
+		if strings.HasPrefix(n, "stage-") {
+			t.Errorf("build left its stage %s behind: %v", n, err)
+		}
+	}
+	return string(data), err
+}
+
+// go in the stage runs with telemetry off, so it starts no sidecar that would outlive the build and
+// write into the stage while it is removed.
+func TestStageGoHasTelemetryOff(t *testing.T) {
+	requireHostGo(t)
+	stage := t.TempDir()
+	if err := prepareStage(stage); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newGoTool(t.Context(), stage, moduleProxy, io.Discard)(stage, "/usr/bin/go", "env", "GOTELEMETRY")
+	cmd.Stdout = nil
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) != "off" {
+		t.Fatalf("go env GOTELEMETRY in the stage = %q, %v; want off", out, err)
+	}
+}
+
+// A module go.sum names comes from the proxy into the stage, and the guest builds with it. This
+// test repository has no image files, so the build stops at the first one.
+func TestBuildFetchesTheModulesGoSumNames(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
+	if err == nil || !strings.Contains(err.Error(), "image file") {
+		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// T34: a proxy that serves other bytes than go.sum names fails the guest build. The check is Go's
+// own under -mod=readonly, not code here: the test guards that toolEnv keeps it on.
+func TestBuildRefusesAModuleThatDoesNotMatchGoSum(t *testing.T) {
+	root, commit := moduleRepo(t, fixtureSum(fixtureZip(fixtureSource), false))
+	log, err := buildWithProxy(t, root, commit, fileProxy(t, fixtureZip("package fixture\n\nconst X = 2\n")))
+	if err == nil || !strings.Contains(err.Error(), "build guest program") || !strings.Contains(log, "checksum mismatch") {
+		t.Fatalf("build = %v, want a checksum mismatch in the guest build; log:\n%s", err, log)
+	}
+}
+
+// T34: a module go.sum does not name is not added to it, so the build never takes what the proxy
+// serves on its word.
+func TestBuildRefusesAModuleMissingFromGoSum(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, true))
+	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
+	if err == nil || !strings.Contains(err.Error(), "build guest program") || !strings.Contains(log, "missing go.sum entry") {
+		t.Fatalf("build = %v, want a missing go.sum entry in the guest build; log:\n%s", err, log)
+	}
+}
+
+// T34: a replace to a path makes go build a module from the file system with no go.sum line, from
+// the host as well as from the export, so the build refuses it before go build runs. The replaced
+// source does not compile, so a go build that ran, with or without the refusal after it, fails the
+// guest build instead.
+func TestBuildRefusesAPathReplace(t *testing.T) {
+	const broken = "package fixture\n\nconst X =\n"
+	host := t.TempDir()
+	for name, body := range map[string]string{"go.mod": fixtureMod, "fixture.go": broken} {
+		if err := os.WriteFile(filepath.Join(host, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, tc := range map[string]struct {
+		target string
+		files  map[string]string
+	}{
+		"host directory":   {target: host},
+		"export directory": {target: "./fixture", files: map[string]string{"fixture/go.mod": fixtureMod, "fixture/fixture.go": broken}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, commit := replacingRepo(t, "", fixturePath+" => "+tc.target, tc.files)
+			log, err := buildWithProxy(t, root, commit, fileProxy(t, fixtureZip(fixtureSource)))
+			if err == nil || !strings.Contains(err.Error(), "a replace to a path is refused") || strings.Contains(err.Error(), "build guest program") {
+				t.Fatalf("build = %v, want the path replace refused before go build; log:\n%s", err, log)
+			}
+		})
+	}
+}
+
+// A replace by a module version is not refused. It only tests the refusal: the replaced v0.9.0 is
+// never selected (MVS takes the required v1.0.0), so the replace changes nothing in the build.
+func TestBuildDoesNotRefuseAVersionReplace(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := replacingRepo(t, fixtureSum(zipped, false), fixturePath+" v0.9.0 => "+fixturePath+" "+fixtureVersion, nil)
+	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
+	if err == nil || !strings.Contains(err.Error(), "image file") {
+		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// A cache reached through a symbolic link (a linked ~/.cache or XDG_CACHE_HOME) builds: go names
+// the export's go.mod by its real path, and the module check accepts that spelling.
+func TestBuildThroughASymlinkedCache(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	cache := filepath.Join(t.TempDir(), "cache")
+	if err := os.Symlink(t.TempDir(), cache); err != nil {
+		t.Fatal(err)
+	}
+	log, err := buildInCache(t, cache, root, commit, fileProxy(t, zipped))
+	if err == nil || !strings.Contains(err.Error(), "image file") {
+		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// T34: an export without a go.mod would make go use one above the stage, which an agent at the
+// same uid can plant, and compile host files into the guest. The build refuses it before go build
+// runs; the planted package does not compile, so a go build that ran fails the guest build instead.
+func TestBuildRefusesAGoModAboveTheExport(t *testing.T) {
+	root, git := testRepo(t)
+	guest := filepath.Join(root, "cmd", "balistid-range-guest")
+	if err := os.MkdirAll(guest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(guest, "main.go"), []byte("package main\n\nimport _ \"m/planted\"\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "no go.mod")
+	cache := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cache, "planted"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"go.mod": "module m\n\ngo 1.24\n", "planted/planted.go": "package planted\n\nconst X =\n"} {
+		if err := os.WriteFile(filepath.Join(cache, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, err := buildInCache(t, cache, root, git("rev-parse", "HEAD"), fileProxy(t, fixtureZip(fixtureSource)))
+	if err == nil || !strings.Contains(err.Error(), "not the export's own") || strings.Contains(err.Error(), "build guest program") {
+		t.Fatalf("build = %v, want the go.mod above the export refused before go build; log:\n%s", err, log)
+	}
+}
+
+// T34: go reaches only the configured module proxy, never through an HTTP proxy from the caller's
+// environment. Neither address is served: go never proxies a loopback address but does proxy
+// 0.0.0.0, so a go that took the proxy variables reports a proxyconnect error, one that did not a
+// refused connection to 0.0.0.0. No network is used.
+func TestGoUsesNoHTTPProxy(t *testing.T) {
+	for _, k := range proxyEnv {
+		v := "http://127.0.0.1:9"
+		if strings.EqualFold(k, "no_proxy") {
+			v = ""
+		}
+		t.Setenv(k, v)
+	}
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	log, err := buildWithProxy(t, root, commit, "https://0.0.0.0:1")
+	if err == nil || !strings.Contains(err.Error(), "build guest program") || strings.Contains(log, "proxyconnect") || !strings.Contains(log, "0.0.0.0:1") {
+		t.Fatalf("build = %v, want a direct, refused connection to the module proxy; log:\n%s", err, log)
 	}
 }
 

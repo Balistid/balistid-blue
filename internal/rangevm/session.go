@@ -55,8 +55,8 @@ var imageFiles = []struct {
 	{"deploy/sysctl/balistid.conf", "etc/sysctl.d/90-balistid.conf", 0o644},
 }
 
-// proxyEnv are the only variables makepkg inherits besides its own paths: network settings, not
-// build settings.
+// proxyEnv are the only variables makepkg and mkosi inherit besides their own paths: network
+// settings, not build settings. go never gets them (newGoTool).
 var proxyEnv = []string{"http_proxy", "https_proxy", "no_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"}
 
 // Result is what one run stores: the verdict and everything that identifies what ran.
@@ -83,7 +83,26 @@ type Result struct {
 // never runs in root and nothing in its object store is trusted: the tools build from an export of
 // the commit verified object by object (ADR 0010). Tool output goes to log.
 func Build(ctx context.Context, root, cache string, log io.Writer) (image string, err error) {
-	return buildCommit(ctx, root, cache, log, launcherCommit(), fetchTimeout)
+	return buildCommit(ctx, root, cache, log, launcherCommit(), defaultBuild())
+}
+
+// moduleProxy is the only place the image build fetches Go modules from: the Go module mirror,
+// without `direct`, so no version control tool runs for a module. Under -mod=readonly a module is
+// used only if it matches the go.sum of the verified export; GOSUMDB stays sum.golang.org,
+// GONOSUMDB, GOPRIVATE and GOINSECURE are never set, and a replace to a path, which go reads
+// without go.sum, is refused before the build (refusePathReplace). So the proxy decides whether
+// the build gets a module, never which bytes.
+const moduleProxy = "https://proxy.golang.org"
+
+// buildConfig is what a build takes besides its inputs. Tests shorten the copy limit or serve
+// modules from a local proxy; Build and BuildCommit use defaultBuild.
+type buildConfig struct {
+	copyTimeout time.Duration
+	proxy       string
+}
+
+func defaultBuild() buildConfig {
+	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -94,11 +113,11 @@ func BuildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if !buildinfo.IsCommitID(commit) {
 		return "", errors.New("commit is not 40 lower-case hex digits")
 	}
-	return buildCommit(ctx, root, cache, log, commit, fetchTimeout)
+	return buildCommit(ctx, root, cache, log, commit, defaultBuild())
 }
 
-// buildCommit is Build for a given commit and copy time limit.
-func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, copyTimeout time.Duration) (image string, err error) {
+// buildCommit is Build for a given commit and configuration.
+func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit string, cfg buildConfig) (image string, err error) {
 	held, err := Lock(cache)
 	if err != nil {
 		return "", err
@@ -109,26 +128,33 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("staging directory: %w", err)
 	}
 	defer func() { err = errors.Join(err, removeDir(stage)) }()
-	for _, d := range stageDirs {
-		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
-			return "", fmt.Errorf("staging directory: %w", err)
-		}
+	if err := prepareStage(stage); err != nil {
+		return "", err
 	}
-	tool := newTool(ctx, stage, log)
+	tool := newTool(ctx, stage, cfg.proxy, log)
 	src := filepath.Join(stage, "src")
 	if commit == "" {
 		return "", errors.New("launcher is not a clean VCS build of a commit (go run, -buildvcs=false or uncommitted changes)")
 	}
 	// Reading root's object store and git's work on it are bounded in time; it takes well under a
 	// second today.
-	fetchCtx, cancel := context.WithTimeout(ctx, copyTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, cfg.copyTimeout)
 	defer cancel()
-	if err := fetchAndExport(fetchCtx, newTool(fetchCtx, stage, log), root, stage, commit, defaultLimits()); err != nil {
+	if err := fetchAndExport(fetchCtx, newTool(fetchCtx, stage, cfg.proxy, log), root, stage, commit, defaultLimits()); err != nil {
 		return "", err
 	}
 
+	// go build reads go.mod and go.sum from the export, never from root; the modules they name are
+	// fetched from cfg.proxy into the stage's empty module cache and checked against that go.sum.
+	goTool := newGoTool(ctx, stage, cfg.proxy, log)
+	if err := requireExportModule(goTool, src); err != nil {
+		return "", err
+	}
+	if err := refusePathReplace(goTool, src); err != nil {
+		return "", err
+	}
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
-	goBuild := tool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
+	goBuild := goTool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
@@ -178,8 +204,81 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
+// maxGoModJSON caps what `go mod edit -json` may print for the export's go.mod.
+const maxGoModJSON = 1 << 20
+
+// requireExportModule fails unless go in src uses src/go.mod. An export without one would make go
+// look for a go.mod above the stage, in directories an agent at the same uid can write, and build
+// the guest from host files.
+func requireExportModule(goTool toolFunc, src string) error {
+	var out bytes.Buffer
+	cmd := goTool(src, "/usr/bin/go", "env", "GOMOD")
+	cmd.Stdout = &cappedWriter{w: &out, left: maxGoModJSON}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	// go names the module file under the real path of its working directory (goEnv sets no PWD),
+	// and the cache may be reached through a symbolic link, so the export's file is compared by its
+	// real path too. A missing go.mod in the export fails here.
+	got := strings.TrimSuffix(out.String(), "\n")
+	want, err := filepath.EvalSymlinks(filepath.Join(src, "go.mod"))
+	if err != nil {
+		return fmt.Errorf("read go.mod: go in the export uses the module file %q, not the export's own: %w", got, err)
+	}
+	if got != want {
+		return fmt.Errorf("read go.mod: go in the export uses the module file %q, not the export's own", got)
+	}
+	return nil
+}
+
+// refusePathReplace fails when the go.mod in src replaces a module with a directory (a replacement
+// without a version): go builds that module from the file system, inside the export or anywhere on
+// the host, and checks no go.sum line for it (ADR 0022 point 4). A replacement by a module version
+// still comes from the proxy and must match go.sum, so it stays allowed.
+func refusePathReplace(tool toolFunc, src string) error {
+	var out bytes.Buffer
+	cmd := tool(src, "/usr/bin/go", "mod", "edit", "-json")
+	cmd.Stdout = &cappedWriter{w: &out, left: maxGoModJSON}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	var mod struct {
+		Replace []struct {
+			Old, New struct{ Path, Version string }
+		}
+	}
+	if err := json.Unmarshal(out.Bytes(), &mod); err != nil {
+		return fmt.Errorf("read go.mod: %w", err)
+	}
+	for _, r := range mod.Replace {
+		if r.New.Version == "" {
+			return fmt.Errorf("go.mod replaces %s with the path %s, whose source go.sum does not check: a replace to a path is refused", r.Old.Path, r.New.Path)
+		}
+	}
+	return nil
+}
+
 // stageDirs are created in every build's stage before any tool runs.
 var stageDirs = []string{"home", "src", "src-pkg", "build", "log", "pkg", "tmp", "mkosi-workspace", "mkosi-pkgcache"}
+
+// prepareStage creates stageDirs in stage and turns the go command's telemetry off in the stage's
+// HOME. Left at its default, go starts a detached sidecar that outlives the build and writes below
+// HOME while the stage is being removed.
+func prepareStage(stage string) error {
+	for _, d := range stageDirs {
+		if err := os.Mkdir(filepath.Join(stage, d), 0o700); err != nil {
+			return fmt.Errorf("staging directory: %w", err)
+		}
+	}
+	telemetry := filepath.Join(stage, "home", ".config", "go", "telemetry")
+	if err := os.MkdirAll(telemetry, 0o700); err != nil {
+		return fmt.Errorf("staging directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off\n"), 0o600); err != nil {
+		return fmt.Errorf("staging directory: %w", err)
+	}
+	return nil
+}
 
 // mkosiCommand builds the image from the export in stage into built. mkosi's defaults are /var/tmp
 // for the workspace (shared on the host for the maintainer, T34) and, at a system uid, /var/cache
@@ -599,8 +698,19 @@ func (c *cappedWriter) Write(p []byte) (int, error) {
 // newTool returns the constructor for every program Build runs. Each gets toolEnv, never the
 // caller's environment: GOFLAGS=-toolexec, GOROOT, a go.env file, a git config or a build cache that
 // an agent at the same uid can write would otherwise decide what is built (T34).
-func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
-	env := toolEnv(stage)
+func newTool(ctx context.Context, stage, proxy string, log io.Writer) toolFunc {
+	return toolWith(ctx, toolEnv(stage, proxy), log)
+}
+
+// newGoTool is newTool for the go command: goEnv, without the caller's proxy variables, so go
+// connects to the module proxy directly and a proxy variable set by an agent cannot route its
+// module traffic elsewhere. makepkg and mkosi keep them: they download from the internet.
+func newGoTool(ctx context.Context, stage, proxy string, log io.Writer) toolFunc {
+	return toolWith(ctx, goEnv(stage, proxy), log)
+}
+
+// toolWith returns the constructor of commands with exactly env as their environment.
+func toolWith(ctx context.Context, env []string, log io.Writer) toolFunc {
 	return func(dir, path string, args ...string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, path, args...) //nolint:gosec // absolute binaries, fixed argv
 		cmd.Dir = dir
@@ -610,12 +720,28 @@ func newTool(ctx context.Context, stage string, log io.Writer) toolFunc {
 	}
 }
 
-// toolEnv is the whole environment of the tools Build runs: fixed values with caches and temporary
-// files inside stage, plus the proxy settings, which choose the network path and not what is built.
-// Git looks for no repository above the stage, which sits inside the maintainer's home repository.
-func toolEnv(stage string) []string {
+// toolEnv is the whole environment of the tools Build runs other than go: goEnv plus the caller's
+// proxy settings, which choose the network path and not what is built.
+func toolEnv(stage, proxy string) []string {
+	env := goEnv(stage, proxy)
+	for _, k := range proxyEnv {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
+}
+
+// goEnv is the whole environment of go in Build: fixed values with caches and temporary files
+// inside stage. Git looks for no repository above the stage, which sits inside the maintainer's
+// home repository. Modules come only from proxy (moduleProxy outside tests), with no HTTP proxy in
+// between, into an empty cache in the stage, and only as go.sum names them: -mod=readonly never
+// adds a sum, GOSUMDB is never off and no GONOSUMDB, GOPRIVATE or GOINSECURE exempts a module. The
+// other exemptions, a go.mod outside the export and a replace to a path, buildCommit refuses before
+// go build (requireExportModule, refusePathReplace).
+func goEnv(stage, proxy string) []string {
 	home := filepath.Join(stage, "home")
-	env := []string{
+	return []string{
 		"PATH=/usr/bin",
 		"HOME=" + home,
 		"GIT_CONFIG_GLOBAL=/dev/null",
@@ -624,19 +750,14 @@ func toolEnv(stage string) []string {
 		"GOENV=off",
 		"GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"),
-		"GOPROXY=off",
+		"GOPROXY=" + proxy,
+		"GOSUMDB=sum.golang.org",
 		"GOTOOLCHAIN=local",
 		"GOWORK=off",
 		"GOFLAGS=-mod=readonly -buildvcs=false",
 		"CGO_ENABLED=0",
 		"TMPDIR=" + filepath.Join(stage, "tmp"),
 	}
-	for _, k := range proxyEnv {
-		if v, ok := os.LookupEnv(k); ok {
-			env = append(env, k+"="+v)
-		}
-	}
-	return env
 }
 
 // launcherCommit is the clean commit this binary was built from, or "" when the build carries no
