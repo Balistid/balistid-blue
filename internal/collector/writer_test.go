@@ -107,6 +107,9 @@ func (s *fakeStore) NoteHealth(b []byte) error {
 	if s.rejectNote || s.noteCap > 0 && len(s.queued) >= s.noteCap {
 		return errors.New("64 health records queued")
 	}
+	if len(b) > store.MaxHealthBytes { // as the store refuses it
+		return errors.New("health record too large")
+	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
 		return err
@@ -1142,8 +1145,30 @@ func TestCloseFailureAtStopIsReported(t *testing.T) {
 	r.done <- nil
 	mu.Lock()
 	defer mu.Unlock()
-	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || !strings.Contains(log.String(), "Count:1") {
-		t.Fatalf("Run = %v, log:\n%s", err, log.String())
+	// The flush at stop commits record 51 before Close fails, so it is not among what may be lost.
+	r.st.mu.Lock()
+	committed := len(r.st.committed)
+	r.st.mu.Unlock()
+	if err == nil || !strings.Contains(log.String(), "store close failed at stop") || committed != 1 && !strings.Contains(log.String(), "Count:1") {
+		t.Fatalf("Run = %v, %d committed, log:\n%s", err, committed, log.String())
+	}
+}
+
+// A flush that fails at stop is reported like a failed Close, with what may be lost.
+func TestAFlushFailureAtStopIsReported(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.push(event(51, ""))
+	time.Sleep(50 * time.Millisecond)
+	close(r.stop)
+	err := <-r.done
+	r.done <- nil
+	if err == nil || !strings.Contains(j.String(), "may be lost") || !strings.Contains(j.String(), "Count:1") {
+		t.Fatalf("Run = %v, log:\n%s", err, j.String())
 	}
 }
 
@@ -1233,5 +1258,93 @@ func TestACommitBeforeAFailureIsNotCountedAgain(t *testing.T) {
 				t.Fatalf("%s: health record %v committed %d times", name, seq, n)
 			}
 		}
+	}
+}
+
+// A reconnect recorded while the store is down outlasts a long outage's stats records: it is a loss the
+// collector cannot count (T25), so it reaches the store once it opens, or the journal if it must give way.
+func TestAConnectionRecordOutlastsALongStoreOutage(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(errors.New("no disk"))
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	for range maxNotes + 20 { // more stats records than the queue holds
+		r.step(statsEvery)
+	}
+	r.opens <- nil
+	r.step(ReopenEvery)
+	r.settle()
+	for range 4 {
+		r.step(0)
+	}
+	found := false
+	for _, c := range r.st.kinds("connection") {
+		if c["laurel_pid"] == float64(77) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the reconnect of pid 77 was not stored after the outage; lost notes %d", r.w.lostNotes)
+	}
+}
+
+func TestConnectionRecordsThatMustGiveWayReachTheJournal(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(errors.New("no disk"))
+	r.settle()
+	for pid := range maxNotes + 5 { // more reconnects than the queue holds
+		connect(r, 1000+pid)
+		r.step(0)
+	}
+	if !strings.Contains(j.String(), `laurel_pid\":1000`) {
+		t.Fatal("the oldest reconnect gave way without a trace in the journal")
+	}
+}
+
+// A health record larger than the store takes must not block the ones behind it, loss records included.
+func TestAnOversizedHealthRecordDoesNotBlockTheQueue(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.w.Started = map[string]string{"version": "test", "rule_version": strings.Repeat("r", store.MaxHealthBytes)}
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	for range 10 {
+		r.step(statsEvery)
+	}
+	if len(r.st.kinds("lost")) == 0 || len(r.st.kinds("stats")) == 0 {
+		t.Fatalf("committed %d loss and %d stats records behind an oversized one", len(r.st.kinds("lost")), len(r.st.kinds("stats")))
+	}
+	if !strings.Contains(j.String(), "too large") {
+		t.Fatal("the oversized record left no trace in the journal")
+	}
+}
+
+// At stop a loss record must reach the store even when the store's own queue is full of notes handed
+// over before: Flush commits those first.
+func TestALossAtStopReachesTheStoreBehindAFullQueue(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	for range 80 {
+		r.step(statsEvery)
+	}
+	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
+	r.step(0) // hands 64 notes over; only the next Flush commits them
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	if len(r.st.kinds("lost")) == 0 {
+		t.Fatal("the loss counted at stop was not stored")
 	}
 }

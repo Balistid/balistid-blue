@@ -149,10 +149,23 @@ type Writer struct {
 	lostNotes uint64 // health records given way in the queue since start
 }
 
-// note is an encoded health record; loss marks a "lost" record, which never gives way in the queue.
+// note is an encoded health record. In a full queue a "lost" record gives way last and a "connection"
+// record (a reconnect is a loss the collector cannot count, T25) before it; either goes to the journal then.
 type note struct {
 	b    []byte
 	loss bool
+	conn bool
+}
+
+// rank is the order in which notes give way in a full queue: lowest first.
+func (n note) rank() int {
+	switch {
+	case n.loss:
+		return 2
+	case n.conn:
+		return 1
+	}
+	return 0
 }
 
 type openResult struct {
@@ -227,7 +240,8 @@ func (w *Writer) step(ctx context.Context) {
 	if w.st == nil && now.Sub(w.lastJournal) >= time.Minute {
 		w.lastJournal = now
 		w.Log.Warn("store down, draining and counting", "reason", w.down, "lost", w.pending,
-			"lost_records_waiting", w.waitingLosses())
+			"lost_records_waiting", w.waiting(func(n note) bool { return n.loss }),
+			"connection_records_waiting", w.waiting(func(n note) bool { return n.conn }))
 	}
 	if w.st == nil && !w.opening && !now.Before(w.nextOpen) {
 		w.startOpen(ctx)
@@ -374,12 +388,12 @@ func (w *Writer) lossWaiting() bool {
 	return slices.ContainsFunc(w.notes, func(n note) bool { return n.loss })
 }
 
-// waitingLosses returns the loss records waiting for the store, which a failed Close may have handed
-// back: while the store is down, the journal is where they leave the collector (ADR 0017, point 7).
-func (w *Writer) waitingLosses() []string {
+// waiting returns the loss or connection records waiting for the store, which a failed Close may have
+// handed back: while the store is down, the journal is where they leave the collector (ADR 0017, point 7).
+func (w *Writer) waiting(which func(note) bool) []string {
 	var out []string
 	for _, n := range w.notes {
-		if n.loss {
+		if which(n) {
 			out = append(out, string(n.b))
 		}
 	}
@@ -453,12 +467,17 @@ func (w *Writer) note(fields map[string]any) {
 		w.Log.Error("health record not encoded", "err", err)
 		return
 	}
-	w.requeue(nil, note{b, fields["kind"] == "lost"})
+	if len(b) > store.MaxHealthBytes { // the store would refuse it and every note queued behind it
+		w.lostNotes++
+		w.Log.Warn("health record too large for the store, kept here only", "record", string(b))
+		return
+	}
+	w.requeue(nil, note{b, fields["kind"] == "lost", fields["kind"] == "connection"})
 }
 
 // requeue puts health records back ahead of those waiting, oldest first, and then appends more; past
-// maxNotes the oldest give way, counted and logged. A loss record gives way only to other loss records,
-// which losses keeps from filling the queue.
+// maxNotes the oldest of the lowest rank give way, counted and logged, a connection or loss record with
+// its content. A loss record gives way only to other loss records, which losses keeps from filling the queue.
 func (w *Writer) requeue(first []note, more ...note) {
 	w.notes = append(append(append([]note(nil), first...), w.notes...), more...)
 	over := len(w.notes) - maxNotes
@@ -467,15 +486,20 @@ func (w *Writer) requeue(first []note, more ...note) {
 	}
 	w.lostNotes += uint64(over)
 	w.Log.Warn("health records dropped while the store cannot take them", "dropped", w.lostNotes)
-	keep := w.notes[:0]
-	for _, n := range w.notes {
-		if over > 0 && !n.loss {
-			over--
-			continue
+	for rank := 0; over > 0; rank++ {
+		keep := w.notes[:0]
+		for _, n := range w.notes {
+			if over > 0 && n.rank() == rank {
+				over--
+				if rank > 0 {
+					w.Log.Warn("health record given way, kept here only", "record", string(n.b))
+				}
+				continue
+			}
+			keep = append(keep, n)
 		}
-		keep = append(keep, n)
+		w.notes = keep
 	}
-	w.notes = keep[over:]
 }
 
 // writeNotes hands health records to the store; the store keeps at most 64, so the rest wait.
@@ -525,6 +549,14 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		}
 		return 1
 	})
+	w.flush(ctx)     // the store's own queue may be full of notes handed over earlier: commit them first
+	if w.st == nil { // the flush failed and fail() closed the store, counting what it had not committed
+		w.Log.Error("store failed at stop: these may be lost", "pending", w.pending)
+		for _, n := range w.notes {
+			w.Log.Warn("health record not stored at stop", "record", string(n.b))
+		}
+		return fmt.Errorf("collector: store failed at stop: %s", w.down)
+	}
 	w.writeNotes()
 	for _, n := range w.notes {
 		w.Log.Warn("health record not stored at stop", "record", string(n.b))
