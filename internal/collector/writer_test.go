@@ -32,6 +32,8 @@ type fakeStore struct {
 	failClose, sealNext      bool          // sealNext: the next Append seals, committing what came before
 	commitThenFail           bool          // the next Flush commits, then fails; Close then has nothing left to lose
 	sealThenFail             bool          // the next Append seals, committing what came before, then fails
+	flushOnly                bool          // Flush fails and keeps what it holds; Close commits it
+	sealClose                bool          // Close seals the records appended and fails: queued notes and drops are lost
 	block                    chan struct{} // Append waits on it when set
 	onFlush                  func()        // runs inside Flush, as a slow commit would
 	noteCap                  int           // NoteHealth refuses past this many queued, as the store's 64; 0 is none
@@ -83,6 +85,9 @@ func (s *fakeStore) Flush(context.Context) ([]store.Seal, error) {
 		s.lose()
 		return nil, errors.New("fsync failed")
 	}
+	if s.flushOnly {
+		return nil, errors.New("health record not written")
+	}
 	s.commit()
 	if s.commitThenFail {
 		s.commitThenFail = false
@@ -125,6 +130,11 @@ func (s *fakeStore) Close(context.Context) ([]store.Seal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed++
+	if s.sealClose { // as store.Close after a failed flush: the seal holds the records, not what the flush lost
+		s.committed, s.appended = append(s.committed, s.appended...), nil
+		s.queued, s.dropped = nil, 0
+		return []store.Seal{{Name: "00000000000000000001.db"}}, errors.New("flush failed before the seal")
+	}
 	if s.failClose || s.failFlush {
 		s.lose()
 		return nil, errors.New("close failed")
@@ -769,14 +779,14 @@ func TestStopStoresLossesSummedBehindAWaitingRecord(t *testing.T) {
 // The queue stays bounded: other records give way first, loss records only to newer loss records.
 func TestRequeueBoundGivesWayToLossRecordsLast(t *testing.T) {
 	w := &Writer{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	w.requeue(nil, note{b: []byte("loss 0"), loss: true}, note{b: []byte("other")})
+	w.requeue(nil, note{b: []byte("loss 0"), kind: "lost"}, note{b: []byte("other")})
 	for i := range maxNotes - 1 {
-		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), loss: true})
+		w.requeue(nil, note{b: fmt.Appendf(nil, "loss %d", i+1), kind: "lost"})
 	}
 	if len(w.notes) != maxNotes || w.lostNotes != 1 || string(w.notes[0].b) != "loss 0" {
 		t.Fatalf("%d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
-	w.requeue(nil, note{b: []byte("loss 128"), loss: true})
+	w.requeue(nil, note{b: []byte("loss 128"), kind: "lost"})
 	if len(w.notes) != maxNotes || w.lostNotes != 2 || string(w.notes[0].b) != "loss 1" {
 		t.Fatalf("only loss records: %d waiting, %d given way, oldest %q", len(w.notes), w.lostNotes, w.notes[0].b)
 	}
@@ -801,7 +811,7 @@ func (j *journal) String() string {
 }
 
 // A loss record that a failed Close handed back reaches the journal each minute while the store is down,
-// and again at a stop with the store still down (ADR 0017, point 7).
+// and again at a stop with the store still down (ADR 0017, point 7): its loss, not its body.
 func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r := newRig(t)
 	j := &journal{}
@@ -813,7 +823,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0) // Flush and Close fail: the record comes back, the store is down
 	r.step(time.Minute)
-	minute := strings.Count(j.String(), "first_seq")
+	minute := strings.Count(j.String(), `lost_records_waiting="map[queue:{Count:1 Bytes:7 FirstSeq:21`)
 	if minute == 0 {
 		t.Fatalf("no loss record in the journal while the store is down:\n%s", j)
 	}
@@ -822,8 +832,11 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.done <- nil
-	if n := strings.Count(j.String(), "first_seq"); n <= minute {
+	if n := strings.Count(j.String(), `lost_records_waiting="map[queue:{Count:1 Bytes:7 FirstSeq:21`); n <= minute {
 		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
+	}
+	if strings.Contains(j.String(), "first_seq") {
+		t.Fatalf("a health record's body reached the journal:\n%s", j)
 	}
 }
 
@@ -1155,64 +1168,81 @@ func TestCloseFailureAtStopIsReported(t *testing.T) {
 	}
 }
 
-// A flush that fails at stop is reported like a failed Close, with what may be lost.
+// A flush that fails at stop, though Close then commits what the store held, is reported with the loss
+// counted at stop, which never reached the store.
 func TestAFlushFailureAtStopIsReported(t *testing.T) {
 	r := newRig(t)
 	j := &journal{}
 	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
 	r.start(nil)
 	r.settle()
-	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.st.set(func(s *fakeStore) { s.flushOnly = true })
 	r.push(event(51, ""))
-	time.Sleep(50 * time.Millisecond)
+	until(t, func() bool { r.st.mu.Lock(); defer r.st.mu.Unlock(); return len(r.st.appended) == 1 })
 	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped"))) // counted at stop
 	close(r.stop)
 	err := <-r.done
 	r.done <- nil
-	if err == nil || !strings.Contains(err.Error(), "store failed at stop") || !strings.Contains(j.String(), `kind\":\"lost\"`) {
+	if err == nil || !strings.Contains(err.Error(), "store failed at stop") ||
+		!strings.Contains(j.String(), `lost_records_waiting="map[queue:{Count:1 Bytes:7 FirstSeq:21`) {
 		t.Fatalf("Run = %v; the loss counted at stop must reach the journal, log:\n%s", err, j.String())
+	}
+	if len(r.st.committed) != 1 || len(r.st.kinds("lost")) != 0 || r.w.lost != 1 {
+		t.Fatalf("%d records and %d loss records committed, %d counted lost", len(r.st.committed), len(r.st.kinds("lost")), r.w.lost)
 	}
 }
 
 func TestLossRecordsOutlastConnectionRecordsInAFullQueue(t *testing.T) {
 	w := &Writer{Log: slog.New(slog.NewTextHandler(&journal{}, nil))}
-	w.notes = append(w.notes, note{b: []byte(`{"kind":"lost"}`), loss: true})
+	w.notes = append(w.notes, note{b: []byte(`{"kind":"lost"}`), kind: "lost"})
 	for range maxNotes {
-		w.requeue(nil, note{b: []byte(`{"kind":"connection"}`), conn: true})
+		w.requeue(nil, note{b: []byte(`{"kind":"connection"}`), kind: "connection"})
 	}
 	if !w.lossWaiting() {
 		t.Fatal("a loss record gave way to connection records")
 	}
-	w.requeue(nil, note{b: []byte(`{"kind":"stats"}`)})
-	if slices.ContainsFunc(w.notes, func(n note) bool { return !n.conn && !n.loss }) || !w.lossWaiting() {
+	w.requeue(nil, note{b: []byte(`{"kind":"stats"}`), kind: "stats"})
+	if slices.ContainsFunc(w.notes, func(n note) bool { return n.rank() == 0 }) || !w.lossWaiting() {
 		t.Fatal("an ordinary record must give way first, in a queue of connection and loss records")
 	}
 }
 
+// A refusal names the peer (T2): during an outage it reaches the store after a reconnect flood, as itself
+// or, when the flood comes after it, in the gave_way record of the refusals.
 func TestARefusalOutlastsAReconnectFlood(t *testing.T) {
-	r := newRig(t)
-	r.start(errors.New("no disk"))
-	r.settle()
-	for pid := range maxNotes + 2 {
-		connect(r, 2000+pid)
-		r.step(0)
-	}
-	r.w.Refusals.add(time.Unix(0, noon), 4343, errors.New("peer refused"))
-	r.step(statsEvery)
-	r.opens <- nil
-	r.step(ReopenEvery)
-	r.settle()
-	for range 4 {
-		r.step(0)
-	}
-	found := false
-	for _, n := range r.st.kinds("refused") {
-		if n["last_uid"] == float64(4343) {
-			found = true
+	for _, after := range []bool{false, true} {
+		r := newRig(t)
+		r.start(errors.New("no disk"))
+		r.settle()
+		refuse := func() {
+			r.w.Refusals.add(time.Unix(0, noon), 4343, errors.New("peer refused"))
+			r.step(statsEvery)
 		}
-	}
-	if !found {
-		t.Fatal("the refusal of uid 4343 gave way to reconnect records")
+		if after {
+			refuse()
+		}
+		for pid := range 2 * maxNotes {
+			connect(r, 2000+pid)
+			r.step(0)
+		}
+		if !after {
+			refuse()
+		}
+		r.opens <- nil
+		r.step(ReopenEvery)
+		r.settle()
+		for range 4 {
+			r.step(0)
+		}
+		found := 0
+		for _, n := range append(r.st.kinds("refused"), r.st.kinds("gave_way")...) {
+			if n["last_uid"] == float64(4343) && (n["kind"] == "refused" || n["of"] == "refused" && n["count"] == 1.0) {
+				found++
+			}
+		}
+		if found != 1 {
+			t.Fatalf("flood after the refusal %v: the refusal of uid 4343 is on record %d times", after, found)
+		}
 	}
 }
 
@@ -1335,26 +1365,73 @@ func TestAConnectionRecordOutlastsALongStoreOutage(t *testing.T) {
 	}
 }
 
-func TestConnectionRecordsThatMustGiveWayReachTheJournal(t *testing.T) {
+// Reconnects that give way during an outage reach the store as one gave_way record, which with the
+// connection records kept accounts for every reconnect; the journal gets counts, no record.
+func TestAReconnectFloodLeavesOneGaveWayRecord(t *testing.T) {
 	r := newRig(t)
 	j := &journal{}
 	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
 	r.start(errors.New("no disk"))
 	r.settle()
-	for pid := range maxNotes + 5 { // more reconnects than the queue holds
+	const flood = 3 * maxNotes
+	for pid := range flood {
 		connect(r, 1000+pid)
 		r.step(0)
 	}
-	if !strings.Contains(j.String(), `laurel_pid\":1000`) {
-		t.Fatal("the oldest reconnect gave way without a trace in the journal")
-	}
 	r.step(time.Minute)
-	if !strings.Contains(j.String(), "connection_records_waiting") {
-		t.Fatal("the minute journal line does not list the waiting connection records")
+	if !strings.Contains(j.String(), "connection_records_waiting=") || !strings.Contains(j.String(), "gave_way=map[connection:") {
+		t.Fatalf("the minute journal line does not count the connection records:\n%s", j)
+	}
+	r.opens <- nil
+	r.step(ReopenEvery)
+	r.settle()
+	for range 4 {
+		r.step(0)
+	}
+	kept, oldest := 0, 1000+flood
+	for _, c := range r.st.kinds("connection") {
+		if pid := int(c["laurel_pid"].(float64)); pid >= 1000 {
+			kept++
+			oldest = min(oldest, pid)
+		}
+	}
+	var gave []map[string]any
+	for _, g := range r.st.kinds("gave_way") {
+		if g["of"] == "connection" {
+			gave = append(gave, g)
+		}
+	}
+	if len(gave) != 1 || int(gave[0]["count"].(float64))+kept != flood || gave[0]["last_laurel_pid"] != float64(oldest-1) {
+		t.Fatalf("%d of %d reconnects kept from pid %d, gave_way records %v", kept, flood, oldest, gave)
+	}
+	if strings.Contains(j.String(), "laurel_pid") {
+		t.Fatalf("a connection record's body reached the journal:\n%s", j)
 	}
 }
 
-// A health record larger than the store takes must not block the ones behind it, loss records included.
+// However many reconnects a flood brings, the journal gets a few lines a minute while the store is down.
+func TestTheJournalStaysBoundedUnderAReconnectFlood(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(errors.New("no disk"))
+	r.settle()
+	before := strings.Count(j.String(), "\n")
+	pid := 1000
+	for range 2 * 60 { // two minutes of ticks a second apart, each with more reconnects than Links keeps
+		for range 2 * maxLinkEvents {
+			pid++
+			connect(r, pid)
+		}
+		r.step(time.Second)
+	}
+	if lines := strings.Count(j.String(), "\n") - before; lines > 4 || len(j.String()) > 4096 {
+		t.Fatalf("%d lines, %d bytes in the journal for %d reconnects:\n%s", lines, len(j.String()), pid-1000, j)
+	}
+}
+
+// A health record larger than the store takes must not block the ones behind it, loss records included;
+// it is counted and journaled by kind and size, and a refusal's count and uid go to its gave_way record.
 func TestAnOversizedHealthRecordDoesNotBlockTheQueue(t *testing.T) {
 	r := newRig(t)
 	j := &journal{}
@@ -1363,14 +1440,125 @@ func TestAnOversizedHealthRecordDoesNotBlockTheQueue(t *testing.T) {
 	r.start(nil)
 	r.settle()
 	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 21, noon, []byte("dropped")))
+	r.w.Refusals.add(time.Unix(0, noon), 4545, errors.New(strings.Repeat("e", store.MaxHealthBytes)))
 	for range 10 {
 		r.step(statsEvery)
 	}
-	if len(r.st.kinds("lost")) == 0 || len(r.st.kinds("stats")) == 0 {
-		t.Fatalf("committed %d loss and %d stats records behind an oversized one", len(r.st.kinds("lost")), len(r.st.kinds("stats")))
+	stats := r.st.kinds("stats")
+	if len(r.st.kinds("lost")) == 0 || len(stats) == 0 || stats[len(stats)-1]["lost_health"] != 2.0 {
+		t.Fatalf("committed %d loss records and stats %v behind an oversized one", len(r.st.kinds("lost")), stats)
 	}
-	if !strings.Contains(j.String(), "too large") {
-		t.Fatal("the oversized record left no trace in the journal")
+	gave := r.st.kinds("gave_way")
+	if len(gave) != 1 || gave[0]["of"] != "refused" || gave[0]["count"] != 1.0 || gave[0]["last_uid"] != 4545.0 {
+		t.Fatalf("gave_way records %v", gave)
+	}
+	if !strings.Contains(j.String(), "too large") || !strings.Contains(j.String(), "kind=started") ||
+		strings.Contains(j.String(), "rrrr") || strings.Contains(j.String(), "eeee") {
+		t.Fatalf("the oversized records must leave their kind and size in the journal, never their body:\n%s", j)
+	}
+}
+
+// Close may return a seal with its error (store.Close): the records the seal holds are not counted lost,
+// and the health records handed over are sent to the next store, not lost.
+func TestASealWithAFailedCloseCommitsItsRecords(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.w.Losses.Add(StageQueue, rawrecord.New(0, "laurel", 80, noon, []byte("dropped")))
+	r.step(0) // the loss record goes to the store, uncommitted
+	r.push(event(81, ""))
+	until(t, func() bool { r.st.mu.Lock(); defer r.st.mu.Unlock(); return len(r.st.appended) == 1 })
+	r.st.set(func(s *fakeStore) { s.failAppend, s.sealClose = true, true })
+	r.push(event(82, "")) // its Append fails; Close seals record 81 and fails
+	r.step(0)
+	if l := r.last.pending[StageStore]; l.Count != 1 || l.FirstSeq != 82 {
+		t.Fatalf("pending loss %+v, want record 82 only", r.last.pending)
+	}
+	r.st.set(func(s *fakeStore) { s.failAppend, s.sealClose = false, false })
+	reopenAfterFailure(r)
+	var lost []string
+	for _, l := range r.st.kinds("lost") {
+		lost = append(lost, fmt.Sprintf("%v %v %v", l["stage"], l["first_seq"], l["count"]))
+	}
+	slices.Sort(lost)
+	if fmt.Sprint(lost) != "[queue 80 1 store 82 1]" || len(r.st.committed) != 1 {
+		t.Fatalf("loss records %v, %d records committed", lost, len(r.st.committed))
+	}
+}
+
+// At stop a flush that fails before Close returns a seal with its error: the sealed records are not lost.
+func TestASealWithAFailedCloseAtStopCountsNothingItHolds(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.flushOnly, s.sealClose = true, true })
+	r.push(event(91, ""))
+	until(t, func() bool { r.st.mu.Lock(); defer r.st.mu.Unlock(); return len(r.st.appended) == 1 })
+	close(r.stop)
+	err := <-r.done
+	r.done <- nil
+	if err == nil || len(r.st.committed) != 1 || r.w.lost != 0 || len(r.w.pending) != 0 || strings.Contains(j.String(), `records="{Count:1`) {
+		t.Fatalf("Run = %v, %d committed, %d counted lost, pending %v, log:\n%s", err, len(r.st.committed), r.w.lost, r.w.pending, j)
+	}
+}
+
+// While the store takes no health record, reconnects that give way add up in one gave_way record, which
+// makes no record give way itself and is stored at stop, accounting for every reconnect with those kept.
+func TestReconnectsThatGaveWayAreStoredAtStop(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	const flood = 2 * maxNotes
+	for pid := range flood {
+		connect(r, 5000+pid)
+		r.step(0)
+	}
+	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	kept := 0
+	for _, c := range r.st.kinds("connection") {
+		if c["laurel_pid"].(float64) >= 5000 {
+			kept++
+		}
+	}
+	gave := r.st.kinds("gave_way")
+	if len(gave) != 1 || gave[0]["of"] != "connection" || int(gave[0]["count"].(float64))+kept != flood {
+		t.Fatalf("%d of %d reconnects kept, gave_way records %v", kept, flood, gave)
+	}
+}
+
+// At stop the store takes a bounded number of health records per Flush; it flushes until every waiting
+// record is stored, so none is left to the journal.
+func TestStopStoresEveryWaitingRecord(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	for pid := range maxNotes - 20 {
+		connect(r, 3000+pid)
+		r.step(0)
+	}
+	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	stored := 0
+	for _, c := range r.st.kinds("connection") {
+		if c["laurel_pid"].(float64) >= 3000 {
+			stored++
+		}
+	}
+	if stored != maxNotes-20 || len(r.st.kinds("stopping")) != 1 {
+		t.Fatalf("%d of %d connection records stored at stop, stopping records %d", stored, maxNotes-20, len(r.st.kinds("stopping")))
 	}
 }
 
