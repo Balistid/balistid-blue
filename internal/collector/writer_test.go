@@ -465,21 +465,36 @@ func TestStartRestartReexecToldApart(t *testing.T) {
 	l := &Links{}
 	for _, pid := range []int{10, 10, 11} {
 		l.Connected(pid)
-		l.Disconnected()
+		l.Disconnected(nil)
 	}
-	events, dropped, connected := l.take()
-	var causes []string
-	for _, e := range events {
-		causes = append(causes, e.cause)
+	l.Disconnected(errors.New("connection reset"))
+	c, connected := l.take()
+	if fmt.Sprint(c.causes) != "map[collector-start:1 eof:3 laurel-restart:1 read-error:1 reconnect:1]" || connected {
+		t.Fatalf("causes %v, connected %v", c.causes, connected)
 	}
-	if strings.Join(causes, " ") != "collector-start eof reconnect eof laurel-restart eof" || dropped != 0 || connected {
-		t.Fatalf("causes %v, dropped %d, connected %v", causes, dropped, connected)
+	if fmt.Sprint(c.pids["eof"]) != "map[10:2 11:1]" || c.lastPID != 11 || c.lastCause != "read-error" {
+		t.Fatalf("pids %v, last %d %s", c.pids, c.lastPID, c.lastCause)
 	}
-	for range maxLinkEvents + 3 {
-		l.Connected(12)
+}
+
+// More connection changes between two ticks than pids kept are all counted, by cause.
+func TestLinksCountEveryChangeBetweenTwoTicks(t *testing.T) {
+	l := &Links{}
+	const pairs = 3 * maxLinkPIDs
+	for pid := range pairs {
+		l.Connected(100 + pid)
+		l.Disconnected(nil)
 	}
-	if events, dropped, _ := l.take(); len(events) != maxLinkEvents || dropped != 3 {
-		t.Fatalf("kept %d events, dropped %d", len(events), dropped)
+	c, _ := l.take()
+	var listed uint64
+	for _, m := range c.pids {
+		for _, n := range m {
+			listed += n
+		}
+	}
+	if c.causes["laurel-restart"] != pairs-1 || c.causes["eof"] != pairs || listed+c.pidsDropped != 2*pairs ||
+		len(c.pids["eof"]) != maxLinkPIDs || c.lastPID != 100+pairs-1 {
+		t.Fatalf("causes %v, %d listed, %d dropped, %d eof pids, last %d", c.causes, listed, c.pidsDropped, len(c.pids["eof"]), c.lastPID)
 	}
 }
 
@@ -499,7 +514,7 @@ func TestEOFUnknownUntilProbeOnTheNextConnection(t *testing.T) {
 	if health(r) != "OK" {
 		t.Fatalf("health %q after the probe was stored", health(r))
 	}
-	r.w.Links.Disconnected()
+	r.w.Links.Disconnected(nil)
 	r.step(0)
 	if health(r) != "UNKNOWN laurel-disconnected" {
 		t.Fatalf("health %q after EOF", health(r))
@@ -818,7 +833,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 	r.st.set(func(s *fakeStore) { s.failFlush = true })
 	r.step(0) // Flush and Close fail: the record comes back, the store is down
 	r.step(time.Minute)
-	minute := strings.Count(j.String(), "lost_queue:1")
+	minute := strings.Count(j.String(), "lost_waiting=\"map[queue:[{Count:1 Bytes:7 FirstSeq:21 LastSeq:21")
 	if minute == 0 {
 		t.Fatalf("no loss record in the journal while the store is down:\n%s", j)
 	}
@@ -827,7 +842,7 @@ func TestLossRecordsWaitingWhileDownReachTheJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.done <- nil
-	if n := strings.Count(j.String(), "lost_queue:1"); n <= minute {
+	if n := strings.Count(j.String(), "lost_not_stored=\"map[queue:[{Count:1 Bytes:7 FirstSeq:21 LastSeq:21"); n == 0 {
 		t.Fatalf("the loss record was not journaled at stop:\n%s", j)
 	}
 }
