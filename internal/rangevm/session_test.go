@@ -335,17 +335,22 @@ func TestToolEnvIsExactlyTheAllowlist(t *testing.T) {
 	for k, v := range map[string]string{"GOFLAGS": "-toolexec=/tmp/x", "GOROOT": "/tmp/goroot", "GOCACHE": "/tmp/cache",
 		"LD_PRELOAD": "/tmp/x.so", "GIT_DIR": "/tmp/repo", "TMPDIR": "/tmp/shared", "XDG_CACHE_HOME": "/tmp/cache",
 		"GOPROXY": "http://evil,direct", "GOMODCACHE": "/tmp/mod", "GONOSUMDB": "*", "GOPRIVATE": "*", "GOINSECURE": "*",
-		"GOSUMDB": "off", "GOVCS": "*:all", "https_proxy": "http://proxy:3128"} {
+		"GOSUMDB": "off", "GOVCS": "*:all", "https_proxy": "http://proxy:3128", "HTTPS_PROXY": "http://proxy:3129"} {
 		t.Setenv(k, v)
 	}
 	home := filepath.Join(stage, "home")
 	// The mirror alone, spelled out so a change of moduleProxy fails here too.
-	want := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+	goWant := []string{"PATH=/usr/bin", "HOME=" + home, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CEILING_DIRECTORIES=" + stage, "GOENV=off", "GOCACHE=" + filepath.Join(home, "gocache"),
 		"GOMODCACHE=" + filepath.Join(home, "gomod"), "GOPROXY=https://proxy.golang.org", "GOSUMDB=sum.golang.org", "GOTOOLCHAIN=local", "GOWORK=off",
-		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0", "TMPDIR=" + filepath.Join(stage, "tmp"),
-		"https_proxy=http://proxy:3128"}
-	cmd := newTool(t.Context(), stage, defaultBuild().proxy, io.Discard)("/", "/usr/bin/true")
+		"GOFLAGS=-mod=readonly -buildvcs=false", "CGO_ENABLED=0", "TMPDIR=" + filepath.Join(stage, "tmp")}
+	// go gets no proxy variable; makepkg and mkosi keep the caller's, which choose their network path.
+	cmd := newGoTool(t.Context(), stage, defaultBuild().proxy, io.Discard)("/", "/usr/bin/true")
+	if !slices.Equal(cmd.Env, goWant) {
+		t.Fatalf("go environment\n got %q\nwant %q", cmd.Env, goWant)
+	}
+	want := append(slices.Clone(goWant), "https_proxy=http://proxy:3128", "HTTPS_PROXY=http://proxy:3129")
+	cmd = newTool(t.Context(), stage, defaultBuild().proxy, io.Discard)("/", "/usr/bin/true")
 	if !slices.Equal(cmd.Env, want) {
 		t.Fatalf("tool environment\n got %q\nwant %q", cmd.Env, want)
 	}
@@ -513,7 +518,7 @@ func TestGuestBuildRunsNoGitAboveTheStage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	tool := newTool(t.Context(), stage, moduleProxy, io.Discard)
+	tool := newGoTool(t.Context(), stage, moduleProxy, io.Discard)
 	build := tool(src, "/usr/bin/go", "build", "-o", filepath.Join(stage, "bin"), ".")
 	build.Env = append(build.Env, "GOCACHE="+goCache(t)) // a warm cache keeps the test fast
 	if err := build.Run(); err != nil {
@@ -1329,8 +1334,13 @@ func replacingRepo(t *testing.T, goSum, replace string, files map[string]string)
 // must still be removed.
 func buildWithProxy(t *testing.T, root, commit, proxy string) (string, error) {
 	t.Helper()
+	return buildInCache(t, t.TempDir(), root, commit, proxy)
+}
+
+// buildInCache is buildWithProxy with cache as the build cache, which holds the stage.
+func buildInCache(t *testing.T, cache, root, commit, proxy string) (string, error) {
+	t.Helper()
 	requireHostGo(t)
-	cache := t.TempDir()
 	f, err := os.CreateTemp(t.TempDir(), "log")
 	if err != nil {
 		t.Fatal(err)
@@ -1359,7 +1369,7 @@ func TestStageGoHasTelemetryOff(t *testing.T) {
 	if err := prepareStage(stage); err != nil {
 		t.Fatal(err)
 	}
-	cmd := newTool(t.Context(), stage, moduleProxy, io.Discard)(stage, "/usr/bin/go", "env", "GOTELEMETRY")
+	cmd := newGoTool(t.Context(), stage, moduleProxy, io.Discard)(stage, "/usr/bin/go", "env", "GOTELEMETRY")
 	cmd.Stdout = nil
 	out, err := cmd.Output()
 	if err != nil || strings.TrimSpace(string(out)) != "off" {
@@ -1428,13 +1438,63 @@ func TestBuildRefusesAPathReplace(t *testing.T) {
 	}
 }
 
-// A replace by a module version still fetches from the proxy and checks go.sum, so it builds.
-func TestBuildAllowsAVersionReplace(t *testing.T) {
+// A replace by a module version is not refused. It only tests the refusal: the replaced v0.9.0 is
+// never selected (MVS takes the required v1.0.0), so the replace changes nothing in the build.
+func TestBuildDoesNotRefuseAVersionReplace(t *testing.T) {
 	zipped := fixtureZip(fixtureSource)
 	root, commit := replacingRepo(t, fixtureSum(zipped, false), fixturePath+" v0.9.0 => "+fixturePath+" "+fixtureVersion, nil)
 	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
 	if err == nil || !strings.Contains(err.Error(), "image file") {
 		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// T34: an export without a go.mod would make go use one above the stage, which an agent at the
+// same uid can plant, and compile host files into the guest. The build refuses it before go build
+// runs; the planted package does not compile, so a go build that ran fails the guest build instead.
+func TestBuildRefusesAGoModAboveTheExport(t *testing.T) {
+	root, git := testRepo(t)
+	guest := filepath.Join(root, "cmd", "balistid-range-guest")
+	if err := os.MkdirAll(guest, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(guest, "main.go"), []byte("package main\n\nimport _ \"m/planted\"\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git("add", ".")
+	git("commit", "-q", "-m", "no go.mod")
+	cache := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cache, "planted"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"go.mod": "module m\n\ngo 1.24\n", "planted/planted.go": "package planted\n\nconst X =\n"} {
+		if err := os.WriteFile(filepath.Join(cache, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log, err := buildInCache(t, cache, root, git("rev-parse", "HEAD"), fileProxy(t, fixtureZip(fixtureSource)))
+	if err == nil || !strings.Contains(err.Error(), "not the export's own") || strings.Contains(err.Error(), "build guest program") {
+		t.Fatalf("build = %v, want the go.mod above the export refused before go build; log:\n%s", err, log)
+	}
+}
+
+// T34: go reaches only the configured module proxy, never through an HTTP proxy from the caller's
+// environment. Neither address is served: go never proxies a loopback address but does proxy
+// 0.0.0.0, so a go that took the proxy variables reports a proxyconnect error, one that did not a
+// refused connection to 0.0.0.0. No network is used.
+func TestGoUsesNoHTTPProxy(t *testing.T) {
+	for _, k := range proxyEnv {
+		v := "http://127.0.0.1:9"
+		if strings.EqualFold(k, "no_proxy") {
+			v = ""
+		}
+		t.Setenv(k, v)
+	}
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	log, err := buildWithProxy(t, root, commit, "https://0.0.0.0:1")
+	if err == nil || !strings.Contains(err.Error(), "build guest program") || strings.Contains(log, "proxyconnect") || !strings.Contains(log, "0.0.0.0:1") {
+		t.Fatalf("build = %v, want a direct, refused connection to the module proxy; log:\n%s", err, log)
 	}
 }
 
