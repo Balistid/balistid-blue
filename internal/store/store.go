@@ -56,7 +56,8 @@ const ownSlack = 4096 + 24
 // Health records are small and their queue bounded, so a collector bug cannot fill memory or the
 // reserve with them.
 const (
-	maxHealthBytes  = 4 << 10
+	// MaxHealthBytes is the largest health record NoteHealth takes.
+	MaxHealthBytes  = 4 << 10
 	maxHealthQueued = 64
 )
 
@@ -574,11 +575,11 @@ func (s *Store) free() error {
 // Health is "" while the store can keep and count records, otherwise why not (UNKNOWN, ADR 0005).
 func (s *Store) Health() string { return s.unknown }
 
-// NoteHealth queues a health record (JSON with a schema_version, at most maxHealthBytes) for the next
+// NoteHealth queues a health record (JSON with a schema_version, at most MaxHealthBytes) for the next
 // Flush; the collector calls it when the state it reports changes (ADR 0013, point 1). It refuses a
 // larger record or a full queue, which only a collector that stopped flushing can cause.
 func (s *Store) NoteHealth(data []byte) error {
-	if len(data) > maxHealthBytes || len(s.health) >= maxHealthQueued {
+	if len(data) > MaxHealthBytes || len(s.health) >= maxHealthQueued {
 		return fmt.Errorf("store: health record of %d bytes with %d queued refused", len(data), len(s.health))
 	}
 	var v struct {
