@@ -111,13 +111,15 @@ func readOne(ctx context.Context, r *Reader, links *Links, c Conn, log *slog.Log
 		case <-done:
 		}
 	}()
-	if err := r.ReadConn(context.WithoutCancel(ctx), c); err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
-		log.Error("connection ended", "pid", c.Peer.PID, "err", err)
+	// A read error is counted with the connection's end, not logged per connection: Laurel can flap.
+	err := r.ReadConn(context.WithoutCancel(ctx), c)
+	if errors.Is(err, os.ErrDeadlineExceeded) { // the stop deadline, not a failure
+		err = nil
 	}
 	close(done)
 	wg.Wait()
 	if err := c.Close(); err != nil {
 		log.Error("connection close failed", "err", fmt.Errorf("collector: %w", err))
 	}
-	links.Disconnected()
+	links.Disconnected(err)
 }
