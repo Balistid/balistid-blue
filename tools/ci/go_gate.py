@@ -52,7 +52,8 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
 
 # The binaries (the range launcher and guest, the runner and the client root installs, ADR 0011) and the
 # image inputs of session.go (imageFiles, range/, packaging/); change together with ci.yml.
-OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid")
+OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid",
+               "cmd/balistid-collector")
 OWNED_PATHS = ("range", "deploy", "packaging")
 # The store's whole compiled closure (SQLite without cgo, ADR 0003), exactly as go.mod requires it; a
 # module bump moves this list in the same code-owned change. Go checks each module's h1 against go.sum.
