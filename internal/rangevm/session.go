@@ -95,8 +95,8 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 const moduleProxy = "https://proxy.golang.org"
 
 // maxModuleCache bounds the disk the stage's module cache may take after the download (R5): go
-// limits each module zip to 500 MiB but not their total. The collector's closure takes about
-// 255 MB today.
+// limits each module zip to 500 MiB but not their total. The guest needs no module today; the cap
+// is for the first one it does.
 const maxModuleCache = 1 << 30
 
 // buildConfig is what a build takes besides its inputs. Tests shorten the copy limit, serve
@@ -104,7 +104,8 @@ const maxModuleCache = 1 << 30
 type buildConfig struct {
 	copyTimeout time.Duration
 	proxy       string
-	moduleCache int64 // bytes allocated on disk
+	moduleCache int64              // bytes allocated on disk
+	afterCap    func(stage string) // a test seam: runs after the cap, before go build
 }
 
 func defaultBuild() buildConfig {
@@ -167,11 +168,15 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if err := download.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: download modules: %w", err)
 	}
-	if err := capModuleCache(filepath.Join(stage, "home", "gomod"), cfg.moduleCache); err != nil {
+	if err := capModuleCache(moduleCache(stage), cfg.moduleCache); err != nil {
 		return "", err
 	}
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
 	goBuild := goTool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
+	goBuild.Env = append(goBuild.Env, "GOPROXY=off") // the last value wins: nothing past the cap is fetched
+	if cfg.afterCap != nil {
+		cfg.afterCap(stage)
+	}
 	if err := goBuild.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: %w", err)
 	}
@@ -225,19 +230,28 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 const maxGoModJSON = 1 << 20
 
 // capModuleCache fails when the files and directories below dir take more than limit bytes on
-// disk (st_blocks, so a sparse file counts as what it holds). Symbolic links are counted as links,
-// never followed; a hard link counts once per name, which can only overstate. A guest that needs
-// no module leaves no cache.
+// disk (st_blocks, so a sparse file counts as what it holds). Only directories and regular files
+// pass: a link, which go would write through unmeasured, or a special file is refused. A hard link
+// counts once per name, which can only overstate. A guest that needs no module leaves no cache.
 func capModuleCache(dir string, limit int64) error {
-	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+	fi, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
 		return nil
+	case err != nil:
+		return fmt.Errorf("module cache: %w", err)
+	case !fi.IsDir():
+		return fmt.Errorf("module cache %s is not a directory", dir)
 	}
 	var total int64
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		info, err := d.Info() // lstat: WalkDir never follows a link
+		if t := d.Type(); t != 0 && !t.IsDir() { // a link go could write through, or a special file
+			return fmt.Errorf("%s is not a file or directory", path)
+		}
+		info, err := d.Info()
 		if err != nil {
 			return err //nolint:wrapcheck // wrapped once below
 		}
@@ -781,6 +795,9 @@ func toolEnv(stage, proxy string) []string {
 	return env
 }
 
+// moduleCache is the stage's GOMODCACHE, the one directory capModuleCache measures.
+func moduleCache(stage string) string { return filepath.Join(stage, "home", "gomod") }
+
 // goEnv is the whole environment of go in Build: fixed values with caches and temporary files
 // inside stage. Git looks for no repository above the stage, which sits inside the maintainer's
 // home repository. Modules come only from proxy (moduleProxy outside tests), with no HTTP proxy in
@@ -798,7 +815,7 @@ func goEnv(stage, proxy string) []string {
 		"GIT_CEILING_DIRECTORIES=" + stage,
 		"GOENV=off",
 		"GOCACHE=" + filepath.Join(home, "gocache"),
-		"GOMODCACHE=" + filepath.Join(home, "gomod"),
+		"GOMODCACHE=" + moduleCache(stage),
 		"GOPROXY=" + proxy,
 		"GOSUMDB=sum.golang.org",
 		"GOTOOLCHAIN=local",
