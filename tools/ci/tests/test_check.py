@@ -331,13 +331,15 @@ class EndToEndTest(unittest.TestCase):
             self.assertIn(SANDBOX_LINE, lines)
             self.assertRegex(lines[-1], r"; CI also: .*\bunix-socket-tests\b")
 
-    def test_go_test_runs_under_the_memory_limit_and_without_fuzzing(self):
+    def test_go_test_runs_short_under_the_memory_limit_and_without_fuzzing(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = Sandbox(tmp)
-            box.run("--all")
+            _, lines = box.run("--all")
             call = box.calls("go", "test")[0]
             self.assertEqual(call["as"], check.AS_LIMIT)
             self.assertIn("-parallel=2", call["args"])
+            self.assertIn("-short", call["args"])
+            self.assertRegex(lines[-1], r"; CI also: .*\blong-tests\b")
             self.assertTrue(any(a.startswith("-timeout=") for a in call["args"]))
             self.assertFalse(any(a.startswith("-fuzz") for a in call["args"]))
             self.assertNotEqual(box.calls("go", "vet")[0]["as"], check.AS_LIMIT)
