@@ -10,7 +10,8 @@ sockets are denied, so the socket tests skip in a sandbox); every other GO*/CGO_
 variable is dropped. gofmt also gets every changed .go file, whether or not go list sees its package.
 Versions are compared with the pins in ci.yml: golangci-lint must match (FAIL); go is compared without
 a distribution suffix such as -X:nodwarf5, and a difference is a WARN. go test runs under RLIMIT_AS
-and a timeout and never fuzzes (seed corpora only). The last line is the verdict and names the checks
+and a timeout, with -short (a test that skips under it runs only in CI) and never fuzzes (seed
+corpora only). The last line is the verdict and names the checks
 that only CI runs. Not called from githooks: it builds and runs project code, which a hook must not.
 """
 
@@ -280,7 +281,7 @@ def checks(args: argparse.Namespace, state: dict) -> None:
     except (OSError, ValueError) as err:
         problems.append(f"ci.yml: {err}")
         return
-    state["labels"] = ci["ci_only"]
+    state["labels"] = [*ci["ci_only"], "long-tests"]
     sockets = unix_sockets_allowed()
     if not sockets:
         print("sandbox: unix sockets denied, socket tests run only in CI")
@@ -374,7 +375,7 @@ def checks(args: argparse.Namespace, state: dict) -> None:
         step(problems, "golangci-lint", *run([golangci, "run", f"--new-from-rev={base}", *lint_args],
                                              repo, static_env, args.timeout))
     step(problems, "go test", *run(
-        [go, "test", f"-timeout={args.timeout}s", f"-p={TEST_PROCS}", f"-parallel={TEST_PARALLEL}",
+        [go, "test", "-short", f"-timeout={args.timeout}s", f"-p={TEST_PROCS}", f"-parallel={TEST_PARALLEL}",
          *imports], repo, test_env, args.timeout + 60, limit_as=AS_LIMIT))
 
 

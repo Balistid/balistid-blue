@@ -1082,6 +1082,9 @@ func TestOpenRefusesADirectoryOthersCanWrite(t *testing.T) {
 }
 
 func TestOwnRecordsPastTheCapStayWithinCapAndHeadroom(t *testing.T) {
+	if testing.Short() {
+		t.Skip("60000 fsynced flushes, about 7 minutes: CI runs it")
+	}
 	// Loss records past the cap trigger checkpoints too; with the reserve they replace, everything the
 	// store holds must stay within Cap + Headroom. One large shard keeps its WAL, as in production.
 	dir := t.TempDir()
