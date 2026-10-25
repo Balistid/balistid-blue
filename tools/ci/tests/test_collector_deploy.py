@@ -56,7 +56,7 @@ SERVICE = {
     "RestartSec": "1s",
     "User": "balistid-collector",
     "Group": "balistid-collector",
-    "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v1",
+    "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v2",
     "StateDirectory": "balistid/collector",
     "StateDirectoryMode": "0700",
     "UMask": "0077",

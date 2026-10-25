@@ -20,7 +20,7 @@ Restart=always
 RestartSec=1s
 User=balistid-collector
 Group=balistid-collector
-ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v1
+ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v2
 # Open and the canary refuse a directory anyone but the collector could write.
 StateDirectory=balistid/collector
 StateDirectoryMode=0700

@@ -1,5 +1,5 @@
 ## Balistid Blue floor-0 audit rules (ADR 0004). Installed only by balistid-install.
-## version: adr-0004-v1 (the collector's -rule-version names it in its started record)
+## version: adr-0004-v2 (the collector's -rule-version names it in its started record)
 ## -f 1 logs a failure instead of panicking; -r 0 so no rate limit drops records at the kernel. The
 ## backlog is a starting value; step 9.3 measures burst_rate against it.
 -D
@@ -15,6 +15,9 @@
 -a always,exit -F arch=b32 -S ptrace,process_vm_writev -k balistid-inject
 -a always,exit -F arch=b64 -S memfd_create -k balistid-memfd
 -a always,exit -F arch=b32 -S memfd_create -k balistid-memfd
+
+## The collector's canary creates c-<n> here; its record proves the path to the store (ADR 0017, point 2).
+-w /var/lib/balistid/collector/canary -p w -k balistid-canary
 
 ## Last: no rule or state change until reboot.
 -e 2

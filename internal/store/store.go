@@ -177,6 +177,23 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 // line, or a shard still open): its seals are not the whole store.
 var ErrUnindexed = errors.New("store: shards missing from the index")
 
+// UnindexedError is the ErrUnindexed of ReadSeals with what it found, by kind, each list sorted: a
+// reader that knows a newer collector run is writing (the range guest) accepts some and refuses the
+// rest (ADR 0022, point 3).
+type UnindexedError struct {
+	Pending  []string // shards the index does not list
+	Sidecars []string // -wal, -shm or -journal files of those shards
+	Beside   []string // sidecars of indexed shards, which a sealed shard never has
+	Torn     bool     // the index ends in a line without its newline
+}
+
+func (e *UnindexedError) Error() string {
+	return fmt.Sprintf("%v: %v (torn last line: %v)", ErrUnindexed, slices.Sorted(slices.Values(slices.Concat(e.Pending, e.Sidecars, e.Beside))), e.Torn)
+}
+
+// Is makes errors.Is(err, ErrUnindexed) true.
+func (e *UnindexedError) Is(target error) bool { return target == ErrUnindexed }
+
 // maxIndexBytes bounds the index read into memory: about 128 bytes a seal, so over 100000 shards,
 // years of daily shards at the cap. A larger index is refused, not read.
 const maxIndexBytes = 16 << 20
@@ -194,8 +211,8 @@ const indexCheckEvery = 4096
 // checks no owner, so a reader such as the range guest finds the sealed shards for shard.Read after the
 // collector stopped; a dir that group or others can write is refused, as Open refuses it. It holds the entries of dir to the rules Open does (classify): an entry that
 // does not belong in the store, or an indexed shard that is not there, is an error. A shard file the
-// index does not list, or any shard sidecar, makes it fail with ErrUnindexed, along with the seals it did
-// list: Open recovers such a shard or refuses the directory; a reader would silently miss it either way.
+// index does not list, or any shard sidecar, makes it fail with an *UnindexedError, along with the seals it
+// did list: Open recovers such a shard or refuses the directory; a reader would silently miss it either way.
 // A dir that is missing, not a directory or a symlink is an error, not an empty store.
 func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	st, err := os.Lstat(dir)
@@ -221,9 +238,8 @@ func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 		return nil, err
 	}
 	// A sealed shard has no sidecar: a -wal, -shm or -journal file, never listed, holds data no seal covers.
-	if unindexed := slices.Concat(c.pending, c.sidecars, c.beside); torn || len(unindexed) > 0 {
-		slices.Sort(unindexed)
-		return seals, fmt.Errorf("%w: %v (torn last line: %v)", ErrUnindexed, unindexed, torn)
+	if torn || len(c.pending)+len(c.sidecars)+len(c.beside) > 0 {
+		return seals, &UnindexedError{Pending: c.pending, Sidecars: c.sidecars, Beside: c.beside, Torn: torn}
 	}
 	return seals, nil
 }

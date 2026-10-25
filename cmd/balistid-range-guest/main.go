@@ -24,11 +24,11 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
 )
 
 const (
 	resultsDisk   = "/dev/disk/by-id/virtio-balistid-results"
-	laurelLog     = "/var/log/laurel/audit.log"
 	auditdState   = "/run/audit/auditd.state"
 	ioUringSysctl = "/proc/sys/kernel/io_uring_disabled"
 	// sysIoUringSetup is io_uring_setup on x86-64; Go's frozen syscall table predates it.
@@ -105,12 +105,19 @@ func run() error {
 	add("collector_cap_prm", prm)
 	add("collector_cap_eff", eff)
 	add("collector_cap_amb", amb)
-	add("canary", canary(ctx))
 
+	// The canary and the disable come back in one read of the store: each read restarts the collector.
+	canaryToken, err := token("balistid-canary-")
+	if err != nil {
+		return fmt.Errorf("canary: %w", err)
+	}
+	canaryErr := exec.CommandContext(ctx, "/usr/bin/true", canaryToken).Run() //nolint:gosec // our own random token
 	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
-	add("e0_recorded", yesNo(waitFor(func() bool { return inLaurelLog(rangeguest.HasRefusedDisable) })))
-	printLines(laurelLog, "audit_enabled")
+	lines, readErr := laurelLines(ctx, selfTestLines)
+	add("canary", canarySeen(canaryErr, readErr, lines, canaryToken))
+	add("e0_recorded", yesNo(readErr == nil && rangeguest.HasRefusedDisable(bytes.NewReader(lines))))
+	printLines(lines, "audit_enabled")
 
 	add("io_uring_sysctl", readTrim(ioUringSysctl))
 	add("io_uring_off", ioUringSetup())
@@ -175,25 +182,14 @@ func runJob(ctx context.Context, dev string) error {
 	if err := os.WriteFile(jobProgram, job.Program, 0o555); err != nil { //nolint:gosec // read-only, executable by the job user
 		return fmt.Errorf("job program: %w", err)
 	}
-	// The descriptor opened before the job shows whether Laurel rotated the log meanwhile.
-	before, err := os.Open(laurelLog)
-	if err != nil {
-		add(rangevm.FactJobError, "cannot open the Laurel log")
-		return write(facts)
-	}
-	defer before.Close() //nolint:errcheck // read-only
-	offset, err := before.Seek(0, io.SeekEnd)
-	if err != nil {
-		add(rangevm.FactJobError, "cannot read the Laurel log")
-		return write(facts)
-	}
-
-	cmd, ctx, cancel := jobCommand(ctx, job)
+	// The store's clock is this guest's: what it received from here on is the job's window.
+	t0 := time.Now().UnixNano()
+	cmd, jobCtx, cancel := jobCommand(ctx, job)
 	defer cancel()
 	var out cappedBuffer
 	out.left = rangevm.JobOutCap
 	cmd.Stdout, cmd.Stderr = &out, &out
-	result, status := unitResult(ctx, cmd.Run())
+	result, status := unitResult(jobCtx, cmd.Run())
 	add(rangevm.FactJobResult, result)
 	add(rangevm.FactJobExit, status)
 	add(rangevm.FactJobOutCut, yesNo(out.cut))
@@ -201,8 +197,8 @@ func runJob(ctx context.Context, dev string) error {
 		add(rangevm.FactJobOut, c)
 	}
 
-	add("canary", canary(ctx)) // once seen, Laurel has written everything before it
-	window, cut := laurelWindow(before, laurelLog, offset, rangevm.JobLaurelCap)
+	window, cut, err := jobWindow(func(fn func(rawrecord.Record) error) error { return readStore(ctx, fn) }, t0, rangevm.JobLaurelCap)
+	add("canary", readStatus(err))
 	add(rangevm.FactJobLaurelCut, cut)
 	for _, c := range rangeguest.Chunks(window, rangevm.JobChunk) {
 		add(rangevm.FactJobLaurel, c)
@@ -265,28 +261,6 @@ func unitResult(ctx context.Context, runErr error) (result, status string) {
 		return "unknown", "unknown"
 	}
 	return props["Result"], props["ExecMainStatus"]
-}
-
-// laurelWindow returns at most limit bytes the Laurel log gained after offset, and "no" only when
-// that is everything the job caused: a rotation meanwhile ("rotated") may hide records in a file
-// this never reads, and a cut window ("yes") lacks the rest. The host accepts only "no".
-func laurelWindow(before *os.File, path string, offset, limit int64) ([]byte, string) {
-	if _, err := before.Seek(offset, io.SeekStart); err != nil {
-		return nil, "error"
-	}
-	data, err := io.ReadAll(io.LimitReader(before, limit+1))
-	if err != nil {
-		return nil, "error"
-	}
-	old, errOld := before.Stat()
-	now, errNow := os.Stat(path)
-	switch {
-	case errOld != nil || errNow != nil || !os.SameFile(old, now):
-		return nil, "rotated"
-	case int64(len(data)) > limit:
-		return data[:limit], "yes"
-	}
-	return data, "no"
 }
 
 // cappedBuffer keeps the first left bytes written and notes that more came.
@@ -457,15 +431,6 @@ func appendNew(list []string, v string) []string {
 	return append(list, v)
 }
 
-func inLaurelLog(match func(io.Reader) bool) bool {
-	f, err := os.Open(laurelLog)
-	if err != nil {
-		return false
-	}
-	defer f.Close() //nolint:errcheck // read-only file
-	return match(f)
-}
-
 func waitFor(ok func() bool) bool {
 	deadline := time.Now().Add(waitLimit)
 	for time.Now().Before(deadline) {
@@ -477,17 +442,15 @@ func waitFor(ok func() bool) bool {
 	return false
 }
 
-// canary execs a binary with a fresh random argument that must come back through kernel, auditd
-// and Laurel (acceptance canary_interval_s).
-func canary(ctx context.Context) string {
-	token, err := token("balistid-canary-")
-	if err != nil {
-		return "error: " + err.Error()
-	}
-	if err := exec.CommandContext(ctx, "/usr/bin/true", token).Run(); err != nil { //nolint:gosec // the token is our own random hex
-		return "error: " + err.Error()
-	}
-	if waitFor(func() bool { return inLaurelLog(func(r io.Reader) bool { return rangeguest.HasExecArg(r, token) }) }) {
+// canarySeen is "seen" when the canary exec of token is among the Laurel lines the store read gave,
+// "missing" when it is not or the read lacks its barrier, else the error.
+func canarySeen(execErr, readErr error, lines []byte, token string) string {
+	switch {
+	case execErr != nil:
+		return "error: " + execErr.Error()
+	case readErr != nil:
+		return readStatus(readErr)
+	case rangeguest.HasExecArg(bytes.NewReader(lines), token):
 		return "seen"
 	}
 	return "missing"
@@ -583,18 +546,13 @@ func diagnose(ctx context.Context) {
 	}
 }
 
-// printLines prints the lines of path that contain substr to the console (serial.log), capped,
-// so a failed check shows what the sensor actually wrote.
-func printLines(path, substr string) {
-	data, err := os.ReadFile(path) //nolint:gosec // fixed log path
-	if err != nil {
-		fmt.Println("balistid-range-guest:", err)
-		return
-	}
+// printLines prints the Laurel lines that contain substr to the console (serial.log), capped, so a
+// failed check shows what the sensor actually wrote; quoted, so a record cannot forge a console line.
+func printLines(lines []byte, substr string) {
 	printed := 0
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, substr) && printed < 8<<10 {
-			fmt.Printf("balistid-range-guest: %s: %.2000s\n", path, line)
+	for line := range bytes.SplitSeq(lines, []byte("\n")) {
+		if bytes.Contains(line, []byte(substr)) && printed < 8<<10 {
+			fmt.Printf("balistid-range-guest: laurel: %.2000q\n", line)
 			printed += len(line)
 		}
 	}
