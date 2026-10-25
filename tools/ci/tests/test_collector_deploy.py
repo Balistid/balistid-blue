@@ -156,6 +156,13 @@ class CollectorDeployTest(unittest.TestCase):
         for flag in ("store", "canary"):
             self.assertEqual(given[flag], defaults[flag], flag)
 
+    def test_range_only_flags_keep_the_host_defaults(self):
+        # ADR 0022: only the image sets -headroom and -log-commits; their defaults are the host's.
+        main = (REPO / "cmd" / "balistid-collector" / "main.go").read_text()
+        self.assertRegex(main, r'flag\.Int64\("headroom", headroom, ')
+        self.assertRegex(main, r'rawCap, headroom, shardMax = 150 << 30, 2 << 30, 512 << 20\n')
+        self.assertRegex(main, r'flag\.Bool\("log-commits", false, ')
+
     def test_paths_agree_across_files(self):
         service = deployed_service()
         argv = shlex.split(service["ExecStart"][0])

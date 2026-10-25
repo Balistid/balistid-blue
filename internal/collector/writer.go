@@ -364,10 +364,11 @@ func (w *Writer) flush(ctx context.Context) {
 	if len(sealed) > 0 || err == nil {
 		w.committed() // a seal on the way committed what was handed over, even if Flush then failed
 	}
-	w.logCommitted()
 	if err != nil {
-		w.fail(ctx, "store-flush", err)
+		w.fail(ctx, "store-flush", err) // journals what its Close committed
+		return
 	}
+	w.logCommitted()
 }
 
 // committed is called once the store committed everything handed to it: the records, the health
@@ -388,7 +389,7 @@ func (w *Writer) committed() {
 // each Flush and after the Close of a failed store, only once the call returned, so the line never
 // runs ahead of the disk. The Close at stop is not journaled: the range reads that seal itself.
 func (w *Writer) logCommitted() {
-	if !w.LogCommits || w.st == nil {
+	if !w.LogCommits {
 		return
 	}
 	if n := w.st.Committed(); n != w.loggedCommit {

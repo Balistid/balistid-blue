@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -29,7 +30,7 @@ func (l *closingListener) Close() error {
 }
 
 // runCollector starts Run on a fake listener and store; cancel stops it and returns Run's error.
-func runCollector(t *testing.T) (*closingListener, *fakeStore, *sync.Map, func() error) {
+func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *sync.Map, func() error) {
 	t.Helper()
 	ln := &closingListener{fakeListener: make(fakeListener, 2)}
 	st := &fakeStore{}
@@ -41,7 +42,7 @@ func runCollector(t *testing.T) (*closingListener, *fakeStore, *sync.Map, func()
 			Listener: ln, LaurelUID: os.Getuid(), CanaryDir: t.TempDir(),
 			OpenStore: func(context.Context) (Store, error) { return st, nil },
 			Notify:    func(s string) error { notified.Store(s, true); return nil },
-			Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Log:       slog.New(slog.NewTextHandler(log, nil)), LogCommits: true,
 		})
 	}()
 	return ln, st, &notified, func() error {
@@ -58,7 +59,8 @@ func runCollector(t *testing.T) (*closingListener, *fakeStore, *sync.Map, func()
 
 // Lines Laurel already wrote when the collector is told to stop are read, stored and the store closed.
 func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
-	ln, st, notified, stop := runCollector(t)
+	j := &journal{}
+	ln, st, notified, stop := runCollector(t, j)
 	server, client := pair(t)
 	ln.fakeListener <- server
 	for i := 1; i <= 50; i++ {
@@ -76,13 +78,16 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 	if n := len(st.appended) + len(st.committed); n != 50 || st.closed != 1 || len(st.kinds("stopping")) != 1 {
 		t.Fatalf("stored %d of 50 lines, closed %d", n, st.closed)
 	}
+	if !strings.Contains(j.String(), `msg="committed through" seq=50`) { // Config.LogCommits reaches the writer
+		t.Fatalf("no commit line at seq 50:\n%s", j)
+	}
 	if conns := st.kinds("connection"); len(conns) == 0 || conns[0]["causes"].(map[string]any)["collector-start"] != 1.0 {
 		t.Fatalf("connection records %v", conns)
 	}
 }
 
 func TestRunStopsWithLaurelStillConnected(t *testing.T) {
-	ln, _, _, stop := runCollector(t)
+	ln, _, _, stop := runCollector(t, io.Discard)
 	server, _ := pair(t) // Laurel connected, writing nothing
 	ln.fakeListener <- server
 	time.Sleep(50 * time.Millisecond)
