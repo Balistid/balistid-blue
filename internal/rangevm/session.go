@@ -94,15 +94,21 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 // the build gets a module, never which bytes.
 const moduleProxy = "https://proxy.golang.org"
 
-// buildConfig is what a build takes besides its inputs. Tests shorten the copy limit or serve
-// modules from a local proxy; Build and BuildCommit use defaultBuild.
+// maxModuleCache bounds the disk the stage's module cache may take after the download (R5): go
+// limits each module zip to 500 MiB but not their total. The collector's closure takes about
+// 255 MB today.
+const maxModuleCache = 1 << 30
+
+// buildConfig is what a build takes besides its inputs. Tests shorten the copy limit, serve
+// modules from a local proxy or lower the module cache cap; Build and BuildCommit use defaultBuild.
 type buildConfig struct {
 	copyTimeout time.Duration
 	proxy       string
+	moduleCache int64 // bytes allocated on disk
 }
 
 func defaultBuild() buildConfig {
-	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy}
+	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy, moduleCache: maxModuleCache}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -151,6 +157,17 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", err
 	}
 	if err := refusePathReplace(goTool, src); err != nil {
+		return "", err
+	}
+	// Every module the guest needs comes down in this one step, so the cache is measured once,
+	// before go build. go list loads the packages as go build does, under -mod=readonly: a module
+	// missing from go.sum fails here. go mod download would instead ask the checksum database.
+	download := goTool(src, "/usr/bin/go", "list", "-deps", "./cmd/balistid-range-guest")
+	download.Stdout = io.Discard
+	if err := download.Run(); err != nil {
+		return "", fmt.Errorf("build guest program: download modules: %w", err)
+	}
+	if err := capModuleCache(filepath.Join(stage, "home", "gomod"), cfg.moduleCache); err != nil {
 		return "", err
 	}
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
@@ -206,6 +223,38 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 
 // maxGoModJSON caps what `go mod edit -json` may print for the export's go.mod.
 const maxGoModJSON = 1 << 20
+
+// capModuleCache fails when the files and directories below dir take more than limit bytes on
+// disk (st_blocks, so a sparse file counts as what it holds). Symbolic links are counted as links,
+// never followed; a hard link counts once per name, which can only overstate. A guest that needs
+// no module leaves no cache.
+func capModuleCache(dir string, limit int64) error {
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	var total int64
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info() // lstat: WalkDir never follows a link
+		if err != nil {
+			return err //nolint:wrapcheck // wrapped once below
+		}
+		st, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("%s: no file status", path)
+		}
+		if total += st.Blocks * 512; total > limit {
+			return fmt.Errorf("modules take more than %d bytes on disk", limit)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("module cache: %w", err)
+	}
+	return nil
+}
 
 // requireExportModule fails unless go in src uses src/go.mod. An export without one would make go
 // look for a go.mod above the stage, in directories an agent at the same uid can write, and build
