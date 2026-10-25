@@ -47,12 +47,15 @@ const (
 // Laurel keeps after dropping root (ADR 0004).
 const capsLaurel = "0000000000080004"
 
+// capsNone is no capability: the collector runs as its own uid without privilege (ADR 0007, T18).
+const capsNone = "0000000000000000"
+
 // expected is every fact the guest reports besides the kernel, with the one value that passes.
 // Isolation: no interface but loopback and no network-class PCI device (present before any driver
 // binds, so a slow driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
 // Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
-// _laurel with only its two capabilities, a canary through Laurel, -e 2 refusing and recording a
+// _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, -e 2 refusing and recording a
 // disable, io_uring refused with a control that the probe tells both states apart, and a
 // plugin-queue overflow reported while the kernel loses nothing.
 var expected = map[string]string{
@@ -67,6 +70,10 @@ var expected = map[string]string{
 	"laurel_cap_prm":         capsLaurel,
 	"laurel_cap_eff":         capsLaurel,
 	"laurel_cap_amb":         "0000000000000000",
+	"collector_user":         "balistid-collector",
+	"collector_cap_prm":      capsNone,
+	"collector_cap_eff":      capsNone,
+	"collector_cap_amb":      capsNone,
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

@@ -19,14 +19,14 @@ one boot each; QEMU has `-no-reboot` and no second boot; agent programs run unpr
    the run is INVALID. The guest runs the trial's program from the image as root; a job disk with a trial is refused;
    exec is unchanged: agents never choose root code.
 2. Limits are a parameter of each run, recorded in its result; self-test and exec keep 10 min and 1 MiB. A scratch disk
-   sized per trial for the store is a fourth writable run file, inside the size cap and the disk admission.
+   sized per trial for the store is a fourth writable run file, inside the size cap and the disk admission (every run's, ADR 0022).
 3. Failure trials (sysrq `b` for a reset, SIGKILL of the measured writer for kill -9, at a random time under load) use
    one sequential generator. Just before the failure the guest writes a serial line with H, the end of the contiguous
    numbers returned 900 ms earlier; the host stamps it on arrival, and unless QEMU exits (reset) or the guest's kill
    line follows within 100 ms the run is INVALID. Every number up to H must be stored, and with the collector every
    number it acknowledged as committed. Reset keeps `-no-reboot` and no `cache=`: boot 1 syncs its facts (echo, armed)
    before the load; only if they parse and are armed does the host zero the results disk and boot the same run files
-   with phase 2. Boot 2 reads the scratch superblock before mounting it (no fstab or mount unit does): ext4 magic, a
+   with phase 2. Boot 2 reads the scratch superblock before mounting it (the store unit of ADR 0022 does both): ext4 magic, a
    journal and the recovery flag that only a clean unmount clears, or INVALID.
 4. A record is one Laurel line (ADR 0016). The generator numbers every event: in exec argv for `sustained_rate`, as the
    address of `ptrace(PEEKDATA)` of no process for `burst_rate`. Stored numbers are read through one interface; until

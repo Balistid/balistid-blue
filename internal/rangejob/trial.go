@@ -68,28 +68,33 @@ const (
 )
 
 var trials = []Trial{
-	{Name: "rate-sustained", Metric: "sustained_rate", Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Count: 2,
-		Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
-	{Name: "rate-burst", Metric: "burst_rate", Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Count: 3,
+	{Name: "rate-sustained", Metric: "sustained_rate", Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch,
+		Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
+	{Name: "rate-burst", Metric: "burst_rate", Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3,
 		Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
 	{Name: "rate-control-drop", Metric: "sustained_rate", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
-		Count: 1, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30, Drop: true}},
+		Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30, Drop: true}},
 	// Failure controls of crash_loss_ms (ADR 0018, point 4): syncing every 250 ms must keep every
 	// number up to H, a last sync 1500 ms before the reset and records held 2 s before write() under
 	// a kill must lose some.
 	{Name: "reset-control-sync250", Metric: "crash_loss_ms", Expect: ExpectPass, Wall: 5 * time.Minute, Serial: 1 << 20,
-		Boots: 2, Scratch: scratch, Count: 1, Failure: FailReset,
+		Boots: 2, Scratch: StoreScratch, Count: 1, Failure: FailReset,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Sync: 250 * time.Millisecond}}},
 	{Name: "reset-control-lastsync1500", Metric: "crash_loss_ms", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
-		Boots: 2, Scratch: scratch, Count: 1, Failure: FailReset,
+		Boots: 2, Scratch: StoreScratch, Count: 1, Failure: FailReset,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Sync: 250 * time.Millisecond, LastSync: 1500 * time.Millisecond}}},
 	{Name: "kill-control-buffer2s", Metric: "crash_loss_ms", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
-		Boots: 1, Scratch: scratch, Count: 1, Failure: FailKill,
+		Boots: 1, Scratch: StoreScratch, Count: 1, Failure: FailKill,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Hold: 2 * time.Second}}},
 }
 
-// scratch is a failure control's scratch disk: room for ext4, its journal and 40000 records.
-const scratch = 64 << 20
+// Scratch disks for the collector's store (ADR 0022, point 2). StoreScratch holds ext4, the store's
+// 64 MiB reserve, its shards and a failure control's 40000 numbers; a sustained trial stores 1.2
+// million exec records, so it gets rangevm.MaxScratch until a range run measures the bytes per record.
+const (
+	StoreScratch     = 512 << 20
+	sustainedScratch = 4 << 30
+)
 
 // Trials returns a copy of the table.
 func Trials() []Trial { return append([]Trial(nil), trials...) }

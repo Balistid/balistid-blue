@@ -163,6 +163,24 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertRegex(main, r'rawCap, headroom, shardMax = 150 << 30, 2 << 30, 512 << 20\n')
         self.assertRegex(main, r'flag\.Bool\("log-commits", false, ')
 
+    def test_range_drop_in_changes_only_the_store_and_the_range_flags(self):
+        # ADR 0022, point 2: the image's drop-in moves the store to the scratch disk and adds the two range
+        # flags; everything else is the installed argv, and nothing but the store becomes writable.
+        drop_in = parse_unit((REPO / "range" / "balistid-collector-range.conf").read_text())
+        installed = shlex.split(deployed_service()["ExecStart"][0])
+        store = "/var/lib/balistid-range/scratch/store"
+        want = installed[:]
+        want[want.index("-store") + 1] = store
+        want += ["-headroom", "67108864", "-log-commits"]
+        self.assertEqual(set(drop_in), {"Unit", "Service"})
+        self.assertEqual(drop_in["Unit"], {"Requires": ["balistid-range-store.service"],
+                                           "After": ["balistid-range-store.service"]})
+        self.assertEqual(set(drop_in["Service"]), {"ExecStart", "ReadWritePaths"})
+        self.assertEqual(drop_in["Service"]["ExecStart"][0], "")
+        self.assertEqual([shlex.split(v) for v in drop_in["Service"]["ExecStart"][1:]], [want])
+        self.assertEqual(drop_in["Service"]["ReadWritePaths"], [store])
+        self.assertEqual(64 << 20, int(want[want.index("-headroom") + 1]))
+
     def test_paths_agree_across_files(self):
         service = deployed_service()
         argv = shlex.split(service["ExecStart"][0])

@@ -36,7 +36,7 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    `evidence/` (checked). Evidence: only from the timer or install, never a request; it goes first.
 6. Jobs run in that unit (`MemoryMax` without `MemoryHigh`, no swap, `TasksMax`, idle CPU, a wall
    clock). A job starts only above a memory reserve and, on each filesystem it writes, a disk reserve
-   plus the sum of its caps (3x per-file `--fsize`: overlay, results, vars; job disk; kept output);
+   plus the sum of its caps (4x per-file `--fsize`: overlay, results, vars, scratch, ADR 0022; job disk; kept output);
    below the memory reserve it is stopped, and INVALID.
 7. The runner reads a job directory only through an `os.Root`, without blocking: Lstat before
    open, regular files with one link, capped. Results name job, source, image and job disk sha256,

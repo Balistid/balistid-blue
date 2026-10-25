@@ -25,7 +25,7 @@ Team (commit 388942ad) has 423 Linux tests, about 97 % `sh`/`bash`, non-maliciou
    --clearenv --setenv PATH /usr/bin`, read-only `/usr` and base image, a writable run directory
    and `--dev-bind /dev/kvm` only. It cannot reach a listener on the host's 127.0.0.1 and has no view of `$HOME`. It runs
    under `prlimit --fsize` sized to the base's virtual size plus the results disk; hitting the
-   limit is INVALID.
+   limit is INVALID. Every run also has a scratch disk for the collector's store (amended by ADR 0022).
 4. The launcher reads the serial console through a pipe with a byte budget and a wall-clock limit;
    hitting either kills QEMU and makes the run INVALID.
 5. Results: the guest writes one length-prefixed record stream to a raw results disk; the host

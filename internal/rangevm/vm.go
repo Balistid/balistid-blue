@@ -51,9 +51,9 @@ const (
 	setupShown   = 512 // bytes of the overlay step's output kept in its INVALID reason
 )
 
-// Limits of a trial run (ADR 0018, points 1-2): Wall bounds all its boots together, Serial each
-// boot's output; Boots is 2 for a reset trial, whose first boot must arm the reset. Scratch is the
-// size of a writable disk the boots share for the store a trial measures, or 0 for none. Failure
+// Limits of a run (ADR 0018, points 1-2): Wall bounds all its boots together, Serial each boot's
+// output; Boots is 2 for a reset trial, whose first boot must arm the reset. Scratch is the size of
+// the writable disk the boots share for the collector's store, which every run has (ADR 0022). Failure
 // is FailReset or FailKill for a failure trial, whose first boot must mark its failure in time
 // (ADR 0018, point 3), else "".
 type Limits struct {
@@ -74,8 +74,12 @@ const (
 	MaxScratch     = 4 << 30
 )
 
-// runLimits are the self-test's and an exec job's (ADR 0009, point 4).
-var runLimits = Limits{Wall: RunTimeout, Serial: SerialBudget, Boots: 1}
+// runLimits are the self-test's and an exec job's (ADR 0009, point 4), with a store scratch disk the
+// size of a rate trial's (ADR 0022, point 2).
+var runLimits = Limits{Wall: RunTimeout, Serial: SerialBudget, Boots: 1, Scratch: rangejob.StoreScratch}
+
+// RunLimits returns the limits of the self-test and an exec job, for the runner's disk admission.
+func RunLimits() Limits { return runLimits }
 
 // Facts of a trial boot: it opens with the trial and phase it read (ADR 0018, point 1), and a first
 // boot of two says reset_armed=yes before it resets itself.
@@ -97,8 +101,8 @@ func (l Limits) check() error {
 		return fmt.Errorf("trial serial budget must be in (0, %d] bytes", int64(MaxTrialSerial))
 	case l.Boots != 1 && l.Boots != 2:
 		return errors.New("a trial boots once or twice")
-	case l.Scratch < 0 || l.Scratch > MaxScratch:
-		return fmt.Errorf("trial scratch disk must be in [0, %d] bytes", int64(MaxScratch))
+	case l.Scratch <= 0 || l.Scratch > MaxScratch:
+		return fmt.Errorf("trial scratch disk must be in (0, %d] bytes", int64(MaxScratch))
 	case l.Failure != "" && l.Failure != FailReset && l.Failure != FailKill,
 		l.Failure == FailReset && l.Boots != 2, l.Failure == FailKill && l.Boots != 1:
 		return errors.New("a reset trial boots twice, a kill trial once, and nothing else fails")
@@ -114,18 +118,13 @@ func TrialLimits(tr rangejob.Trial) Limits {
 	return Limits{Trial: tr.Name, Wall: tr.Wall, Serial: tr.Serial, Boots: tr.Boots, Scratch: tr.Scratch, Failure: tr.Failure}
 }
 
-// DiskNeed is all a run under l can write in its run directory: a scratch disk is a fourth file and
+// DiskNeed is all a run under l can write in its run directory: the scratch disk is a fourth file and
 // raises the one per-file cap for all four (ADR 0011, point 6; ADR 0018, point 2).
-func (l Limits) DiskNeed(baseSize int64) int64 {
-	if l.Scratch == 0 {
-		return 3 * WriteCap(baseSize)
-	}
-	return 4 * l.fileCap(baseSize)
-}
+func (l Limits) DiskNeed(baseSize int64) int64 { return 4 * l.fileCap(baseSize) }
 
 // sandboxArgv wraps prog in prlimit and bwrap (ADR 0009, point 3): no network, no host $HOME,
-// read-only /usr, base image and run directory, and only the three run files writable, plus a
-// trial's scratch disk (ADR 0018), so the per-file size limit bounds all the disk a compromised
+// read-only /usr, base image and run directory, and only the three run files writable, plus the
+// scratch disk (ADR 0018, 0022), so the per-file size limit bounds all the disk a compromised
 // QEMU can fill; the bwrap root and /dev are remounted read-only, so it has no tmpfs to fill (its
 // memory is bounded only by the host). --core=0 because SIGXFSZ dumps core by default, and a QEMU
 // core holds guest memory.
@@ -354,9 +353,9 @@ func removeRunDir(runDir string, runErr error) error {
 	return errors.Join(runErr, fmt.Errorf("remove run directory: %w", err))
 }
 
-// WriteCap is the size limit of each of the three files QEMU can write (overlay, results, firmware
-// variables) for a base image of baseSize bytes in a run without a scratch disk; prlimit applies it
-// per file, so such a run can write three times this much (Limits.DiskNeed, ADR 0011, point 6).
+// WriteCap is the size limit of each of the three files QEMU can write besides the scratch disk
+// (overlay, results, firmware variables) for a base image of baseSize bytes; prlimit applies the
+// larger of it and the scratch size per file (Limits.DiskNeed, ADR 0011, point 6).
 func WriteCap(baseSize int64) int64 { return baseSize + ResultsBytes }
 
 // readResults treats every problem with the results disk as INVALID: a compromised QEMU can
@@ -382,7 +381,7 @@ func readResults(path string) Outcome {
 }
 
 // prepare writes the zeroed results disk, a private copy of the firmware variables, the empty
-// overlay file that qemu-img fills and a trial's scratch disk; the sandbox can write only these.
+// overlay file that qemu-img fills and the scratch disk; the sandbox can write only these.
 func prepare(runDir string, job []byte, varsTemplate string, scratchBytes int64) error {
 	if job != nil {
 		if err := os.WriteFile(filepath.Join(runDir, jobDisk), job, 0o400); err != nil {

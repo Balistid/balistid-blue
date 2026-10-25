@@ -45,17 +45,18 @@ func TestScratchDiskArgv(t *testing.T) {
 	}
 }
 
-// The self-test and exec jobs keep their limits (ADR 0018, point 2).
+// The self-test and exec jobs keep their limits (ADR 0018, point 2) and gain the store's scratch
+// disk (ADR 0022, point 2).
 func TestRunLimitsAreUnchanged(t *testing.T) {
-	if want := (Limits{Wall: 10 * time.Minute, Serial: 1 << 20, Boots: 1}); runLimits != want {
+	if want := (Limits{Wall: 10 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: 512 << 20}); runLimits != want || RunLimits() != want {
 		t.Errorf("runLimits = %+v, want %+v", runLimits, want)
 	}
 }
 
 func TestDiskNeedCountsEveryFileQEMUCanWrite(t *testing.T) {
 	base := int64(1 << 30)
-	if got, want := runLimits.DiskNeed(base), 3*WriteCap(base); got != want {
-		t.Errorf("without scratch: %d, want %d", got, want)
+	if got, want := runLimits.DiskNeed(base), 4*WriteCap(base); got != want {
+		t.Errorf("self-test and exec: %d, want %d", got, want)
 	}
 	small := Limits{Scratch: 1 << 20}
 	if got, want := small.DiskNeed(base), 4*WriteCap(base); got != want {
@@ -68,7 +69,7 @@ func TestDiskNeedCountsEveryFileQEMUCanWrite(t *testing.T) {
 }
 
 func TestRunTrialRefusesLimitsOutsideTheirRange(t *testing.T) {
-	ok := Limits{Trial: "reset-crash", Wall: time.Minute, Serial: 1 << 20, Boots: 2}
+	ok := Limits{Trial: "reset-crash", Wall: time.Minute, Serial: 1 << 20, Boots: 2, Scratch: 1 << 20}
 	cases := map[string]func(*Limits){
 		"empty name":       func(l *Limits) { l.Trial = "" },
 		"upper case":       func(l *Limits) { l.Trial = "Reset" },
@@ -83,6 +84,7 @@ func TestRunTrialRefusesLimitsOutsideTheirRange(t *testing.T) {
 		"serial overflow":  func(l *Limits) { l.Serial = math.MaxInt64 },
 		"no boot":          func(l *Limits) { l.Boots = 0 },
 		"three boots":      func(l *Limits) { l.Boots = 3 },
+		"no scratch":       func(l *Limits) { l.Scratch = 0 },
 		"negative scratch": func(l *Limits) { l.Scratch = -1 },
 		"huge scratch":     func(l *Limits) { l.Scratch = MaxScratch + 1 },
 		"unknown failure":  func(l *Limits) { l.Failure = "crash" },
@@ -296,8 +298,8 @@ func TestEveryBootMustExitCleanlyAndEchoByName(t *testing.T) {
 	}
 }
 
-// Run boots once with its own limits, no fw_cfg credentials and no scratch disk; a one-boot trial
-// boots once as well.
+// Run boots once with its own limits, the store's scratch disk and no fw_cfg credentials; a one-boot
+// trial boots once as well.
 func TestOneBootRuns(t *testing.T) {
 	for name, c := range map[string]struct {
 		lim    Limits
@@ -316,10 +318,9 @@ func TestOneBootRuns(t *testing.T) {
 		if b.timeout != c.lim.Wall || b.budget != c.lim.Serial {
 			t.Errorf("%s: timeout %s budget %d", name, b.timeout, b.budget)
 		}
-		if c.lim.Trial == "" && slices.ContainsFunc(b.argv, func(a string) bool {
-			return strings.Contains(a, "scratch") || strings.Contains(a, "credentials")
-		}) {
-			t.Errorf("plain run argv has a scratch disk or credential: %q", b.argv)
+		if c.lim.Trial == "" && (slices.ContainsFunc(b.argv, func(a string) bool { return strings.Contains(a, "credentials") }) ||
+			!slices.Contains(b.argv, "virtio-blk-pci,drive=scratch,serial="+scratchID)) {
+			t.Errorf("plain run argv has a credential or lacks the scratch disk: %q", b.argv)
 		}
 	}
 }

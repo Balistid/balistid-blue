@@ -134,7 +134,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tick: image: %w", err)
 	}
-	runs := 3*rangevm.WriteCap(st.Size()) + rangejob.DiskBytes
+	runs := rangevm.RunLimits().DiskNeed(st.Size()) + rangejob.DiskBytes
 	for _, tr := range rangejob.Trials() {
 		runs = max(runs, rangevm.TrialLimits(tr).DiskNeed(st.Size()))
 	}
