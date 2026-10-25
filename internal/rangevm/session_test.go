@@ -1494,6 +1494,74 @@ func TestModuleCacheCapWithoutModules(t *testing.T) {
 	}
 }
 
+// The cap counts allocated blocks, refuses a cache it cannot walk whole (R6) and one reached
+// through a link, whose target it would not measure.
+func TestModuleCacheCapCountsBlocksAndRefusesWhatItCannotRead(t *testing.T) {
+	sparse := t.TempDir()
+	hole := filepath.Join(sparse, "sparse")
+	if err := errors.Join(os.WriteFile(hole, nil, 0o600), os.Truncate(hole, 1<<30)); err != nil {
+		t.Fatal(err)
+	}
+	if err := capModuleCache(sparse, 1<<20); err != nil {
+		t.Errorf("a sparse 1 GiB file under a 1 MiB cap = %v, want nil", err)
+	}
+
+	unreadable := t.TempDir()
+	sub := filepath.Join(unreadable, "sub")
+	if err := os.Mkdir(sub, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) }) //nolint:gosec // lets TempDir remove it
+	if err := capModuleCache(unreadable, 1<<30); err == nil {
+		t.Error("a cache with an unreadable directory passed")
+	}
+
+	target := t.TempDir()
+	if err := os.WriteFile(filepath.Join(target, "big"), bytes.Repeat([]byte("x"), 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "gomod")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := capModuleCache(link, 1<<30); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("a linked cache = %v, want it refused", err)
+	}
+	if err := capModuleCache(filepath.Join(target, "big"), 1<<30); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("a file as the cache = %v, want it refused", err)
+	}
+	for name, create := range map[string]func(string) error{
+		"link": func(p string) error { return os.Symlink(target, p) },
+		"fifo": func(p string) error { return syscall.Mkfifo(p, 0o600) },
+	} {
+		dir := t.TempDir()
+		if err := create(filepath.Join(dir, "entry")); err != nil {
+			t.Fatal(err)
+		}
+		if err := capModuleCache(dir, 1<<30); err == nil || !strings.Contains(err.Error(), "not a file or directory") {
+			t.Errorf("a %s in the cache = %v, want it refused", name, err)
+		}
+	}
+}
+
+// go build runs with GOPROXY=off: a module missing after the cap fails the build instead of
+// coming down unmeasured.
+func TestBuildFetchesNothingAfterTheCap(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	cfg := defaultBuild()
+	cfg.proxy = fileProxy(t, zipped)
+	cfg.afterCap = func(stage string) {
+		if err := os.Rename(moduleCache(stage), moduleCache(stage)+".gone"); err != nil {
+			t.Error(err)
+		}
+	}
+	log, err := buildWith(t, t.TempDir(), root, commit, cfg)
+	if err == nil || !strings.Contains(err.Error(), "build guest program") || !strings.Contains(log, "GOPROXY=off") {
+		t.Fatalf("build without its modules after the cap = %v, want go build to fail offline; log:\n%s", err, log)
+	}
+}
+
 // A cache reached through a symbolic link (a linked ~/.cache or XDG_CACHE_HOME) builds: go names
 // the export's go.mod by its real path, and the module check accepts that spelling.
 func TestBuildThroughASymlinkedCache(t *testing.T) {
