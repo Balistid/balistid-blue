@@ -1,0 +1,15 @@
+# Range image only (ADR 0022, point 2): mounts the run's scratch disk for the collector's store before the
+# collector starts. It formats only in a run's first boot; a reset's second boot reads the superblock first.
+[Unit]
+Description=Balistid Blue range: the scratch disk for the collector's store
+DefaultDependencies=no
+Requires=dev-disk-by\x2did-virtio\x2dbalistid\x2dscratch.device
+After=dev-disk-by\x2did-virtio\x2dbalistid\x2dscratch.device systemd-sysusers.service
+Before=balistid-collector.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A trial's name and boot phase (ADR 0018, point 1): the mount and the format depend on them.
+ImportCredential=balistid.*
+ExecStart=/usr/lib/balistid-range/guest store-setup

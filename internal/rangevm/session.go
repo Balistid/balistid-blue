@@ -39,20 +39,33 @@ const (
 // of the image, does not change with the build time.
 const sourceDateEpoch = "1790899200"
 
-// imageFiles are copied from the checked tree into the image: the guest unit and the floor-0 sensor
-// configuration exactly as balistid-install will place it on a host (ADR 0004).
+// imageFiles are copied from the checked tree into the image: the guest units, and the floor-0 sensor
+// and the collector exactly as balistid-install will place them on a host (ADR 0004, 0022), changed only
+// by the range drop-in of the collector (ADR 0022, point 2).
 // The CI gate checks these sources are code-owned (OWNED_PATHS, tools/ci/go_gate.py): change both.
 var imageFiles = []struct {
 	src, dst string
 	mode     os.FileMode
 }{
 	{"range/balistid-range-guest.service", "usr/lib/systemd/system/balistid-range-guest.service", 0o644},
+	{"range/balistid-range-store.service", "usr/lib/systemd/system/balistid-range-store.service", 0o644},
+	{"range/balistid-collector-range.conf", "usr/lib/systemd/system/balistid-collector.service.d/range.conf", 0o644},
 	{"range/balistid-job.conf", "usr/lib/sysusers.d/balistid-job.conf", 0o644},
+	{"deploy/collector/balistid-collector.service", "usr/lib/systemd/system/balistid-collector.service", 0o644},
+	{"deploy/collector/balistid-collector.socket", "usr/lib/systemd/system/balistid-collector.socket", 0o644},
+	{"deploy/collector/sysusers.conf", "usr/lib/sysusers.d/balistid-collector.conf", 0o644},
+	{"deploy/collector/tmpfiles.conf", "usr/lib/tmpfiles.d/balistid-collector.conf", 0o644},
 	{"deploy/audit/balistid.rules", "etc/audit/rules.d/balistid.rules", 0o640},
 	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
 	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},
 	{"deploy/laurel/config.toml", "etc/laurel/config.toml", 0o644},
 	{"deploy/sysctl/balistid.conf", "etc/sysctl.d/90-balistid.conf", 0o644},
+}
+
+// imagePrograms are built from the export into the image, at the paths their units name.
+var imagePrograms = []struct{ name, pkg, dst string }{
+	{"guest program", "./cmd/balistid-range-guest", "usr/lib/balistid-range/guest"},
+	{"collector program", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
 }
 
 // proxyEnv are the only variables makepkg and mkosi inherit besides their own paths: network
@@ -95,8 +108,8 @@ func Build(ctx context.Context, root, cache string, log io.Writer) (image string
 const moduleProxy = "https://proxy.golang.org"
 
 // maxModuleCache bounds the disk the stage's module cache may take after the download (R5): go
-// limits each module zip to 500 MiB but not their total. The guest needs no module today; the cap
-// is for the first one it does.
+// limits each module zip to 500 MiB but not their total. The collector's SQLite (modernc.org) is
+// what the image needs today.
 const maxModuleCache = 1 << 30
 
 // buildConfig is what a build takes besides its inputs. Tests shorten the copy limit, serve
@@ -160,10 +173,14 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if err := refusePathReplace(goTool, src); err != nil {
 		return "", err
 	}
-	// Every module the guest needs comes down in this one step, so the cache is measured once,
-	// before go build. go list loads the packages as go build does, under -mod=readonly: a module
+	// Every module the image's programs need comes down in this one step, so the cache is measured
+	// once, before go build. go list loads the packages as go build does, under -mod=readonly: a module
 	// missing from go.sum fails here. go mod download would instead ask the checksum database.
-	download := goTool(src, "/usr/bin/go", "list", "-deps", "./cmd/balistid-range-guest")
+	list := []string{"list", "-deps"}
+	for _, p := range imagePrograms {
+		list = append(list, p.pkg)
+	}
+	download := goTool(src, "/usr/bin/go", list...)
 	download.Stdout = io.Discard
 	if err := download.Run(); err != nil {
 		return "", fmt.Errorf("build guest program: download modules: %w", err)
@@ -172,13 +189,15 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", err
 	}
 	tree, pkgs := filepath.Join(stage, "tree"), filepath.Join(stage, "pkg")
-	goBuild := goTool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, "usr/lib/balistid-range/guest"), "./cmd/balistid-range-guest")
-	goBuild.Env = append(goBuild.Env, "GOPROXY=off") // the last value wins: nothing past the cap is fetched
 	if cfg.afterCap != nil {
 		cfg.afterCap(stage)
 	}
-	if err := goBuild.Run(); err != nil {
-		return "", fmt.Errorf("build guest program: %w", err)
+	for _, p := range imagePrograms {
+		goBuild := goTool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, p.dst), p.pkg)
+		goBuild.Env = append(goBuild.Env, "GOPROXY=off") // the last value wins: nothing past the cap is fetched
+		if err := goBuild.Run(); err != nil {
+			return "", fmt.Errorf("build %s: %w", p.name, err)
+		}
 	}
 	for _, f := range imageFiles {
 		if err := copyInto(filepath.Join(src, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -21,11 +22,10 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
-// A failure trial's scratch disk, the file its measured writer appends to, the console its marks go
-// to directly (the unit's own output goes through the journal first), and the sysrq trigger.
+// The file a failure trial's measured writer appends to, beside the collector's store on the scratch
+// disk, the console its marks go to directly (the unit's own output goes through the journal first),
+// and the sysrq trigger.
 const (
-	scratchDev   = "/dev/disk/by-id/virtio-balistid-scratch"
-	scratchMount = "/run/balistid-scratch"
 	numbersFile  = scratchMount + "/numbers"
 	consoleDev   = "/dev/ttyS0"
 	sysrqTrigger = "/proc/sysrq-trigger"
@@ -34,39 +34,26 @@ const (
 
 var errFailNow = errors.New("failure moment reached")
 
-// runFailure runs boot `boot` of failure trial tr (ADR 0018, point 3). Boot 1 makes ext4 on the
-// scratch disk, mounts it, and for a reset reports its echo and reset_armed=yes before any load, so
-// the host can boot again; it then hands numbers to the measured writer, a child process, at the
-// trial's rate, and at a random moment in the load's second half writes "balistid-fail <H> <S>" to
-// the console (S: what the writer had synced, ADR 0019) and resets with sysrq b, or kills the writer
-// and writes "balistid-killed". After a reset
-// boot 2 reads the superblock before anything mounts the disk. Both report what the file holds.
+// runFailure runs boot `boot` of failure trial tr (ADR 0018, point 3) on the scratch disk store-setup
+// mounted. Boot 1, for a reset, reports its echo and reset_armed=yes before any load, so the host can
+// boot again; it then hands numbers to the measured writer, a child process, at the trial's rate, and
+// at a random moment in the load's second half writes "balistid-fail <H> <S>" to the console (S: what
+// the writer had synced, ADR 0019) and resets with sysrq b, or kills the writer and writes
+// "balistid-killed". After a reset boot 2 reports the superblock store-setup read before the mount.
+// Both report what the file holds.
 func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) error {
 	r := &report{facts: facts, send: write}
 	add, fail := r.add, r.fail
-	if !waitFor(func() bool { _, err := os.Stat(scratchDev); return err == nil }) {
-		return fail("no scratch disk")
+	if !mounted(scratchMount) {
+		return fail("scratch disk not mounted")
 	}
 	if boot == 2 {
-		head := make([]byte, rangeguest.SuperblockEnd)
-		if err := readHead(scratchDev, head); err != nil {
+		if err := r.superblock(superblockFile); err != nil {
 			return fail("superblock: " + err.Error())
-		}
-		journal, recovery, err := rangeguest.Superblock(head)
-		if err != nil {
-			return fail("superblock: " + err.Error())
-		}
-		add(rangevm.FactScratchJournal, yesNo(journal))
-		add(rangevm.FactScratchRecovery, yesNo(recovery))
-		if err := mountScratch(); err != nil {
-			return fail(err.Error())
 		}
 		return r.stored(numbersFile)
 	}
-	if out, err := exec.CommandContext(ctx, "/usr/bin/mkfs.ext4", "-q", "-F", scratchDev).CombinedOutput(); err != nil {
-		return fail(fmt.Sprintf("mkfs: %v: %.200s", err, out))
-	}
-	if err := mountScratch(); err != nil {
+	if err := holdWriteback(); err != nil {
 		return fail(err.Error())
 	}
 	if tr.Failure == rangejob.FailReset {
@@ -312,19 +299,34 @@ func writerMain(args []string) error {
 	return nil
 }
 
-func mountScratch() error {
-	if err := os.MkdirAll(scratchMount, 0o700); err != nil {
-		return fmt.Errorf("mount point: %w", err)
-	}
-	// Only an fsync puts data on the scratch disk: no journal commit or flusher thread may write it
-	// earlier, so what a control did not sync is lost for certain (ADR 0020).
+// holdWriteback stops the flusher threads: with commit=300 on the mount, only an fsync puts the
+// measured writer's data on the scratch disk, so what a control did not sync is lost for certain
+// (ADR 0020).
+func holdWriteback() error {
 	for name, value := range map[string]string{"dirty_writeback_centisecs": "0", "dirty_expire_centisecs": "360000"} {
 		if err := os.WriteFile("/proc/sys/vm/"+name, []byte(value), 0); err != nil {
 			return fmt.Errorf("vm.%s: %w", name, err)
 		}
 	}
-	if err := syscall.Mount(scratchDev, scratchMount, "ext4", 0, "commit=300"); err != nil {
-		return fmt.Errorf("mount scratch: %w", err)
+	return nil
+}
+
+// superblock adds the two superblock facts store-setup wrote to path, exactly those and in order.
+func (r *report) superblock(path string) error {
+	data, err := os.ReadFile(path) //nolint:gosec // store-setup's file in /run
+	if err != nil {
+		return err //nolint:wrapcheck // the caller names it
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	for i, name := range []string{rangevm.FactScratchJournal, rangevm.FactScratchRecovery} {
+		value, ok := "", false
+		if i < len(lines) {
+			value, ok = strings.CutPrefix(lines[i], name+" ")
+		}
+		if len(lines) != 2 || !ok || value != "yes" && value != "no" {
+			return fmt.Errorf("%s does not hold the two superblock facts", path)
+		}
+		r.add(name, value)
 	}
 	return nil
 }

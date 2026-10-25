@@ -28,9 +28,11 @@ func TestTrialTableFitsTheBudget(t *testing.T) {
 			t.Errorf("%s: exactly the failure trials hand numbers to a measured writer", tr.Name)
 		case tr.Failure == "" && tr.Load.Kind != LoadExec && tr.Load.Kind != LoadPtrace:
 			t.Errorf("%s: unknown load %q", tr.Name, tr.Load.Kind)
-		case tr.Failure == FailReset && (tr.Boots != 2 || tr.Scratch == 0), tr.Failure == FailKill && (tr.Boots != 1 || tr.Scratch == 0),
-			tr.Failure != "" && tr.Failure != FailReset && tr.Failure != FailKill, tr.Failure == "" && (tr.Boots != 1 || tr.Scratch != 0):
-			t.Errorf("%s: a reset boots twice and a kill once, both on a scratch disk; a rate trial boots once without one", tr.Name)
+		case tr.Failure == FailReset && tr.Boots != 2, tr.Failure == FailKill && tr.Boots != 1,
+			tr.Failure != "" && tr.Failure != FailReset && tr.Failure != FailKill, tr.Failure == "" && tr.Boots != 1:
+			t.Errorf("%s: a reset boots twice, a kill and a rate trial once", tr.Name)
+		case tr.Scratch < StoreScratch:
+			t.Errorf("%s: scratch disk of %d bytes, below the store's %d (ADR 0022, point 2)", tr.Name, tr.Scratch, StoreScratch)
 		case tr.Load.Writer != (WriterPolicy{}) && tr.Load.Kind != LoadWrite:
 			t.Errorf("%s: only a write load has a writer policy", tr.Name)
 		}

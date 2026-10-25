@@ -529,8 +529,8 @@ func TestAdmissionIsAskedForTheWorstCase(t *testing.T) {
 	if err := tr.Tick(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	// The failure trials' 64 MiB scratch disk raises the cap of each of their four files.
-	runs := max(3*uint64(rangevm.WriteCap(int64(len("image"))))+rangejob.DiskBytes, 4*64<<20) //nolint:gosec // a small constant
+	// The sustained trial's 4 GiB scratch disk raises the cap of each of its four files (T36).
+	runs := max(uint64(rangevm.RunLimits().DiskNeed(int64(len("image"))))+rangejob.DiskBytes, 4*4<<30) //nolint:gosec // a small constant
 	want := []DiskNeed{
 		{filepath.Join(tr.State, "cache", "runs"), runs},
 		{tr.Results, maxKeptBytes},

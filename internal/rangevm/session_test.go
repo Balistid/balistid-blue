@@ -1314,6 +1314,7 @@ func replacingRepo(t *testing.T, goSum, replace string, files map[string]string)
 		"go.mod":                           goMod,
 		"go.sum":                           goSum,
 		"cmd/balistid-range-guest/main.go": "package main\n\nimport \"" + fixturePath + "\"\n\nfunc main() { _ = fixture.X }\n",
+		"cmd/balistid-collector/main.go":   "package main\n\nfunc main() {}\n",
 	}
 	maps.Copy(all, files)
 	for name, body := range all {
@@ -1393,6 +1394,33 @@ func TestBuildFetchesTheModulesGoSumNames(t *testing.T) {
 	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
 	if err == nil || !strings.Contains(err.Error(), "image file") {
 		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// The collector is built into the image with the guest (ADR 0022, point 1): its modules come down in
+// the same checked download, and a collector that does not build fails the image.
+func TestBuildBuildsTheCollector(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	uses := map[string]string{
+		"cmd/balistid-range-guest/main.go": "package main\n\nfunc main() {}\n",
+		"cmd/balistid-collector/main.go":   "package main\n\nimport \"" + fixturePath + "\"\n\nfunc main() { _ = fixture.X }\n",
+	}
+	broken := map[string]string{"cmd/balistid-collector/main.go": "package main\n\nfunc main() {\n"}
+	for _, tc := range []struct {
+		name, goSum, want string
+		files             map[string]string
+	}{
+		{"module missing from go.sum", fixtureSum(zipped, true), "download modules", uses},
+		{"collector does not build", fixtureSum(zipped, false), "build collector program", broken},
+		{"both build", fixtureSum(zipped, false), "image file", uses},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, commit := replacingRepo(t, tc.goSum, "", tc.files)
+			log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("build = %v, want %q; log:\n%s", err, tc.want, log)
+			}
+		})
 	}
 }
 

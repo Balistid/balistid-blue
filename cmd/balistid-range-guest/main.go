@@ -49,6 +49,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) == 2 && os.Args[1] == storeSetupArg {
+		if err := storeSetup(context.Background()); err != nil {
+			fmt.Fprintln(os.Stderr, "balistid-range-guest store-setup:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "balistid-range-guest:", err)
 		os.Exit(1)
@@ -87,11 +94,17 @@ func run() error {
 	}
 
 	pid := laurelPID()
-	add("laurel_user", laurelUser(pid))
-	prm, eff, amb := laurelCaps(pid)
+	add("laurel_user", procUser(pid, "no laurel process"))
+	prm, eff, amb := threadCaps(pid, "no laurel process")
 	add("laurel_cap_prm", prm)
 	add("laurel_cap_eff", eff)
 	add("laurel_cap_amb", amb)
+	collector := collectorPID(ctx)
+	add("collector_user", procUser(collector, "no collector process"))
+	prm, eff, amb = threadCaps(collector, "no collector process")
+	add("collector_cap_prm", prm)
+	add("collector_cap_eff", eff)
+	add("collector_cap_amb", amb)
 	add("canary", canary(ctx))
 
 	disableAudit(ctx)
@@ -398,9 +411,19 @@ func laurelPID() string {
 	return ""
 }
 
-func laurelUser(pid string) string {
+// collectorPID is the main pid systemd started balistid-collector.service with, or "".
+func collectorPID(ctx context.Context) string {
+	pid := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "--property=MainPID", "--value", "balistid-collector.service"))
+	if n, err := strconv.Atoi(pid); err != nil || n <= 0 {
+		return ""
+	}
+	return pid
+}
+
+// procUser is the name of pid's uid when its real, effective, saved and file uids agree.
+func procUser(pid, absent string) string {
 	if pid == "" {
-		return "no laurel process"
+		return absent
 	}
 	uids := strings.Fields(rangeguest.StatusField(readTrim("/proc/"+pid+"/status"), "Uid"))
 	if len(uids) != 4 || uids[0] != uids[1] || uids[1] != uids[2] || uids[2] != uids[3] {
@@ -409,11 +432,11 @@ func laurelUser(pid string) string {
 	return valueOr(rangeguest.UserName(readTrim("/etc/passwd"), uids[0]))
 }
 
-// laurelCaps reports each capability set across all of Laurel's threads; differing threads show
-// every value, which never matches the expected single value.
-func laurelCaps(pid string) (prm, eff, amb string) {
+// threadCaps reports each capability set across all of pid's threads; differing threads show every
+// value, which never matches the expected single value.
+func threadCaps(pid, absent string) (prm, eff, amb string) {
 	if pid == "" {
-		return "no laurel process", "no laurel process", "no laurel process"
+		return absent, absent, absent
 	}
 	tasks, err := filepath.Glob("/proc/" + pid + "/task/[0-9]*/status")
 	if err != nil || len(tasks) == 0 {

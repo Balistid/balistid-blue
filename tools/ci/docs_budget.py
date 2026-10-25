@@ -89,6 +89,9 @@ LAYOUT: tuple[str, ...] = (
     "range/mkosi.conf",
     "range/balistid-range-guest.service",
     "range/balistid-job.conf",
+    # The collector in the range image (ADR 0022).
+    "range/balistid-range-store.service",
+    "range/balistid-collector-range.conf",
 )
 
 REGULAR_MODES = {"100644", "100755"}
