@@ -35,6 +35,8 @@ type Config struct {
 	Notify    func(state string) error
 	Log       *slog.Logger
 	Started   map[string]string
+	// LogCommits journals the store's last durable seq on every change (Writer.LogCommits).
+	LogCommits bool
 }
 
 // Run collects until ctx is done: the acceptor and reader start before the store opens, READY=1 goes
@@ -53,6 +55,7 @@ func Run(ctx context.Context, cfg Config) error {
 	w := &Writer{
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started,
+		LogCommits: cfg.LogCommits,
 	}
 
 	var wg sync.WaitGroup

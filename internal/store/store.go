@@ -94,7 +94,8 @@ type Store struct {
 	health      [][]byte // health records waiting for Flush
 	torn        bool     // the index ends in a torn line
 	unknown     string
-	sealLost    bool // a seal failed: what the shard held since its last commit may be gone
+	sealLost    bool   // a seal failed: what the shard held since its last commit may be gone
+	committed   uint64 // the last seq on disk to stay: sealed, recovered or committed
 	now         func() time.Time
 	avail       func() (int64, error) // what the filesystem lets the collector allocate (a test seam)
 	given       int64                 // what the reserve gave back: Headroom less its size, kept for own records
@@ -143,6 +144,7 @@ func openWith(ctx context.Context, dir string, lim Limits, crashAt func(string))
 	if err := s.recover(ctx, pending); err != nil {
 		return nil, err
 	}
+	s.committed = s.next - 1 // every seq below next is in a sealed shard
 	if err := s.reserve(); err != nil {
 		s.unknown = err.Error()
 	}
@@ -596,6 +598,11 @@ func (s *Store) NoteHealth(data []byte) error {
 // ones; the collector can always catch up from here, after the last seal the ledger reports.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 
+// Committed is the last seq the store has made durable: through it, a crash loses no record. It
+// rises only when a commit or a seal returns, never on Append, so a reader of it never counts a
+// record that a crash can still take (crash_loss_ms, ADR 0022).
+func (s *Store) Committed() uint64 { return s.committed }
+
 // Append stores a sensor's record under the next seq, whatever r.Seq holds, or drops it at the cap and
 // counts it for a loss record, which Flush or the next stored record writes. A record that
 // rawrecord.Check refuses, or from a provider other than the sensor's, fails with ErrRefused and the
@@ -714,6 +721,7 @@ func (s *Store) commit() error {
 	if err := s.cur.Commit(); err != nil {
 		return s.fail(err)
 	}
+	s.committed = s.next - 1
 	return nil
 }
 
@@ -863,6 +871,7 @@ func (s *Store) seal(ctx context.Context) (Seal, error) {
 		s.sealLost = true
 		return Seal{}, s.fail(fmt.Errorf("seal %s: %w", s.curName, err))
 	}
+	s.committed = s.next - 1 // a sealed shard outlives a lost index line (Open recovers it)
 	s.crashAt("sealed")
 	l := Seal{Name: s.curName, First: s.curFirst, Last: s.next - 1, SHA256: sum}
 	if err := s.appendIndex(l); err != nil {
