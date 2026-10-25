@@ -881,25 +881,25 @@ func Check(ctx context.Context, image, cache, state string) (Result, error) {
 	}, JudgeSelftest, nil)
 }
 
-// LabelBaseline marks a trial result read from Laurel's log, not the collector's store: it measures
-// the sensor and never passes a metric (ADR 0018, point 4). Every trial is read so until the
-// collector's store reader joins the table.
+// LabelBaseline marked a trial result read from Laurel's log, not the collector's store: it measured
+// the sensor and never passed a metric (ADR 0018, point 4). Since the guest reads the store (ADR 0022)
+// no run gets it; results and suites of older commits still carry it.
 const LabelBaseline = "baseline"
 
 // LabelControl marks a control's result: it must give its trial's Expect, and never counts for its
 // metric.
 const LabelControl = "control"
 
-// TrialLabel is control for a control, else baseline.
+// TrialLabel is control for a control, else none: the run may decide its metric.
 func TrialLabel(tr rangejob.Trial) string {
 	if tr.Expect != "" {
 		return LabelControl
 	}
-	return LabelBaseline
+	return ""
 }
 
 // CheckTrial runs trial tr of image once and stores its Result, named after the trial and labelled
-// baseline or control, and serial log as Check does.
+// by TrialLabel, and serial log as Check does.
 func CheckTrial(ctx context.Context, image, cache, state string, tr rangejob.Trial) (Result, error) {
 	return check(ctx, image, cache, state, tr.Name, TrialLabel(tr), func(runs string, serial io.Writer) (Outcome, error) {
 		return RunTrial(ctx, image, runs, serial, TrialLimits(tr))

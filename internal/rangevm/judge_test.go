@@ -187,12 +187,26 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		if err := json.Unmarshal(data, &stored); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]string{"rate-burst": LabelBaseline, "rate-control-drop": LabelControl}[name]
+		want := map[string]string{"rate-burst": "", "rate-control-drop": LabelControl}[name]
 		if stored.Trial != name || stored.Label != want || stored.Verdict != Pass {
 			t.Errorf("%s stored trial %q, label %q, verdict %q; want label %q", name, stored.Trial, stored.Label, stored.Verdict, want)
 		}
 		if stored.SchemaVersion != 2 || stored.Measures[FactStealTicks] != 100 || len(stored.Measures) != len(counts) {
 			t.Errorf("%s stored schema %d, measures %v", name, stored.SchemaVersion, stored.Measures)
+		}
+	}
+}
+
+// Since the guest reads the collector's store (ADR 0022), a trial's run may decide its metric: only a
+// control is labelled, and no run is baseline (ADR 0018, point 4, amended).
+func TestTrialLabelIsNeverBaseline(t *testing.T) {
+	for _, tr := range rangejob.Trials() {
+		want := ""
+		if tr.Expect != "" {
+			want = LabelControl
+		}
+		if got := TrialLabel(tr); got != want {
+			t.Errorf("%s: label %q, want %q", tr.Name, got, want)
 		}
 	}
 }

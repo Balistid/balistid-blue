@@ -31,7 +31,7 @@ one boot each; QEMU has `-no-reboot` and no second boot; agent programs run unpr
 4. A record is one Laurel line (ADR 0016). The generator numbers every event: in exec argv for `sustained_rate`, as the
    address of `ptrace(PEEKDATA)` of no process for `burst_rate`. Stored numbers are read through one interface; until
    the collector's store reader is in the table it follows Laurel's log across rotation, and those runs are `baseline`:
-   they never pass a metric. Zero loss: every number stored once and none outside the generated set, audit `lost`
+   they never pass a metric (ADR 0022 reads the store: none is). Zero loss: every number stored once and none outside the generated set, audit `lost`
    unchanged, no dispatcher overflow, the rate held in every 10 s window; guest steal over 1 % is INVALID. Must miss: a
    reader dropping one number; under kill -9 a writer holding records 2 s before write(); a writer last synced 1500 ms
    before a reset. Must pass: one syncing every 250 ms. Rates, the credential, sysrq and steal need KVM to verify.
