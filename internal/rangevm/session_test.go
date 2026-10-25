@@ -1340,12 +1340,20 @@ func buildWithProxy(t *testing.T, root, commit, proxy string) (string, error) {
 // buildInCache is buildWithProxy with cache as the build cache, which holds the stage.
 func buildInCache(t *testing.T, cache, root, commit, proxy string) (string, error) {
 	t.Helper()
+	cfg := defaultBuild()
+	cfg.proxy = proxy
+	return buildWith(t, cache, root, commit, cfg)
+}
+
+// buildWith is buildInCache with the whole configuration given.
+func buildWith(t *testing.T, cache, root, commit string, cfg buildConfig) (string, error) {
+	t.Helper()
 	requireHostGo(t)
 	f, err := os.CreateTemp(t.TempDir(), "log")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = buildCommit(t.Context(), root, cache, f, commit, buildConfig{copyTimeout: fetchTimeout, proxy: proxy})
+	_, err = buildCommit(t.Context(), root, cache, f, commit, cfg)
 	if cerr := f.Close(); cerr != nil {
 		t.Fatal(cerr)
 	}
@@ -1446,6 +1454,43 @@ func TestBuildDoesNotRefuseAVersionReplace(t *testing.T) {
 	log, err := buildWithProxy(t, root, commit, fileProxy(t, zipped))
 	if err == nil || !strings.Contains(err.Error(), "image file") {
 		t.Fatalf("build = %v, want the guest built and then a missing image file; log:\n%s", err, log)
+	}
+}
+
+// R5: the modules a build downloads may take at most cfg.moduleCache on disk. A fixture with a
+// 2 MiB file is refused under a 1 MiB cap before go build runs, and builds under a 16 MiB one.
+func TestBuildCapsTheModuleCache(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	zipped[fixturePath+"@"+fixtureVersion+"/blob.txt"] = strings.Repeat("x", 2<<20)
+	root, commit := moduleRepo(t, fixtureSum(zipped, false))
+	proxy := fileProxy(t, zipped)
+	for _, tc := range []struct {
+		limit int64
+		want  string
+	}{{1 << 20, "modules take more than 1048576 bytes on disk"}, {16 << 20, "image file"}} {
+		cfg := defaultBuild()
+		cfg.proxy, cfg.moduleCache = proxy, tc.limit
+		log, err := buildWith(t, t.TempDir(), root, commit, cfg)
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "build guest program") {
+			t.Errorf("build with a %d byte cap = %v, want %q before any failing go command; log:\n%s", tc.limit, err, tc.want, log)
+		}
+	}
+	if defaultBuild().moduleCache != 1<<30 {
+		t.Errorf("default module cache cap %d, want 1 GiB", defaultBuild().moduleCache)
+	}
+}
+
+// A guest that needs no module leaves no module cache, and the cap does not refuse that.
+func TestModuleCacheCapWithoutModules(t *testing.T) {
+	if err := capModuleCache(filepath.Join(t.TempDir(), "gomod"), 0); err != nil {
+		t.Fatalf("cap on a missing cache = %v, want nil", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := capModuleCache(dir, 0); err == nil {
+		t.Fatal("a cache over its cap passed")
 	}
 }
 
