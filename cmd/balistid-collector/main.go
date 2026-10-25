@@ -33,6 +33,9 @@ func run() int {
 	storeDir := flag.String("store", "/var/lib/balistid/collector/store", "raw store directory")
 	canaryDir := flag.String("canary", "/var/lib/balistid/collector/canary", "directory the canary audit rule watches")
 	ruleVersion := flag.String("rule-version", "", "version of the installed audit rules, for the started record")
+	// The range image alone sets these two (ADR 0022): its root has no room for the host's reserve.
+	headroomBytes := flag.Int64("headroom", headroom, "bytes the store reserves for its own records")
+	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -48,8 +51,9 @@ func run() int {
 	}
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: laurelUID(log), CanaryDir: *canaryDir,
-		OpenStore: openStore(*storeDir), Notify: collector.Notify, Log: log,
-		Started: map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
+		OpenStore: openStore(*storeDir, *headroomBytes), Notify: collector.Notify, Log: log,
+		Started:    map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
+		LogCommits: *logCommits,
 	})
 	if err != nil {
 		log.Error("collector stopped", "err", err)
@@ -74,9 +78,10 @@ func laurelUID(log *slog.Logger) int {
 }
 
 // openStore opens the raw store; a failed Open yields a nil Store, never a nil *store.Store in it.
-func openStore(dir string) func(context.Context) (collector.Store, error) {
+// Open refuses a headroom too small for a loss record.
+func openStore(dir string, reserve int64) func(context.Context) (collector.Store, error) {
 	return func(ctx context.Context) (collector.Store, error) {
-		st, err := store.Open(ctx, dir, store.Limits{Cap: rawCap, ShardMax: shardMax, Headroom: headroom})
+		st, err := store.Open(ctx, dir, store.Limits{Cap: rawCap, ShardMax: shardMax, Headroom: reserve})
 		if err != nil {
 			return nil, err //nolint:wrapcheck // store errors carry their context
 		}

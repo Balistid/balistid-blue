@@ -172,6 +172,59 @@ func TestReopenContinuesTheSeq(t *testing.T) {
 	}
 }
 
+// Committed rises only once a commit returns, never on Append, and a reopen starts from what is on
+// disk (ADR 0022: the range reads it as the last durable seq).
+func TestCommittedOnlyAfterCommit(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "a")
+	add(t, s, noon, "b")
+	if got := s.Committed(); got != 0 {
+		t.Fatalf("Committed after two Appends = %d, want 0", got)
+	}
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Committed(); got != 2 {
+		t.Fatalf("Committed after Flush = %d, want 2", got)
+	}
+	add(t, s, noon, "c")
+	closeStore(t, s)
+	if got := s.Committed(); got != 3 {
+		t.Fatalf("Committed after Close = %d, want 3", got)
+	}
+	s = open(t, dir, small)
+	defer closeStore(t, s)
+	if got := s.Committed(); got != 3 {
+		t.Fatalf("Committed after a reopen = %d, want 3", got)
+	}
+}
+
+// A seal makes its records durable even when what follows it fails: an UNKNOWN store's Close seals
+// and errors, and Committed covers the sealed shard.
+func TestCommittedAfterSealThenFlushFails(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, Limits{Cap: shard.WALMaxBytes + 256<<10, ShardMax: 128 << 10, Headroom: shard.WALMaxBytes + LossChunk})
+	var stored uint64
+	for i := 0; add(t, s, noon+int64(i), strings.Repeat("x", 4<<10)); i++ {
+		stored++
+	}
+	fullFilesystem(t, s, 0)
+	for i := 0; i < 200 && s.Health() == ""; i++ {
+		_ = s.room(0, func() error { return syscall.ENOSPC })
+	}
+	if s.Health() == "" || s.Committed() >= stored {
+		t.Fatalf("setup: health %q, Committed %d of %d stored; want UNKNOWN with records uncommitted", s.Health(), s.Committed(), stored)
+	}
+	sealed, err := s.Close(t.Context())
+	if err == nil || len(sealed) != 1 {
+		t.Fatalf("Close = %v, %v; want a seal and an error", sealed, err)
+	}
+	if got := s.Committed(); got != sealed[0].Last || got != stored {
+		t.Fatalf("Committed after the seal = %d, want %d (seal) and %d (stored)", got, sealed[0].Last, stored)
+	}
+}
+
 func TestTheCapDropsAndFlushCountsTheDropsWithoutAnotherAppend(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, small)

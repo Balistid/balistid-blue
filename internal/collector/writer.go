@@ -47,6 +47,7 @@ type Store interface {
 	NoteHealth(data []byte) error
 	Health() string
 	Close(ctx context.Context) ([]store.Seal, error)
+	Committed() uint64
 }
 
 // maxLinkPIDs bounds the distinct pids kept per cause until a summary record takes the counts; the
@@ -176,6 +177,9 @@ type Writer struct {
 	Notify   func(state string) error // sd_notify; the tick feeds the watchdog
 	Log      *slog.Logger
 	Started  map[string]string // version, boot id, rule version for the started record
+	// LogCommits journals each new Committed of the store: the range reads it as the barrier and
+	// the last durable seq (ADR 0022). Off on the host.
+	LogCommits bool
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -203,6 +207,7 @@ type Writer struct {
 	journaledLost uint64 // lostNotes when the journal last said so
 	noteErr       error  // why the store last refused a health record, for the journal
 	refuse        tally  // refusals not yet in a summary record
+	loggedCommit  uint64 // the Committed last journaled
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what
@@ -359,6 +364,7 @@ func (w *Writer) flush(ctx context.Context) {
 	if len(sealed) > 0 || err == nil {
 		w.committed() // a seal on the way committed what was handed over, even if Flush then failed
 	}
+	w.logCommitted()
 	if err != nil {
 		w.fail(ctx, "store-flush", err)
 	}
@@ -378,12 +384,27 @@ func (w *Writer) committed() {
 	w.batch, w.capped, w.inflight = Loss{}, Loss{}, nil
 }
 
+// logCommitted journals the store's Committed when LogCommits is on and it changed. It runs after
+// each Flush and after the Close of a failed store, only once the call returned, so the line never
+// runs ahead of the disk. The Close at stop is not journaled: the range reads that seal itself.
+func (w *Writer) logCommitted() {
+	if !w.LogCommits || w.st == nil {
+		return
+	}
+	if n := w.st.Committed(); n != w.loggedCommit {
+		w.loggedCommit = n
+		w.Log.Info("committed through", "seq", n)
+	}
+}
+
 // fail counts what the store had not committed as lost at most, closes it and schedules a reopen.
 func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.Log.Error("store failed", "reason", reason, "err", err)
 	// Close commits what the store held, or fails saying it is lost (store.Close): only then is it
 	// counted and handed to the next store, so nothing committed is counted twice.
-	if sealed, cerr := w.st.Close(context.WithoutCancel(ctx)); cerr == nil {
+	sealed, cerr := w.st.Close(context.WithoutCancel(ctx))
+	w.logCommitted()
+	if cerr == nil {
 		w.committed()
 	} else {
 		// A seal that comes with the error holds every record; drops at the cap after the last record and

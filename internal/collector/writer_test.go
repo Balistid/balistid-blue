@@ -122,6 +122,12 @@ func (s *fakeStore) NoteHealth(b []byte) error {
 
 func (s *fakeStore) Health() string { return "" }
 
+func (s *fakeStore) Committed() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return uint64(len(s.committed))
+}
+
 func (s *fakeStore) Close(context.Context) ([]store.Seal, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1145,6 +1151,49 @@ func TestLagIsMeasuredWhenTheCommitEnds(t *testing.T) {
 	r.step(0)
 	if lag := r.st.kinds("lag"); len(lag) != 1 || lag[0]["lag_ms"].(float64) < 2000 {
 		t.Fatalf("lag records %v", lag)
+	}
+}
+
+// Only -log-commits journals the store's Committed, once per change and after the commit (ADR 0022).
+func TestNoCommitLogWithoutFlag(t *testing.T) {
+	for _, on := range []bool{false, true} {
+		t.Run(fmt.Sprint(on), func(t *testing.T) {
+			r := newRig(t)
+			j := &journal{}
+			r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+			r.w.LogCommits = on
+			r.start(nil)
+			r.settle()
+			r.push(event(1, ""), event(2, ""))
+			r.step(0)
+			r.step(0) // nothing new was committed
+			r.push(event(3, ""))
+			r.step(0)
+			lines := strings.Count(j.String(), `msg="committed through"`)
+			if !on && lines != 0 {
+				t.Fatalf("commit lines without the flag:\n%s", j)
+			}
+			if on && (lines != 2 || !strings.Contains(j.String(), `msg="committed through" seq=2`) ||
+				!strings.Contains(j.String(), `msg="committed through" seq=3`)) {
+				t.Fatalf("want one line at seq 2 and one at 3:\n%s", j)
+			}
+		})
+	}
+}
+
+// A failed Flush journals nothing new, and the Close that follows it, which commits, does.
+func TestCommitLogAfterTheCloseOfAFailedStore(t *testing.T) {
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.w.LogCommits = true
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.flushErr = true })
+	r.push(event(1, ""))
+	r.step(0)
+	if got := strings.Count(j.String(), `msg="committed through"`); got != 1 || !strings.Contains(j.String(), `msg="committed through" seq=1`) {
+		t.Fatalf("want one line at seq 1 from the Close:\n%s", j)
 	}
 }
 
