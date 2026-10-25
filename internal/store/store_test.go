@@ -1625,6 +1625,38 @@ func sealFailChild(t *testing.T) {
 }
 
 // A sidecar, beside an indexed shard or alone, holds data no seal covers: the store is incomplete.
+// ReadSeals hands a reader what it did not index by kind (ADR 0022, point 3): a pending shard, its
+// sidecars, a sidecar beside a sealed shard and a torn last line each land in their own field.
+func TestReadSealsTypesWhatIsUnindexed(t *testing.T) {
+	dir := t.TempDir()
+	want := sealedThree(t, dir)
+	pending := fmt.Sprintf("%020d.db", want[2].Last+1)
+	for _, name := range []string{pending, pending + "-wal", pending + "-shm", want[1].Name + "-wal"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.OpenFile(filepath.Join(dir, indexName), os.O_APPEND|os.O_WRONLY, 0) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(pending + " 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSeals(t.Context(), dir)
+	var u *UnindexedError
+	if !errors.As(err, &u) || !errors.Is(err, ErrUnindexed) || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ReadSeals = %v, %v", got, err)
+	}
+	if wantU := (UnindexedError{Pending: []string{pending}, Sidecars: []string{pending + "-shm", pending + "-wal"},
+		Beside: []string{want[1].Name + "-wal"}, Torn: true}); fmt.Sprint(*u) != fmt.Sprint(wantU) {
+		t.Fatalf("unindexed %+v, want %+v", *u, wantU)
+	}
+}
+
 func TestReadSealsRefusesShardSidecars(t *testing.T) {
 	dir := t.TempDir()
 	want := sealedThree(t, dir)

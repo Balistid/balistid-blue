@@ -13,6 +13,8 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 // maxChildren bounds the exec generator's children running at once; stateWait bounds how long
@@ -31,8 +33,8 @@ func credentials() fs.FS {
 }
 
 // runTrial runs the rate trial the host named (ADR 0018, point 4) as root from the image: it echoes
-// the trial and phase first, follows Laurel's log, generates the numbered load, closes the window
-// with a canary and reports the counts for the host to judge. A trial it cannot run reports
+// the trial and phase first, generates the numbered load, reads what the collector stored up to a
+// barrier (ADR 0022, point 3) and reports the counts for the host to judge. A trial it cannot run reports
 // trial_error, which the host judges INVALID.
 func runTrial(ctx context.Context, name, phase string) error {
 	var facts []fact
@@ -58,8 +60,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 	if tr.Load.Drop {
 		skip = uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) / 2 //nolint:gosec // non-negative table values
 	}
-	fl := rangeguest.NewFollower(laurelLog, tr.Load.Kind, skip)
-	if err := fl.Start(); err != nil {
+	counter, err := rangeguest.NewCounter(tr.Load.Kind, skip)
+	if err != nil {
 		return fail(err.Error())
 	}
 	emit, wait := rangeguest.Peek, func() error { return nil }
@@ -72,13 +74,13 @@ func runTrial(ctx context.Context, name, phase string) error {
 	genErr = errors.Join(genErr, wait())
 	statLoaded := readTrim("/proc/stat")
 
-	token, err := token("balistid-canary-")
-	if err != nil {
-		return fail(err.Error())
-	}
-	nums, followErr := fl.Finish(ctx, token, func(ctx context.Context) error {
-		return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
-	}, waitLimit)
+	followErr := readStore(ctx, func(r rawrecord.Record) error {
+		if r.Provider == store.SensorProvider {
+			counter.Line(r.Data)
+		}
+		return nil
+	})
+	nums := counter.Numbers()
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.
 	cpu, steal, loadErr := rangeguest.TickDelta(statBefore, statLoaded)
@@ -98,14 +100,12 @@ func runTrial(ctx context.Context, name, phase string) error {
 		stored, missing, duplicate, outside = nums.Count(generated)
 	}
 	if outside > 0 {
-		// Show what counted as outside: Laurel's log is gone after the run. Quoted, so a record cannot
+		// Show what counted as outside: the store is gone after the run. Quoted, so a record cannot
 		// put a line of its own, such as a mark, on the console.
-		for _, rec := range fl.Outside() {
+		for _, rec := range counter.Outside() {
 			fmt.Printf("balistid-range-guest: outside record: %q\n", rec)
 		}
-		if nums != nil {
-			fmt.Printf("balistid-range-guest: outside numbers above %d: %v\n", generated, nums.Above(generated, 3))
-		}
+		fmt.Printf("balistid-range-guest: outside numbers above %d: %v\n", generated, nums.Above(generated, 3))
 	}
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	add(rangevm.FactGenerated, u(generated))

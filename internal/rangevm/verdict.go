@@ -30,8 +30,8 @@ const (
 )
 
 // Facts of an exec job (ADR 0011): the program's sha256 as the guest decoded it, its exit, and its
-// output and the Laurel log written while it ran, as base64 chunks in order. The host matches no
-// pattern on them; the agent reads them.
+// output and the Laurel records the collector stored while it ran (ADR 0022), as base64 chunks in
+// order. The host matches no pattern on them; the agent reads them.
 const (
 	FactJobSHA256    = "job_sha256"
 	FactJobResult    = "job_result"

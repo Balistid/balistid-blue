@@ -1,7 +1,7 @@
 package main
 
 import (
-	"io"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 // The time limit an encoded job disk carries is the unit's runtime limit, the context outlasts it
@@ -59,47 +62,46 @@ func TestJobCommandEnforcesTheDiskTimeLimit(t *testing.T) {
 	}
 }
 
-// Laurel renames a full log and starts a new one; any rotation during the job means records may
-// sit in a file the window never reads, so it is never reported complete.
-func TestLaurelWindowIsCompleteOnlyWithoutARotation(t *testing.T) {
-	log := filepath.Join(t.TempDir(), "audit.log")
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
+// An exec job's window is the Laurel lines received from t0 on, whole lines up to the cap, and "no" only
+// when nothing may be missing: a loss record, a collector start or a Laurel reconnect in the window
+// (T25), or a barrier that never came back, makes it "lost" (ADR 0022, point 3).
+func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
+	laurel := func(at int64, data string) rawrecord.Record {
+		return rawrecord.New(0, store.SensorProvider, 1, at, []byte(data))
+	}
+	health := func(at int64, kind string) rawrecord.Record {
+		return rawrecord.New(0, store.HealthProvider, 0, at, []byte(`{"kind":"`+kind+`","schema_version":1}`))
+	}
+	read := func(err error, recs ...rawrecord.Record) func(func(rawrecord.Record) error) error {
+		return func(fn func(rawrecord.Record) error) error {
+			for _, r := range recs {
+				if err := fn(r); err != nil {
+					return err
+				}
+			}
+			return err
 		}
 	}
-	appendTo := func(path, s string) {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // test temp dir
-		must(err)
-		_, err = f.WriteString(s)
-		must(err)
-		must(f.Close())
-	}
-	appendTo(log, "old\n")
-	before, err := os.Open(log) //nolint:gosec // test temp dir
-	must(err)
-	defer before.Close() //nolint:errcheck // test
-	offset, err := before.Seek(0, io.SeekEnd)
-	must(err)
-
-	appendTo(log, "job-a\n")
-	if w, cut := laurelWindow(before, log, offset, 1<<20); string(w) != "job-a\n" || cut != "no" {
-		t.Fatalf("no rotation: %q %s", w, cut)
-	}
-	if w, cut := laurelWindow(before, log, offset, 3); len(w) != 3 || cut != "yes" {
-		t.Fatalf("over the cap: %q %s", w, cut)
-	}
-	must(os.Rename(log, log+".1"))
-	appendTo(log, "job-b, longer than the old offset\n")
-	for _, limit := range []int64{1 << 20, 3} {
-		if _, cut := laurelWindow(before, log, offset, limit); cut != "rotated" {
-			t.Fatalf("rotation with cap %d reported %s", limit, cut)
+	before, job := laurel(5, "before"), laurel(10, "job-a")
+	for name, c := range map[string]struct {
+		read          func(func(rawrecord.Record) error) error
+		limit         int
+		window, state string
+	}{
+		"whole":             {read(nil, before, job, health(11, "stats")), 1 << 20, "job-a\n", "no"},
+		"over the cap":      {read(nil, job, laurel(12, "job-b")), 8, "job-a\n", "yes"},
+		"collector started": {read(nil, job, health(11, "started")), 1 << 20, "job-a\n", "lost"},
+		"laurel reconnect":  {read(nil, job, health(11, "connection")), 1 << 20, "job-a\n", "lost"},
+		"counted loss":      {read(nil, job, rawrecord.New(0, store.LossProvider, 0, 11, []byte("{}"))), 1 << 20, "job-a\n", "lost"},
+		"unreadable health": {read(nil, job, rawrecord.New(0, store.HealthProvider, 0, 11, []byte("x"))), 1 << 20, "job-a\n", "lost"},
+		"start before t0":   {read(nil, health(9, "started"), job), 1 << 20, "job-a\n", "no"},
+		"barrier missing":   {read(rangeguest.ErrBarrierMissing, job), 1 << 20, "job-a\n", "lost"},
+		"store unreadable":  {read(errors.New("read store: x"), job), 1 << 20, "", "error"},
+	} {
+		w, state, _ := jobWindow(c.read, 10, c.limit)
+		if string(w) != c.window || state != c.state {
+			t.Errorf("%s: %q %s, want %q %s", name, w, state, c.window, c.state)
 		}
-	}
-	must(os.Remove(log))
-	if _, cut := laurelWindow(before, log, offset, 1<<20); cut != "rotated" {
-		t.Fatalf("log removed: %s", cut)
 	}
 }
 
