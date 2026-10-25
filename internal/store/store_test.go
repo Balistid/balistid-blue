@@ -225,6 +225,67 @@ func TestCommittedAfterSealThenFlushFails(t *testing.T) {
 	}
 }
 
+// A commit or seal that fails leaves Committed where the last good commit put it: a Flush whose
+// WAL cannot grow, the Close after it and a Flush on the failed store all keep 1.
+func TestCommittedHoldsWhenACommitFails(t *testing.T) {
+	if os.Getenv("BALISTID_COMMIT_FAIL_CHILD") == "1" {
+		commitFailChild(t)
+		return
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestCommittedHoldsWhenACommitFails$") //nolint:gosec // the test binary itself
+	cmd.Env = append(os.Environ(), "BALISTID_COMMIT_FAIL_CHILD=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "flush failed true close failed true committed 1 1 1") {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+}
+
+func commitFailChild(t *testing.T) {
+	signal.Ignore(syscall.SIGXFSZ)
+	s := open(t, t.TempDir(), small)
+	add(t, s, noon, "r1")
+	if _, err := s.Flush(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	add(t, s, noon+1, "r2")
+	if err := s.NoteHealth([]byte(`{"schema_version":1,"kind":"probe"}`)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(s.dir, s.curName+"-wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &syscall.Rlimit{Cur: uint64(st.Size()), Max: uint64(st.Size())}); err != nil { //nolint:gosec // a file size
+		t.Fatal(err)
+	}
+	_, ferr := s.Flush(t.Context())
+	a := s.Committed()
+	_, cerr := s.Close(t.Context())
+	b := s.Committed()
+	_, _ = s.Flush(t.Context()) // fails: the store is UNKNOWN
+	fmt.Printf("flush failed %v close failed %v committed %d %d %d\n", ferr != nil, cerr != nil, a, b, s.Committed())
+}
+
+// A seal whose index line then fails still made its records durable: Committed covers them and the
+// next Open recovers them.
+func TestCommittedCoversASealWithoutItsIndexLine(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, small)
+	add(t, s, noon, "r1")
+	old := indexCap
+	indexCap = indexBytes(nil)
+	_, err := s.Close(t.Context())
+	indexCap = old
+	if err == nil || s.Committed() != 1 {
+		t.Fatalf("Close = %v, Committed %d; want an index error and 1", err, s.Committed())
+	}
+	r := open(t, dir, small)
+	defer closeStore(t, r)
+	if r.Committed() < 1 {
+		t.Fatalf("Committed after the reopen = %d, want at least 1", r.Committed())
+	}
+}
+
 func TestTheCapDropsAndFlushCountsTheDropsWithoutAnotherAppend(t *testing.T) {
 	dir := t.TempDir()
 	s := open(t, dir, small)

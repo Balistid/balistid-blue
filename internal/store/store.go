@@ -599,8 +599,8 @@ func (s *Store) NoteHealth(data []byte) error {
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 
 // Committed is the last seq the store has made durable: through it, a crash loses no record. It
-// rises only when a commit or a seal returns, never on Append, so a reader of it never counts a
-// record that a crash can still take (crash_loss_ms, ADR 0022).
+// rises only when a commit or a seal returns (a seal Append makes on the way included), never for
+// the record Append stores, and Open sets it to what it found on disk (crash_loss_ms, ADR 0022).
 func (s *Store) Committed() uint64 { return s.committed }
 
 // Append stores a sensor's record under the next seq, whatever r.Seq holds, or drops it at the cap and
