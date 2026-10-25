@@ -1382,11 +1382,12 @@ func TestASlotWithoutAJobRunsABatch(t *testing.T) {
 		t.Fatalf("batch ran %+v (%s)", tr.vm.trials, planned)
 	}
 	res := tr.results(t, LabelAcceptance)
-	if len(res) != 2 || res[0].Runs[0].Label != rangevm.LabelBaseline || res[0].Verdict != rangevm.Pass ||
+	if len(res) != 2 || res[0].Runs[0].Label != "" || res[0].Verdict != rangevm.Pass ||
 		res[0].Runs[0].Measures[rangevm.FactStealTicks] != 7 || res[0].Job.Trial != "rate-sustained" {
 		t.Fatalf("acceptance results %+v", res)
 	}
-	if a := tr.acceptance(t); a.Commit != testCommit || a.Trials["rate-sustained"].Valid != 2 || a.BatchTurn {
+	if a := tr.acceptance(t); a.Commit != testCommit || a.Trials["rate-sustained"].Valid != 2 || a.Trials["rate-sustained"].Passed != 2 ||
+		a.Trials["rate-sustained"].Baseline || a.BatchTurn {
 		t.Fatalf("suite %+v", a)
 	}
 	if ev, ag := tr.results(t, LabelEvidence), tr.results(t, LabelAgent); ev != nil || ag != nil {
