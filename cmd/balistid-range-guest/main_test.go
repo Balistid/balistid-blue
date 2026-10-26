@@ -63,40 +63,64 @@ func TestJobCommandEnforcesTheDiskTimeLimit(t *testing.T) {
 }
 
 // An exec job's window is the Laurel lines received from t0 on, whole lines up to the cap, and "no" only
-// when nothing may be missing: a loss record, a collector start or a Laurel reconnect in the window
-// (T25), or a barrier that never came back, makes it "lost" (ADR 0022, point 3).
+// when nothing may be missing up to the end of the stopped run, its "stopping" record: anything but
+// a known, safe health record of schema 1, inside the window or stored after the barrier (the collector
+// writes a tick's health after its lines), makes it "lost" (T25, ADR 0022 point 3).
 func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 	laurel := func(at int64, data string) rawrecord.Record {
 		return rawrecord.New(0, store.SensorProvider, 1, at, []byte(data))
 	}
-	health := func(at int64, kind string) rawrecord.Record {
-		return rawrecord.New(0, store.HealthProvider, 0, at, []byte(`{"kind":"`+kind+`","schema_version":1}`))
+	health := func(at int64, body string) rawrecord.Record {
+		return rawrecord.New(0, store.HealthProvider, 0, at, []byte(body))
 	}
-	read := func(err error, recs ...rawrecord.Record) func(func(rawrecord.Record) error) error {
-		return func(fn func(rawrecord.Record) error) error {
-			for _, r := range recs {
-				if err := fn(r); err != nil {
+	kind := func(at int64, k string) rawrecord.Record {
+		return health(at, `{"schema_version":1,"kind":"`+k+`"}`)
+	}
+	stopping := kind(20, "stopping")
+	type recs = []rawrecord.Record
+	read := func(err error, before, after recs) storeRead {
+		return func(b, a func(rawrecord.Record) error) error {
+			for _, r := range before {
+				if err := b(r); err != nil {
+					return err
+				}
+			}
+			for _, r := range after {
+				if err := a(r); err != nil {
 					return err
 				}
 			}
 			return err
 		}
 	}
-	before, job := laurel(5, "before"), laurel(10, "job-a")
+	job := laurel(10, "job-a")
 	for name, c := range map[string]struct {
-		read          func(func(rawrecord.Record) error) error
+		read          storeRead
 		limit         int
 		window, state string
 	}{
-		"whole":             {read(nil, before, job, health(11, "stats")), 1 << 20, "job-a\n", "no"},
-		"over the cap":      {read(nil, job, laurel(12, "job-b")), 8, "job-a\n", "yes"},
-		"collector started": {read(nil, job, health(11, "started")), 1 << 20, "job-a\n", "lost"},
-		"laurel reconnect":  {read(nil, job, health(11, "connection")), 1 << 20, "job-a\n", "lost"},
-		"counted loss":      {read(nil, job, rawrecord.New(0, store.LossProvider, 0, 11, []byte("{}"))), 1 << 20, "job-a\n", "lost"},
-		"unreadable health": {read(nil, job, rawrecord.New(0, store.HealthProvider, 0, 11, []byte("x"))), 1 << 20, "job-a\n", "lost"},
-		"start before t0":   {read(nil, health(9, "started"), job), 1 << 20, "job-a\n", "no"},
-		"barrier missing":   {read(rangeguest.ErrBarrierMissing, job), 1 << 20, "job-a\n", "lost"},
-		"store unreadable":  {read(errors.New("read store: x"), job), 1 << 20, "", "error"},
+		"whole":                    {read(nil, recs{laurel(5, "before"), job, kind(11, "stats")}, recs{laurel(15, "x"), kind(16, "lag"), stopping}), 1 << 20, "job-a\n", "no"},
+		"health OK":                {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"OK"}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"over the cap":             {read(nil, recs{job, laurel(12, "job-b")}, recs{stopping}), 8, "job-a\n", "yes"},
+		"no end of the run":        {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
+		"reconnect after barrier":  {read(nil, recs{job}, recs{kind(16, "connection"), stopping}), 1 << 20, "job-a\n", "lost"},
+		"loss after barrier":       {read(nil, recs{job}, recs{kind(16, "lost"), stopping}), 1 << 20, "job-a\n", "lost"},
+		"next run after the end":   {read(nil, recs{job}, recs{stopping, kind(21, "started"), kind(22, "connection")}), 1 << 20, "job-a\n", "no"},
+		"collector started":        {read(nil, recs{job, kind(11, "started")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"laurel reconnect":         {read(nil, recs{job, kind(11, "connection")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"a stop inside the window": {read(nil, recs{job, kind(11, "stopping")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"store recovered":          {read(nil, recs{job, kind(11, "recovered")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"health not OK":            {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"UNKNOWN canary-missed"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unknown kind":             {read(nil, recs{job, kind(11, "something-new")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unknown schema":           {read(nil, recs{job, health(11, `{"schema_version":2,"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"no schema":                {read(nil, recs{job, health(11, `{"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"schema as a string":       {read(nil, recs{job, health(11, `{"schema_version":"1","kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unreadable health":        {read(nil, recs{job, health(11, "x")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"counted loss":             {read(nil, recs{job, rawrecord.New(0, store.LossProvider, 0, 11, []byte("{}"))}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"start before t0":          {read(nil, recs{kind(9, "started"), job}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"end of another schema":    {read(nil, recs{job}, recs{health(20, `{"schema_version":2,"kind":"stopping"}`)}), 1 << 20, "job-a\n", "lost"},
+		"barrier missing":          {read(rangeguest.ErrBarrierMissing, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
+		"store unreadable":         {read(errors.New("read store: x"), recs{job}, nil), 1 << 20, "", "error"},
 	} {
 		w, state, _ := jobWindow(c.read, 10, c.limit)
 		if string(w) != c.window || state != c.state {

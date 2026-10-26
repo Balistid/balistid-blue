@@ -79,7 +79,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 			counter.Line(r.Data)
 		}
 		return nil
-	})
+	}, nil)
 	nums := counter.Numbers()
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.

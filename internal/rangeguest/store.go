@@ -43,14 +43,22 @@ type StoreRead struct {
 	Settle, Poll time.Duration
 }
 
-// Read calls fn with every record the store holds before a fresh barrier, in seq order, reading
-// only sealed shards (store.ReadSeals, shard.Read; never store.Open). It execs the barrier, waits at
-// most wait until the commit line rose and then stayed for Settle, and stops the collector. A
-// barrier not found in the shards sealed so far is tried again with a new one until wait has passed,
-// then the read is ErrBarrierMissing. Only shards a newer collector run is writing may be beside the
-// seals: unindexed shards above the seal holding the barrier, their sidecars and a torn last index
-// line; a sidecar beside a seal is an error.
-func (sr StoreRead) Read(ctx context.Context, wait time.Duration, fn func(rawrecord.Record) error) error {
+// Read calls before with every record the store holds before a fresh barrier, in seq order, and after,
+// if not nil, with every record sealed after it: the collector writes health records of a tick after
+// its Laurel lines, and the rest of the stopped run at its stop, so what happened before the barrier
+// can be stored behind it. It reads only sealed shards (store.ReadSeals, shard.Read; never
+// store.Open): it execs the barrier, waits at most wait until the commit line rose and then stayed
+// for Settle, and stops the collector. A barrier not found in the shards sealed so far is tried
+// again with a new one until wait has passed, then the read is ErrBarrierMissing. Only shards a newer
+// collector run is writing may be beside the seals: unindexed shards above the seal holding the
+// barrier, their sidecars and a torn last index line; a sidecar beside a seal is an error.
+func (sr StoreRead) Read(ctx context.Context, wait time.Duration, before, after func(rawrecord.Record) error) error {
+	if sr.Settle <= 0 || sr.Poll <= 0 {
+		return errors.New("store read: settle and poll must be positive")
+	}
+	if after == nil {
+		after = func(rawrecord.Record) error { return nil }
+	}
 	deadline := sr.Clock.Now().Add(wait)
 	next := uint64(1)
 	for {
@@ -58,20 +66,20 @@ func (sr StoreRead) Read(ctx context.Context, wait time.Duration, fn func(rawrec
 		if err != nil {
 			return err
 		}
-		before, err := sr.Collector.Committed(ctx)
+		committed, err := sr.Collector.Committed(ctx)
 		if err != nil {
 			return fmt.Errorf("commit line: %w", err)
 		}
 		if err := sr.Mark(ctx, token); err != nil {
 			return fmt.Errorf("barrier: %w", err)
 		}
-		if err := sr.settle(ctx, before, deadline); err != nil {
+		if err := sr.settle(ctx, committed, deadline); err != nil {
 			return err
 		}
 		if err := sr.Collector.Stop(ctx); err != nil {
 			return fmt.Errorf("stop collector: %w", err)
 		}
-		found, err := sr.sealed(ctx, token, &next, fn)
+		found, err := sr.sealed(ctx, token, &next, before, after)
 		if err != nil || found {
 			return err
 		}
@@ -104,9 +112,10 @@ func (sr StoreRead) settle(ctx context.Context, before uint64, deadline time.Tim
 	}
 }
 
-// sealed reads the seals from *next on up to the barrier's record and moves *next past them. It
-// reports whether the barrier was found; then everything below its seq is sealed and read.
-func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, fn func(rawrecord.Record) error) (bool, error) {
+// sealed reads the seals from *next on, records before the barrier through before and the rest through
+// after, and moves *next past them. It reports whether the barrier was found; then everything below
+// its seq is sealed and read.
+func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, before, after func(rawrecord.Record) error) (bool, error) {
 	seals, err := store.ReadSeals(ctx, sr.Dir)
 	var u *store.UnindexedError
 	if err != nil && !errors.As(err, &u) {
@@ -115,6 +124,7 @@ func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, fn f
 	if u != nil && len(u.Beside) > 0 {
 		return false, fmt.Errorf("read store: sidecars beside sealed shards: %v", u.Beside)
 	}
+	found := false
 	for _, l := range seals {
 		if l.Last < *next {
 			continue
@@ -122,31 +132,30 @@ func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, fn f
 		if l.First != *next {
 			return false, fmt.Errorf("read store: seal %s starts at %d, want %d", l.Name, l.First, *next)
 		}
-		found := false
 		err := shard.Read(ctx, filepath.Join(sr.Dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
 			switch {
 			case found:
-				return nil
+				return after(r)
 			case r.Provider == store.SensorProvider && IsBarrier(r.Data, token):
 				found = true
 				return nil
 			}
-			return fn(r)
+			return before(r)
 		})
 		if err != nil {
 			return false, fmt.Errorf("read store: %s: %w", l.Name, err)
 		}
 		*next = l.Last + 1
-		if found {
-			return true, newerRunOnly(u, l.Last)
-		}
 	}
-	return false, nil
+	if !found {
+		return false, nil
+	}
+	return true, newerRunOnly(u, *next-1)
 }
 
 // newerRunOnly accepts what ReadSeals did not index only as a newer run's: shards that start above
-// last, the end of the seal holding the barrier, and their sidecars. A torn last index line follows
-// every whole one, so it is above last too.
+// last, the end of the last seal, which holds or follows the barrier, and their sidecars. A torn last
+// index line follows every whole one, so it is above last too.
 func newerRunOnly(u *store.UnindexedError, last uint64) error {
 	if u == nil {
 		return nil

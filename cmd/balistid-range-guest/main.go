@@ -197,7 +197,7 @@ func runJob(ctx context.Context, dev string) error {
 		add(rangevm.FactJobOut, c)
 	}
 
-	window, cut, err := jobWindow(func(fn func(rawrecord.Record) error) error { return readStore(ctx, fn) }, t0, rangevm.JobLaurelCap)
+	window, cut, err := jobWindow(func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) }, t0, rangevm.JobLaurelCap)
 	add("canary", readStatus(err))
 	add(rangevm.FactJobLaurelCut, cut)
 	for _, c := range rangeguest.Chunks(window, rangevm.JobChunk) {
