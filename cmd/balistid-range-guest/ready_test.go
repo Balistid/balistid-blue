@@ -128,7 +128,7 @@ func TestDrained(t *testing.T) {
 		tick = tick.Add(10 * time.Second)
 		return tick
 	}
-	if err := drained(w, moving, func() string { return "12" }); err == nil || !strings.Contains(err.Error(), "still committed") {
+	if err := drained(w, moving, func() string { return "12" }); err == nil || !strings.Contains(err.Error(), `backlog was still "12"`) {
 		t.Errorf("quiet with a backlog: %v", err)
 	}
 	if err := drained(&commitWatch{done: make(chan struct{})}, clock, empty); err == nil || !strings.Contains(err.Error(), "no commit line") {

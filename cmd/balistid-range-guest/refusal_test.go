@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,7 +22,8 @@ func healthAt(received int64, data string) rawrecord.Record {
 	return rawrecord.New(1, store.HealthProvider, 0, received, []byte(data))
 }
 
-const startedRecord = `{"schema_version":1,"kind":"started","version":"v","boot_id":"b","rule_version":"adr-0004-v2"}`
+// startedRecord is the collector's started record as writer.go writes it: its argv facts under info.
+const startedRecord = `{"schema_version":1,"kind":"started","info":{"version":"v","boot_id":"b","rule_version":"adr-0004-v2"},"at":1,"note_seq":1}`
 
 func refusedAt(received, firstAt int64, count int) rawrecord.Record {
 	return healthAt(received, fmt.Sprintf(`{"schema_version":1,"kind":"refused","socket":"collector.sock","count":%d,`+
@@ -56,19 +58,20 @@ func TestRefusalScan(t *testing.T) {
 // A summary that is not whole is reported by its first fault and not counted.
 func TestRefusalScanNamesAFault(t *testing.T) {
 	const ok = `"socket":"collector.sock","count":2,"causes":{"uid":2},"first_at":1,"rule_version":"adr-0004-v2","last_uid":0`
-	for field, data := range map[string]string{
-		"rule_version":                  strings.Replace(ok, `"adr-0004-v2"`, `"adr-0004-v1"`, 1),
-		"socket":                        strings.Replace(ok, `"collector.sock"`, `"other.sock"`, 1),
-		"causes":                        strings.Replace(ok, `{"uid":2}`, `{"uid":1,"peer_error":1}`, 1),
-		"count":                         strings.Replace(ok, `"count":2`, `"count":0`, 1),
-		"last_uid":                      strings.Replace(ok, `,"last_uid":0`, ``, 1),
-		"first_at before it was stored": strings.Replace(ok, `"first_at":1`, `"first_at":9`, 1),
+	for _, c := range []struct{ want, data string }{
+		{"rule_version", strings.Replace(ok, `"adr-0004-v2"`, `"adr-0004-v1"`, 1)},
+		{"socket", strings.Replace(ok, `"collector.sock"`, `"other.sock"`, 1)},
+		{"causes", strings.Replace(ok, `{"uid":2}`, `{"uid":1,"peer_error":1}`, 1)},
+		{"count", strings.Replace(ok, `"count":2`, `"count":0`, 1)},
+		{"last_uid", strings.Replace(ok, `,"last_uid":0`, ``, 1)},
+		{"first_at before it was stored", strings.Replace(ok, `"first_at":1`, `"first_at":9`, 1)},
+		{"first_at before it was stored", strings.Replace(ok, `"first_at":1`, `"first_at":-9223372036854775808`, 1)},
 	} {
 		s := refusalScan{}
 		_ = s.after(healthAt(1, startedRecord))
-		_ = s.after(healthAt(5, `{"schema_version":1,"kind":"refused",`+data+`}`))
-		if s.missing != field || s.count != 0 || s.summaries != 1 {
-			t.Errorf("%s: %+v", field, s)
+		_ = s.after(healthAt(5, `{"schema_version":1,"kind":"refused",`+c.data+`}`))
+		if s.missing != c.want || s.count != 0 || s.summaries != 1 {
+			t.Errorf("%s: %+v", c.want, s)
 		}
 	}
 	s := refusalScan{}
@@ -79,7 +82,7 @@ func TestRefusalScanNamesAFault(t *testing.T) {
 }
 
 func TestCeilMS(t *testing.T) {
-	for ns, want := range map[uint64]uint64{0: 0, 1: 1, 1_000_000: 1, 60_250_000_001: 60_251} {
+	for ns, want := range map[uint64]uint64{0: 0, 1: 1, 1_000_000: 1, 60_250_000_001: 60_251, math.MaxUint64: math.MaxUint64/1_000_000 + 1} {
 		if got := ceilMS(ns); got != want {
 			t.Errorf("ceilMS(%d) = %d, want %d", ns, got, want)
 		}
