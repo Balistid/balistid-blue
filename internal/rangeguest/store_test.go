@@ -8,7 +8,9 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +30,7 @@ type fakeCollector struct {
 	st        *store.Store
 	afterStop func(*fakeCollector)
 	stops     int
+	after     []rawrecord.Record // what the read handed over as after its barrier
 }
 
 func newFakeCollector(t *testing.T) *fakeCollector {
@@ -94,6 +97,9 @@ func (c *fakeCollector) read(t *testing.T, mark func(string), wait time.Duration
 			got = append(got, string(r.Data))
 		}
 		return nil
+	}, func(r rawrecord.Record) error {
+		c.after = append(c.after, r)
+		return nil
 	})
 	return got, err
 }
@@ -106,6 +112,44 @@ func TestStoreReadEndsAtTheBarrier(t *testing.T) {
 	want := []string{execLine("balistid-n-1"), execLine("balistid-n-2"), execLine("balistid-n-3")}
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) || c.stops != 1 {
 		t.Fatalf("read = %q, %v after %d stops; want %q", got, err, c.stops, want)
+	}
+}
+
+// What the collector stores behind the barrier, up to the end of the run the read stopped, goes to
+// after: a tick's health records follow its Laurel lines, so a reconnect before the barrier can be
+// stored after it.
+func TestStoreReadHandsOverWhatFollowsTheBarrier(t *testing.T) {
+	c := newFakeCollector(t)
+	c.add(execLine("balistid-n-1"))
+	got, err := c.read(t, func(token string) {
+		c.add(execLine(token), execLine("balistid-n-2"))
+		if err := c.st.NoteHealth([]byte(`{"schema_version":1,"kind":"connection"}`)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.st.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}, 30*time.Second)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("read = %q, %v", got, err)
+	}
+	var kinds []string
+	for _, r := range c.after {
+		kinds = append(kinds, r.Provider+" "+string(r.Data))
+	}
+	if len(kinds) != 2 || kinds[0] != store.SensorProvider+" "+execLine("balistid-n-2") ||
+		kinds[1] != store.HealthProvider+` {"schema_version":1,"kind":"connection"}` {
+		t.Fatalf("after the barrier: %q", kinds)
+	}
+}
+
+// A store read needs a positive settle time and poll interval: zero would spin or stop before the
+// commit line settled.
+func TestStoreReadRefusesZeroTimings(t *testing.T) {
+	for _, sr := range []StoreRead{{Settle: 0, Poll: time.Millisecond}, {Settle: time.Second, Poll: 0}} {
+		if err := sr.Read(t.Context(), time.Second, func(rawrecord.Record) error { return nil }, nil); err == nil {
+			t.Errorf("%+v: read ran", sr)
+		}
 	}
 }
 
@@ -201,30 +245,92 @@ not json
 	}
 }
 
-// The guest reads the store only through ReadSeals and shard.Read: it never calls store.Open, which
-// writes (recovery, the reserve, a new shard) into the store it measures (ADR 0022, point 1).
+const (
+	modulePath = "github.com/Balistid/balistid-blue"
+	storePath  = modulePath + "/internal/store"
+)
+
+// The guest reads the store only through ReadSeals and shard.Read: no package of the guest's build
+// calls store.Open, under whatever name it imports the store, since Open writes (recovery, the
+// reserve, a new shard) into the store the guest measures (ADR 0022, point 1).
 func TestGuestNeverOpensStore(t *testing.T) {
-	for _, dir := range []string{".", "../../cmd/balistid-range-guest"} {
-		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-		if err != nil || len(files) == 0 {
-			t.Fatalf("%s: %v, %d files", dir, err, len(files))
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), goBin, "list", "-deps", "-f", "{{.ImportPath}}\t{{.Dir}}\t{{join .GoFiles \" \"}}", modulePath+"/cmd/balistid-range-guest") //nolint:gosec // the go found on PATH, fixed arguments
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	checked := 0
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		pkg, rest, _ := strings.Cut(line, "\t")
+		dir, files, _ := strings.Cut(rest, "\t")
+		if !strings.HasPrefix(pkg, modulePath+"/") || pkg == storePath {
+			continue
 		}
-		for _, name := range files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
+		for _, f := range strings.Fields(files) {
+			if opensStore(t, filepath.Join(dir, f)) {
+				t.Errorf("%s/%s calls store.Open", pkg, f)
 			}
-			f, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
-			if err != nil {
-				t.Fatal(err)
+			checked++
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("checked only %d files of the guest's build", checked)
+	}
+}
+
+// opensStore reports whether the Go file at path calls Open of the store package, or dot-imports it.
+func opensStore(t *testing.T, path string) bool {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, spec := range f.Imports {
+		if strings.Trim(spec.Path.Value, `"`) != storePath {
+			continue
+		}
+		switch {
+		case spec.Name == nil:
+			names = append(names, "store")
+		case spec.Name.Name == ".":
+			return true
+		default:
+			names = append(names, spec.Name.Name)
+		}
+	}
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Open" {
+			if id, ok := sel.X.(*ast.Ident); ok && slices.Contains(names, id.Name) {
+				found = true
 			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Open" {
-					if id, ok := sel.X.(*ast.Ident); ok && id.Name == "store" {
-						t.Errorf("%s calls store.Open", name)
-					}
-				}
-				return true
-			})
+		}
+		return !found
+	})
+	return found
+}
+
+// The check finds Open under the store's own name, an alias and a dot import, and nothing in a file
+// that only reads seals or opens something else.
+func TestOpensStoreSeesThroughAliases(t *testing.T) {
+	for body, want := range map[string]bool{
+		`import "` + storePath + `"; var _, _ = store.Open`:                                true,
+		`import st "` + storePath + `"; func f() { _, _ = st.Open(nil, "", st.Limits{}) }`: true,
+		`import . "` + storePath + `"; var _ = Seal{}`:                                     true,
+		`import "` + storePath + `"; var _ = store.ReadSeals`:                              false,
+		`import "os"; var _, _ = os.Open("x")`:                                             false,
+	} {
+		path := filepath.Join(t.TempDir(), "x.go")
+		if err := os.WriteFile(path, []byte("package x\n"+body+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := opensStore(t, path); got != want {
+			t.Errorf("%s: %v, want %v", body, got, want)
 		}
 	}
 }

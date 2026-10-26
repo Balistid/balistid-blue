@@ -38,15 +38,16 @@ func (collectorUnit) Stop(ctx context.Context) error {
 	return nil
 }
 
-// readStore reads every record the collector stored before a fresh barrier (ADR 0022, point 3).
-func readStore(ctx context.Context, fn func(rawrecord.Record) error) error {
+// readStore reads every record the collector stored before a fresh barrier, and after it the rest
+// of the run the read stopped (ADR 0022, point 3); after may be nil.
+func readStore(ctx context.Context, before, after func(rawrecord.Record) error) error {
 	sr := rangeguest.StoreRead{
 		Dir: storeDir, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},
 	}
-	return sr.Read(ctx, waitLimit, fn) //nolint:wrapcheck // the reader's errors name the step
+	return sr.Read(ctx, waitLimit, before, after) //nolint:wrapcheck // the reader's errors name the step
 }
 
 // laurelLines reads the store once and returns its Laurel lines, one per line, at most limit bytes of
@@ -63,7 +64,7 @@ func laurelLines(ctx context.Context, limit int) ([]byte, error) {
 		buf.Write(r.Data)
 		buf.WriteByte('\n')
 		return nil
-	})
+	}, nil)
 	return buf.Bytes(), err
 }
 
@@ -82,33 +83,42 @@ func readStatus(err error) string {
 	return "error: " + err.Error()
 }
 
+// storeRead is readStore with its context bound; tests replace it.
+type storeRead func(before, after func(rawrecord.Record) error) error
+
 // jobWindow returns at most limit bytes of the Laurel lines a store read received from t0 on, whole
 // lines only, and "no" only when that is everything the job caused (the host accepts only "no"):
-// "yes" when it is cut, "lost" when the barrier did not come back or a loss record, a collector start
-// or a Laurel reconnect lies in the window, whose unread bytes are counted nowhere (T25), "error"
-// when the store could not be read.
-func jobWindow(read func(func(rawrecord.Record) error) error, t0 int64, limit int) (window []byte, truncated string, err error) {
+// "yes" when it is cut, "lost" when the barrier did not come back, when a record from t0 to the end
+// of the stopped run may mean records are gone (T25; keepsWindow), or when that end, its "stopping"
+// record, is not there to show nothing came after; "error" when the store could not be read.
+func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated string, err error) {
 	var buf bytes.Buffer
-	whole, cut := true, false
+	whole, cut, ended := true, false, false
 	err = read(func(r rawrecord.Record) error {
 		if r.Received < t0 {
 			return nil
 		}
-		switch r.Provider {
-		case store.SensorProvider:
+		if r.Provider == store.SensorProvider {
 			if cut = cut || r.Truncated() || buf.Len()+len(r.Data)+1 > limit; !cut {
 				buf.Write(r.Data)
 				buf.WriteByte('\n')
 			}
-		case store.LossProvider:
+			return nil
+		}
+		whole = whole && keepsWindow(r, false)
+		return nil
+	}, func(r rawrecord.Record) error {
+		switch {
+		case ended || r.Provider == store.SensorProvider:
+		case keepsWindow(r, true):
+			ended = isStopping(r)
+		default:
 			whole = false
-		case store.HealthProvider:
-			whole = whole && !breaksWindow(r.Data)
 		}
 		return nil
 	})
 	switch {
-	case errors.Is(err, rangeguest.ErrBarrierMissing) || err == nil && !whole:
+	case errors.Is(err, rangeguest.ErrBarrierMissing) || err == nil && (!whole || !ended):
 		return buf.Bytes(), "lost", err
 	case err != nil:
 		return nil, "error", err
@@ -118,13 +128,44 @@ func jobWindow(read func(func(rawrecord.Record) error) error, t0 int64, limit in
 	return buf.Bytes(), "no", nil
 }
 
-// breaksWindow reports whether a health record says records may be gone: a collector start, a
-// Laurel connection or a loss the collector counted. A record it cannot read breaks it too.
-func breaksWindow(data []byte) bool {
-	var rec map[string]json.RawMessage
-	var kind string
-	if json.Unmarshal(data, &rec) != nil || json.Unmarshal(rec["kind"], &kind) != nil {
-		return true
+// healthSchema is the schema of the collector's and the store's health records it reads.
+const healthSchema = 1
+
+// keepsWindow is an allowlist (R7): only a health record of the known schema and a kind that says no
+// record went missing keeps a window whole. stats, lag and refused (a peer that is not Laurel) do,
+// and health only while OK; started, connection, lost, recovered, a loss record, any other kind or
+// schema break it. The stopped run's own "stopping" is its end after the barrier, never inside.
+func keepsWindow(r rawrecord.Record, afterBarrier bool) bool {
+	if r.Provider != store.HealthProvider {
+		return false
 	}
-	return kind == "started" || kind == "connection" || kind == "lost"
+	kind, state, ok := healthKind(r.Data)
+	switch {
+	case !ok:
+		return false
+	case kind == "stats" || kind == "lag" || kind == "refused":
+		return true
+	case kind == "health":
+		return state == "OK"
+	}
+	return kind == "stopping" && afterBarrier
+}
+
+func isStopping(r rawrecord.Record) bool {
+	kind, _, ok := healthKind(r.Data)
+	return ok && kind == "stopping"
+}
+
+// healthKind decodes a health record's kind and, for kind health, its state; ok only for schema 1.
+func healthKind(data []byte) (kind, state string, ok bool) {
+	var rec map[string]json.RawMessage
+	var schema int
+	if json.Unmarshal(data, &rec) != nil || json.Unmarshal(rec["schema_version"], &schema) != nil || schema != healthSchema ||
+		json.Unmarshal(rec["kind"], &kind) != nil {
+		return "", "", false
+	}
+	if kind == "health" && json.Unmarshal(rec["state"], &state) != nil {
+		return "", "", false
+	}
+	return kind, state, true
 }
