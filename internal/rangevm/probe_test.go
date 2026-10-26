@@ -107,9 +107,10 @@ func TestJudgeExposure(t *testing.T) {
 	}
 	tr := trial(t, "exposure")
 	for want, reports := range map[string][]string{
-		Miss:    {c + "2.6", c + "10.0", c + "0.8,balistid-normalizer.service=2.6"},
-		Invalid: {c + "2.55", c + "2", "0.8", "laurel.service=0.8", "balistid-normalizer.service=0.8", c + "0.8,", c + "100.0", c + "0.8,x"},
-		Pass:    {c + "2.5", c + "0.0", c + "0.8,balistid-normalizer.service=2.5"},
+		Miss: {c + "2.6", c + "10.0"},
+		Invalid: {c + "2.55", c + "2", "0.8", "laurel.service=0.8", "balistid-normalizer.service=0.8", c + "0.8,", c + "100.0", c + "0.8,x",
+			c + "0.8,balistid-normalizer.service=2.5", c + "0.8,balistid-runner-build.service=4.6", c + "0.8," + c + "0.8"},
+		Pass: {c + "2.5", c + "0.0"},
 	} {
 		for _, rep := range reports {
 			o := probeRun("exposure", exposureFacts, map[string]string{FactExposure: rep})
