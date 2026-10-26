@@ -100,3 +100,20 @@ func FuzzParsers(f *testing.F) {
 		_ = HasRefusedDisable(bytes.NewReader(data))
 	})
 }
+
+// The collector's canary record is found by its rule key, as a string with other keys joined by \x01
+// or as a list, and never by the key's text elsewhere in the record.
+func TestHasRuleKey(t *testing.T) {
+	for line, want := range map[string]bool{
+		`{"SYSCALL":{"key":"balistid-canary"}}`:                           true,
+		`{"SYSCALL":{"key":"other\u0001balistid-canary"}}`:                true,
+		`{"SYSCALL":{"key":["other","balistid-canary"]}}`:                 true,
+		`{"SYSCALL":{"key":"balistid-canary-x"}}`:                         false,
+		`{"SYSCALL":{"key":"other"},"PATH":[{"name":"balistid-canary"}]}`: false,
+		`{"EXECVE":{"ARGV":["/usr/bin/true","balistid-canary"]}}`:         false,
+	} {
+		if got := HasRuleKey(strings.NewReader(line+"\n"), "balistid-canary"); got != want {
+			t.Errorf("%s: %v, want %v", line, got, want)
+		}
+	}
+}

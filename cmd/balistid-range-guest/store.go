@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,19 +17,39 @@ import (
 
 const collectorUnitName = "balistid-collector.service"
 
+// collectorCanaryKey is collector.CanaryKey, the rule key of the collector's canary (ADR 0017, point 2);
+// a test keeps them equal without linking the collector into the guest.
+const collectorCanaryKey = "balistid-canary"
+
 // collectorUnit is the collector as the guest reads its commit line from the journal and stops it.
 type collectorUnit struct{}
 
-// commitLines is how many of the collector's last journal lines are searched for its commit line: it
-// writes few others (lag, health), so the last commit is among them.
-const commitLines = "500"
-
-func (collectorUnit) Committed(ctx context.Context) (uint64, error) {
-	out, err := exec.CommandContext(ctx, "/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "cat", "-n", commitLines, "-u", collectorUnitName).Output()
+// Follow runs one journalctl that follows the collector's journal from now on and sends the seq of
+// each commit line; the channel closes once ctx ended and journalctl exited.
+func (collectorUnit) Follow(ctx context.Context) (<-chan uint64, error) {
+	cmd := exec.CommandContext(ctx, "/usr/bin/journalctl", "-f", "-n", "0", "-q", "--no-pager", "-o", "cat", "-u", collectorUnitName)
+	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return 0, fmt.Errorf("journalctl: %w", err)
+		return nil, fmt.Errorf("journalctl: %w", err)
 	}
-	return rangeguest.LastCommitted(string(out)), nil
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("journalctl: %w", err)
+	}
+	commits := make(chan uint64, 1)
+	go func() {
+		defer close(commits)
+		sc := bufio.NewScanner(out) // a line over 64 KiB ends the scan, and so the read, never silently
+		for sc.Scan() {
+			if n := rangeguest.LastCommitted(sc.Text()); n != 0 {
+				select {
+				case commits <- n: // only that it moved counts, so a full channel drops the value
+				default:
+				}
+			}
+		}
+		_ = cmd.Wait()
+	}()
+	return commits, nil
 }
 
 func (collectorUnit) Stop(ctx context.Context) error {

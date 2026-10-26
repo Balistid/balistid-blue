@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/collector"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -105,6 +106,8 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		"no end of the run":        {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
 		"reconnect after barrier":  {read(nil, recs{job}, recs{kind(16, "connection"), stopping}), 1 << 20, "job-a\n", "lost"},
 		"loss after barrier":       {read(nil, recs{job}, recs{kind(16, "lost"), stopping}), 1 << 20, "job-a\n", "lost"},
+		"collector loss":           {read(nil, recs{job, kind(11, "lost")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"truncated record":         {read(nil, recs{job, laurel(12, strings.Repeat("x", rawrecord.MaxBytes+1))}, recs{stopping}), 8 << 20, "job-a\n", "yes"},
 		"next run after the end":   {read(nil, recs{job}, recs{stopping, kind(21, "started"), kind(22, "connection")}), 1 << 20, "job-a\n", "no"},
 		"collector started":        {read(nil, recs{job, kind(11, "started")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
 		"laurel reconnect":         {read(nil, recs{job, kind(11, "connection")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
@@ -195,5 +198,37 @@ func TestMarkInTime(t *testing.T) {
 	}
 	if err := markInTime(t0, t0.Add(101*time.Millisecond)); err == nil {
 		t.Error("a mark 101 ms after H was accepted")
+	}
+}
+
+// A rate trial counts the numbers in Laurel's lines; a loss record of the store, which drops only on a
+// full scratch disk, marks the read so the run is INVALID instead of a MISS of the collector.
+func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
+	c, err := rangeguest.NewCounter(rangejob.LoadExec, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost := false
+	fn := rateRecords(c, &lost)
+	line := `{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","balistid-n-1"]}}`
+	for _, r := range []rawrecord.Record{
+		rawrecord.New(0, store.SensorProvider, 1, 1, []byte(line)),
+		rawrecord.New(0, store.HealthProvider, 0, 2, []byte(`{"schema_version":1,"kind":"stats"}`)),
+	} {
+		if err := fn(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if stored, _, _, _ := c.Numbers().Count(1); stored != 1 || lost {
+		t.Fatalf("stored %d, lost %v", stored, lost)
+	}
+	if err := fn(rawrecord.New(0, store.LossProvider, 0, 3, []byte("{}"))); err != nil || !lost {
+		t.Fatalf("a store loss record: %v, lost %v", err, lost)
+	}
+}
+
+func TestCollectorCanaryKeyIsTheCollectors(t *testing.T) {
+	if collectorCanaryKey != collector.CanaryKey {
+		t.Errorf("guest looks for %q, the collector's canary uses %q", collectorCanaryKey, collector.CanaryKey)
 	}
 }

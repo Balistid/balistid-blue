@@ -74,12 +74,11 @@ func runTrial(ctx context.Context, name, phase string) error {
 	genErr = errors.Join(genErr, wait())
 	statLoaded := readTrim("/proc/stat")
 
-	followErr := readStore(ctx, func(r rawrecord.Record) error {
-		if r.Provider == store.SensorProvider {
-			counter.Line(r.Data)
-		}
-		return nil
-	}, nil)
+	storeLost := false
+	followErr := readStore(ctx, rateRecords(counter, &storeLost), nil)
+	if followErr == nil && storeLost {
+		followErr = errStoreLost
+	}
 	nums := counter.Numbers()
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.
@@ -131,4 +130,22 @@ func freshOverflow(ctx context.Context) string {
 	return rangeguest.FreshState(ctx, auditdState, func(ctx context.Context) error {
 		return exec.CommandContext(ctx, "/usr/bin/auditctl", "--signal", "state").Run()
 	}, stateWait, 50*time.Millisecond)
+}
+
+// errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
+// scratch disk drops, which says the range sized it wrong, not that the collector lost them: INVALID.
+var errStoreLost = errors.New("the store dropped records: the scratch disk is full")
+
+// rateRecords counts a rate trial's numbers in the Laurel lines and sets *storeLost at a loss record of
+// the store.
+func rateRecords(c *rangeguest.Counter, storeLost *bool) func(rawrecord.Record) error {
+	return func(r rawrecord.Record) error {
+		switch r.Provider {
+		case store.SensorProvider:
+			c.Line(r.Data)
+		case store.LossProvider:
+			*storeLost = true
+		}
+		return nil
+	}
 }

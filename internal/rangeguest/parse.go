@@ -93,6 +93,25 @@ func HasRefusedDisable(log io.Reader) bool {
 	})
 }
 
+// HasRuleKey reports whether a Laurel log holds a SYSCALL record under the audit rule key: the kernel
+// joins several keys with \x01 in one string, which Laurel may also write as a list.
+func HasRuleKey(log io.Reader, key string) bool {
+	return eachEvent(log, func(ev map[string]json.RawMessage) bool {
+		var sc map[string]json.RawMessage
+		if json.Unmarshal(ev["SYSCALL"], &sc) != nil {
+			return false
+		}
+		var one string
+		var many []string
+		if json.Unmarshal(sc["key"], &one) == nil {
+			many = strings.Split(one, "\x01")
+		} else if json.Unmarshal(sc["key"], &many) != nil {
+			return false
+		}
+		return slices.Contains(many, key)
+	})
+}
+
 // eachEvent calls match on every JSON object line of log until it returns true.
 func eachEvent(log io.Reader, match func(map[string]json.RawMessage) bool) bool {
 	sc := bufio.NewScanner(log)

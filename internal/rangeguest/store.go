@@ -25,8 +25,10 @@ var ErrBarrierMissing = errors.New("barrier missing")
 // Collector is what a store read needs of the running collector; the guest's is systemd and the
 // journal, tests replace it.
 type Collector interface {
-	// Committed is the seq of the collector's last "committed through" journal line, 0 for none.
-	Committed(ctx context.Context) (uint64, error)
+	// Follow sends the seq of each "committed through" line the collector journals from now on, until
+	// ctx ends, then closes the channel. It starts no process per line: one that did would add an
+	// audited exec, and so a commit, of its own every time.
+	Follow(ctx context.Context) (<-chan uint64, error)
 	// Stop stops the collector's service, not its socket, and returns once it exited: its Close
 	// sealed the open shard, and systemd starts it again when Laurel reconnects.
 	Stop(ctx context.Context) error
@@ -47,11 +49,11 @@ type StoreRead struct {
 // if not nil, with every record sealed after it: the collector writes health records of a tick after
 // its Laurel lines, and the rest of the stopped run at its stop, so what happened before the barrier
 // can be stored behind it. It reads only sealed shards (store.ReadSeals, shard.Read; never
-// store.Open): it execs the barrier, waits at most wait until the commit line rose and then stayed
-// for Settle, and stops the collector. A barrier not found in the shards sealed so far is tried
-// again with a new one until wait has passed, then the read is ErrBarrierMissing. Only shards a newer
-// collector run is writing may be beside the seals: unindexed shards above the seal holding the
-// barrier, their sidecars and a torn last index line; a sidecar beside a seal is an error.
+// store.Open): it execs the barrier, waits at most wait until the commit line moved and then stayed
+// for Settle, and stops the collector once. A barrier not in the shards sealed then is
+// ErrBarrierMissing: a second stop would lose what Laurel had sent and not been read (T25). Only
+// shards a newer collector run is writing may be beside the seals: unindexed shards above the last
+// seal, their sidecars and a torn last index line; a sidecar beside a seal is an error.
 func (sr StoreRead) Read(ctx context.Context, wait time.Duration, before, after func(rawrecord.Record) error) error {
 	if sr.Settle <= 0 || sr.Poll <= 0 {
 		return errors.New("store read: settle and poll must be positive")
@@ -59,50 +61,56 @@ func (sr StoreRead) Read(ctx context.Context, wait time.Duration, before, after 
 	if after == nil {
 		after = func(rawrecord.Record) error { return nil }
 	}
-	deadline := sr.Clock.Now().Add(wait)
-	next := uint64(1)
-	for {
-		token, err := barrierToken()
-		if err != nil {
-			return err
-		}
-		committed, err := sr.Collector.Committed(ctx)
-		if err != nil {
-			return fmt.Errorf("commit line: %w", err)
-		}
-		if err := sr.Mark(ctx, token); err != nil {
-			return fmt.Errorf("barrier: %w", err)
-		}
-		if err := sr.settle(ctx, committed, deadline); err != nil {
-			return err
-		}
-		if err := sr.Collector.Stop(ctx); err != nil {
-			return fmt.Errorf("stop collector: %w", err)
-		}
-		found, err := sr.sealed(ctx, token, &next, before, after)
-		if err != nil || found {
-			return err
-		}
-		if !sr.Clock.Now().Before(deadline) {
-			return ErrBarrierMissing
-		}
+	token, err := barrierToken()
+	if err != nil {
+		return err
 	}
+	followCtx, stopFollow := context.WithCancel(ctx)
+	defer stopFollow()
+	commits, err := sr.Collector.Follow(followCtx)
+	if err != nil {
+		return fmt.Errorf("commit line: %w", err)
+	}
+	defer func() {
+		stopFollow()
+		for range commits { //nolint:revive // waits until the follower ended (ENGINEERING.md 7, Goroutines)
+		}
+	}()
+	deadline := sr.Clock.Now().Add(wait)
+	if err := sr.Mark(ctx, token); err != nil {
+		return fmt.Errorf("barrier: %w", err)
+	}
+	if err := sr.settle(ctx, commits, deadline); err != nil {
+		return err
+	}
+	if err := sr.Collector.Stop(ctx); err != nil {
+		return fmt.Errorf("stop collector: %w", err)
+	}
+	found, err := sr.sealed(ctx, token, before, after)
+	if err == nil && !found {
+		return ErrBarrierMissing
+	}
+	return err
 }
 
-// settle returns once the commit line rose above before and then stayed for Settle, or at deadline:
-// a barrier that is not sealed by then is looked for again.
-func (sr StoreRead) settle(ctx context.Context, before uint64, deadline time.Time) error {
-	last, since := before, sr.Clock.Now()
+// settle returns once a commit line came after the barrier's exec and none followed for Settle, or
+// at deadline; a barrier not sealed by the stop is missing.
+func (sr StoreRead) settle(ctx context.Context, commits <-chan uint64, deadline time.Time) error {
+	moved, since := false, sr.Clock.Now()
 	for {
-		n, err := sr.Collector.Committed(ctx)
-		if err != nil {
-			return fmt.Errorf("commit line: %w", err)
+		for drained := false; !drained; {
+			select {
+			case _, ok := <-commits:
+				if !ok {
+					return errors.New("commit line: the journal follower ended")
+				}
+				moved, since = true, sr.Clock.Now()
+			default:
+				drained = true
+			}
 		}
 		now := sr.Clock.Now()
-		if n != last {
-			last, since = n, now
-		}
-		if last > before && now.Sub(since) >= sr.Settle || !now.Before(deadline) {
+		if moved && now.Sub(since) >= sr.Settle || !now.Before(deadline) {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
@@ -112,10 +120,9 @@ func (sr StoreRead) settle(ctx context.Context, before uint64, deadline time.Tim
 	}
 }
 
-// sealed reads the seals from *next on, records before the barrier through before and the rest through
-// after, and moves *next past them. It reports whether the barrier was found; then everything below
-// its seq is sealed and read.
-func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, before, after func(rawrecord.Record) error) (bool, error) {
+// sealed reads every seal, records before the barrier through before and the rest through after. It
+// reports whether the barrier was found; then everything below its seq is sealed and read.
+func (sr StoreRead) sealed(ctx context.Context, token string, before, after func(rawrecord.Record) error) (bool, error) {
 	seals, err := store.ReadSeals(ctx, sr.Dir)
 	var u *store.UnindexedError
 	if err != nil && !errors.As(err, &u) {
@@ -124,13 +131,10 @@ func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, befo
 	if u != nil && len(u.Beside) > 0 {
 		return false, fmt.Errorf("read store: sidecars beside sealed shards: %v", u.Beside)
 	}
-	found := false
+	found, next := false, uint64(1)
 	for _, l := range seals {
-		if l.Last < *next {
-			continue
-		}
-		if l.First != *next {
-			return false, fmt.Errorf("read store: seal %s starts at %d, want %d", l.Name, l.First, *next)
+		if l.First != next {
+			return false, fmt.Errorf("read store: seal %s starts at %d, want %d", l.Name, l.First, next)
 		}
 		err := shard.Read(ctx, filepath.Join(sr.Dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
 			switch {
@@ -145,12 +149,12 @@ func (sr StoreRead) sealed(ctx context.Context, token string, next *uint64, befo
 		if err != nil {
 			return false, fmt.Errorf("read store: %s: %w", l.Name, err)
 		}
-		*next = l.Last + 1
+		next = l.Last + 1
 	}
 	if !found {
 		return false, nil
 	}
-	return true, newerRunOnly(u, *next-1)
+	return true, newerRunOnly(u, next-1)
 }
 
 // newerRunOnly accepts what ReadSeals did not index only as a newer run's: shards that start above
