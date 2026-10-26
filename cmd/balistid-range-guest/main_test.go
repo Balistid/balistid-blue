@@ -73,7 +73,7 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		_, _, why, _ := jobWindow(func(b, a func(rawrecord.Record) error) error {
 			return errors.Join(b(rawrecord.New(0, store.HealthProvider, 0, 11, []byte(`{"schema_version":1,"kind":"something-new"}`))),
 				a(rawrecord.New(0, store.HealthProvider, 0, 20, []byte(`{"schema_version":1,"kind":"stopping"}`))))
-		}, 10, 1<<20)
+		}, 10, 1<<20, noKernelLoss)
 		if !strings.Contains(why, `"something-new" in the window`) {
 			t.Errorf("reason %q does not name the record", why)
 		}
@@ -149,7 +149,7 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		"barrier missing":            {read(rangeguest.ErrBarrierMissing, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
 		"store unreadable":           {read(errors.New("read store: x"), recs{job}, nil), 1 << 20, "", "error"},
 	} {
-		w, state, why, _ := jobWindow(c.read, 10, c.limit)
+		w, state, why, _ := jobWindow(c.read, 10, c.limit, noKernelLoss)
 		if string(w) != c.window || state != c.state || (why != "") != (state == "lost" || state == "error") {
 			t.Errorf("%s: %q %s (%q), want %q %s", name, w, state, why, c.window, c.state)
 		}
@@ -374,5 +374,59 @@ func FuzzKeepsWindow(f *testing.F) {
 func TestDescribeNamesTheProvider(t *testing.T) {
 	if got := describe(rawrecord.New(0, store.LossProvider, 0, 1, []byte("{}")), "in the window"); got != store.LossProvider+" record in the window" {
 		t.Errorf("describe = %q", got)
+	}
+}
+
+// A job window is whole only while the kernel's lost count stays and auditd's plugin queue never
+// overflows: both drop records before Laurel, so the store cannot show them missing.
+func TestKernelLossBreaksTheWindow(t *testing.T) {
+	for name, c := range map[string]struct {
+		lostBefore, lostAfter, overflowBefore, overflowAfter string
+		lost                                                 bool
+	}{
+		"nothing lost":       {"0", "0", "no", "no", false},
+		"lost earlier":       {"3", "3", "no", "no", false},
+		"kernel lost some":   {"0", "5", "no", "no", true},
+		"count went down":    {"5", "0", "no", "no", true},
+		"count unknown":      {"", "0", "no", "no", true},
+		"count not a number": {"0", "x", "no", "no", true},
+		"overflow during":    {"0", "0", "no", "yes", true},
+		"overflow before":    {"0", "0", "yes", "yes", true},
+		"overflow unknown":   {"0", "0", "no", "missing", true},
+	} {
+		if got := kernelLoss(c.lostBefore, c.lostAfter, c.overflowBefore, c.overflowAfter); (got != "") != c.lost {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}
+
+func noKernelLoss() string { return "" }
+
+// A window the store shows whole is still lost when the kernel or auditd dropped records meanwhile.
+func TestJobWindowCountsTheKernelsLoss(t *testing.T) {
+	read := func(b, a func(rawrecord.Record) error) error {
+		return errors.Join(b(rawrecord.New(0, store.SensorProvider, 1, 11, []byte("job-a"))),
+			a(rawrecord.New(0, store.HealthProvider, 0, 20, []byte(`{"schema_version":1,"kind":"stopping"}`))))
+	}
+	if _, state, _, _ := jobWindow(read, 10, 1<<20, noKernelLoss); state != "no" {
+		t.Fatalf("without a kernel loss: %s", state)
+	}
+	_, state, why, _ := jobWindow(read, 10, 1<<20, func() string { return "the kernel lost 5 records during the job" })
+	if state != "lost" || !strings.Contains(why, "kernel lost 5") {
+		t.Fatalf("with a kernel loss: %s %q", state, why)
+	}
+}
+
+// laurelHold rests on Laurel 0.8.2's coalescing timeouts: a Laurel upgrade must re-check it.
+func TestLaurelHoldMatchesThePackagedLaurel(t *testing.T) {
+	pkg, err := os.ReadFile("../../packaging/laurel/PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkg), "\npkgver=0.8.2\n") {
+		t.Fatal("Laurel is no longer 0.8.2: check its EXPIRE_INFLIGHT_TIMEOUT and EXPIRE_PERIOD against laurelHold")
+	}
+	if laurelHold < 5*time.Second+time.Second {
+		t.Errorf("laurelHold %s is under Laurel's 5 s hold and 1 s expiry period", laurelHold)
 	}
 }

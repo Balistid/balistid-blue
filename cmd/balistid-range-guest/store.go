@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
@@ -120,9 +121,10 @@ type storeRead func(before, after func(rawrecord.Record) error) error
 // lines only, and "no" only when that is everything the job caused (the host accepts only "no"):
 // "yes" when it is cut, "lost" when the barrier did not come back, when a record from t0 to the end
 // of the stopped run may mean records are gone (T25; keepsWindow), or when that end, its "stopping"
-// record, is not there to show nothing came after; "error" when the store could not be read. why
+// record, is not there to show nothing came after, or kernel reports a loss before Laurel
+// (kernelLoss); "error" when the store could not be read. why
 // names the first record that broke the window, for the console (a security decision's reason).
-func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated, why string, err error) {
+func jobWindow(read storeRead, t0 int64, limit int, kernel func() string) (window []byte, truncated, why string, err error) {
 	var buf bytes.Buffer
 	cut, ended := false, false
 	err = read(func(r rawrecord.Record) error {
@@ -157,6 +159,8 @@ func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated, w
 		return nil, "error", err.Error(), err
 	case why == "" && !ended:
 		why = "the stopped run's stopping record is not in the store"
+	case why == "":
+		why = kernel()
 	}
 	switch {
 	case why != "":
@@ -179,6 +183,30 @@ func describe(r rawrecord.Record, where string) string {
 	return fmt.Sprintf("%s record %.40q %s", r.Provider, h.kind, where)
 }
 
+// laurelHold is how long the guest waits after a job before its barrier: Laurel 0.8.2 holds a kernel
+// event without an end marker (a seccomp or crash record) until a later record is over 5 s newer,
+// checking each 1 s (coalesce.rs EXPIRE_INFLIGHT_TIMEOUT, EXPIRE_PERIOD), so a barrier right after the
+// job would pass the job's last such records; with 1 s margin they reach the store first.
+const laurelHold = 7 * time.Second
+
+// kernelLoss says why records may be missing before Laurel saw them, or "": the kernel's lost count
+// moved while the job ran, or auditd's plugin queue overflowed (ADR 0016: both drop records the
+// collector never receives). A count that is not a number, or an overflow flag that is not "no",
+// is a loss too, never a whole window (R6).
+func kernelLoss(lostBefore, lostAfter, overflowBefore, overflowAfter string) string {
+	b, errB := strconv.ParseUint(lostBefore, 10, 64)
+	a, errA := strconv.ParseUint(lostAfter, 10, 64)
+	switch {
+	case errB != nil || errA != nil:
+		return fmt.Sprintf("the kernel's lost count is unknown (%.20q, %.20q)", lostBefore, lostAfter)
+	case a != b:
+		return fmt.Sprintf("the kernel lost %d records during the job", a-b)
+	case overflowBefore != "no" || overflowAfter != "no":
+		return fmt.Sprintf("auditd's plugin queue overflowed (%.20q, %.20q)", overflowBefore, overflowAfter)
+	}
+	return ""
+}
+
 // reportWindow prints why an exec window is not whole, and by which rule, to the console, which the
 // host keeps as serial.log; quoted, so a record cannot put a line of its own on the console.
 func reportWindow(w io.Writer, truncated, why string) {
@@ -188,7 +216,7 @@ func reportWindow(w io.Writer, truncated, why string) {
 }
 
 // jobWindowRule names the rule jobWindow decides by, for the console line that gives its reason.
-const jobWindowRule = "adr-0022-window-v3"
+const jobWindowRule = "adr-0022-window-v4"
 
 // healthSchema is the schema of the collector's and the store's health records it reads.
 const healthSchema = 1
