@@ -139,6 +139,16 @@ func TestDrained(t *testing.T) {
 	if err := drained(ended, clock, empty); err == nil || !strings.Contains(err.Error(), "follower ended") {
 		t.Errorf("follower ended: %v", err)
 	}
+	// A backlog seen once, then commits that resume: the wait runs out on the commits, not the backlog.
+	resumed := &commitWatch{seq: 5, at: now.Add(-cpuDrainQuiet), done: make(chan struct{})}
+	reads := 0
+	if err := drained(resumed, moving, func() string {
+		reads++
+		resumed.at = now.Add(time.Hour)
+		return "12"
+	}); err == nil || !strings.Contains(err.Error(), "still committed") || reads != 1 {
+		t.Errorf("backlog then resumed commits: %v after %d reads", err, reads)
+	}
 	busy := &commitWatch{seq: 5, at: now.Add(time.Hour), done: make(chan struct{})} // never a quiet second
 	if err := drained(busy, moving, empty); err == nil || !strings.Contains(err.Error(), "still committed") {
 		t.Errorf("never quiet: %v", err)
