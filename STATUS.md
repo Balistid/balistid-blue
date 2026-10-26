@@ -16,17 +16,17 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started; plan draft outside the repo |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- C1 = B4.3-B4.5 (#131, follow-up #132): collector, store-setup and range drop-in in the image, a scratch disk in
-  every run, the guest reads sealed shards up to a barrier. KVM 5890be4: self-test and burst PASS, drop and the three
-  controls as expected; sustained MISS (889009 of 1.2 M generated in 2 vCPU, CPU saturated, all stored).
-- #133: refusal summaries count each cause and name the socket and rule version (refusal_summary_s).
+- C1 (#131, #132): collector and store in the image, guest reads sealed shards to a barrier. KVM 5890be4: burst PASS,
+  sustained MISS (889009 of 1.2 M in 2 vCPU). #133: refusal summaries per cause, with socket and rule version.
 - C2 = B4.6-B4.8 (feat/collector-trials, ADR 0023 proposed): trials run and are judged by their method;
   crash_loss_ms by 7+7 rows of kill and reset of the collector at 2000/s (S from its live commit line, MISS when
   the recovery record's last seq is below S); record-max, refusal-flood, ready-1..4, exposure, cpu-1000 (collector,
-  auditd and Laurel). Judges by closed facts, mutations of every judge killed; not yet run in KVM.
+  auditd and Laurel). Judges by closed facts, mutations killed; 3 Codex and 2 critic rounds, a lean /security-audit.
+  KVM ac77232: self-test, record-max, refusal-flood (60498 ms of 60500), ready-1 (7.2 s), exposure (0.8), cpu-1000
+  (0.468 cores) PASS; kill and reset INVALID, rate not held (~1500/s); rate-burst INVALID, barrier missing.
 ## Next step
-1. C2: Opus critic and Codex security on the pull request, maintainer's `/security-audit`, then one short KVM run
-   (record, refusal, ready, exposure, one kill, one reset); merge #133 first, then C2 (owned: maintainer approves).
+1. C2: rerun rate-burst in KVM with the collector's journal printed on a failed read (passed in C1); merge #133
+   first, then C2 (owned: maintainer approves).
 2. C3 = B4.9: reinstall the runner (maintainer), the suite, verdicts of the 8 metrics in status.py.
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
@@ -35,5 +35,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #125: past 16 pids per cause only a count is kept (amend ADR 0017 point 4?); a read error's text is not recorded.
 - Store: btrfs keeps truncated extents, an active filler takes the freed reserve (T10): own filesystem at install.
-- The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
+- The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi (exposure 4.6): its own change.
+- refusal_summary_s held by 2 ms and cpu_cores at 0.468 of 0.5 in KVM: margins to watch in the suite.
 - R2 signing keys; before floor 0's host install: x32 mitigation, io_uring. shellcheck in CI is unpinned (R14).
