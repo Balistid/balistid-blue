@@ -200,9 +200,7 @@ func runJob(ctx context.Context, dev string) error {
 	}
 
 	window, cut, why, err := jobWindow(func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) }, t0, rangevm.JobLaurelCap)
-	if why != "" {
-		fmt.Printf("balistid-range-guest: job window %s (rule %s): %q\n", cut, jobWindowRule, why)
-	}
+	reportWindow(os.Stdout, cut, why)
 	add("canary", readStatus(err))
 	add(rangevm.FactJobLaurelCut, cut)
 	for _, c := range rangeguest.Chunks(window, rangevm.JobChunk) {
