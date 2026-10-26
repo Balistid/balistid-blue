@@ -36,10 +36,12 @@ const (
 	FactTrialError = "trial_error"
 )
 
+// rateFacts also carry the collector's CPU µs over the load and its cgroup's memory peak: measures
+// only, not judged, a number or why there is none.
 var rateFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter,
 	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactDrainCPU, FactDrainSteal, FactFollow,
-	FactStored, FactMissing, FactDuplicate, FactOutside,
+	FactStored, FactMissing, FactDuplicate, FactOutside, FactCollectorUS, FactCollectorMem,
 }
 
 // counts are the rate facts that must be plain decimal numbers.
@@ -132,12 +134,18 @@ const (
 // Measures returns the measures of a run of tr; a count missing, repeated or not a plain number is
 // left out, never guessed (T30).
 func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
-	names := counts
+	var names []string
 	switch tr.Method() {
+	case rangejob.MethodRate:
+		names = append(slices.Clone(counts), FactCollectorUS, FactCollectorMem)
 	case rangejob.MethodWriterFailure:
 		names = []string{FactStoredPrefix, FactStoredCount}
 	case rangejob.MethodCollectorFailure:
 		names = []string{FactStoredPrefix, FactStoredCount, FactRecoveredLast}
+	case rangejob.MethodReady:
+		names = []string{FactReadyMS}
+	case rangejob.MethodCPU:
+		names = []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -195,6 +203,12 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeRecord(tr, o)
 	case rangejob.MethodRefusal:
 		return judgeRefusal(tr, o)
+	case rangejob.MethodReady:
+		return judgeReady(tr, o)
+	case rangejob.MethodExposure:
+		return judgeExposure(tr, o)
+	case rangejob.MethodCPU:
+		return judgeCPU(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

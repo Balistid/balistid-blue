@@ -1252,6 +1252,7 @@ func rateReport(tr rangejob.Trial, missing int) rangevm.Outcome {
 		{rangevm.FactOverflowAfter, "no"}, {rangevm.FactCPUTicks, "10000"}, {rangevm.FactStealTicks, "7"},
 		{rangevm.FactDrainCPU, "5000"}, {rangevm.FactDrainSteal, "3"}, {rangevm.FactFollow, "ok"},
 		{rangevm.FactStored, stored}, {rangevm.FactMissing, strconv.Itoa(missing)}, {rangevm.FactDuplicate, "0"}, {rangevm.FactOutside, "0"},
+		{rangevm.FactCollectorUS, "1"}, {rangevm.FactCollectorMem, "1"},
 	}
 	var o rangevm.Outcome
 	for _, v := range values {

@@ -42,6 +42,7 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 		FactOverflowBefore: "no", FactOverflowAfter: "no", FactCPUTicks: "10000", FactStealTicks: "100", FactFollow: "ok",
 		FactDrainCPU: "5000", FactDrainSteal: "50",
 		FactStored: planned, FactMissing: "0", FactDuplicate: "0", FactOutside: "0",
+		FactCollectorUS: "9000000", FactCollectorMem: "unknown",
 	}
 	for _, c := range change {
 		name, value, _ := strings.Cut(c, "=")
@@ -200,7 +201,7 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		if stored.Trial != name || stored.Label != want || stored.Verdict != Pass {
 			t.Errorf("%s stored trial %q, label %q, verdict %q; want label %q", name, stored.Trial, stored.Label, stored.Verdict, want)
 		}
-		if stored.SchemaVersion != 2 || stored.Measures[FactStealTicks] != 100 || len(stored.Measures) != len(counts) {
+		if stored.SchemaVersion != 2 || stored.Measures[FactStealTicks] != 100 || len(stored.Measures) != len(counts)+1 {
 			t.Errorf("%s stored schema %d, measures %v", name, stored.SchemaVersion, stored.Measures)
 		}
 	}

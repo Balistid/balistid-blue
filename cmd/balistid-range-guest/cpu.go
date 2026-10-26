@@ -1,0 +1,170 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangeguest"
+	"github.com/Balistid/balistid-blue/internal/rangejob"
+	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
+)
+
+// The units whose CPU cpu_cores counts (ADR 0023 point 5): auditd's cgroup holds Laurel too. A CPU
+// trial's load has drained once no commit line came for cpuDrainQuiet, at most cpuDrainWait after it.
+const (
+	auditdUnitName = "auditd.service"
+	cpuDrainQuiet  = time.Second
+	cpuDrainWait   = 60 * time.Second
+)
+
+// unitSample is a unit's cgroup CPU µs and memory peak and the invocation they belong to, or why not.
+type unitSample struct {
+	usec       uint64
+	memPeak    string
+	invocation string
+	err        error
+}
+
+// sampleUnit reads unit's cgroup through systemd: a restarted unit has another invocation and fresh
+// counters.
+func sampleUnit(ctx context.Context, unit string) unitSample {
+	show := func(prop string) string {
+		return strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "--property="+prop, "--value", unit))
+	}
+	cg, inv := show("ControlGroup"), show("InvocationID")
+	if !strings.HasPrefix(cg, "/") || inv == "" {
+		return unitSample{err: fmt.Errorf("%s has no cgroup or invocation", unit)}
+	}
+	usec, err := usageUsec(readTrim("/sys/fs/cgroup" + cg + "/cpu.stat"))
+	if err != nil {
+		return unitSample{err: fmt.Errorf("%s: %w", unit, err)}
+	}
+	return unitSample{usec: usec, memPeak: readTrim("/sys/fs/cgroup" + cg + "/memory.peak"), invocation: inv}
+}
+
+// usageUsec is usage_usec of a cgroup's cpu.stat.
+func usageUsec(stat string) (uint64, error) {
+	for _, line := range strings.Split(stat, "\n") {
+		if v, ok := strings.CutPrefix(line, "usage_usec "); ok {
+			n, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("usage_usec %q", v)
+			}
+			return n, nil
+		}
+	}
+	return 0, errors.New("no usage_usec in cpu.stat")
+}
+
+// used is the CPU µs between two samples of one invocation, or why there is none.
+func used(before, after unitSample) (uint64, string) {
+	switch {
+	case before.err != nil:
+		return 0, before.err.Error()
+	case after.err != nil:
+		return 0, after.err.Error()
+	case before.invocation != after.invocation:
+		return 0, "restarted"
+	case after.usec < before.usec:
+		return 0, "counter went back"
+	}
+	return after.usec - before.usec, ""
+}
+
+// collectorMeasures are a rate trial's measures of the collector, a number or why not: its CPU µs over
+// the load and its cgroup's memory peak.
+func collectorMeasures(before, after unitSample) (cpu, mem string) {
+	n, why := used(before, after)
+	if why != "" {
+		return why, why
+	}
+	return strconv.FormatUint(n, 10), after.memPeak
+}
+
+// runCPU execs numbered events at the trial's rate and reports the CPU of the collector's and of
+// auditd's cgroups from before the load until it drained, with the load's counts and steal
+// (cpu_cores, ADR 0023 point 5).
+func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	w, err := watchCommits(commitFollower(watchCtx), time.Now)
+	if err != nil {
+		stopWatch()
+		return r.fail("commit line: " + err.Error())
+	}
+	defer func() { stopWatch(); w.wait() }()
+	collector0, auditd0 := sampleUnit(ctx, collectorUnitName), sampleUnit(ctx, auditdUnitName)
+	statBefore := readTrim("/proc/stat")
+	execs := rangeguest.NewExecs(maxChildren)
+	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, execs.Emit, rangeguest.WallClock)
+	if err := errors.Join(genErr, execs.Wait()); err != nil {
+		return r.fail("generator: " + err.Error())
+	}
+	cpu, steal, err := rangeguest.TickDelta(statBefore, readTrim("/proc/stat"))
+	if err != nil {
+		return r.fail("CPU ticks: " + err.Error())
+	}
+	if err := drained(w, time.Now); err != nil {
+		return r.fail(err.Error())
+	}
+	collectorUS, whyC := used(collector0, sampleUnit(ctx, collectorUnitName))
+	auditdUS, whyA := used(auditd0, sampleUnit(ctx, auditdUnitName))
+	counter, err := rangeguest.NewCounter(rangejob.LoadExec, 0)
+	if err != nil {
+		return r.fail(err.Error())
+	}
+	if err := readStore(ctx, func(x rawrecord.Record) error {
+		if x.Provider == store.SensorProvider {
+			counter.Line(x.Data)
+		}
+		return nil
+	}, nil); err != nil {
+		return r.fail("store: " + err.Error())
+	}
+	stored, missing, _, _ := counter.Numbers().Count(generated)
+	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
+	r.add(rangevm.FactGenerated, u(generated))
+	r.add(rangevm.FactWindowMin, u(windowMin))
+	r.add(rangevm.FactCPUTicks, u(cpu))
+	r.add(rangevm.FactStealTicks, u(steal))
+	r.add(rangevm.FactCollectorUS, u(collectorUS))
+	r.add(rangevm.FactAuditdUS, u(auditdUS))
+	r.add(rangevm.FactUnits, unitsState(whyC, whyA))
+	r.add(rangevm.FactStored, u(stored))
+	r.add(rangevm.FactMissing, u(missing))
+	return r.send(r.facts)
+}
+
+// unitsState is "same" when both units' CPU was read over one invocation each, else why not.
+func unitsState(collector, auditd string) string {
+	switch {
+	case collector != "":
+		return "collector: " + collector
+	case auditd != "":
+		return "auditd: " + auditd
+	}
+	return "same"
+}
+
+// drained returns once no commit line came for cpuDrainQuiet, or fails after cpuDrainWait, without any
+// commit line, or once the journal follower ended: CPU sampled before the collector caught up would
+// understate its cost.
+func drained(w *commitWatch, now func() time.Time) error {
+	for deadline := now().Add(cpuDrainWait); now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		seq, at := w.last()
+		switch {
+		case closed(w.done):
+			return errors.New("commit line: the journal follower ended")
+		case seq == 0:
+			return errors.New("no commit line during the load")
+		case now().Sub(at) >= cpuDrainQuiet:
+			return nil
+		}
+	}
+	return fmt.Errorf("the collector still committed %s after the load", cpuDrainWait)
+}

@@ -31,18 +31,26 @@ const (
 	MetricCrashLoss = "crash_loss_ms"
 	MetricRecordMax = "record_max_kib"
 	MetricRefusal   = "refusal_summary_s"
+	MetricReady     = "ready_s"
+	MetricExposure  = "systemd_exposure"
+	MetricCPU       = "cpu_cores"
 )
 
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
 // numbered events in the store; a writer failure kills or resets the measured writer of a control; a
 // collector failure kills or resets the collector under load; a record trial stores oversized and
-// malformed records, a refusal trial floods the socket from refused peers (ADR 0023).
+// malformed records, a refusal trial floods the socket from refused peers, a ready trial times a boot to
+// health OK, an exposure trial scores the collector's unit and a CPU trial times its processes under
+// exec load (ADR 0023).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
 	MethodCollectorFailure = "collector-failure"
 	MethodRecord           = "record"
 	MethodRefusal          = "refusal"
+	MethodReady            = "ready"
+	MethodExposure         = "exposure"
+	MethodCPU              = "cpu"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -63,6 +71,12 @@ func (tr Trial) Method() string {
 		return MethodRecord
 	case tr.Metric == MetricRefusal && tr.Load.Kind == LoadConnect:
 		return MethodRefusal
+	case tr.Metric == MetricReady && tr.Load == (Load{}):
+		return MethodReady
+	case tr.Metric == MetricExposure && tr.Load == (Load{}):
+		return MethodExposure
+	case tr.Metric == MetricCPU && tr.Load.Kind == LoadExec && !tr.Load.Drop:
+		return MethodCPU
 	}
 	return ""
 }
@@ -147,6 +161,13 @@ var trials = slices.Concat([]Trial{
 		{Name: "record-max", Metric: MetricRecordMax, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3},
 		{Name: "refusal-flood", Metric: MetricRefusal, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
 			Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}},
+	},
+	// ready_s, systemd_exposure and cpu_cores (ADR 0023, point 5): ready_s asks for 10 boots.
+	repeated(Trial{Name: "ready", Metric: MetricReady, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3}, 4),
+	[]Trial{
+		{Name: "exposure", Metric: MetricExposure, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1},
+		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
+			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}},
 	},
 )
 
