@@ -426,3 +426,16 @@ func TestOpensStoreSeesThroughAliases(t *testing.T) {
 		}
 	}
 }
+
+// CommitTime is the collector's own slog time of a line, zero for a line without one in RFC 3339.
+func TestCommitTime(t *testing.T) {
+	line := `{"time":"2026-10-26T19:15:01.168193215Z","level":"INFO","msg":"committed through","seq":139}`
+	if got := CommitTime(line); !got.Equal(time.Date(2026, 10, 26, 19, 15, 1, 168193215, time.UTC)) {
+		t.Errorf("time %v", got)
+	}
+	for _, bad := range []string{`{"msg":"committed through","seq":1}`, `{"time":"yesterday"}`, `{"time":1}`, `not json`} {
+		if got := CommitTime(bad); !got.IsZero() {
+			t.Errorf("%s: %v", bad, got)
+		}
+	}
+}
