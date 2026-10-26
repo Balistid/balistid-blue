@@ -77,10 +77,34 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricRefusal, Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}}, MethodRefusal},
 		{Trial{Metric: MetricRefusal}, ""},
 		{Trial{Metric: MetricRecordMax, Failure: FailKill}, ""},
+		{Trial{Metric: MetricReady}, MethodReady},
+		{Trial{Metric: MetricExposure}, MethodExposure},
+		{Trial{Metric: MetricExposure, Load: Load{Kind: LoadConnect, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}}, MethodCPU},
+		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadPtrace, Rate: 1000, Seconds: 600}}, ""},
+		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600, Drop: true}}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
 		}
+	}
+}
+
+// cpu_cores is measured at 1000 records a second over 10 min (acceptance/0.toml), in rows that pass
+// the metric only together with ten boots of ready_s.
+func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
+	cpu, ok := Lookup("cpu-1000")
+	if !ok || cpu.Load != (Load{Kind: LoadExec, Rate: 1000, Seconds: 600}) {
+		t.Errorf("cpu-1000 = %+v", cpu)
+	}
+	boots := 0
+	for _, tr := range Trials() {
+		if tr.Method() == MethodReady {
+			boots += tr.Count
+		}
+	}
+	if boots < 10 {
+		t.Errorf("%d ready boots; acceptance ready_s asks 10", boots)
 	}
 }
 

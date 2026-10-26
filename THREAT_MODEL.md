@@ -40,15 +40,15 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
 | T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated | — | partial: Pi parsers are exposed to root |
 | T17 | A2 | Start a new log origin to reset history | Pi accepts a new origin only after the old log's final checkpoint | test rollover | designed |
-| T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours | designed |
+| T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints | fuzz_hours | partial: a compromised ledger can sign |
-| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries | record-max, refusal-flood (0023); rss_mib | designed |
+| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries | record-max, refusal-flood, cpu-1000 (0023); rss_mib | designed |
 | T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006) | test pi_reach | designed |
 | T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
 | T24 | A6 | Crash or power loss loses committed records | WAL `FULL`, a commit at every Flush (250 ms) or 2 MiB, sealing barrier (0005, 0013) | crash_loss_ms: kill -9 and reset of the collector under load, every seq it journaled committed survives (0018, 0023) | designed; hole: a device's volatile write cache is not modelled |
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day | partial: unread bytes at a collector restart or of a dead Laurel stay uncounted (0016); the range reads only sealed shards up to a barrier and keeps an exec window whole only when every health record up to the stopped run's end is a known safe one and the kernel lost count and auditd's overflow flag did not move, its barrier 7 s after the job past Laurel's 5 s hold of events without an end, which a step back of the guest's clock (root or hypervisor only) could undo (0022); a health record the collector gave way under load is not seen |
-| T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test | designed |
+| T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test; ready-1..4 boots to health OK (0023) | designed |
 | T27 | A6 | Pi dies, or push delivery fails | — | — | gap: dead-man switch, floor 3 |
 | T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |
 | T28 | A6 | Host offline: outage looks like attack | Announced shutdown and suspend; silence alarm | silence_alarm_s | partial: outages alarm too |

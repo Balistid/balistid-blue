@@ -222,7 +222,8 @@ func TestAControlThatCannotMeasureGivesUp(t *testing.T) {
 }
 
 func TestMetricsAreTheTables(t *testing.T) {
-	if got := Metrics(); !slices.Equal(got, []string{"sustained_rate", "burst_rate", "crash_loss_ms", "record_max_kib", "refusal_summary_s"}) {
+	if got := Metrics(); !slices.Equal(got, []string{"sustained_rate", "burst_rate", "crash_loss_ms", "record_max_kib", "refusal_summary_s",
+		"ready_s", "systemd_exposure", "cpu_cores"}) {
 		t.Errorf("metrics %v", got)
 	}
 }

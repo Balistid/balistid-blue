@@ -2,6 +2,8 @@ package rangevm
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
@@ -131,4 +133,96 @@ func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 		return Miss, fmt.Sprintf("%d other health records during the flood", n[FactOtherRecords])
 	}
 	return Pass, fmt.Sprintf("%d refusals in %d summaries, at most %d ms after the first", attempts, n[FactSummaries], n[FactMaxLatencyMS])
+}
+
+// Facts of a ready trial (ready_s): ms from kernel start to the store's receipt of the first health
+// record OK, or "none". Of an exposure trial (systemd_exposure): the collector unit's overall exposure
+// as systemd-analyze prints it, one decimal. Of a CPU trial (cpu_cores), besides the load's counts and
+// ticks: CPU µs of the collector's and of auditd's cgroup (auditd and Laurel) from before the load to
+// its drain, and "same" when neither unit restarted in between, else what did.
+const (
+	FactReadyMS      = "ready_ms"
+	FactExposure     = "exposure"
+	FactCollectorUS  = "collector_usec"
+	FactAuditdUS     = "auditd_usec"
+	FactCollectorMem = "collector_memory_peak"
+	FactUnits        = "units"
+
+	readyLimitMS = 30_000
+	// exposureLimit is systemd_exposure's 2.5 in tenths.
+	exposureLimit = 25
+)
+
+var (
+	readyFacts    = []string{FactTrial, FactPhase, FactKernel, FactReadyMS}
+	exposureFacts = []string{FactTrial, FactPhase, FactKernel, FactExposure}
+	cpuFacts      = []string{FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
+		FactCollectorUS, FactAuditdUS, FactUnits, FactStored, FactMissing}
+	exposureValue = regexp.MustCompile(`^([0-9]{1,2})\.([0-9])$`)
+)
+
+// judgeReady: health OK within 30 s of kernel start; none, or later, is a MISS (the range runs only the
+// smoke-tested target kernel, so UNKNOWN has no excuse).
+func judgeReady(tr rangejob.Trial, o Outcome) (string, string) {
+	f, _, why := probeFacts(tr, o, readyFacts, nil)
+	if why != "" {
+		return Invalid, why
+	}
+	if f[FactReadyMS] == "none" {
+		return Miss, "no health record OK in the store"
+	}
+	ms, err := plainNumber(f[FactReadyMS])
+	switch {
+	case err != nil:
+		return Invalid, fmt.Sprintf("ready time %q is not a plain number", Printable(f[FactReadyMS], 64))
+	case ms > readyLimitMS:
+		return Miss, fmt.Sprintf("health OK %d ms after kernel start, over %d", ms, readyLimitMS)
+	}
+	return Pass, fmt.Sprintf("health OK %d ms after kernel start", ms)
+}
+
+// judgeExposure: the collector unit's exposure at most 2.5; a value systemd-analyze did not print as
+// one decimal is INVALID.
+func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
+	f, _, why := probeFacts(tr, o, exposureFacts, nil)
+	if why != "" {
+		return Invalid, why
+	}
+	m := exposureValue.FindStringSubmatch(f[FactExposure])
+	if m == nil {
+		return Invalid, fmt.Sprintf("exposure %q is not one decimal", Printable(f[FactExposure], 64))
+	}
+	whole, _ := strconv.Atoi(m[1])
+	tenths := whole*10 + int(m[2][0]-'0')
+	if tenths > exposureLimit {
+		return Miss, fmt.Sprintf("the collector's unit has exposure %s, over 2.5", f[FactExposure])
+	}
+	return Pass, fmt.Sprintf("the collector's unit has exposure %s", f[FactExposure])
+}
+
+// judgeCPU: the load held its rate in every 10 s window, steal stayed within 1 %, neither unit restarted
+// and every record was stored, else INVALID: a lighter or broken load would understate the cost. CPU of
+// collector, auditd and Laurel over the load's seconds above 0.5 cores is a MISS.
+func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
+	f, n, why := probeFacts(tr, o, cpuFacts, []string{FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
+		FactCollectorUS, FactAuditdUS, FactStored, FactMissing})
+	if why != "" {
+		return Invalid, why
+	}
+	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
+	used := n[FactCollectorUS] + n[FactAuditdUS]
+	milli := used / uint64(tr.Load.Seconds) / 1000 //nolint:gosec // positive table value
+	switch {
+	case n[FactGenerated] != planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10: //nolint:gosec // positive table value
+		return Invalid, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin])
+	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100:
+		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks", n[FactStealTicks], n[FactCPUTicks])
+	case f[FactUnits] != "same":
+		return Invalid, fmt.Sprintf("units changed during the load: %q", Printable(f[FactUnits], 64))
+	case n[FactMissing] != 0 || n[FactStored] != n[FactGenerated]:
+		return Invalid, fmt.Sprintf("stored %d of %d, missing %d", n[FactStored], n[FactGenerated], n[FactMissing])
+	case used*2 > uint64(tr.Load.Seconds)*1_000_000: //nolint:gosec // positive table value
+		return Miss, fmt.Sprintf("%d.%03d cores at %d records/s, over 0.5", milli/1000, milli%1000, tr.Load.Rate)
+	}
+	return Pass, fmt.Sprintf("%d.%03d cores at %d records/s", milli/1000, milli%1000, tr.Load.Rate)
 }

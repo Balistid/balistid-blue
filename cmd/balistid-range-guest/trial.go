@@ -55,6 +55,12 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runRecord(ctx, r)
 	case rangejob.MethodRefusal:
 		return runRefusal(ctx, tr, r)
+	case rangejob.MethodReady:
+		return runReady(ctx, r)
+	case rangejob.MethodExposure:
+		return runExposure(ctx, r)
+	case rangejob.MethodCPU:
+		return runCPU(ctx, tr, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }
@@ -65,6 +71,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add, fail := r.add, r.fail
 	lostBefore := valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
 	overflowBefore := freshOverflow(ctx)
+	collector0 := sampleUnit(ctx, collectorUnitName)
 
 	var skip uint64
 	if tr.Load.Drop {
@@ -83,6 +90,8 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
 	statLoaded := readTrim("/proc/stat")
+	// The collector's CPU over the load, read before the store read stops it and its cgroup.
+	collectorCPU, collectorMem := collectorMeasures(collector0, sampleUnit(ctx, collectorUnitName))
 
 	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) })
 	nums := counter.Numbers()
@@ -128,6 +137,8 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactMissing, u(missing))
 	add(rangevm.FactDuplicate, u(duplicate))
 	add(rangevm.FactOutside, u(outside))
+	add(rangevm.FactCollectorUS, collectorCPU)
+	add(rangevm.FactCollectorMem, collectorMem)
 	return r.send(r.facts)
 }
 

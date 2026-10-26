@@ -86,3 +86,41 @@ func TestJudgeRefusal(t *testing.T) {
 		Pass: {"max_latency_ms=0", "summaries=1", "attempts_root=14850,refused_count=29750,refused_uid=29750"},
 	})
 }
+
+func TestJudgeReady(t *testing.T) {
+	run := func(change ...string) Outcome {
+		return probeRun("ready-1", readyFacts, map[string]string{FactReadyMS: "12000"}, change...)
+	}
+	judgeCases(t, "ready-1", run, map[string][]string{
+		Miss:    {"ready_ms=none", "ready_ms=30001"},
+		Invalid: {"ready_ms=-1", "ready_ms=12.5", "ready_ms=", "ready_ms", "kernel=6.0.0", "trial=ready-2"},
+		Pass:    {"ready_ms=30000", "ready_ms=0"},
+	})
+}
+
+func TestJudgeExposure(t *testing.T) {
+	run := func(change ...string) Outcome {
+		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: "0.8"}, change...)
+	}
+	judgeCases(t, "exposure", run, map[string][]string{
+		Miss:    {"exposure=2.6", "exposure=10.0", "exposure=99.9"},
+		Invalid: {"exposure=2.55", "exposure=2", "exposure=.5", "exposure=-1.0", "exposure=OK", "exposure=100.0", "exposure"},
+		Pass:    {"exposure=2.5", "exposure=0.0"},
+	})
+}
+
+func TestJudgeCPU(t *testing.T) {
+	base := map[string]string{
+		FactGenerated: "600000", FactWindowMin: "10000", FactCPUTicks: "120000", FactStealTicks: "1200",
+		FactCollectorUS: "150000000", FactAuditdUS: "150000000", FactUnits: "same", FactStored: "600000", FactMissing: "0",
+	}
+	run := func(change ...string) Outcome { return probeRun("cpu-1000", cpuFacts, base, change...) }
+	judgeCases(t, "cpu-1000", run, map[string][]string{
+		Miss: {"collector_usec=150000001", "auditd_usec=300000001,collector_usec=0"},
+		Invalid: {
+			"generated=599999,stored=599999", "window_min=9999", "steal_ticks=1201", "cpu_ticks=0", "units=collector restarted",
+			"missing=1,stored=599999", "stored=599999", "auditd_usec=x", "collector_usec", "kernel=6.0.0",
+		},
+		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=299999999,auditd_usec=1", "auditd_usec=300000000,collector_usec=0"},
+	})
+}
