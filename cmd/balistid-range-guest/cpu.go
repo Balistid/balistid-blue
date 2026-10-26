@@ -16,10 +16,11 @@ import (
 )
 
 // The units whose CPU cpu_cores counts (ADR 0023 point 5): auditd's cgroup holds Laurel too. A CPU
-// trial's load has drained once no commit line came for cpuDrainQuiet, at most cpuDrainWait after it.
+// trial's load has drained once the kernel's audit backlog is empty and no commit line came for
+// cpuDrainQuiet, at most cpuDrainWait after it.
 const (
 	auditdUnitName = "auditd.service"
-	cpuDrainQuiet  = time.Second
+	cpuDrainQuiet  = 3 * time.Second
 	cpuDrainWait   = 60 * time.Second
 )
 
@@ -109,7 +110,9 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail("CPU ticks: " + err.Error())
 	}
-	if err := drained(w, time.Now); err != nil {
+	if err := drained(w, time.Now, func() string {
+		return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
+	}); err != nil {
 		return r.fail(err.Error())
 	}
 	collectorUS, whyC := used(collector0, sampleUnit(ctx, collectorUnitName))
@@ -151,10 +154,11 @@ func unitsState(collector, auditd string) string {
 	return "same"
 }
 
-// drained returns once no commit line came for cpuDrainQuiet, or fails after cpuDrainWait, without any
-// commit line, or once the journal follower ended: CPU sampled before the collector caught up would
-// understate its cost.
-func drained(w *commitWatch, now func() time.Time) error {
+// drained returns once the kernel's audit backlog is "0" and no commit line came for cpuDrainQuiet, or
+// fails after cpuDrainWait, without any commit line, or once the journal follower ended: CPU sampled
+// before auditd, Laurel and the collector caught up would understate their cost. What Laurel holds
+// without sending is not seen (ADR 0023).
+func drained(w *commitWatch, now func() time.Time, backlog func() string) error {
 	for deadline := now().Add(cpuDrainWait); now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		seq, at := w.last()
 		switch {
@@ -162,7 +166,7 @@ func drained(w *commitWatch, now func() time.Time) error {
 			return errors.New("commit line: the journal follower ended")
 		case seq == 0:
 			return errors.New("no commit line during the load")
-		case now().Sub(at) >= cpuDrainQuiet:
+		case now().Sub(at) >= cpuDrainQuiet && backlog() == "0":
 			return nil
 		}
 	}

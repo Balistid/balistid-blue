@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
@@ -21,6 +22,7 @@ const (
 	FactStoredTruncated = "stored_truncated"
 	FactStatsMalformed  = "stats_malformed"
 	FactStoredMalformed = "stored_malformed"
+	FactLostRecords     = "lost_records"
 
 	RecordWhole     = "whole"
 	RecordTruncated = "truncated"
@@ -31,7 +33,7 @@ const (
 
 var recordFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactRecord131K, FactRecord2M, FactRecord6M, FactMalformedStored, FactStatsAfter,
-	FactStatsTruncated, FactStoredTruncated, FactStatsMalformed, FactStoredMalformed,
+	FactStatsTruncated, FactStoredTruncated, FactStatsMalformed, FactStoredMalformed, FactLostRecords,
 }
 
 // Facts of a refusal trial (refusal_summary_s, ADR 0023 point 4): connections each flooder made, what
@@ -77,12 +79,13 @@ func probeFacts(tr rangejob.Trial, o Outcome, names, nums []string) (map[string]
 	return f, n, ""
 }
 
-// judgeRecord: the 131 KB and 2 MB execs stored whole, the 6 MB one truncated, the three malformed lines
-// stored, and a stats record after them counting every truncated and malformed record the store holds
-// before it. Without a stats record after the lines the run is INVALID.
+// judgeRecord: the 131 KB and 2 MB execs stored whole, the 6 MB one truncated with its length, head and
+// tail, the three malformed lines stored exactly (the long one by head, tail, length and SHA-256), no
+// loss record, and a stats record after them counting every truncated and malformed record the store
+// holds before it. Without a stats record after the lines the run is INVALID.
 func judgeRecord(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, recordFacts, []string{FactMalformedStored, FactStatsTruncated, FactStoredTruncated,
-		FactStatsMalformed, FactStoredMalformed})
+		FactStatsMalformed, FactStoredMalformed, FactLostRecords})
 	switch {
 	case why != "":
 		return Invalid, why
@@ -93,6 +96,8 @@ func judgeRecord(tr rangejob.Trial, o Outcome) (string, string) {
 			Printable(f[FactRecord131K], 64), Printable(f[FactRecord2M], 64))
 	case f[FactRecord6M] != RecordTruncated:
 		return Miss, fmt.Sprintf("the 6 MB record is %q, not truncated", Printable(f[FactRecord6M], 64))
+	case n[FactLostRecords] > 0:
+		return Miss, fmt.Sprintf("%d loss records during the trial", n[FactLostRecords])
 	case n[FactMalformedStored] != MalformedLines:
 		return Miss, fmt.Sprintf("%d of %d malformed lines stored", n[FactMalformedStored], MalformedLines)
 	case n[FactStatsTruncated] != n[FactStoredTruncated] || n[FactStatsMalformed] != n[FactStoredMalformed]:
@@ -105,10 +110,11 @@ func judgeRecord(tr rangejob.Trial, o Outcome) (string, string) {
 		n[FactStoredTruncated], n[FactStoredMalformed])
 }
 
-// judgeRefusal: each flooder must have made 99 % of its connections, else INVALID. Every connection
-// must be counted once under cause uid, every summary name its socket and rule version and come at most
-// a minute and one collector tick after its first refusal, at most two more summaries than minutes
-// of flood, and no other health record during it, else MISS.
+// judgeRefusal: each flooder must have made 99 % of its connections and no more than planned, else
+// INVALID. Every connection must be counted once under cause uid, every summary be whole (socket, rule
+// version, one cause) and stored at most a minute and one collector tick after its first refusal, one
+// summary for every minute of flood and at most two more, and no other health record during it, else
+// MISS.
 func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, refusalFacts, []string{FactAttemptsRoot, FactAttemptsOther, FactRefusedCount,
 		FactRefusedUID, FactSummaries, FactMaxLatencyMS, FactOtherRecords})
@@ -116,8 +122,11 @@ func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, why
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
+	minutes := (uint64(tr.Load.Seconds) + 59) / 60            //nolint:gosec // positive table value
 	attempts := n[FactAttemptsRoot] + n[FactAttemptsOther]
 	switch {
+	case n[FactAttemptsRoot] > planned || n[FactAttemptsOther] > planned:
+		return Invalid, fmt.Sprintf("flooders made %d and %d connections, more than the %d planned", n[FactAttemptsRoot], n[FactAttemptsOther], planned)
 	case 100*n[FactAttemptsRoot] < 99*planned || 100*n[FactAttemptsOther] < 99*planned:
 		return Invalid, fmt.Sprintf("flooders made %d and %d of %d connections each", n[FactAttemptsRoot], n[FactAttemptsOther], planned)
 	case n[FactRefusedCount] != attempts || n[FactRefusedUID] != attempts:
@@ -125,7 +134,7 @@ func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 			n[FactRefusedCount], n[FactRefusedUID])
 	case f[FactSummaryFields] != "ok":
 		return Miss, fmt.Sprintf("a refusal summary lacks %q", Printable(f[FactSummaryFields], 64))
-	case n[FactSummaries] == 0 || n[FactSummaries] > uint64(tr.Load.Seconds)/60+2: //nolint:gosec // positive table value
+	case n[FactSummaries] < minutes || n[FactSummaries] > minutes+2:
 		return Miss, fmt.Sprintf("%d refusal summaries for %d s of flood", n[FactSummaries], tr.Load.Seconds)
 	case n[FactMaxLatencyMS] > refusalLimitMS:
 		return Miss, fmt.Sprintf("a summary came %d ms after its first refusal, over %d", n[FactMaxLatencyMS], refusalLimitMS)
@@ -136,8 +145,8 @@ func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 }
 
 // Facts of a ready trial (ready_s): ms from kernel start to the store's receipt of the first health
-// record OK, or "none". Of an exposure trial (systemd_exposure): the collector unit's overall exposure
-// as systemd-analyze prints it, one decimal. Of a CPU trial (cpu_cores), besides the load's counts and
+// record OK, or "none". Of an exposure trial (systemd_exposure): each service's overall exposure as
+// systemd-analyze prints it, "unit=N.N" joined by commas. Of a CPU trial (cpu_cores), besides the load's counts and
 // ticks: CPU µs of the collector's and of auditd's cgroup (auditd and Laurel) from before the load to
 // its drain, and "same" when neither unit restarted in between, else what did.
 const (
@@ -149,6 +158,8 @@ const (
 	FactUnits        = "units"
 
 	readyLimitMS = 30_000
+	// maxCores bounds what a CPU trial's counts may claim, so a report cannot overflow their sum.
+	maxCores = 1024
 	// exposureLimit is systemd_exposure's 2.5 in tenths.
 	exposureLimit = 25
 )
@@ -158,7 +169,7 @@ var (
 	exposureFacts = []string{FactTrial, FactPhase, FactKernel, FactExposure}
 	cpuFacts      = []string{FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
 		FactCollectorUS, FactAuditdUS, FactUnits, FactStored, FactMissing}
-	exposureValue = regexp.MustCompile(`^([0-9]{1,2})\.([0-9])$`)
+	exposureValue = regexp.MustCompile(`^(balistid-[a-z0-9-]{1,64}\.service)=([0-9]{1,2})\.([0-9])$`)
 )
 
 // judgeReady: health OK within 30 s of kernel start; none, or later, is a MISS (the range runs only the
@@ -181,23 +192,32 @@ func judgeReady(tr rangejob.Trial, o Outcome) (string, string) {
 	return Pass, fmt.Sprintf("health OK %d ms after kernel start", ms)
 }
 
-// judgeExposure: the collector unit's exposure at most 2.5; a value systemd-analyze did not print as
-// one decimal is INVALID.
+// judgeExposure: every Balistid Blue service the range runs, the collector among them, at most 2.5; a
+// report not of the form "unit=N.N,..." is INVALID.
 func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 	f, _, why := probeFacts(tr, o, exposureFacts, nil)
 	if why != "" {
 		return Invalid, why
 	}
-	m := exposureValue.FindStringSubmatch(f[FactExposure])
-	if m == nil {
-		return Invalid, fmt.Sprintf("exposure %q is not one decimal", Printable(f[FactExposure], 64))
+	collector, worst, worstUnit := false, -1, ""
+	for _, score := range strings.Split(f[FactExposure], ",") {
+		m := exposureValue.FindStringSubmatch(score)
+		if m == nil {
+			return Invalid, fmt.Sprintf("exposure %q is not unit=N.N", Printable(score, 96))
+		}
+		whole, _ := strconv.Atoi(m[2])
+		if tenths := whole*10 + int(m[3][0]-'0'); tenths > worst {
+			worst, worstUnit = tenths, m[1]
+		}
+		collector = collector || m[1] == "balistid-collector.service"
 	}
-	whole, _ := strconv.Atoi(m[1])
-	tenths := whole*10 + int(m[2][0]-'0')
-	if tenths > exposureLimit {
-		return Miss, fmt.Sprintf("the collector's unit has exposure %s, over 2.5", f[FactExposure])
+	switch {
+	case !collector:
+		return Invalid, "no exposure of balistid-collector.service"
+	case worst > exposureLimit:
+		return Miss, fmt.Sprintf("%s has exposure %d.%d, over 2.5", worstUnit, worst/10, worst%10)
 	}
-	return Pass, fmt.Sprintf("the collector's unit has exposure %s", f[FactExposure])
+	return Pass, fmt.Sprintf("the worst unit, %s, has exposure %d.%d", worstUnit, worst/10, worst%10)
 }
 
 // judgeCPU: the load held its rate in every 10 s window, steal stayed within 1 %, neither unit restarted
@@ -209,11 +229,14 @@ func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 	if why != "" {
 		return Invalid, why
 	}
-	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
+	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds)                                                           //nolint:gosec // positive table values
+	if limit := uint64(tr.Load.Seconds) * 1_000_000 * maxCores; n[FactCollectorUS] > limit || n[FactAuditdUS] > limit { //nolint:gosec // positive table value
+		return Invalid, fmt.Sprintf("CPU of %d and %d µs is more than %d cores could use", n[FactCollectorUS], n[FactAuditdUS], maxCores)
+	}
 	used := n[FactCollectorUS] + n[FactAuditdUS]
 	milli := used / uint64(tr.Load.Seconds) / 1000 //nolint:gosec // positive table value
 	switch {
-	case n[FactGenerated] != planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10: //nolint:gosec // positive table value
+	case n[FactGenerated] != planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10 || n[FactWindowMin] > n[FactGenerated]: //nolint:gosec // positive table value
 		return Invalid, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin])
 	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100:
 		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks", n[FactStealTicks], n[FactCPUTicks])

@@ -57,6 +57,8 @@ const (
 // judges the run INVALID.
 func (tr Trial) Method() string {
 	switch {
+	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
+		return ""
 	case tr.Failure != "" && tr.Load.Kind == LoadWrite:
 		return MethodWriterFailure
 	case tr.Failure != "" && tr.Load.Kind == LoadExec:

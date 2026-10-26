@@ -59,6 +59,16 @@ func TestMeasuresOfAFailureTrialTimeTheMarks(t *testing.T) {
 		t.Errorf("reset: measures %v, want %v", m, want)
 	}
 
+	// A collector's S is a store seq: its own key, never read as synced numbers.
+	collector := trial(t, "kill-collector-1")
+	o = crashRun(collector)
+	o.Marks.Fail, o.Marks.Killed = t0, t0.Add(time.Millisecond)
+	want = map[string]uint64{FactStoredPrefix: 1200, FactStoredCount: 1300, FactRecoveredLast: 5200, MeasureH: 1000,
+		MeasureCommitted: 5000, MeasureKilledAfterFail: 1000}
+	if m := Measures(collector, o); !maps.Equal(m, want) {
+		t.Errorf("collector kill: measures %v, want %v", m, want)
+	}
+
 	o = failureRun(kill)
 	o.Marks.Fail, o.Marks.Killed, o.Marks.Exited = t0, t0.Add(2*time.Millisecond), t0.Add(-time.Millisecond)
 	m := Measures(kill, o)
