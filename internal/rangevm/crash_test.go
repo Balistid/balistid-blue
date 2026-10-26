@@ -78,7 +78,7 @@ func TestJudgeCrash(t *testing.T) {
 			Invalid: {
 				"marks:h=0", "marks:s=0", "recovered=0", "recovered=2", "recovered_seq=5200", "recovered_seq=5202",
 				"stored_count=1199", "stored_prefix=-1", "recovered_last=", "kernel=6.0.0", "canary=seen",
-				"recovered", "stored_count", "recovered_last=01,recovered_seq=2",
+				"recovered", "stored_count", "recovered_last=01,recovered_seq=2", "trial=kill-collector-2",
 			},
 		}
 		for want, changes := range cases {
