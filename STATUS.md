@@ -19,8 +19,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - A7 closed: reconnect counts per kind and pid (#125), store, shard, collector and `cmd/balistid-collector`
   code-owned (#127). ADR 0022 accepted (#124): the collector runs in the range image, which reads sealed shards.
 - B4.1 (#123): the image build fetches modules from proxy.golang.org against the export's go.sum; a path replace,
-  a go.mod outside the export and caller proxies are refused; the module cache is capped at 1 GiB before an
-  offline go build.
+  a go.mod outside the export and caller proxies are refused; the module cache is capped at 1 GiB.
 - B4.2 (#128): `Store.Committed` rises only when a commit or seal returns; `-log-commits` journals it.
 - C1 = B4.3-B4.5 (feat/collector-in-image): collector, store-setup oneshot and range drop-in in the image, a
   512 MiB scratch disk in every run (4 GiB sustained); Laurel to the socket, guest reads up to a barrier from
@@ -32,7 +31,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #128: a reserve made at one `-headroom` is reused at another without resizing (`reserve()`); B5 measures it.
-- C1: the failure controls' numbers share the store's ext4; a collector fsync may flush them (KVM shows it).
+- C1: failure controls share the store's ext4 (a collector fsync may flush their numbers, KVM shows it);
+  `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #125: past 16 pids per cause only a count is kept (amend ADR 0017 point 4?); a read error's text is not recorded.
 - Store: btrfs keeps truncated extents and an active filler takes the freed reserve (T10 partial): a filesystem of
   its own for the store at host install.

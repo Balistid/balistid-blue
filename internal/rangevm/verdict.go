@@ -74,6 +74,7 @@ var expected = map[string]string{
 	"collector_cap_prm":      capsNone,
 	"collector_cap_eff":      capsNone,
 	"collector_cap_amb":      capsNone,
+	"collector_canary":       "yes",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

@@ -117,6 +117,8 @@ func run() error {
 	lines, readErr := laurelLines(ctx, selfTestLines)
 	add("canary", canarySeen(canaryErr, readErr, lines, canaryToken))
 	add("e0_recorded", yesNo(readErr == nil && rangeguest.HasRefusedDisable(bytes.NewReader(lines))))
+	// The collector's own canary went through the watch rule and Laurel's socket into its store.
+	add("collector_canary", yesNo(readErr == nil && rangeguest.HasRuleKey(bytes.NewReader(lines), collectorCanaryKey)))
 	printLines(lines, "audit_enabled")
 
 	add("io_uring_sysctl", readTrim(ioUringSysctl))

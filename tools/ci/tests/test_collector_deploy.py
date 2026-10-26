@@ -175,10 +175,11 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertEqual(set(drop_in), {"Unit", "Service"})
         self.assertEqual(drop_in["Unit"], {"Requires": ["balistid-range-store.service"],
                                            "After": ["balistid-range-store.service"]})
-        self.assertEqual(set(drop_in["Service"]), {"ExecStart", "ReadWritePaths"})
+        self.assertEqual(set(drop_in["Service"]), {"ExecStart", "ReadWritePaths", "NoExecPaths"})
         self.assertEqual(drop_in["Service"]["ExecStart"][0], "")
         self.assertEqual([shlex.split(v) for v in drop_in["Service"]["ExecStart"][1:]], [want])
         self.assertEqual(drop_in["Service"]["ReadWritePaths"], [store])
+        self.assertEqual(drop_in["Service"]["NoExecPaths"], [store])  # a writable mount skips the noexec of /
         self.assertEqual(64 << 20, int(want[want.index("-headroom") + 1]))
 
     def test_paths_agree_across_files(self):
@@ -198,6 +199,25 @@ class CollectorDeployTest(unittest.TestCase):
         rules = (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
         self.assertEqual([l for l in rules if l.startswith("## version: ")],
                          [f"## version: {version} (the collector's -rule-version names it in its started record)"])
+
+    def test_canary_rule_watches_the_canary_directory_before_the_lock(self):
+        # ADR 0017, point 2: the collector's canary creates c-<n> in its -canary directory under this key,
+        # and only rules loaded before -e 2 take effect.
+        argv = shlex.split(deployed_service()["ExecStart"][0])
+        canary = argv[argv.index("-canary") + 1]
+        key = re.search(r'CanaryKey = "([a-z-]+)"', (REPO / "internal" / "collector" / "canary.go").read_text()).group(1)
+        rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
+                 if l and not l.startswith("#")]
+        watch = f"-w {canary} -p w -k {key}"
+        self.assertEqual([l for l in rules if l.startswith("-w ")], [watch])
+        self.assertLess(rules.index(watch), rules.index("-e 2"))
+        self.assertEqual(rules[-1], "-e 2")
+
+    def test_laurel_writes_to_the_collector_socket(self):
+        # ADR 0016: Laurel's one output is the socket the collector's unit listens on, not a log file.
+        config = (REPO / "deploy" / "laurel" / "config.toml").read_text()
+        section = config.split("[auditlog]\n", 1)[1].split("\n[", 1)[0]
+        self.assertEqual([l for l in section.splitlines() if l.strip()], [f'file = "unix:{SOCKET_PATH}"'])
 
     def test_tmpfiles(self):
         self.assertEqual(lines("tmpfiles.conf"), TMPFILES)

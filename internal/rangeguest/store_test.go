@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,11 @@ type fakeCollector struct {
 	afterStop func(*fakeCollector)
 	stops     int
 	after     []rawrecord.Record // what the read handed over as after its barrier
+
+	mu      sync.Mutex
+	commits chan uint64 // while a read follows the commit line
+	quiet   bool        // no commit line: the collector never journals one
+	clock   *fakeClock  // the last read's
 }
 
 func newFakeCollector(t *testing.T) *fakeCollector {
@@ -64,13 +70,29 @@ func (c *fakeCollector) add(lines ...string) {
 	if _, err := c.st.Flush(c.t.Context()); err != nil {
 		c.t.Fatal(err)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.commits != nil && !c.quiet {
+		select {
+		case c.commits <- c.st.Committed():
+		default:
+		}
+	}
 }
 
-func (c *fakeCollector) Committed(context.Context) (uint64, error) {
-	if c.st == nil {
-		return 0, nil
-	}
-	return c.st.Committed(), nil
+func (c *fakeCollector) Follow(ctx context.Context) (<-chan uint64, error) {
+	ch := make(chan uint64, 1)
+	c.mu.Lock()
+	c.commits = ch
+	c.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		close(ch)
+		c.commits = nil
+	}()
+	return ch, nil
 }
 
 func (c *fakeCollector) Stop(ctx context.Context) error {
@@ -88,8 +110,9 @@ func (c *fakeCollector) Stop(ctx context.Context) error {
 func (c *fakeCollector) read(t *testing.T, mark func(string), wait time.Duration) ([]string, error) {
 	t.Helper()
 	var got []string
+	c.clock = &fakeClock{now: time.Unix(0, 0)}
 	sr := StoreRead{
-		Dir: c.dir, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
+		Dir: c.dir, Collector: c, Clock: c.clock, Settle: time.Second, Poll: 100 * time.Millisecond,
 		Mark: func(_ context.Context, token string) error { mark(token); return nil },
 	}
 	err := sr.Read(t.Context(), wait, func(r rawrecord.Record) error {
@@ -153,15 +176,31 @@ func TestStoreReadRefusesZeroTimings(t *testing.T) {
 	}
 }
 
-// A barrier the collector never stored is looked for again until the wait is over, then the read is
-// missing, never a short read.
+// A barrier the collector did not seal by the one stop is missing, never a short read, and is not
+// looked for again: a second stop would lose what Laurel sent meanwhile.
 func TestStoreReadWithoutItsBarrierIsMissing(t *testing.T) {
 	c := newFakeCollector(t)
 	c.afterStop = (*fakeCollector).open
 	c.add(execLine("balistid-n-1"))
 	_, err := c.read(t, func(string) { c.add(execLine("balistid-n-2")) }, 30*time.Second)
-	if !errors.Is(err, ErrBarrierMissing) || c.stops < 2 {
-		t.Fatalf("read = %v after %d stops, want the barrier missing after more than one try", err, c.stops)
+	if !errors.Is(err, ErrBarrierMissing) || c.stops != 1 {
+		t.Fatalf("read = %v after %d stops, want the barrier missing after one", err, c.stops)
+	}
+}
+
+// The stop comes once the commit line moved after the barrier and then stayed for Settle, not at the
+// end of the wait; a collector that never journals a commit is stopped only when the wait is over.
+func TestStoreReadStopsWhenTheCommitLineSettles(t *testing.T) {
+	for _, quiet := range []bool{false, true} {
+		c := newFakeCollector(t)
+		c.quiet = quiet
+		if _, err := c.read(t, func(token string) { c.add(execLine(token)) }, 30*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		took := c.clock.now.Sub(time.Unix(0, 0))
+		if quiet && took < 30*time.Second || !quiet && (took < time.Second || took > 2*time.Second) {
+			t.Errorf("quiet %v: stopped after %s", quiet, took)
+		}
 	}
 }
 
