@@ -180,8 +180,9 @@ func TestStoreReadHandsOverWhatFollowsTheBarrier(t *testing.T) {
 // that ends before the stop fails the read, never lets it stop early.
 func TestStoreReadEdges(t *testing.T) {
 	c := newFakeCollector(t)
+	mark := func(token string) { c.add(execLine(token), execLine("late")) }
 	sr := StoreRead{Dir: c.dir, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Mark: func(_ context.Context, token string) error { c.add(execLine(token), execLine("late")); return nil }}
+		Mark: func(_ context.Context, token string) error { mark(token); return nil }}
 	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err != nil {
 		t.Fatalf("read without an after callback: %v", err)
 	}
