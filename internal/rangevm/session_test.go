@@ -1472,6 +1472,49 @@ func TestImageTreeIsOpenToOtherUsers(t *testing.T) {
 	}
 }
 
+// T34: a link planted in the stage tree never widens a file outside it: the walk skips a link to a
+// directory, and a program that is a link out of the tree fails instead of changing its target.
+func TestOpenTreeChangesNothingOutsideTheTree(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.Chmod(outside, 0o700); err != nil { //nolint:gosec // a directory, owner only
+		t.Fatal(err)
+	}
+	secret := filepath.Join(outside, "secret")
+	if err := os.WriteFile(secret, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tree := t.TempDir()
+	for _, p := range imagePrograms {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(tree, p.dst)), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(tree, p.dst), nil, 0o700); err != nil { //nolint:gosec // a program, as go build writes it
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(outside, filepath.Join(tree, "usr", "out")); err != nil {
+		t.Fatal(err)
+	}
+	if err := openTree(tree); err != nil {
+		t.Fatalf("a tree with a link to a directory outside: %v", err)
+	}
+	program := filepath.Join(tree, imagePrograms[1].dst)
+	if err := os.Remove(program); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, program); err != nil {
+		t.Fatal(err)
+	}
+	if err := openTree(tree); err == nil {
+		t.Error("a program linked out of the tree was accepted")
+	}
+	for path, want := range map[string]os.FileMode{outside: 0o700, secret: 0o600} {
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: mode %v (%v), want %o", path, st.Mode().Perm(), err, want)
+		}
+	}
+}
+
 // T34: a proxy that serves other bytes than go.sum names fails the guest build. The check is Go's
 // own under -mod=readonly, not code here: the test guards that toolEnv keeps it on.
 func TestBuildRefusesAModuleThatDoesNotMatchGoSum(t *testing.T) {
