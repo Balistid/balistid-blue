@@ -204,7 +204,7 @@ func newRig(t *testing.T) *rig {
 	r.w = &Writer{
 		Queue: q, Losses: loss, Refusals: &Refusals{}, Reader: NewReader(q, r.clock), Links: &Links{},
 		Canary: c, Now: r.clock, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Started: map[string]string{"version": "test"},
+		Started: map[string]string{"version": "test", "rule_version": "test-rules"},
 		Open: func(ctx context.Context) (Store, error) {
 			select {
 			case err := <-r.opens:
