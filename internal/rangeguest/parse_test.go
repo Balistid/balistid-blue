@@ -98,6 +98,8 @@ func FuzzParsers(f *testing.F) {
 		_ = OverflowDetected(s)
 		_ = HasExecArg(bytes.NewReader(data), "t")
 		_ = HasRefusedDisable(bytes.NewReader(data))
+		_ = HasRuleKey(bytes.NewReader(data), "t")
+		_ = LastCommitted(s)
 	})
 }
 

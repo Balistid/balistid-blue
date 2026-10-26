@@ -34,9 +34,10 @@ type fakeCollector struct {
 	after     []rawrecord.Record // what the read handed over as after its barrier
 
 	mu      sync.Mutex
-	commits chan uint64 // while a read follows the commit line
-	quiet   bool        // no commit line: the collector never journals one
-	clock   *fakeClock  // the last read's
+	commits chan uint64   // while a read follows the commit line
+	ended   chan struct{} // closed once the last follower ended
+	quiet   bool          // no commit line: the collector never journals one
+	clock   *fakeClock    // the last read's
 }
 
 func newFakeCollector(t *testing.T) *fakeCollector {
@@ -85,12 +86,16 @@ func (c *fakeCollector) Follow(ctx context.Context) (<-chan uint64, error) {
 	c.mu.Lock()
 	c.commits = ch
 	c.mu.Unlock()
+	ended := make(chan struct{})
+	c.ended = ended
 	go func() {
 		<-ctx.Done()
 		c.mu.Lock()
-		defer c.mu.Unlock()
-		close(ch)
 		c.commits = nil
+		c.mu.Unlock()
+		time.Sleep(10 * time.Millisecond) // a follower slow to exit: Read must still wait for it
+		close(ended)
+		close(ch) // as the guest's does once journalctl exited
 	}()
 	return ch, nil
 }
@@ -135,6 +140,11 @@ func TestStoreReadEndsAtTheBarrier(t *testing.T) {
 	want := []string{execLine("balistid-n-1"), execLine("balistid-n-2"), execLine("balistid-n-3")}
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(want) || c.stops != 1 {
 		t.Fatalf("read = %q, %v after %d stops; want %q", got, err, c.stops, want)
+	}
+	select {
+	case <-c.ended:
+	default:
+		t.Error("Read returned while its journal follower still ran")
 	}
 }
 
