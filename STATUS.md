@@ -27,7 +27,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   KVM 5890be4: self-test PASS, burst PASS 100000/100000, drop and the three controls as expected; sustained
   MISS: 889009 of 1.2 M generated in 2 vCPU (rate not held, CPU saturated), all stored, scratch enough.
 ## Next step
-1. C1 merge (maintainer's approval), then a small PR: exec jobs check kernel `audit_lost` and overflow.
+1. fix/range-after-c1: exec windows count kernel `audit_lost`, overflow and Laurel's 5 s hold; tree via os.Root.
 2. C2 = B4.6-B4.8 (crash, record, refusal, ready, exposure, cpu trials), then C3 = B4.9 (install, suite).
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
