@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"time"
 
@@ -27,7 +28,12 @@ type collectorUnit struct{}
 // Follow runs one journalctl that follows the collector's journal from now on and sends the seq of
 // each commit line; the channel closes once ctx ended and journalctl exited.
 func (collectorUnit) Follow(ctx context.Context) (<-chan uint64, error) {
-	cmd := exec.CommandContext(ctx, "/usr/bin/journalctl", "-f", "-n", "0", "-q", "--no-pager", "-o", "cat", "-u", collectorUnitName)
+	return followCommits(exec.CommandContext(ctx, "/usr/bin/journalctl", "-f", "-n", "0", "-q", "--no-pager", "-o", "cat", "-u", collectorUnitName))
+}
+
+// followCommits starts cmd, a journal follower, and sends the seq of each commit line it prints; the
+// channel closes once cmd exited, at once when a line is too long to scan.
+func followCommits(cmd *exec.Cmd) (<-chan uint64, error) {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("journalctl: %w", err)
@@ -170,8 +176,16 @@ func describe(r rawrecord.Record, where string) string {
 	return fmt.Sprintf("%s record %.40q %s", r.Provider, h.kind, where)
 }
 
+// reportWindow prints why an exec window is not whole, and by which rule, to the console, which the
+// host keeps as serial.log; quoted, so a record cannot put a line of its own on the console.
+func reportWindow(w io.Writer, truncated, why string) {
+	if why != "" {
+		_, _ = fmt.Fprintf(w, "balistid-range-guest: job window %s (rule %s): %q\n", truncated, jobWindowRule, why)
+	}
+}
+
 // jobWindowRule names the rule jobWindow decides by, for the console line that gives its reason.
-const jobWindowRule = "adr-0022-window-v2"
+const jobWindowRule = "adr-0022-window-v3"
 
 // healthSchema is the schema of the collector's and the store's health records it reads.
 const healthSchema = 1
@@ -179,8 +193,10 @@ const healthSchema = 1
 // keepsWindow is an allowlist (R7): only a health record of the known schema and a kind that says no
 // record went missing keeps a window whole. stats counting no lost record or health record since the
 // collector started (the job's VM is fresh), lag and refused (a peer that is not Laurel) do, health
-// only while OK, and connection only when every event it counts is an eof: the collector read
-// that connection to its end, and the read's own stop ends one so. A connect of any cause (Laurel
+// only while OK, and behind the barrier a connection record that counts only eofs: the read's own stop
+// ends Laurel's connection so, and leaves unread only what Laurel sent after the barrier, as the
+// collector reads connections in order. Inside the window an eof breaks it: there only another stop
+// (deadline) or a Laurel close ends a connection. A connect of any cause (Laurel
 // restarted or reconnected, the collector started), a read error, started, lost, recovered, a loss
 // record, any other kind or schema break it. The stopped run's "stopping" is its end after the
 // barrier, never inside.
@@ -199,7 +215,7 @@ func keepsWindow(r rawrecord.Record, afterBarrier bool) bool {
 	case h.kind == "health":
 		return h.state == "OK"
 	case h.kind == "connection":
-		return len(h.causes) == 1 && h.causes["eof"] > 0
+		return afterBarrier && len(h.causes) == 1 && h.causes["eof"] > 0
 	}
 	return h.kind == "stopping" && afterBarrier
 }

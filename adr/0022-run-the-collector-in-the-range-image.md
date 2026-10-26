@@ -29,7 +29,7 @@ empty module cache in the stage (`toolEnv`); the collector and a guest that read
    accepts only pending shards (with `-wal`, `-shm`, `-journal`) and a torn line above the last seq of the seal holding
    the barrier; a sidecar beside a seal is an error. A read without its barrier is `missing`: INVALID for a trial
    (ADR 0021), not whole for an exec job, never a MISS. An exec window is whole only if every health record from its start to
-   the stopped run's `stopping` (a tick's health follows its lines) is stats without loss, lag, refused, OK, or eof-only connection (T25).
+   the stopped run's `stopping` (a tick's health follows its lines) is stats without loss, lag, refused, OK, or behind the barrier an eof-only connection (T25).
 4. Modules: `toolEnv` sets `GOPROXY=https://proxy.golang.org` without `direct` and `GOSUMDB=sum.golang.org`, keeps
    `-mod=readonly` and sets no `GONOSUMDB`, `GOPRIVATE` or `GOINSECURE`; go.mod and go.sum come from the verified export
    (ADR 0010). Integrity rests on the code-owned go.sum, which every download must match; with it complete go never asks

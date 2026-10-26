@@ -122,7 +122,7 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		"no end of the run":          {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
 		"reconnect after barrier":    {read(nil, recs{job}, recs{kind(16, "connection"), stopping}), 1 << 20, "job-a\n", "lost"},
 		"own stop after barrier":     {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"eof":1}}`), stopping}), 1 << 20, "job-a\n", "no"},
-		"laurel closed in window":    {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"connection","causes":{"eof":2}}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"eof inside the window":      {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"connection","causes":{"eof":2}}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
 		"eof and reconnect":          {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"eof":1,"reconnect":1}}`), stopping}), 1 << 20, "job-a\n", "lost"},
 		"laurel restarted":           {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"connection","causes":{"laurel-restart":1}}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
 		"read error":                 {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"read-error":1}}`), stopping}), 1 << 20, "job-a\n", "lost"},
@@ -274,4 +274,49 @@ func FuzzHealthKind(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		_, _ = decodeHealth(data)
 	})
+}
+
+// A lost window's reason goes to the console with the rule, quoted; a whole window prints nothing.
+func TestReportWindow(t *testing.T) {
+	var b strings.Builder
+	reportWindow(&b, "no", "")
+	reportWindow(&b, "lost", "balistid-health record \"x\"\nfake line")
+	want := "balistid-range-guest: job window lost (rule " + jobWindowRule + "): \"balistid-health record \\\"x\\\"\\nfake line\"\n"
+	if b.String() != want {
+		t.Errorf("console %q, want %q", b.String(), want)
+	}
+}
+
+// A journal line too long to scan ends the follower at once: the process is killed and the channel
+// closes, so a read fails instead of waiting out its limit.
+func TestFollowCommitsEndsOnAnOverlongLine(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", "head -c 70000 /dev/zero | tr '\\0' x; sleep 60")
+	commits, err := followCommits(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, ok := <-commits:
+		if ok {
+			t.Fatal("a commit from a line that is no commit line")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the follower still runs after an overlong line")
+	}
+}
+
+// Commit lines become seqs in order; other lines send nothing.
+func TestFollowCommitsSendsCommitLines(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", `printf '%s\n' '{"msg":"lag"}' '{"msg":"committed through","seq":7}'`)
+	commits, err := followCommits(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uint64
+	for n := range commits {
+		got = append(got, n)
+	}
+	if len(got) != 1 || got[0] != 7 {
+		t.Errorf("commits %v, want [7]", got)
+	}
 }
