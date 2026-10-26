@@ -169,6 +169,9 @@ func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated, w
 
 // describe names a record that broke a window: its provider and, for a health record, its kind.
 func describe(r rawrecord.Record, where string) string {
+	if r.Provider != store.HealthProvider {
+		return fmt.Sprintf("%s record %s", r.Provider, where)
+	}
 	h, ok := decodeHealth(r.Data)
 	if !ok {
 		h.kind = "unreadable"

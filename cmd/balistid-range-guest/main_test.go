@@ -117,6 +117,7 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		"stats counting a loss":      {read(nil, recs{job, stats(11, 3, 0)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
 		"stats counting lost health": {read(nil, recs{job}, recs{stats(16, 0, 1), stopping}), 1 << 20, "job-a\n", "lost"},
 		"stats without counts":       {read(nil, recs{job, kind(11, "stats")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"stats with null counts":     {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"stats","lost":null,"lost_health":null}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
 		"health OK":                  {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"OK"}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
 		"over the cap":               {read(nil, recs{job, laurel(12, "job-b")}, recs{stopping}), 8, "job-a\n", "yes"},
 		"no end of the run":          {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
@@ -318,5 +319,60 @@ func TestFollowCommitsSendsCommitLines(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != 7 {
 		t.Errorf("commits %v, want [7]", got)
+	}
+}
+
+// A rate trial's read fails with errStoreLost when the store dropped records before or behind the
+// barrier, so the run is INVALID; without a loss it counts the numbers and a read error stays its own.
+func TestRateReadFailsOnAStoreLoss(t *testing.T) {
+	line := rawrecord.New(0, store.SensorProvider, 1, 1, []byte(`{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","balistid-n-1"]}}`))
+	loss := rawrecord.New(0, store.LossProvider, 0, 2, []byte("{}"))
+	feed := func(before, after []rawrecord.Record, err error) storeRead {
+		return func(b, a func(rawrecord.Record) error) error {
+			for _, r := range before {
+				_ = b(r)
+			}
+			for _, r := range after {
+				_ = a(r)
+			}
+			return err
+		}
+	}
+	other := errors.New("read store: x")
+	for name, c := range map[string]struct {
+		read storeRead
+		want error
+	}{
+		"whole":       {feed([]rawrecord.Record{line}, nil, nil), nil},
+		"loss before": {feed([]rawrecord.Record{line, loss}, nil, nil), errStoreLost},
+		"loss behind": {feed([]rawrecord.Record{line}, []rawrecord.Record{loss}, nil), errStoreLost},
+		"read error":  {feed([]rawrecord.Record{line, loss}, nil, other), other},
+	} {
+		counter, err := rangeguest.NewCounter(rangejob.LoadExec, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := rateRead(counter, c.read); !errors.Is(err, c.want) || (c.want == nil) != (err == nil) {
+			t.Errorf("%s: %v, want %v", name, err, c.want)
+		}
+		if stored, _, _, _ := counter.Numbers().Count(1); stored != 1 {
+			t.Errorf("%s: %d numbers stored", name, stored)
+		}
+	}
+}
+
+// A health record with a null or missing count, or any other bytes, never panics the window check.
+func FuzzKeepsWindow(f *testing.F) {
+	f.Add([]byte(`{"schema_version":1,"kind":"stats","lost":null,"lost_health":null}`), true)
+	f.Add([]byte(`{"schema_version":1,"kind":"connection","causes":null}`), true)
+	f.Fuzz(func(t *testing.T, data []byte, afterBarrier bool) {
+		_ = keepsWindow(rawrecord.New(0, store.HealthProvider, 0, 1, data), afterBarrier)
+	})
+}
+
+// The reason names a loss record by its provider, not as an unreadable health record.
+func TestDescribeNamesTheProvider(t *testing.T) {
+	if got := describe(rawrecord.New(0, store.LossProvider, 0, 1, []byte("{}")), "in the window"); got != store.LossProvider+" record in the window" {
+		t.Errorf("describe = %q", got)
 	}
 }
