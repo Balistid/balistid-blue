@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"errors"
 	"net"
 	"os"
 	"sync/atomic"
@@ -87,10 +88,10 @@ func TestPeerOtherUidRefusedAndCounted(t *testing.T) {
 	if n, err := client.Read(make([]byte, 1)); n != 0 || err == nil || os.IsTimeout(err) {
 		t.Fatalf("the refused peer read %d bytes, %v; want the connection closed", n, err)
 	}
-	if got := refused.Take(); got.Count != 1 || got.LastUID != os.Getuid() || got.First != noon {
+	if got := refused.Take(); got.Count != 1 || got.LastUID != os.Getuid() || got.First != noon || got.Causes[CauseUID] != 1 {
 		t.Fatalf("refusals %+v", got)
 	}
-	if got := refused.Take(); got.Count != 0 {
+	if got := refused.Take(); got.Count != 0 || got.Causes != nil {
 		t.Fatalf("Take did not reset: %+v", got)
 	}
 }
@@ -102,8 +103,28 @@ func TestUnresolvedLaurelRefusesEveryone(t *testing.T) {
 	ln <- server
 	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
 	_, _ = client.Read(make([]byte, 1))
-	if got := refused.Take(); got.Count != 1 {
+	if got := refused.Take(); got.Count != 1 || len(got.Causes) != 1 || got.Causes[CauseUnresolved] != 1 {
 		t.Fatalf("refusals %+v", got)
+	}
+}
+
+// Each refused peer is counted under its one cause, and Laurel's uid under none.
+func TestRefusalCause(t *testing.T) {
+	for _, c := range []struct {
+		peer      Peer
+		err       error
+		laurelUID int
+		want      string
+	}{
+		{Peer{UID: 7}, nil, 7, ""},
+		{Peer{UID: 0}, nil, 7, CauseUID},
+		{Peer{UID: -1}, errors.New("no creds"), 7, CausePeerError},
+		{Peer{UID: 7}, nil, -1, CauseUnresolved},
+		{Peer{UID: -1}, errors.New("no creds"), -1, CausePeerError},
+	} {
+		if got := refusal(c.peer, c.err, c.laurelUID); got != c.want {
+			t.Errorf("refusal(%+v, %v, %d) = %q, want %q", c.peer, c.err, c.laurelUID, got, c.want)
+		}
 	}
 }
 

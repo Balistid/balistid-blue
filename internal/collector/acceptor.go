@@ -28,31 +28,47 @@ type Conn struct {
 	Peer Peer
 }
 
+// socketName names the one socket the collector accepts on (ADR 0016, point 1) in its refusal summaries,
+// which acceptance counts per socket.
+const socketName = "collector.sock"
+
+// Why a peer is refused, each counted on its own in the summary (refusal_summary_s): another uid, no
+// credentials from the kernel, or no `_laurel` account to admit.
+const (
+	CauseUID        = "uid"
+	CausePeerError  = "peer_error"
+	CauseUnresolved = "laurel_unresolved"
+)
+
 // Refusals counts connections from other uids, for one health summary per minute (refusal_summary_s).
 type Refusals struct {
 	mu        sync.Mutex
 	count     uint64
+	causes    map[string]uint64
 	first     int64
 	last      int64
 	lastUID   int
 	lastError string
 }
 
-// Refused is a summary of the refusals since the last Take.
+// Refused is a summary of the refusals since the last Take: how many, how many per cause, and the
+// newest one's uid and error as a sample.
 type Refused struct {
 	Count       uint64
+	Causes      map[string]uint64
 	First, Last int64
 	LastUID     int
 	LastError   string
 }
 
-func (r *Refusals) add(at time.Time, uid int, err error) {
+func (r *Refusals) add(at time.Time, uid int, cause string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.count == 0 {
-		r.first = at.UnixNano()
+		r.first, r.causes = at.UnixNano(), map[string]uint64{}
 	}
 	r.count++
+	r.causes[cause]++
 	r.last, r.lastUID = at.UnixNano(), uid
 	if err != nil {
 		r.lastError = err.Error()
@@ -63,9 +79,22 @@ func (r *Refusals) add(at time.Time, uid int, err error) {
 func (r *Refusals) Take() Refused {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := Refused{Count: r.count, First: r.first, Last: r.last, LastUID: r.lastUID, LastError: r.lastError}
-	r.count, r.lastError = 0, ""
+	s := Refused{Count: r.count, Causes: r.causes, First: r.first, Last: r.last, LastUID: r.lastUID, LastError: r.lastError}
+	r.count, r.causes, r.lastError = 0, nil, ""
 	return s
+}
+
+// refusal is why the peer p is refused, or "" for Laurel's uid.
+func refusal(p Peer, err error, laurelUID int) string {
+	switch {
+	case err != nil:
+		return CausePeerError
+	case laurelUID < 0:
+		return CauseUnresolved
+	case p.UID != laurelUID:
+		return CauseUID
+	}
+	return ""
 }
 
 // Acceptor admits Laurel's uid only, checked with SO_PEERCRED on every accepted connection, and hands
@@ -114,8 +143,8 @@ func (a *Acceptor) Run(ctx context.Context) error {
 			return fmt.Errorf("collector: accept: %w", err)
 		}
 		p, err := a.peer(c)
-		if err != nil || a.laurelUID < 0 || p.UID != a.laurelUID {
-			a.refused.add(a.now(), p.UID, err)
+		if cause := refusal(p, err, a.laurelUID); cause != "" {
+			a.refused.add(a.now(), p.UID, cause, err)
 			_ = c.Close()
 			<-a.slots
 			continue

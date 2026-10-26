@@ -106,14 +106,14 @@ func TestStopStoresEverySummaryBeforeOtherRecords(t *testing.T) {
 	r.settle()
 	r.st.set(func(s *fakeStore) { s.rejectNote = true })
 	connect(r, 77)
-	r.w.Refusals.add(r.clock(), 1233, nil)
+	r.w.Refusals.add(r.clock(), 1233, CauseUID, nil)
 	r.step(statsEvery) // both summaries wait for the store
 	r.w.Links.Disconnected(nil)
-	r.w.Refusals.add(r.clock(), 1234, errors.New("peer gone"))
+	r.w.Refusals.add(r.clock(), 1234, CausePeerError, errors.New("peer gone"))
 	for range 80 {
 		r.step(statsEvery) // counted behind the waiting summaries, which 80 records follow
 	}
-	r.w.Refusals.add(r.clock(), 1235, nil) // taken at stop
+	r.w.Refusals.add(r.clock(), 1235, CauseUID, nil) // taken at stop
 	r.st.set(func(s *fakeStore) { s.rejectNote, s.noteCap = false, 64 })
 	if err := stopRig(r); err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestJournalBoundedUnderFlood(t *testing.T) {
 		for tick := range minutes * 60 {
 			for i := range 20 {
 				r.w.Links.Connected(100 + i)
-				r.w.Refusals.add(r.clock(), 1234, errors.New("peer gone"))
+				r.w.Refusals.add(r.clock(), 1234, CausePeerError, errors.New("peer gone"))
 			}
 			events += 20
 			if tick%2 == 1 { // a health record every tick, which gives way in the end
@@ -220,7 +220,7 @@ func TestRefusalAfterTheLastStatsTickIsKeptAtStop(t *testing.T) {
 	r := newRig(t)
 	r.start(nil)
 	r.settle()
-	r.w.Refusals.add(r.clock(), 1234, nil)
+	r.w.Refusals.add(r.clock(), 1234, CauseUID, nil)
 	if err := stopRig(r); err != nil {
 		t.Fatal(err)
 	}
@@ -232,12 +232,45 @@ func TestRefusalAfterTheLastStatsTickIsKeptAtStop(t *testing.T) {
 	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
 	r.start(errors.New("no disk"))
 	r.settle()
-	r.w.Refusals.add(r.clock(), 1234, nil)
+	r.w.Refusals.add(r.clock(), 1234, CauseUID, nil)
 	if err := stopRig(r); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(j.String(), "refused:1") {
 		t.Fatalf("the refusal did not reach the journal:\n%s", j)
+	}
+}
+
+// A refusal summary names its socket and rule version and counts each cause; refusals taken in two
+// minutes while an earlier summary waits for the store add up per cause in the next one
+// (refusal_summary_s: count per socket and reason, rule version, one sample).
+func TestRefusalSummaryCountsEachCause(t *testing.T) {
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	r.w.Refusals.add(r.clock(), 1233, CauseUID, nil)
+	r.w.Refusals.add(r.clock(), 1233, CauseUID, nil)
+	r.step(statsEvery) // the first summary waits for the store
+	r.w.Refusals.add(r.clock(), 1234, CausePeerError, errors.New("peer gone"))
+	r.step(statsEvery)
+	r.w.Refusals.add(r.clock(), 1235, CauseUID, nil) // taken at stop
+	r.st.set(func(s *fakeStore) { s.rejectNote = false })
+	if err := stopRig(r); err != nil {
+		t.Fatal(err)
+	}
+	got := r.st.kinds("refused")
+	want := []map[string]any{{"uid": 2.0}, {"peer_error": 1.0, "uid": 1.0}}
+	if len(got) != 2 {
+		t.Fatalf("refused records %v", got)
+	}
+	for i, rec := range got {
+		if rec["socket"] != "collector.sock" || rec["rule_version"] != "test-rules" || fmt.Sprint(rec["causes"]) != fmt.Sprint(want[i]) {
+			t.Errorf("refused record %d: %v, want causes %v", i, rec, want[i])
+		}
+	}
+	if got[1]["count"] != 2.0 || got[1]["last_uid"] != 1235.0 || got[1]["last_error"] != "peer gone" {
+		t.Errorf("second summary %v", got[1])
 	}
 }
 

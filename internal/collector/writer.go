@@ -226,13 +226,17 @@ func (n note) keep() bool { return n.kind == "lost" || n.kind == "connection" ||
 // record and none has to give way.
 type tally struct {
 	count           uint64
+	causes          map[string]uint64
 	firstAt, lastAt int64
 	last            map[string]any // the newest uid and error
 }
 
-func (t *tally) add(n uint64, first, last int64, fields map[string]any) {
+func (t *tally) add(n uint64, causes map[string]uint64, first, last int64, fields map[string]any) {
 	if t.count == 0 {
-		t.firstAt = first
+		t.firstAt, t.causes = first, map[string]uint64{}
+	}
+	for cause, c := range causes {
+		t.causes[cause] += c
 	}
 	t.count, t.lastAt, t.last = t.count+n, last, fields
 }
@@ -490,7 +494,8 @@ func (w *Writer) summaries(stop bool) {
 			"causes": c.causes, "pids": c.pids, "pids_dropped": c.pidsDropped, "laurel_pid": c.lastPID, "cause": c.lastCause})
 	}
 	if t := w.refuse; t.count > 0 && free("refused") {
-		f := map[string]any{"kind": "refused", "count": t.count, "first_at": t.firstAt, "last_at": t.lastAt}
+		f := map[string]any{"kind": "refused", "socket": socketName, "count": t.count, "causes": t.causes,
+			"first_at": t.firstAt, "last_at": t.lastAt, "rule_version": w.Started["rule_version"]}
 		maps.Copy(f, t.last)
 		w.note(f)
 		w.refuse = tally{}
@@ -547,7 +552,7 @@ func (w *Writer) refusals() {
 		if r.LastError == "" && w.refuse.last != nil { // the acceptor's error is per Take, the tally's since its record
 			r.LastError, _ = w.refuse.last["last_error"].(string)
 		}
-		w.refuse.add(r.Count, r.First, r.Last, map[string]any{"last_uid": r.LastUID, "last_error": r.LastError})
+		w.refuse.add(r.Count, r.Causes, r.First, r.Last, map[string]any{"last_uid": r.LastUID, "last_error": r.LastError})
 	}
 }
 
