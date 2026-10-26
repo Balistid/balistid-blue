@@ -18,16 +18,15 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - C1 (#131, #132): collector and store in the image, guest reads sealed shards to a barrier. KVM 5890be4: burst PASS,
   sustained MISS (889009 of 1.2 M in 2 vCPU). #133: refusal summaries per cause, with socket and rule version.
-- C2 = B4.6-B4.8 (feat/collector-trials, ADR 0023 proposed): trials run and are judged by their method;
-  crash_loss_ms by 7+7 rows of kill and reset of the collector at 2000/s (S from its live commit line, MISS when
-  the recovery record's last seq is below S); record-max, refusal-flood, ready-1..4, exposure, cpu-1000 (collector,
-  auditd and Laurel). Judges by closed facts, mutations killed; 3 Codex and 2 critic rounds, a lean /security-audit.
-  KVM ac77232: self-test, record-max, refusal-flood (60498 ms of 60500), ready-1 (7.2 s), exposure (0.8), cpu-1000
-  (0.468 cores) PASS; kill and reset INVALID, rate not held (~1500/s); rate-burst INVALID, barrier missing.
+- C2 (#134, ADR 0023): trials by method; crash_loss_ms by kill/reset of the collector (S from its commit line),
+  record-max, refusal-flood, ready-1..4, exposure, cpu-1000. KVM: record, refusal (60498 of 60500 ms), ready (7.2 s),
+  exposure (0.8), cpu (0.468) PASS; kill/reset INVALID, rate not held; burst 2 of 3 failed: systemd's 10 s watchdog
+  killed the collector mid-burst (journal in the guest's report).
 ## Next step
-1. C2: rerun rate-burst in KVM with the collector's journal printed on a failed read (passed in C1); merge #133
-   first, then C2 (owned: maintainer approves).
-2. C3 = B4.9: reinstall the runner (maintainer), the suite, verdicts of the 8 metrics in status.py.
+1. Merge #133, then C2 (owned: maintainer approves).
+2. Collector: a writer tick appends the whole queue before it feeds the watchdog (writer.go step), so a burst can
+   outlast WatchdogSec=10s and lose the queue; bound a tick's work or feed the watchdog within it (own PR, test).
+3. C3 = B4.9: reinstall the runner (maintainer), the suite, verdicts of the 8 metrics in status.py.
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #128: a reserve made at one `-headroom` is reused at another without resizing (`reserve()`); B5 measures it.
@@ -37,4 +36,5 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - Store: btrfs keeps truncated extents, an active filler takes the freed reserve (T10): own filesystem at install.
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi (exposure 4.6): its own change.
 - refusal_summary_s held by 2 ms and cpu_cores at 0.468 of 0.5 in KVM: margins to watch in the suite.
+- A collector killed mid-read makes a rate trial INVALID (barrier missing), not MISS: a loss it causes is not a MISS.
 - R2 signing keys; before floor 0's host install: x32 mitigation, io_uring. shellcheck in CI is unpinned (R14).
