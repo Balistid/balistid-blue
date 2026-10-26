@@ -186,8 +186,25 @@ func describe(r rawrecord.Record, where string) string {
 // laurelHold is how long the guest waits after a job before its barrier: Laurel 0.8.2 holds a kernel
 // event without an end marker (a seccomp or crash record) until a later record is over 5 s newer,
 // checking each 1 s (coalesce.rs EXPIRE_INFLIGHT_TIMEOUT, EXPIRE_PERIOD), so a barrier right after the
-// job would pass the job's last such records; with 1 s margin they reach the store first.
+// job would pass the job's last such records; with 1 s margin they reach the store first. Laurel
+// orders by audit timestamps, so a step back of the guest's realtime clock (only root or the hypervisor
+// can make one; the job cannot) could still reorder them: a residual in T25.
 const laurelHold = 7 * time.Second
+
+// lossSample is the kernel's lost count and auditd's overflow flag at one moment.
+type lossSample struct{ lost, overflow string }
+
+// jobEvidence waits out Laurel's hold, then reads the job's window from the store and checks the
+// kernel's and auditd's losses from before (sampled before the job) to a sample taken after the read:
+// the interval is the job and its drain to the store, so a loss in the read itself counts against
+// the window too, which can only make it "lost".
+func jobEvidence(sleep func(time.Duration), read storeRead, t0 int64, limit int, before lossSample, sample func() lossSample) (window []byte, truncated, why string, err error) {
+	sleep(laurelHold)
+	return jobWindow(read, t0, limit, func() string {
+		after := sample()
+		return kernelLoss(before.lost, after.lost, before.overflow, after.overflow)
+	})
+}
 
 // kernelLoss says why records may be missing before Laurel saw them, or "": the kernel's lost count
 // moved while the job ran, or auditd's plugin queue overflowed (ADR 0016: both drop records the
@@ -199,7 +216,9 @@ func kernelLoss(lostBefore, lostAfter, overflowBefore, overflowAfter string) str
 	switch {
 	case errB != nil || errA != nil:
 		return fmt.Sprintf("the kernel's lost count is unknown (%.20q, %.20q)", lostBefore, lostAfter)
-	case a != b:
+	case a < b:
+		return fmt.Sprintf("the kernel's lost count went back from %d to %d", b, a)
+	case a > b:
 		return fmt.Sprintf("the kernel lost %d records during the job", a-b)
 	case overflowBefore != "no" || overflowAfter != "no":
 		return fmt.Sprintf("auditd's plugin queue overflowed (%.20q, %.20q)", overflowBefore, overflowAfter)

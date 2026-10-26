@@ -430,3 +430,33 @@ func TestLaurelHoldMatchesThePackagedLaurel(t *testing.T) {
 		t.Errorf("laurelHold %s is under Laurel's 5 s hold and 1 s expiry period", laurelHold)
 	}
 }
+
+// The job's evidence waits out Laurel's hold before the store read, and the loss check compares the
+// sample from before the job with one taken after the read.
+func TestJobEvidenceWaitsThenComparesSamples(t *testing.T) {
+	var steps []string
+	sleep := func(d time.Duration) { steps = append(steps, "sleep "+d.String()) }
+	read := func(b, a func(rawrecord.Record) error) error {
+		steps = append(steps, "read")
+		return errors.Join(b(rawrecord.New(0, store.SensorProvider, 1, 11, []byte("job-a"))),
+			a(rawrecord.New(0, store.HealthProvider, 0, 20, []byte(`{"schema_version":1,"kind":"stopping"}`))))
+	}
+	for name, c := range map[string]struct {
+		after lossSample
+		state string
+	}{
+		"no loss":        {lossSample{"2", "no"}, "no"},
+		"kernel lost":    {lossSample{"4", "no"}, "lost"},
+		"queue overflow": {lossSample{"2", "yes"}, "lost"},
+	} {
+		steps = nil
+		sample := func() lossSample { steps = append(steps, "sample"); return c.after }
+		_, state, why, _ := jobEvidence(sleep, read, 10, 1<<20, lossSample{"2", "no"}, sample)
+		if state != c.state || strings.Join(steps, ",") != "sleep "+laurelHold.String()+",read,sample" {
+			t.Errorf("%s: %s (%q) after %v", name, state, why, steps)
+		}
+	}
+	if got := kernelLoss("5", "0", "no", "no"); !strings.Contains(got, "went back from 5 to 0") {
+		t.Errorf("a counter going back reads %q", got)
+	}
+}
