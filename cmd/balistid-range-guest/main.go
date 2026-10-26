@@ -528,6 +528,10 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 func diagnose(ctx context.Context) {
 	for _, argv := range [][]string{
 		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-u", "auditd", "-u", "audit-rules", "-u", "systemd-sysctl"},
+		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-n", "200", "-u", "balistid-range-store", "-u", "balistid-collector.socket", "-u", "balistid-collector"},
+		{"/usr/bin/systemctl", "status", "--no-pager", "-l", "-n", "0", "balistid-range-store", "balistid-collector.socket", "balistid-collector"},
+		{"/usr/bin/findmnt", "-n", "/var/lib/balistid-range/scratch"},
+		{"/usr/bin/ls", "-ln", "/var/lib/balistid-range/scratch", "/usr/local/lib/balistid"},
 		{"/usr/bin/auditctl", "-s"},
 		{"/usr/bin/auditctl", "-l"},
 		{"/usr/bin/findmnt", "-n", "/"},
