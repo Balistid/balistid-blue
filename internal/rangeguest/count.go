@@ -65,12 +65,36 @@ func (n *Numbers) Above(generated uint64, max int) []uint64 {
 	return out
 }
 
-// Count compares the set with 1..generated: stored once, missing, repeated, and outside the set.
-func (n *Numbers) Count(generated uint64) (stored, missing, duplicate, outside uint64) {
+// Prefix is the end of the run 1..N the set holds without a gap, and Total how many numbers it holds.
+func (n *Numbers) Prefix() uint64 {
+	var seq uint64
+	for w, b := range n.bits {
+		bit := uint64(0)
+		if w == 0 {
+			bit = 1 // 0 is never a number
+		}
+		for ; bit < 64; bit++ {
+			if b&(1<<bit) == 0 {
+				return seq
+			}
+			seq = uint64(w)*64 + bit
+		}
+	}
+	return seq
+}
+
+// Total is how many numbers the set holds.
+func (n *Numbers) Total() uint64 {
 	var all uint64
 	for _, w := range n.bits {
 		all += uint64(bits.OnesCount64(w)) //nolint:gosec // a count of 0 to 64
 	}
+	return all
+}
+
+// Count compares the set with 1..generated: stored once, missing, repeated, and outside the set.
+func (n *Numbers) Count(generated uint64) (stored, missing, duplicate, outside uint64) {
+	all := n.Total()
 	for seq := uint64(1); seq <= generated && seq <= MaxNumber; seq++ {
 		w := int(seq / 64)
 		if w < len(n.bits) && n.bits[w]&(1<<(seq%64)) != 0 {

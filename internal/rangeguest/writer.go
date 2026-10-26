@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -119,6 +120,28 @@ func (h *Handover) H(failAt time.Time) uint64 {
 		n++
 	}
 	return n
+}
+
+// WindowMin is the fewest numbers handed over in any whole 10 s window from start to until, numbers
+// due at rate per second from start and counted as Generate counts them (ADR 0019): in the window a
+// number was due in if handed over at most grace after its end, else in the window it was handed over
+// in. Without a whole window it is 0.
+func (h *Handover) WindowMin(start, until time.Time, rate int) uint64 {
+	counts := make([]uint64, until.Sub(start)/window)
+	if len(counts) == 0 || rate < 1 {
+		return 0
+	}
+	for i, at := range h.at {
+		due := time.Duration(i) * time.Second / time.Duration(rate)
+		w, done := int(due/window), at.Sub(start)
+		if done > time.Duration(w+1)*window+grace {
+			w = int(done / window)
+		}
+		if w < len(counts) {
+			counts[w]++
+		}
+	}
+	return slices.Min(counts)
 }
 
 // StoredPrefix returns the longest run 1..N of numbers a file of records holds, ignoring a cut

@@ -133,8 +133,11 @@ const (
 // left out, never guessed (T30).
 func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	names := counts
-	if tr.Failure != "" {
+	switch tr.Method() {
+	case rangejob.MethodWriterFailure:
 		names = []string{FactStoredPrefix, FactStoredCount}
+	case rangejob.MethodCollectorFailure:
+		names = []string{FactStoredPrefix, FactStoredCount, FactRecoveredLast}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -186,6 +189,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeRate(tr, o)
 	case rangejob.MethodWriterFailure:
 		return judgeFailure(tr, o)
+	case rangejob.MethodCollectorFailure:
+		return judgeCrash(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

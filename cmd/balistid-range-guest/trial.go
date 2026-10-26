@@ -49,6 +49,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runRate(ctx, tr, r)
 	case rangejob.MethodWriterFailure:
 		return runFailure(ctx, tr, boot, r)
+	case rangejob.MethodCollectorFailure:
+		return runCrash(ctx, tr, boot, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }

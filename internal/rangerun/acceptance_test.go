@@ -46,13 +46,19 @@ func TestAMetricPassesOnlyWhenEveryRunPassesAndEveryControlHolds(t *testing.T) {
 		}
 		return counted, rangevm.Pass
 	})
-	for _, m := range []string{"sustained_rate", "burst_rate"} {
+	for _, m := range []string{"sustained_rate", "burst_rate", "crash_loss_ms"} {
 		if v := a.Verdict(m); v != rangevm.Pass {
 			t.Errorf("%s: %q", m, v)
 		}
 	}
-	// crash_loss_ms has only controls until the collector's failure trials join the table (B4).
-	if v := a.Verdict("crash_loss_ms"); v != "" {
+	// crash_loss_ms never passes on its writer controls alone, only with the collector's failures.
+	c := Acceptance{}.ForCommit(testCommit)
+	for _, tr := range rangejob.Trials() {
+		if tr.Method() == rangejob.MethodWriterFailure {
+			c = c.Record(tr, rangevm.LabelControl, tr.Expect, resultID)
+		}
+	}
+	if v := c.Verdict("crash_loss_ms"); v != "" {
 		t.Errorf("crash_loss_ms passed on its controls alone: %q", v)
 	}
 	// One run short of the count leaves the metric open.

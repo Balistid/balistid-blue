@@ -41,6 +41,41 @@ func TestNumbersCountEveryKindOfLoss(t *testing.T) {
 	}
 }
 
+// Prefix ends at the first gap, across words of the set; Total counts every number once.
+func TestNumbersPrefixAndTotal(t *testing.T) {
+	cases := []struct {
+		nums          []uint64
+		prefix, total uint64
+	}{
+		{nil, 0, 0},
+		{[]uint64{2, 3}, 0, 2},
+		{[]uint64{1, 2, 3, 5}, 3, 4},
+		{[]uint64{1, 1, 2}, 2, 2},
+	}
+	for _, c := range cases {
+		var n Numbers
+		for _, seq := range c.nums {
+			n.Add(seq)
+		}
+		if n.Prefix() != c.prefix || n.Total() != c.total {
+			t.Errorf("%v: Prefix %d, Total %d; want %d, %d", c.nums, n.Prefix(), n.Total(), c.prefix, c.total)
+		}
+	}
+	var n Numbers
+	for seq := uint64(1); seq <= 200; seq++ {
+		if seq != 130 {
+			n.Add(seq)
+		}
+	}
+	if n.Prefix() != 129 || n.Total() != 199 {
+		t.Errorf("1..200 without 130: Prefix %d, Total %d", n.Prefix(), n.Total())
+	}
+	n.Add(130)
+	if n.Prefix() != 200 {
+		t.Errorf("1..200: Prefix %d", n.Prefix())
+	}
+}
+
 func TestRecordReadsOnlyTheGeneratorsNumbers(t *testing.T) {
 	cases := []struct {
 		kind, line string

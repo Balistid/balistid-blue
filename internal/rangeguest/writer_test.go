@@ -160,6 +160,36 @@ func TestHandoverH(t *testing.T) {
 	}
 }
 
+// WindowMin counts whole 10 s windows before until only, a number handed over up to 100 ms late in the
+// window it was due in, and a later one in the window it came in (ADR 0019).
+func TestHandoverWindowMin(t *testing.T) {
+	t0 := time.Unix(100, 0)
+	steady := func(rate, n int, late map[int]time.Duration) *Handover {
+		var h Handover
+		for i := range n {
+			h.Add(t0.Add(time.Duration(i)*time.Second/time.Duration(rate) + late[i]))
+		}
+		return &h
+	}
+	cases := []struct {
+		name  string
+		h     *Handover
+		until time.Duration
+		want  uint64
+	}{
+		{"one whole window", steady(10, 150, nil), 15 * time.Second, 100},
+		{"no whole window", steady(10, 90, nil), 9 * time.Second, 0},
+		{"two windows, second short", steady(10, 150, nil), 20 * time.Second, 50},
+		{"100 ms late counts", steady(10, 100, map[int]time.Duration{99: 200 * time.Millisecond}), 15 * time.Second, 100},
+		{"101 ms late moves", steady(10, 100, map[int]time.Duration{99: 201 * time.Millisecond}), 15 * time.Second, 99},
+	}
+	for _, c := range cases {
+		if got := c.h.WindowMin(t0, t0.Add(c.until), 10); got != c.want {
+			t.Errorf("%s: WindowMin = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 func TestStoredPrefix(t *testing.T) {
 	rec := func(nums ...uint64) []byte {
 		var b []byte
