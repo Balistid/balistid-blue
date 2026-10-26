@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,6 +88,9 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		return health(at, `{"schema_version":1,"kind":"`+k+`"}`)
 	}
 	stopping := kind(20, "stopping")
+	stats := func(at int64, lost, lostHealth int) rawrecord.Record {
+		return health(at, fmt.Sprintf(`{"schema_version":1,"kind":"stats","lost":%d,"lost_health":%d}`, lost, lostHealth))
+	}
 	type recs = []rawrecord.Record
 	read := func(err error, before, after recs) storeRead {
 		return func(b, a func(rawrecord.Record) error) error {
@@ -109,30 +113,40 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		limit         int
 		window, state string
 	}{
-		"whole":                    {read(nil, recs{laurel(5, "before"), job, kind(11, "stats")}, recs{laurel(15, "x"), kind(16, "lag"), stopping}), 1 << 20, "job-a\n", "no"},
-		"health OK":                {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"OK"}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
-		"over the cap":             {read(nil, recs{job, laurel(12, "job-b")}, recs{stopping}), 8, "job-a\n", "yes"},
-		"no end of the run":        {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
-		"reconnect after barrier":  {read(nil, recs{job}, recs{kind(16, "connection"), stopping}), 1 << 20, "job-a\n", "lost"},
-		"loss after barrier":       {read(nil, recs{job}, recs{kind(16, "lost"), stopping}), 1 << 20, "job-a\n", "lost"},
-		"collector loss":           {read(nil, recs{job, kind(11, "lost")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"truncated record":         {read(nil, recs{job, laurel(12, strings.Repeat("x", rawrecord.MaxBytes+1))}, recs{stopping}), 8 << 20, "job-a\n", "yes"},
-		"next run after the end":   {read(nil, recs{job}, recs{stopping, kind(21, "started"), kind(22, "connection")}), 1 << 20, "job-a\n", "no"},
-		"collector started":        {read(nil, recs{job, kind(11, "started")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"laurel reconnect":         {read(nil, recs{job, kind(11, "connection")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"a stop inside the window": {read(nil, recs{job, kind(11, "stopping")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"store recovered":          {read(nil, recs{job, kind(11, "recovered")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"health not OK":            {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"UNKNOWN canary-missed"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"unknown kind":             {read(nil, recs{job, kind(11, "something-new")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"unknown schema":           {read(nil, recs{job, health(11, `{"schema_version":2,"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"no schema":                {read(nil, recs{job, health(11, `{"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"schema as a string":       {read(nil, recs{job, health(11, `{"schema_version":"1","kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"unreadable health":        {read(nil, recs{job, health(11, "x")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"counted loss":             {read(nil, recs{job, rawrecord.New(0, store.LossProvider, 0, 11, []byte("{}"))}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
-		"start before t0":          {read(nil, recs{kind(9, "started"), job}, recs{stopping}), 1 << 20, "job-a\n", "no"},
-		"end of another schema":    {read(nil, recs{job}, recs{health(20, `{"schema_version":2,"kind":"stopping"}`)}), 1 << 20, "job-a\n", "lost"},
-		"barrier missing":          {read(rangeguest.ErrBarrierMissing, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
-		"store unreadable":         {read(errors.New("read store: x"), recs{job}, nil), 1 << 20, "", "error"},
+		"whole":                      {read(nil, recs{laurel(5, "before"), job, stats(11, 0, 0)}, recs{laurel(15, "x"), kind(16, "lag"), stopping}), 1 << 20, "job-a\n", "no"},
+		"stats counting a loss":      {read(nil, recs{job, stats(11, 3, 0)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"stats counting lost health": {read(nil, recs{job}, recs{stats(16, 0, 1), stopping}), 1 << 20, "job-a\n", "lost"},
+		"stats without counts":       {read(nil, recs{job, kind(11, "stats")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"health OK":                  {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"OK"}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"over the cap":               {read(nil, recs{job, laurel(12, "job-b")}, recs{stopping}), 8, "job-a\n", "yes"},
+		"no end of the run":          {read(nil, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
+		"reconnect after barrier":    {read(nil, recs{job}, recs{kind(16, "connection"), stopping}), 1 << 20, "job-a\n", "lost"},
+		"own stop after barrier":     {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"eof":1}}`), stopping}), 1 << 20, "job-a\n", "no"},
+		"laurel closed in window":    {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"connection","causes":{"eof":2}}`)}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"eof and reconnect":          {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"eof":1,"reconnect":1}}`), stopping}), 1 << 20, "job-a\n", "lost"},
+		"laurel restarted":           {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"connection","causes":{"laurel-restart":1}}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"read error":                 {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"read-error":1}}`), stopping}), 1 << 20, "job-a\n", "lost"},
+		"connection without causes":  {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection"}`), stopping}), 1 << 20, "job-a\n", "lost"},
+		"zero eof":                   {read(nil, recs{job}, recs{health(16, `{"schema_version":1,"kind":"connection","causes":{"eof":0}}`), stopping}), 1 << 20, "job-a\n", "lost"},
+		"loss after barrier":         {read(nil, recs{job}, recs{kind(16, "lost"), stopping}), 1 << 20, "job-a\n", "lost"},
+		"collector loss":             {read(nil, recs{job, kind(11, "lost")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"truncated record":           {read(nil, recs{job, laurel(12, strings.Repeat("x", rawrecord.MaxBytes+1))}, recs{stopping}), 8 << 20, "job-a\n", "yes"},
+		"next run after the end":     {read(nil, recs{job}, recs{stopping, kind(21, "started"), kind(22, "connection")}), 1 << 20, "job-a\n", "no"},
+		"collector started":          {read(nil, recs{job, kind(11, "started")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"laurel reconnect":           {read(nil, recs{job, kind(11, "connection")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"a stop inside the window":   {read(nil, recs{job, kind(11, "stopping")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"store recovered":            {read(nil, recs{job, kind(11, "recovered")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"health not OK":              {read(nil, recs{job, health(11, `{"schema_version":1,"kind":"health","state":"UNKNOWN canary-missed"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unknown kind":               {read(nil, recs{job, kind(11, "something-new")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unknown schema":             {read(nil, recs{job, health(11, `{"schema_version":2,"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"no schema":                  {read(nil, recs{job, health(11, `{"kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"schema as a string":         {read(nil, recs{job, health(11, `{"schema_version":"1","kind":"stats"}`)}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"unreadable health":          {read(nil, recs{job, health(11, "x")}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"counted loss":               {read(nil, recs{job, rawrecord.New(0, store.LossProvider, 0, 11, []byte("{}"))}, recs{stopping}), 1 << 20, "job-a\n", "lost"},
+		"start before t0":            {read(nil, recs{kind(9, "started"), job}, recs{stopping}), 1 << 20, "job-a\n", "no"},
+		"end of another schema":      {read(nil, recs{job}, recs{health(20, `{"schema_version":2,"kind":"stopping"}`)}), 1 << 20, "job-a\n", "lost"},
+		"barrier missing":            {read(rangeguest.ErrBarrierMissing, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
+		"store unreadable":           {read(errors.New("read store: x"), recs{job}, nil), 1 << 20, "", "error"},
 	} {
 		w, state, why, _ := jobWindow(c.read, 10, c.limit)
 		if string(w) != c.window || state != c.state || (why != "") != (state == "lost" || state == "error") {
@@ -253,11 +267,11 @@ func TestCollectorCanaryKeyIsTheCollectors(t *testing.T) {
 	}
 }
 
-// healthKind decodes JSON a collector wrote into the store; whatever the bytes, it returns.
+// decodeHealth decodes JSON a collector wrote into the store; whatever the bytes, it returns.
 func FuzzHealthKind(f *testing.F) {
 	f.Add([]byte(`{"schema_version":1,"kind":"health","state":"OK"}`))
 	f.Add([]byte(`{"schema_version":2,"kind":"stats"}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		_, _, _ = healthKind(data)
+		_, _ = decodeHealth(data)
 	})
 }
