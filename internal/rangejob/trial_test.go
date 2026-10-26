@@ -24,9 +24,11 @@ func TestTrialTableFitsTheBudget(t *testing.T) {
 			t.Errorf("%s: a trial measures a metric at a positive rate for whole 10 s windows", tr.Name)
 		case tr.Expect != "" && tr.Expect != ExpectPass && tr.Expect != ExpectMiss, tr.Load.Drop && tr.Expect != ExpectMiss:
 			t.Errorf("%s: a control expects PASS or MISS, and one that drops a number MISS", tr.Name)
-		case (tr.Failure != "") != (tr.Load.Kind == LoadWrite):
-			t.Errorf("%s: exactly the failure trials hand numbers to a measured writer", tr.Name)
-		case tr.Failure == "" && tr.Load.Kind != LoadExec && tr.Load.Kind != LoadPtrace:
+		case tr.Method() == "":
+			t.Errorf("%s: no method runs a %s trial with load %q", tr.Name, tr.Metric, tr.Load.Kind)
+		case tr.Load.Kind == LoadWrite && tr.Method() != MethodWriterFailure:
+			t.Errorf("%s: only a writer failure hands numbers to a measured writer", tr.Name)
+		case tr.Method() == MethodRate && tr.Load.Kind != LoadExec && tr.Load.Kind != LoadPtrace:
 			t.Errorf("%s: unknown load %q", tr.Name, tr.Load.Kind)
 		case tr.Failure == FailReset && tr.Boots != 2, tr.Failure == FailKill && tr.Boots != 1,
 			tr.Failure != "" && tr.Failure != FailReset && tr.Failure != FailKill, tr.Failure == "" && tr.Boots != 1:
@@ -52,6 +54,26 @@ func TestLookupOnlyFindsTheTable(t *testing.T) {
 	Trials()[0].Name = "changed"
 	if _, ok := Lookup("changed"); ok {
 		t.Error("Trials returns the table itself")
+	}
+}
+
+// Each trial has one method, from its failure, load and metric; anything else has none.
+func TestMethod(t *testing.T) {
+	for _, c := range []struct {
+		tr   Trial
+		want string
+	}{
+		{Trial{Metric: MetricSustained, Load: Load{Kind: LoadExec}}, MethodRate},
+		{Trial{Metric: MetricBurst, Load: Load{Kind: LoadPtrace}}, MethodRate},
+		{Trial{Metric: MetricCrashLoss, Failure: FailReset, Load: Load{Kind: LoadWrite}}, MethodWriterFailure},
+		{Trial{Metric: MetricCrashLoss, Failure: FailKill, Load: Load{Kind: LoadExec}}, MethodCollectorFailure},
+		{Trial{Metric: MetricCrashLoss, Failure: FailKill, Load: Load{Kind: LoadPtrace}}, ""},
+		{Trial{Metric: MetricCrashLoss, Load: Load{Kind: LoadExec}}, ""},
+		{Trial{Metric: "healthy_ok", Load: Load{Kind: LoadExec}}, ""},
+	} {
+		if got := c.tr.Method(); got != c.want {
+			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
+		}
 	}
 }
 

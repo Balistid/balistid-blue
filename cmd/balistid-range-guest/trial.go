@@ -32,27 +32,31 @@ func credentials() fs.FS {
 	return nil
 }
 
-// runTrial runs the rate trial the host named (ADR 0018, point 4) as root from the image: it echoes
-// the trial and phase first, generates the numbered load, reads what the collector stored up to a
-// barrier (ADR 0022, point 3) and reports the counts for the host to judge. A trial it cannot run reports
-// trial_error, which the host judges INVALID.
+// runTrial runs the trial the host named (ADR 0018) as root from the image by its method: it echoes
+// the trial, phase and kernel first, then runs the method, which reports its facts for the host to
+// judge. A trial it cannot run reports trial_error, which the host judges INVALID.
 func runTrial(ctx context.Context, name, phase string) error {
-	var facts []fact
-	add := func(name, value string) { facts = append(facts, fact{name, value}) }
-	add(rangevm.FactTrial, name)
-	add(rangevm.FactPhase, phase)
-	add(rangevm.FactKernel, readTrim("/proc/sys/kernel/osrelease"))
-	fail := func(why string) error {
-		add(rangevm.FactTrialError, why)
-		return write(facts)
-	}
+	r := &report{send: write}
+	r.add(rangevm.FactTrial, name)
+	r.add(rangevm.FactPhase, phase)
+	r.add(rangevm.FactKernel, readTrim("/proc/sys/kernel/osrelease"))
 	tr, boot, err := rangeguest.TrialFor(name, phase)
 	if err != nil {
-		return fail(err.Error())
+		return r.fail(err.Error())
 	}
-	if tr.Failure != "" {
-		return runFailure(ctx, tr, boot, facts)
+	switch tr.Method() {
+	case rangejob.MethodRate:
+		return runRate(ctx, tr, r)
+	case rangejob.MethodWriterFailure:
+		return runFailure(ctx, tr, boot, r)
 	}
+	return r.fail("no method runs trial " + tr.Name)
+}
+
+// runRate generates the numbered load of rate trial tr (ADR 0018, point 4), reads what the collector
+// stored up to a barrier (ADR 0022, point 3) and reports the counts.
+func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
+	add, fail := r.add, r.fail
 	lostBefore := valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
 	overflowBefore := freshOverflow(ctx)
 
@@ -118,7 +122,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 	add(rangevm.FactMissing, u(missing))
 	add(rangevm.FactDuplicate, u(duplicate))
 	add(rangevm.FactOutside, u(outside))
-	return write(facts)
+	return r.send(r.facts)
 }
 
 // freshOverflow asks auditd to rewrite its state file and reads the overflow flag from that rewrite.
