@@ -119,6 +119,7 @@ type buildConfig struct {
 	proxy       string
 	moduleCache int64              // bytes allocated on disk
 	afterCap    func(stage string) // a test seam: runs after the cap, before go build
+	afterBuild  func(tree string)  // a test seam: runs after go build, before the image files
 }
 
 func defaultBuild() buildConfig {
@@ -198,6 +199,13 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		if err := goBuild.Run(); err != nil {
 			return "", fmt.Errorf("build %s: %w", p.name, err)
 		}
+		// go build applies the builder's umask; the collector runs as its own uid and must exec it.
+		if err := os.Chmod(filepath.Join(tree, p.dst), 0o755); err != nil { //nolint:gosec // a program others run
+			return "", fmt.Errorf("build %s: %w", p.name, err)
+		}
+	}
+	if cfg.afterBuild != nil {
+		cfg.afterBuild(tree)
 	}
 	for _, f := range imageFiles {
 		if err := copyInto(filepath.Join(src, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {

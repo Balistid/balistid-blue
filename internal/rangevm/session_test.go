@@ -1424,6 +1424,35 @@ func TestBuildBuildsTheCollector(t *testing.T) {
 	}
 }
 
+// The image's programs are 0755 whatever the builder's umask: the collector runs as its own uid, not
+// root, and a 0750 binary fails to exec in the range.
+func TestBuiltProgramsAreExecutableByOthers(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	root, commit := replacingRepo(t, fixtureSum(zipped, false), "", nil)
+	cfg := defaultBuild()
+	cfg.proxy = fileProxy(t, zipped)
+	var modes []os.FileMode
+	cfg.afterBuild = func(tree string) {
+		for _, p := range imagePrograms {
+			st, err := os.Stat(filepath.Join(tree, p.dst))
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			modes = append(modes, st.Mode().Perm())
+		}
+	}
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	log, err := buildWith(t, t.TempDir(), root, commit, cfg)
+	if err == nil || !strings.Contains(err.Error(), "image file") {
+		t.Fatalf("build = %v, want both programs built; log:\n%s", err, log)
+	}
+	if len(modes) != len(imagePrograms) || slices.ContainsFunc(modes, func(m os.FileMode) bool { return m != 0o755 }) {
+		t.Fatalf("program modes %v, want 0755 each", modes)
+	}
+}
+
 // T34: a proxy that serves other bytes than go.sum names fails the guest build. The check is Go's
 // own under -mod=readonly, not code here: the test guards that toolEnv keeps it on.
 func TestBuildRefusesAModuleThatDoesNotMatchGoSum(t *testing.T) {
