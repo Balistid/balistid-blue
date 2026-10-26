@@ -1424,32 +1424,51 @@ func TestBuildBuildsTheCollector(t *testing.T) {
 	}
 }
 
-// The image's programs are 0755 whatever the builder's umask: the collector runs as its own uid, not
-// root, and a 0750 binary fails to exec in the range.
-func TestBuiltProgramsAreExecutableByOthers(t *testing.T) {
+// The image's programs and every directory of its tree are 0755 whatever the builder's umask: the
+// collector runs as its own uid, not root, and must reach and exec its binary in the range.
+func TestImageTreeIsOpenToOtherUsers(t *testing.T) {
 	zipped := fixtureZip(fixtureSource)
-	root, commit := replacingRepo(t, fixtureSum(zipped, false), "", nil)
+	files := map[string]string{}
+	for _, f := range imageFiles {
+		files[f.src] = "x\n"
+	}
+	root, commit := replacingRepo(t, fixtureSum(zipped, false), "", files)
 	cfg := defaultBuild()
 	cfg.proxy = fileProxy(t, zipped)
-	var modes []os.FileMode
-	cfg.afterBuild = func(tree string) {
-		for _, p := range imagePrograms {
-			st, err := os.Stat(filepath.Join(tree, p.dst))
+	var wrong []string
+	reached := false
+	cfg.afterTree = func(tree string) {
+		reached = true
+		err := filepath.WalkDir(tree, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				t.Error(err)
-				continue
+				return err
 			}
-			modes = append(modes, st.Mode().Perm())
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && info.Mode().Perm() != 0o755 {
+				wrong = append(wrong, fmt.Sprintf("%s %o", path, info.Mode().Perm()))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Error(err)
+		}
+		for _, p := range imagePrograms {
+			if st, err := os.Stat(filepath.Join(tree, p.dst)); err != nil || st.Mode().Perm() != 0o755 {
+				wrong = append(wrong, fmt.Sprintf("%s %v", p.dst, err))
+			}
 		}
 	}
 	old := syscall.Umask(0o077)
 	defer syscall.Umask(old)
 	log, err := buildWith(t, t.TempDir(), root, commit, cfg)
-	if err == nil || !strings.Contains(err.Error(), "image file") {
-		t.Fatalf("build = %v, want both programs built; log:\n%s", err, log)
+	if !reached || err == nil || !strings.Contains(err.Error(), "makepkg") {
+		t.Fatalf("build = %v (tree reached %v), want the tree built and makepkg to fail; log:\n%s", err, reached, log)
 	}
-	if len(modes) != len(imagePrograms) || slices.ContainsFunc(modes, func(m os.FileMode) bool { return m != 0o755 }) {
-		t.Fatalf("program modes %v, want 0755 each", modes)
+	if len(wrong) > 0 {
+		t.Fatalf("not open to other users: %v", wrong)
 	}
 }
 

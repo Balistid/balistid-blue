@@ -119,7 +119,7 @@ type buildConfig struct {
 	proxy       string
 	moduleCache int64              // bytes allocated on disk
 	afterCap    func(stage string) // a test seam: runs after the cap, before go build
-	afterBuild  func(tree string)  // a test seam: runs after go build, before the image files
+	afterTree   func(tree string)  // a test seam: runs once the tree mkosi copies into the image is complete
 }
 
 func defaultBuild() buildConfig {
@@ -204,13 +204,16 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 			return "", fmt.Errorf("build %s: %w", p.name, err)
 		}
 	}
-	if cfg.afterBuild != nil {
-		cfg.afterBuild(tree)
-	}
 	for _, f := range imageFiles {
 		if err := copyInto(filepath.Join(src, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {
 			return "", err
 		}
+	}
+	if err := widenTreeDirs(tree); err != nil {
+		return "", err
+	}
+	if cfg.afterTree != nil {
+		cfg.afterTree(tree)
 	}
 	makepkg := tool(filepath.Join(src, "packaging", "laurel"), "/usr/bin/makepkg", "--noconfirm", "--nodeps")
 	makepkg.Env = append(makepkg.Env, "PKGDEST="+pkgs, "SOURCE_DATE_EPOCH="+sourceDateEpoch, "SRCDEST="+filepath.Join(stage, "src-pkg"),
@@ -1081,6 +1084,21 @@ func copyInto(src, dst string, mode os.FileMode) error {
 	// WriteFile applies the umask; the image must not depend on the builder's.
 	if err := os.Chmod(dst, mode); err != nil {
 		return fmt.Errorf("image file: %w", err)
+	}
+	return nil
+}
+
+// widenTreeDirs makes every directory of the tree 0755: go build and MkdirAll apply the builder's
+// umask, mkosi copies the modes into the image, and the collector's uid must reach its binary.
+func widenTreeDirs(tree string) error {
+	err := filepath.WalkDir(tree, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return err
+		}
+		return os.Chmod(path, 0o755) //nolint:gosec // system directories in the image
+	})
+	if err != nil {
+		return fmt.Errorf("image tree: %w", err)
 	}
 	return nil
 }
