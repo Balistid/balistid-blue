@@ -168,6 +168,7 @@ func drained(w *commitWatch, now func() time.Time, backlog func() string) error 
 		case seq == 0:
 			return errors.New("no commit line during the load")
 		case now().Sub(at) < cpuDrainQuiet:
+			last = "" // commits resumed: an earlier backlog no longer says why the wait ran out
 			continue
 		}
 		if last = backlog(); last == "0" {
