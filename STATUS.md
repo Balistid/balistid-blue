@@ -23,18 +23,18 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - B4.2 (#128): `Store.Committed` rises only when a commit or seal returns; `-log-commits` journals it.
 - C1 = B4.3-B4.5 (feat/collector-in-image): collector, store-setup oneshot and range drop-in in the image, a
   512 MiB scratch disk in every run (4 GiB sustained); Laurel to the socket, guest reads up to a barrier from
-  sealed shards only; exec window `lost` on restart, reconnect or loss (T25); trials no longer baseline.
+  sealed shards only; exec window whole only up to the stopped run's end without loss (T25); no baseline.
+  KVM 5890be4: self-test PASS, burst PASS 100000/100000, drop and the three controls as expected; sustained
+  MISS: 889009 of 1.2 M generated in 2 vCPU (rate not held, CPU saturated), all stored, scratch enough.
 ## Next step
-1. C1: critic and Codex security on the PR, then one short KVM run with the maintainer (runner reinstall by
-   cmdcheck): self-test PASS, the three controls give their Expect, sustained scratch measured.
+1. C1 merge (maintainer's approval), then a small PR: exec jobs check kernel `audit_lost` and overflow.
 2. C2 = B4.6-B4.8 (crash, record, refusal, ready, exposure, cpu trials), then C3 = B4.9 (install, suite).
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #128: a reserve made at one `-headroom` is reused at another without resizing (`reserve()`); B5 measures it.
-- C1: failure controls share the store's ext4 (a collector fsync may flush their numbers, KVM shows it);
-  `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
+- sustained_rate MISS in a 2-vCPU range VM with the collector: more vCPUs for that trial, or a product limit?
+- C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #125: past 16 pids per cause only a count is kept (amend ADR 0017 point 4?); a read error's text is not recorded.
-- Store: btrfs keeps truncated extents and an active filler takes the freed reserve (T10 partial): a filesystem of
-  its own for the store at host install.
+- Store: btrfs keeps truncated extents, an active filler takes the freed reserve (T10): own filesystem at install.
 - The build unit has no syscall filter, yet runs a commit's PKGBUILD and mkosi: its own change.
 - R2 signing keys; before floor 0's host install: x32 mitigation, io_uring. shellcheck in CI is unpinned (R14).
