@@ -176,6 +176,48 @@ func TestStoreReadHandsOverWhatFollowsTheBarrier(t *testing.T) {
 	}
 }
 
+// Without an after callback a read still runs to its barrier and drops what follows it; a follower
+// that ends before the stop fails the read, never lets it stop early.
+func TestStoreReadEdges(t *testing.T) {
+	c := newFakeCollector(t)
+	sr := StoreRead{Dir: c.dir, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
+		Mark: func(_ context.Context, token string) error { c.add(execLine(token), execLine("late")); return nil }}
+	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err != nil {
+		t.Fatalf("read without an after callback: %v", err)
+	}
+	sr.Collector, sr.Mark = endedFollower{}, func(context.Context, string) error { return nil }
+	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err == nil || !strings.Contains(err.Error(), "follower ended") {
+		t.Fatalf("read with an ended follower: %v", err)
+	}
+}
+
+// endedFollower is a collector whose journal follower ends at once.
+type endedFollower struct{}
+
+func (endedFollower) Follow(context.Context) (<-chan uint64, error) {
+	ch := make(chan uint64)
+	close(ch)
+	return ch, nil
+}
+
+func (endedFollower) Stop(context.Context) error { return errors.New("stopped") }
+
+// A shard the index does not list that starts inside the sealed range is no newer run's: the read
+// fails even with its barrier found.
+func TestUnindexedShardBelowTheSealsRefused(t *testing.T) {
+	c := newFakeCollector(t)
+	c.add(execLine("balistid-n-1"), execLine("balistid-n-2"))
+	c.afterStop = func(c *fakeCollector) {
+		if err := os.WriteFile(filepath.Join(c.dir, fmt.Sprintf("%020d.db", 2)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := c.read(t, func(token string) { c.add(execLine(token)) }, 30*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "not above") {
+		t.Fatalf("read with an unindexed shard below the seals = %v", err)
+	}
+}
+
 // A store read needs a positive settle time and poll interval: zero would spin or stop before the
 // commit line settled.
 func TestStoreReadRefusesZeroTimings(t *testing.T) {

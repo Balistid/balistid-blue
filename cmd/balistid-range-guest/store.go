@@ -47,6 +47,9 @@ func (collectorUnit) Follow(ctx context.Context) (<-chan uint64, error) {
 				}
 			}
 		}
+		if sc.Err() != nil {
+			_ = cmd.Process.Kill() // a cut scan ends the follower now, so the read fails, not waits it out
+		}
 		_ = cmd.Wait()
 	}()
 	return commits, nil
@@ -160,54 +163,75 @@ func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated, w
 
 // describe names a record that broke a window: its provider and, for a health record, its kind.
 func describe(r rawrecord.Record, where string) string {
-	kind, _, ok := healthKind(r.Data)
+	h, ok := decodeHealth(r.Data)
 	if !ok {
-		kind = "unreadable"
+		h.kind = "unreadable"
 	}
-	return fmt.Sprintf("%s record %.40q %s", r.Provider, kind, where)
+	return fmt.Sprintf("%s record %.40q %s", r.Provider, h.kind, where)
 }
 
 // jobWindowRule names the rule jobWindow decides by, for the console line that gives its reason.
-const jobWindowRule = "adr-0022-window-v1"
+const jobWindowRule = "adr-0022-window-v2"
 
 // healthSchema is the schema of the collector's and the store's health records it reads.
 const healthSchema = 1
 
 // keepsWindow is an allowlist (R7): only a health record of the known schema and a kind that says no
-// record went missing keeps a window whole. stats, lag and refused (a peer that is not Laurel) do,
-// and health only while OK; started, connection, lost, recovered, a loss record, any other kind or
-// schema break it. The stopped run's own "stopping" is its end after the barrier, never inside.
+// record went missing keeps a window whole. stats counting no lost record or health record since the
+// collector started (the job's VM is fresh), lag and refused (a peer that is not Laurel) do, health
+// only while OK, and connection only when every event it counts is an eof: the collector read
+// that connection to its end, and the read's own stop ends one so. A connect of any cause (Laurel
+// restarted or reconnected, the collector started), a read error, started, lost, recovered, a loss
+// record, any other kind or schema break it. The stopped run's "stopping" is its end after the
+// barrier, never inside.
 func keepsWindow(r rawrecord.Record, afterBarrier bool) bool {
 	if r.Provider != store.HealthProvider {
 		return false
 	}
-	kind, state, ok := healthKind(r.Data)
+	h, ok := decodeHealth(r.Data)
 	switch {
 	case !ok:
 		return false
-	case kind == "stats" || kind == "lag" || kind == "refused":
+	case h.kind == "stats":
+		return h.lost != nil && h.lostHealth != nil && *h.lost == 0 && *h.lostHealth == 0
+	case h.kind == "lag" || h.kind == "refused":
 		return true
-	case kind == "health":
-		return state == "OK"
+	case h.kind == "health":
+		return h.state == "OK"
+	case h.kind == "connection":
+		return len(h.causes) == 1 && h.causes["eof"] > 0
 	}
-	return kind == "stopping" && afterBarrier
+	return h.kind == "stopping" && afterBarrier
 }
 
 func isStopping(r rawrecord.Record) bool {
-	kind, _, ok := healthKind(r.Data)
-	return ok && kind == "stopping"
+	h, ok := decodeHealth(r.Data)
+	return ok && h.kind == "stopping"
 }
 
-// healthKind decodes a health record's kind and, for kind health, its state; ok only for schema 1.
-func healthKind(data []byte) (kind, state string, ok bool) {
+// health is what a window reads of a health record: its kind, a health record's state and a
+// connection record's counts per cause.
+type health struct {
+	kind, state      string
+	causes           map[string]uint64
+	lost, lostHealth *uint64 // a stats record's counts since the collector started
+}
+
+// decodeHealth decodes a health record of schema 1; a health record needs its state, a connection
+// record its causes and a stats record its loss counts, or it is not read.
+func decodeHealth(data []byte) (health, bool) {
 	var rec map[string]json.RawMessage
 	var schema int
+	var h health
 	if json.Unmarshal(data, &rec) != nil || json.Unmarshal(rec["schema_version"], &schema) != nil || schema != healthSchema ||
-		json.Unmarshal(rec["kind"], &kind) != nil {
-		return "", "", false
+		json.Unmarshal(rec["kind"], &h.kind) != nil {
+		return health{}, false
 	}
-	if kind == "health" && json.Unmarshal(rec["state"], &state) != nil {
-		return "", "", false
+	switch {
+	case h.kind == "health" && json.Unmarshal(rec["state"], &h.state) != nil,
+		h.kind == "connection" && json.Unmarshal(rec["causes"], &h.causes) != nil,
+		h.kind == "stats" && (json.Unmarshal(rec["lost"], &h.lost) != nil || json.Unmarshal(rec["lost_health"], &h.lostHealth) != nil):
+		return health{}, false
 	}
-	return kind, state, true
+	return h, true
 }
