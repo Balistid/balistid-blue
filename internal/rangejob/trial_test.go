@@ -71,6 +71,8 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricCrashLoss, Failure: FailKill, Load: Load{Kind: LoadExec}}, MethodCollectorFailure},
 		{Trial{Metric: MetricCrashLoss, Failure: FailKill, Load: Load{Kind: LoadPtrace}}, ""},
 		{Trial{Metric: MetricCrashLoss, Load: Load{Kind: LoadExec}}, ""},
+		{Trial{Metric: MetricReady, Failure: FailKill, Load: Load{Kind: LoadWrite}}, ""},
+		{Trial{Metric: MetricSustained, Failure: FailReset, Load: Load{Kind: LoadExec}}, ""},
 		{Trial{Metric: "healthy_ok", Load: Load{Kind: LoadExec}}, ""},
 		{Trial{Metric: MetricRecordMax}, MethodRecord},
 		{Trial{Metric: MetricRecordMax, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},

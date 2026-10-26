@@ -143,7 +143,7 @@ func inject(ctx context.Context, token string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, injectWait)
 	defer cancel()
-	child := exec.CommandContext(ctx, self, injectArg, token) //nolint:gosec // our own binary
+	child := exec.CommandContext(ctx, self, injectArg, collectorSocket, token) //nolint:gosec // our own binary
 	child.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: gid, Groups: []uint32{}}}
 	out, err := child.StdoutPipe()
 	if err != nil {
@@ -192,21 +192,25 @@ func hupLaurel() error {
 	return nil
 }
 
-// injectMain is the injector's process: it connects to the collector's socket, says so, and sends the
-// malformed lines of token.
+// injectMain is the injector's process: it connects to the socket, says so on stdout, and sends the
+// malformed lines of the token.
 func injectMain(args []string) error {
-	if len(args) != 1 {
-		return errors.New("want the token")
+	if len(args) != 2 {
+		return errors.New("want the socket and the token")
 	}
-	c, err := (&net.Dialer{Timeout: connectWait}).DialContext(context.Background(), "unix", collectorSocket)
+	return injectLines(args[0], args[1], os.Stdout)
+}
+
+func injectLines(socket, token string, say io.Writer) error {
+	c, err := (&net.Dialer{Timeout: connectWait}).DialContext(context.Background(), "unix", socket)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer c.Close() //nolint:errcheck // the lines are written or the write fails
-	if _, err := os.Stdout.WriteString("connected\n"); err != nil {
+	if _, err := io.WriteString(say, "connected\n"); err != nil {
 		return fmt.Errorf("say connected: %w", err)
 	}
-	for _, l := range malformedLines(args[0]) {
+	for _, l := range malformedLines(token) {
 		if _, err := io.WriteString(c, l+"\n"); err != nil {
 			return fmt.Errorf("send: %w", err)
 		}
@@ -215,10 +219,13 @@ func injectMain(args []string) error {
 }
 
 // recordScan is what a record trial finds in the store: per argv case how its record was stored, the
-// malformed lines found, and per record whether it is truncated or malformed, up to the last stats
-// record before the barrier.
+// malformed lines stored exactly as sent, loss records, and per record whether it is truncated or
+// malformed, up to the last stats record before the barrier.
 type recordScan struct {
 	token     string
+	lines     []string // the malformed lines sent, by marker below
+	markers   []string
+	lost      uint64
 	cases     map[string]string
 	ours      uint64 // the highest seq of a record of this trial
 	malformed map[string]bool
@@ -235,7 +242,8 @@ type scanned struct {
 }
 
 func newRecordScan(token string) *recordScan {
-	return &recordScan{token: token, cases: map[string]string{}, malformed: map[string]bool{}}
+	return &recordScan{token: token, lines: malformedLines(token), markers: malformedMarkers(token), cases: map[string]string{},
+		malformed: map[string]bool{}}
 }
 
 func (s *recordScan) add(x rawrecord.Record) error {
@@ -247,8 +255,8 @@ func (s *recordScan) add(x rawrecord.Record) error {
 			return nil
 		}
 		s.ours = max(s.ours, x.Seq)
-		for _, m := range malformedMarkers(s.token) {
-			if malformed && bytes.Contains(x.Data, []byte(m)) {
+		for i, m := range s.markers {
+			if malformed && bytes.Contains(x.Data, []byte(m)) && storedExactly(x, s.lines[i]) {
 				s.malformed[m] = true
 			}
 		}
@@ -257,7 +265,12 @@ func (s *recordScan) add(x rawrecord.Record) error {
 				s.cases[c.fact] = s.argvStored(c, a, x)
 			}
 		}
+	case store.LossProvider:
+		s.lost++
 	case store.HealthProvider:
+		if healthKind(x) == "lost" {
+			s.lost++
+		}
 		var rec struct {
 			Kind      string  `json:"kind"`
 			Truncated *uint64 `json:"truncated"`
@@ -278,8 +291,10 @@ func (s *recordScan) argvStored(c argvCase, a []string, x rawrecord.Record) stri
 	switch {
 	case s.cases[c.fact] != "":
 		return "twice"
-	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0:
-		return rangevm.RecordTruncated
+	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0 && bytes.Contains(x.Data, []byte(`"`+a[len(a)-1]+`"`)):
+		return rangevm.RecordTruncated // its first argument in the head, as found, and its last in the tail
+	case x.Truncated() && c.minBytes > 0:
+		return "truncated without its length or tail"
 	case x.Truncated():
 		return "truncated within the limit"
 	}
@@ -309,6 +324,14 @@ func (s *recordScan) report(r *report) {
 	r.add(rangevm.FactStoredTruncated, u(truncated))
 	r.add(rangevm.FactStatsMalformed, u(s.malCount))
 	r.add(rangevm.FactStoredMalformed, u(malformed))
+	r.add(rangevm.FactLostRecords, u(s.lost))
+}
+
+// storedExactly is whether x holds line as the collector must keep it: whole up to the record limit,
+// else its head, tail, length and SHA-256 (rawrecord.New).
+func storedExactly(x rawrecord.Record, line string) bool {
+	want := rawrecord.New(x.Seq, x.Provider, x.ProviderSeq, x.Received, []byte(line))
+	return bytes.Equal(x.Data, want.Data) && x.OrigLen == want.OrigLen && x.OrigSHA256 == want.OrigSHA256
 }
 
 func b2u(b bool) uint64 {

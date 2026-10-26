@@ -14,8 +14,9 @@ import (
 func crashRun(tr rangejob.Trial, change ...string) Outcome {
 	first := map[string]string{FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel, FactResetArmed: "yes"}
 	last := map[string]string{FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel, FactStoredPrefix: "1200",
-		FactStoredCount: "1300", FactRecovered: "1", FactRecoveredLast: "5200", FactRecoveredSeq: "5201"}
-	order := []string{FactTrial, FactPhase, FactKernel, FactStoredPrefix, FactStoredCount, FactRecovered, FactRecoveredLast, FactRecoveredSeq}
+		FactStoredCount: "1300", FactRecovered: "1", FactRecoveredLast: "5200", FactRecoveredSeq: "5201", FactSeqPrefix: "6000"}
+	order := []string{FactTrial, FactPhase, FactKernel, FactStoredPrefix, FactStoredCount, FactRecovered, FactRecoveredLast,
+		FactRecoveredSeq, FactSeqPrefix}
 	if tr.Failure == FailReset {
 		last[FactPhase], last[FactScratchJournal], last[FactScratchRecovery] = "2", "yes", "yes"
 		order = append(order, FactScratchJournal, FactScratchRecovery)
@@ -70,15 +71,19 @@ func TestJudgeCrash(t *testing.T) {
 				"recovered_last=4999,recovered_seq=5000", // Open reused an acknowledged seq
 				"marks:s=1005200",                        // an overclaimed S: no run can show it survived
 				"stored_prefix=0,stored_count=0",
+				"seq_prefix=4999", // a seq acknowledged is not in the read
+				"seq_prefix=0",
 			},
 			Pass: {
 				"stored_prefix=1000",                     // exactly H
 				"recovered_last=5000,recovered_seq=5001", // exactly S
+				"seq_prefix=5000",
 			},
 			Invalid: {
 				"marks:h=0", "marks:s=0", "recovered=0", "recovered=2", "recovered_seq=5200", "recovered_seq=5202",
 				"stored_count=1199", "stored_prefix=-1", "recovered_last=", "kernel=6.0.0", "canary=seen",
 				"recovered", "stored_count", "recovered_last=01,recovered_seq=2", "trial=kill-collector-2",
+				"recovered_last=18446744073709551615,recovered_seq=0", "seq_prefix", "seq_prefix=18446744073709551616",
 			},
 		}
 		for want, changes := range cases {

@@ -98,7 +98,7 @@ func TestStoredRunReportsNumbersAndRecovery(t *testing.T) {
 	if err := storedRun(read, r); err != nil {
 		t.Fatal(err)
 	}
-	want := "stored_prefix=3 stored_count=5 recovered=1 recovered_last=5 recovered_seq=6"
+	want := "stored_prefix=3 stored_count=5 recovered=1 recovered_last=5 recovered_seq=6 seq_prefix=3"
 	if s := factsString(got); s != want {
 		t.Errorf("facts %s, want %s", s, want)
 	}
@@ -219,7 +219,7 @@ func TestCrashKillsTheCollectorAndReadsTheStore(t *testing.T) {
 	if h < 900 || h > 1000 || s == 0 {
 		t.Errorf("H=%d S=%d: H counts the numbers execed 900 ms before the failure at 100/s, S a commit", h, s)
 	}
-	if got := factsString(facts); got != "stored_prefix=1000 stored_count=1000 recovered=1 recovered_last=1000 recovered_seq=1001" {
+	if got := factsString(facts); got != "stored_prefix=1000 stored_count=1000 recovered=1 recovered_last=1000 recovered_seq=1001 seq_prefix=1001" {
 		t.Errorf("facts %s", got)
 	}
 }

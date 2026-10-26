@@ -64,7 +64,7 @@ func TestRecordScanOfASoundStore(t *testing.T) {
 	r := &report{}
 	s.report(r)
 	want := "record_131k=whole record_2m=whole record_6m=truncated malformed_stored=3 stats_after=yes " +
-		"stats_truncated=2 stored_truncated=2 stats_malformed=3 stored_malformed=3"
+		"stats_truncated=2 stored_truncated=2 stats_malformed=3 stored_malformed=3 lost_records=0"
 	if g := factsString(r.facts); g != want {
 		t.Errorf("facts\n%s\nwant\n%s", g, want)
 	}
@@ -86,7 +86,22 @@ func TestRecordScanFindsEachFault(t *testing.T) {
 		"missing":    {nil, "record_131k=missing"},
 		"stats late": {[]rawrecord.Record{statsRecord(1, 0, 0), laurelExecOf(t, 2, small.args(tok))}, "stats_after=no"},
 		"large whole": {[]rawrecord.Record{{Seq: 1, Provider: store.SensorProvider, ProviderSeq: 1,
-			Data: laurelExecOf(t, 1, large.args(tok)[:1]).Data, OrigLen: 100}}, "record_6m=truncated within the limit"},
+			Data: laurelExecOf(t, 1, large.args(tok)[:1]).Data, OrigLen: 100}}, "record_6m=truncated without its length or tail"},
+		"large without its tail": {[]rawrecord.Record{func() rawrecord.Record {
+			x := laurelExecOf(t, 1, large.args(tok))
+			x.Data = x.Data[:len(x.Data)/2]
+			return x
+		}()}, "record_6m=truncated without its length or tail"},
+		"loss": {[]rawrecord.Record{rawrecord.New(1, store.LossProvider, 0, 1, []byte(`{}`)),
+			rawrecord.New(2, store.HealthProvider, 0, 1, []byte(`{"schema_version":1,"kind":"lost"}`))}, "lost_records=2"},
+		"long line changed": {[]rawrecord.Record{func() rawrecord.Record {
+			l := []byte(malformedLines(tok)[2])
+			x := rawrecord.New(1, store.SensorProvider, 0, 1, l)
+			x.OrigSHA256[0] ^= 1
+			return x
+		}()}, "malformed_stored=0"},
+		"short line cut": {[]rawrecord.Record{rawrecord.New(1, store.SensorProvider, 0, 1, []byte(malformedLines(tok)[0][:35]))},
+			"malformed_stored=0"},
 	}
 	for name, c := range cases {
 		s := newRecordScan(tok)

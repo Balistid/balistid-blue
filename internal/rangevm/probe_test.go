@@ -52,12 +52,13 @@ func TestJudgeRecord(t *testing.T) {
 	base := map[string]string{
 		FactRecord131K: RecordWhole, FactRecord2M: RecordWhole, FactRecord6M: RecordTruncated, FactMalformedStored: "3",
 		FactStatsAfter: "yes", FactStatsTruncated: "2", FactStoredTruncated: "2", FactStatsMalformed: "3", FactStoredMalformed: "3",
+		FactLostRecords: "0",
 	}
 	run := func(change ...string) Outcome { return probeRun("record-max", recordFacts, base, change...) }
 	judgeCases(t, "record-max", run, map[string][]string{
 		Miss: {
 			"record_131k=missing", "record_2m=truncated", "record_2m=cut", "record_6m=whole", "record_6m=missing",
-			"malformed_stored=2", "malformed_stored=4", "stats_truncated=1", "stats_malformed=4",
+			"malformed_stored=2", "malformed_stored=4", "stats_truncated=1", "stats_malformed=4", "lost_records=1",
 			"stats_truncated=3,stored_truncated=3,stats_malformed=4,stored_malformed=4,record_6m=missing",
 		},
 		Invalid: {
@@ -71,19 +72,20 @@ func TestJudgeRecord(t *testing.T) {
 func TestJudgeRefusal(t *testing.T) {
 	base := map[string]string{
 		FactAttemptsRoot: "15000", FactAttemptsOther: "14900", FactRefusedCount: "29900", FactRefusedUID: "29900",
-		FactSummaries: "4", FactMaxLatencyMS: "60250", FactSummaryFields: "ok", FactOtherRecords: "0",
+		FactSummaries: "3", FactMaxLatencyMS: "60250", FactSummaryFields: "ok", FactOtherRecords: "0",
 	}
 	run := func(change ...string) Outcome { return probeRun("refusal-flood", refusalFacts, base, change...) }
 	judgeCases(t, "refusal-flood", run, map[string][]string{
 		Miss: {
 			"refused_count=29899", "refused_count=29901", "refused_uid=29899", "summary_fields=rule_version",
-			"summaries=0", "summaries=5", "max_latency_ms=60251", "other_records=1",
+			"summaries=0", "summaries=2", "summaries=6", "max_latency_ms=60251", "other_records=1",
 		},
 		Invalid: {
 			"attempts_root=14849,refused_count=29749,refused_uid=29749", "attempts_other=0,refused_count=15000,refused_uid=15000",
 			"summaries=x", "max_latency_ms", "kernel=6.0.0", "trial=record-max",
+			"attempts_root=15001,refused_count=29901,refused_uid=29901", "attempts_other=18446744073709551615",
 		},
-		Pass: {"max_latency_ms=0", "summaries=1", "attempts_root=14850,refused_count=29750,refused_uid=29750"},
+		Pass: {"max_latency_ms=0", "summaries=5", "attempts_root=14850,refused_count=29750,refused_uid=29750"},
 	})
 }
 
@@ -99,14 +101,24 @@ func TestJudgeReady(t *testing.T) {
 }
 
 func TestJudgeExposure(t *testing.T) {
+	const c = "balistid-collector.service="
 	run := func(change ...string) Outcome {
-		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: "0.8"}, change...)
+		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: c + "0.8"}, change...)
 	}
-	judgeCases(t, "exposure", run, map[string][]string{
-		Miss:    {"exposure=2.6", "exposure=10.0", "exposure=99.9"},
-		Invalid: {"exposure=2.55", "exposure=2", "exposure=.5", "exposure=-1.0", "exposure=OK", "exposure=100.0", "exposure"},
-		Pass:    {"exposure=2.5", "exposure=0.0"},
-	})
+	tr := trial(t, "exposure")
+	for want, reports := range map[string][]string{
+		Miss:    {c + "2.6", c + "10.0", c + "0.8,balistid-normalizer.service=2.6"},
+		Invalid: {c + "2.55", c + "2", "0.8", "laurel.service=0.8", "balistid-normalizer.service=0.8", c + "0.8,", c + "100.0", c + "0.8,x"},
+		Pass:    {c + "2.5", c + "0.0", c + "0.8,balistid-normalizer.service=2.5"},
+	} {
+		for _, rep := range reports {
+			o := probeRun("exposure", exposureFacts, map[string]string{FactExposure: rep})
+			if v, r := JudgeTrial(tr, o, cleanBuild, cleanBuild); v != want {
+				t.Errorf("%q: %s (%s); want %s", rep, v, r, want)
+			}
+		}
+	}
+	judgeCases(t, "exposure", run, map[string][]string{Invalid: {"exposure", "kernel=6.0.0"}})
 }
 
 func TestJudgeCPU(t *testing.T) {
@@ -120,6 +132,7 @@ func TestJudgeCPU(t *testing.T) {
 		Invalid: {
 			"generated=599999,stored=599999", "window_min=9999", "steal_ticks=1201", "cpu_ticks=0", "units=collector restarted",
 			"missing=1,stored=599999", "stored=599999", "auditd_usec=x", "collector_usec", "kernel=6.0.0",
+			"collector_usec=18446744073709551615,auditd_usec=1", "window_min=600001", "auditd_usec=614400000001",
 		},
 		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=299999999,auditd_usec=1", "auditd_usec=300000000,collector_usec=0"},
 	})

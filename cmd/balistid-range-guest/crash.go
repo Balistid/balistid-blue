@@ -214,14 +214,19 @@ func collectorBack(ctx context.Context, env crashEnv, w *commitWatch, killed str
 	return fmt.Errorf("no restarted collector committed within %s of the kill", backWait)
 }
 
-// storedRun reads the store and reports the numbers it holds and its recovery records.
+// storedRun reads the store and reports the numbers it holds, its recovery records and how far its
+// seqs run without a gap.
 func storedRun(read storeRead, r *report) error {
 	c, err := rangeguest.NewCounter(rangejob.LoadExec, 0)
 	if err != nil {
 		return r.fail(err.Error())
 	}
 	var rec recovery
+	var seqs uint64 // the end of the seqs 1..N read without a gap
 	each := func(x rawrecord.Record) error {
+		if x.Seq == seqs+1 {
+			seqs++
+		}
 		switch x.Provider {
 		case store.SensorProvider:
 			c.Line(x.Data)
@@ -239,6 +244,7 @@ func storedRun(read storeRead, r *report) error {
 	r.add(rangevm.FactRecovered, u(rec.count))
 	r.add(rangevm.FactRecoveredLast, u(rec.last))
 	r.add(rangevm.FactRecoveredSeq, u(rec.seq))
+	r.add(rangevm.FactSeqPrefix, u(seqs))
 	return r.send(r.facts)
 }
 

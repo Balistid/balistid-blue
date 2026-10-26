@@ -21,13 +21,17 @@ import (
 )
 
 // A refusal trial's flooders (ADR 0023, point 4): root, whom the socket's mode does not stop, and
-// nobody in _laurel's group, whom it lets connect; the collector must refuse both by uid. drainWait is
-// how long the acceptor gets for connections still in the backlog before the store is read.
+// nobody in _laurel's group, whom it lets connect; the collector must refuse both by uid. A flooder
+// stops at its seconds plus floodGrace, whatever it made by then; drainWait is how long the acceptor
+// gets for connections still in the backlog before the store is read. collectorSockN is the socket's
+// name in the collector's summaries (collector.socketName).
 const (
-	floodArg     = "flood"
-	nobodyUID    = 65534
-	drainWait    = 2 * time.Second
-	floodTimeout = time.Minute // past the flood's own seconds
+	floodArg       = "flood"
+	nobodyUID      = 65534
+	floodGrace     = time.Second
+	drainWait      = 2 * time.Second
+	floodTimeout   = time.Minute // past the flood's own seconds
+	collectorSockN = "collector.sock"
 )
 
 // floodKinds are the health records a flood may leave besides its summaries: stats, health state and
@@ -44,21 +48,22 @@ func runRefusal(ctx context.Context, tr rangejob.Trial, r *report) error {
 	creds := []*syscall.Credential{{Uid: 0, Gid: 0, Groups: []uint32{}}, {Uid: nobodyUID, Gid: gid, Groups: []uint32{}}}
 	start := time.Now()
 	type result struct {
+		i   int
 		ok  uint64
 		err error
 	}
 	results := make(chan result, len(creds))
-	for _, c := range creds {
+	for i, c := range creds {
 		go func() {
 			ok, err := flood(ctx, c, tr.Load.Rate, tr.Load.Seconds)
-			results <- result{ok, err}
+			results <- result{i, ok, err}
 		}()
 	}
-	var ok []uint64
+	ok := make([]uint64, len(creds))
 	var errs []error
 	for range creds {
 		res := <-results
-		ok, errs = append(ok, res.ok), append(errs, res.err)
+		ok[res.i], errs = res.ok, append(errs, res.err)
 	}
 	if err := errors.Join(errs...); err != nil {
 		return r.fail("flood: " + err.Error())
@@ -75,10 +80,15 @@ func runRefusal(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRefusedCount, u(scan.count))
 	r.add(rangevm.FactRefusedUID, u(scan.uid))
 	r.add(rangevm.FactSummaries, u(scan.summaries))
-	r.add(rangevm.FactMaxLatencyMS, u(scan.latency/uint64(time.Millisecond)))
+	r.add(rangevm.FactMaxLatencyMS, u(ceilMS(scan.latency)))
 	r.add(rangevm.FactSummaryFields, valueOr2(scan.missing, "ok"))
 	r.add(rangevm.FactOtherRecords, u(scan.other))
 	return r.send(r.facts)
+}
+
+// ceilMS is ns in whole ms, rounded up: a latency a few µs over the limit is over it.
+func ceilMS(ns uint64) uint64 {
+	return (ns + uint64(time.Millisecond) - 1) / uint64(time.Millisecond)
 }
 
 // flood runs a flooder child with cred and returns how many connections it made.
@@ -89,7 +99,7 @@ func flood(ctx context.Context, cred *syscall.Credential, rate, seconds int) (ui
 	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second+floodTimeout)
 	defer cancel()
-	child := exec.CommandContext(ctx, self, floodArg, strconv.Itoa(rate), strconv.Itoa(seconds)) //nolint:gosec // our own binary
+	child := exec.CommandContext(ctx, self, floodArg, collectorSocket, strconv.Itoa(rate), strconv.Itoa(seconds)) //nolint:gosec // our own binary
 	child.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	child.Stderr = os.Stderr
 	out, err := child.Output()
@@ -103,40 +113,51 @@ func flood(ctx context.Context, cred *syscall.Credential, rate, seconds int) (ui
 	return n, nil
 }
 
-// floodMain is a flooder's process: rate connections a second to the collector's socket for seconds,
-// each closed at once, on the generator's schedule; it prints how many connected.
+// floodMain is a flooder's process: the socket, a rate and seconds; it prints how many connected.
 func floodMain(args []string) error {
-	if len(args) != 2 {
-		return errors.New("want rate and seconds")
+	if len(args) != 3 {
+		return errors.New("want the socket, rate and seconds")
 	}
-	rate, errR := strconv.Atoi(args[0])
-	seconds, errS := strconv.Atoi(args[1])
+	rate, errR := strconv.Atoi(args[1])
+	seconds, errS := strconv.Atoi(args[2])
 	if errR != nil || errS != nil || rate < 1 || seconds < 1 {
 		return errors.New("rate and seconds must be positive numbers")
 	}
+	_, err := fmt.Fprintln(os.Stdout, floodSocket(args[0], rate, seconds))
+	return err //nolint:wrapcheck // the process's own output
+}
+
+// floodSocket connects rate times a second to socket for seconds, each connection closed at once, on
+// the generator's schedule, and stops floodGrace after the last is due however many it made: a flood
+// that runs slow makes fewer, never the same count over a longer time.
+func floodSocket(socket string, rate, seconds int) uint64 {
 	var ok uint64
-	d := net.Dialer{Timeout: time.Second}
 	start := time.Now()
+	deadline := start.Add(time.Duration(seconds)*time.Second + floodGrace)
 	for i := range rate * seconds {
-		if due := time.Duration(i) * time.Second / time.Duration(rate); due > time.Since(start) {
-			time.Sleep(due - time.Since(start))
+		if wait := time.Until(start.Add(time.Duration(i) * time.Second / time.Duration(rate))); wait > 0 {
+			time.Sleep(wait)
 		}
-		if c, err := d.DialContext(context.Background(), "unix", collectorSocket); err == nil {
+		if !time.Now().Before(deadline) {
+			break
+		}
+		d := net.Dialer{Deadline: deadline}
+		if c, err := d.DialContext(context.Background(), "unix", socket); err == nil {
 			ok++
 			_ = c.Close()
 		}
 	}
-	_, err := fmt.Fprintln(os.Stdout, ok)
-	return err //nolint:wrapcheck // the process's own output
+	return ok
 }
 
 // refusalScan is what the refusal summaries in the store count, and the other health records stored
 // between from and to, the flood.
 type refusalScan struct {
 	from, to              int64
+	ruleVersion           string // of the collector run the summaries belong to, from its started record
 	count, uid, summaries uint64
-	latency               uint64 // the longest from a summary's first refusal to its record, ns
-	missing               string // the first field a summary lacks
+	latency               uint64 // the longest from a summary's first refusal to the store receiving it, ns
+	missing               string // the first field a summary lacks or has wrong
 	other                 uint64
 }
 
@@ -147,41 +168,49 @@ func (s *refusalScan) before(x rawrecord.Record) error {
 	return s.after(x)
 }
 
-// after counts every summary, also the one the read's stop stores behind the barrier.
+// after counts every summary, also the one the read's stop stores behind the barrier. A summary
+// counts only whole: its socket, the rule version its run started with, and its count all under
+// cause uid, as only peers of another uid flooded.
 func (s *refusalScan) after(x rawrecord.Record) error {
-	if healthKind(x) != "refused" {
-		return nil
-	}
 	var rec struct {
 		Count       *uint64           `json:"count"`
 		Causes      map[string]uint64 `json:"causes"`
 		Socket      string            `json:"socket"`
 		RuleVersion string            `json:"rule_version"`
 		FirstAt     *int64            `json:"first_at"`
-		At          *int64            `json:"at"`
 		LastUID     *int64            `json:"last_uid"`
+	}
+	switch healthKind(x) {
+	case "started":
+		if json.Unmarshal(x.Data, &rec) == nil {
+			s.ruleVersion = rec.RuleVersion
+		}
+		return nil
+	case "refused":
+	default:
+		return nil
 	}
 	s.summaries++
 	err := json.Unmarshal(x.Data, &rec)
 	switch {
 	case err != nil:
 		s.firstMissing("a readable record")
-	case rec.Count == nil:
+	case rec.Count == nil || *rec.Count == 0:
 		s.firstMissing("count")
-	case rec.Causes == nil:
+	case len(rec.Causes) != 1 || rec.Causes["uid"] != *rec.Count:
 		s.firstMissing("causes")
-	case rec.Socket == "":
+	case rec.Socket != collectorSockN:
 		s.firstMissing("socket")
-	case rec.RuleVersion == "":
+	case s.ruleVersion == "" || rec.RuleVersion != s.ruleVersion:
 		s.firstMissing("rule_version")
 	case rec.LastUID == nil:
 		s.firstMissing("last_uid")
-	case rec.FirstAt == nil || rec.At == nil || *rec.At < *rec.FirstAt:
-		s.firstMissing("first_at before at")
+	case rec.FirstAt == nil || x.Received < *rec.FirstAt:
+		s.firstMissing("first_at before it was stored")
 	default:
 		s.count += *rec.Count
 		s.uid += rec.Causes["uid"]
-		s.latency = max(s.latency, uint64(*rec.At-*rec.FirstAt)) //nolint:gosec // checked not negative
+		s.latency = max(s.latency, uint64(x.Received-*rec.FirstAt)) //nolint:gosec // checked not negative
 	}
 	return nil
 }

@@ -127,6 +127,7 @@ func ExpectedVerdict(tr rangejob.Trial) string {
 const (
 	MeasureH               = "h"
 	MeasureSynced          = "synced"
+	MeasureCommitted       = "committed_seq"
 	MeasureExitAfterFail   = "exit_after_fail_us"
 	MeasureKilledAfterFail = "killed_after_fail_us"
 )
@@ -165,7 +166,12 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	if tr.Failure == "" || o.Marks.Fail.IsZero() {
 		return m
 	}
-	m[MeasureH], m[MeasureSynced] = o.Marks.H, o.Marks.Synced
+	m[MeasureH] = o.Marks.H
+	if tr.Method() == rangejob.MethodCollectorFailure {
+		m[MeasureCommitted] = o.Marks.Synced // S of a collector is a store seq, not a number (ADR 0023)
+	} else {
+		m[MeasureSynced] = o.Marks.Synced
+	}
 	after := func(key string, t time.Time) {
 		if d := t.Sub(o.Marks.Fail); !t.IsZero() && d >= 0 {
 			m[key] = uint64(d / time.Microsecond)
