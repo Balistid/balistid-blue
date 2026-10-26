@@ -75,7 +75,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 	statLoaded := readTrim("/proc/stat")
 
 	storeLost := false
-	followErr := readStore(ctx, rateRecords(counter, &storeLost), nil)
+	followErr := readStore(ctx, rateRecords(counter, &storeLost), storeLoss(&storeLost))
 	if followErr == nil && storeLost {
 		followErr = errStoreLost
 	}
@@ -135,6 +135,15 @@ func freshOverflow(ctx context.Context) string {
 // errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
 // scratch disk drops, which says the range sized it wrong, not that the collector lost them: INVALID.
 var errStoreLost = errors.New("the store dropped records: the scratch disk is full")
+
+// storeLoss sets *storeLost at a loss record of the store behind the barrier too: the store records a
+// drop before the record after it, so one there dropped only later records, yet the disk was full.
+func storeLoss(storeLost *bool) func(rawrecord.Record) error {
+	return func(r rawrecord.Record) error {
+		*storeLost = *storeLost || r.Provider == store.LossProvider
+		return nil
+	}
+}
 
 // rateRecords counts a rate trial's numbers in the Laurel lines and sets *storeLost at a loss record of
 // the store.

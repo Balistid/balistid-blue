@@ -111,10 +111,11 @@ type storeRead func(before, after func(rawrecord.Record) error) error
 // lines only, and "no" only when that is everything the job caused (the host accepts only "no"):
 // "yes" when it is cut, "lost" when the barrier did not come back, when a record from t0 to the end
 // of the stopped run may mean records are gone (T25; keepsWindow), or when that end, its "stopping"
-// record, is not there to show nothing came after; "error" when the store could not be read.
-func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated string, err error) {
+// record, is not there to show nothing came after; "error" when the store could not be read. why
+// names the first record that broke the window, for the console (a security decision's reason).
+func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated, why string, err error) {
 	var buf bytes.Buffer
-	whole, cut, ended := true, false, false
+	cut, ended := false, false
 	err = read(func(r rawrecord.Record) error {
 		if r.Received < t0 {
 			return nil
@@ -126,28 +127,48 @@ func jobWindow(read storeRead, t0 int64, limit int) (window []byte, truncated st
 			}
 			return nil
 		}
-		whole = whole && keepsWindow(r, false)
+		if why == "" && !keepsWindow(r, false) {
+			why = describe(r, "in the window")
+		}
 		return nil
 	}, func(r rawrecord.Record) error {
 		switch {
 		case ended || r.Provider == store.SensorProvider:
 		case keepsWindow(r, true):
 			ended = isStopping(r)
-		default:
-			whole = false
+		case why == "":
+			why = describe(r, "after the barrier")
 		}
 		return nil
 	})
 	switch {
-	case errors.Is(err, rangeguest.ErrBarrierMissing) || err == nil && (!whole || !ended):
-		return buf.Bytes(), "lost", err
+	case errors.Is(err, rangeguest.ErrBarrierMissing):
+		return buf.Bytes(), "lost", "the barrier did not come back", err
 	case err != nil:
-		return nil, "error", err
-	case cut:
-		return buf.Bytes(), "yes", nil
+		return nil, "error", err.Error(), err
+	case why == "" && !ended:
+		why = "the stopped run's stopping record is not in the store"
 	}
-	return buf.Bytes(), "no", nil
+	switch {
+	case why != "":
+		return buf.Bytes(), "lost", why, nil
+	case cut:
+		return buf.Bytes(), "yes", "", nil
+	}
+	return buf.Bytes(), "no", "", nil
 }
+
+// describe names a record that broke a window: its provider and, for a health record, its kind.
+func describe(r rawrecord.Record, where string) string {
+	kind, _, ok := healthKind(r.Data)
+	if !ok {
+		kind = "unreadable"
+	}
+	return fmt.Sprintf("%s record %.40q %s", r.Provider, kind, where)
+}
+
+// jobWindowRule names the rule jobWindow decides by, for the console line that gives its reason.
+const jobWindowRule = "adr-0022-window-v1"
 
 // healthSchema is the schema of the collector's and the store's health records it reads.
 const healthSchema = 1

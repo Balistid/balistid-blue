@@ -68,6 +68,15 @@ func TestJobCommandEnforcesTheDiskTimeLimit(t *testing.T) {
 // a known, safe health record of schema 1, inside the window or stored after the barrier (the collector
 // writes a tick's health after its lines), makes it "lost" (T25, ADR 0022 point 3).
 func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
+	t.Run("reason", func(t *testing.T) {
+		_, _, why, _ := jobWindow(func(b, a func(rawrecord.Record) error) error {
+			return errors.Join(b(rawrecord.New(0, store.HealthProvider, 0, 11, []byte(`{"schema_version":1,"kind":"something-new"}`))),
+				a(rawrecord.New(0, store.HealthProvider, 0, 20, []byte(`{"schema_version":1,"kind":"stopping"}`))))
+		}, 10, 1<<20)
+		if !strings.Contains(why, `"something-new" in the window`) {
+			t.Errorf("reason %q does not name the record", why)
+		}
+	})
 	laurel := func(at int64, data string) rawrecord.Record {
 		return rawrecord.New(0, store.SensorProvider, 1, at, []byte(data))
 	}
@@ -125,9 +134,9 @@ func TestJobWindowIsWholeOnlyWithoutALoss(t *testing.T) {
 		"barrier missing":          {read(rangeguest.ErrBarrierMissing, recs{job}, nil), 1 << 20, "job-a\n", "lost"},
 		"store unreadable":         {read(errors.New("read store: x"), recs{job}, nil), 1 << 20, "", "error"},
 	} {
-		w, state, _ := jobWindow(c.read, 10, c.limit)
-		if string(w) != c.window || state != c.state {
-			t.Errorf("%s: %q %s, want %q %s", name, w, state, c.window, c.state)
+		w, state, why, _ := jobWindow(c.read, 10, c.limit)
+		if string(w) != c.window || state != c.state || (why != "") != (state == "lost" || state == "error") {
+			t.Errorf("%s: %q %s (%q), want %q %s", name, w, state, why, c.window, c.state)
 		}
 	}
 }
@@ -225,10 +234,30 @@ func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
 	if err := fn(rawrecord.New(0, store.LossProvider, 0, 3, []byte("{}"))); err != nil || !lost {
 		t.Fatalf("a store loss record: %v, lost %v", err, lost)
 	}
+	behind := false
+	after := storeLoss(&behind)
+	for _, r := range []rawrecord.Record{rawrecord.New(0, store.SensorProvider, 1, 4, []byte(line)), rawrecord.New(0, store.LossProvider, 0, 5, []byte("{}")),
+		rawrecord.New(0, store.HealthProvider, 0, 6, []byte(`{"schema_version":1,"kind":"stats"}`))} {
+		if err := after(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !behind {
+		t.Error("a store loss record behind the barrier was not noted")
+	}
 }
 
 func TestCollectorCanaryKeyIsTheCollectors(t *testing.T) {
 	if collectorCanaryKey != collector.CanaryKey {
 		t.Errorf("guest looks for %q, the collector's canary uses %q", collectorCanaryKey, collector.CanaryKey)
 	}
+}
+
+// healthKind decodes JSON a collector wrote into the store; whatever the bytes, it returns.
+func FuzzHealthKind(f *testing.F) {
+	f.Add([]byte(`{"schema_version":1,"kind":"health","state":"OK"}`))
+	f.Add([]byte(`{"schema_version":2,"kind":"stats"}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _, _ = healthKind(data)
+	})
 }
