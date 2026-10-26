@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -199,17 +200,13 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		if err := goBuild.Run(); err != nil {
 			return "", fmt.Errorf("build %s: %w", p.name, err)
 		}
-		// go build applies the builder's umask; the collector runs as its own uid and must exec it.
-		if err := os.Chmod(filepath.Join(tree, p.dst), 0o755); err != nil { //nolint:gosec // a program others run
-			return "", fmt.Errorf("build %s: %w", p.name, err)
-		}
 	}
 	for _, f := range imageFiles {
 		if err := copyInto(filepath.Join(src, f.src), filepath.Join(tree, f.dst), f.mode); err != nil {
 			return "", err
 		}
 	}
-	if err := widenTreeDirs(tree); err != nil {
+	if err := openTree(tree); err != nil {
 		return "", err
 	}
 	if cfg.afterTree != nil {
@@ -1088,15 +1085,26 @@ func copyInto(src, dst string, mode os.FileMode) error {
 	return nil
 }
 
-// widenTreeDirs makes every directory of the tree 0755: go build and MkdirAll apply the builder's
-// umask, mkosi copies the modes into the image, and the collector's uid must reach its binary.
-func widenTreeDirs(tree string) error {
-	err := filepath.WalkDir(tree, func(path string, d os.DirEntry, err error) error {
+// openTree makes every directory of the tree and the image's programs 0755: go build and MkdirAll
+// apply the builder's umask, mkosi copies the modes into the image, and the collector's uid must
+// reach and exec its binary. It works through an os.Root, so a link in the stage, which a process at
+// the builder's uid can plant, never changes a file outside the tree (T34): the walk does not follow
+// links, and a program that is a link out of the tree fails the build.
+func openTree(tree string) (err error) {
+	r, err := os.OpenRoot(tree)
+	if err != nil {
+		return fmt.Errorf("image tree: %w", err)
+	}
+	defer func() { err = errors.Join(err, r.Close()) }()
+	err = fs.WalkDir(r.FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || !d.IsDir() {
 			return err
 		}
-		return os.Chmod(path, 0o755) //nolint:gosec // system directories in the image
+		return r.Chmod(path, 0o755)
 	})
+	for _, p := range imagePrograms {
+		err = errors.Join(err, r.Chmod(p.dst, 0o755))
+	}
 	if err != nil {
 		return fmt.Errorf("image tree: %w", err)
 	}
