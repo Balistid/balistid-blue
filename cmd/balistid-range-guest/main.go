@@ -49,6 +49,15 @@ func main() {
 		}
 		return
 	}
+	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain} {
+		if len(os.Args) > 1 && os.Args[1] == arg {
+			if err := sub(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "balistid-range-guest %s: %v\n", arg, err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
 	if len(os.Args) == 2 && os.Args[1] == storeSetupArg {
 		if err := storeSetup(context.Background()); err != nil {
 			fmt.Fprintln(os.Stderr, "balistid-range-guest store-setup:", err)

@@ -46,6 +46,8 @@ func judgeCrash(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	h, s := o.Marks.H, o.Marks.Synced
 	switch {
+	case f[FactTrial] != tr.Name:
+		return Invalid, "the guest ran another trial"
 	case f[FactKernel] != TargetKernel:
 		return Invalid, fmt.Sprintf("guest kernel \"%s\" is not the target %s", Printable(f[FactKernel], 128), TargetKernel)
 	case n[FactStoredCount] < n[FactStoredPrefix]:

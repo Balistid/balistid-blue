@@ -20,8 +20,10 @@ func TestTrialTableFitsTheBudget(t *testing.T) {
 			t.Errorf("%s: count, wall and serial must be positive", tr.Name)
 		case int64(tr.Count)*int64(tr.Wall+Setup) > int64(Batch):
 			t.Errorf("%s: %d × (%s + %s) exceeds the %s batch", tr.Name, tr.Count, tr.Wall, Setup, Batch)
-		case tr.Load.Seconds < 10 || tr.Load.Seconds%10 != 0 || tr.Load.Rate < 1 || tr.Metric == "":
-			t.Errorf("%s: a trial measures a metric at a positive rate for whole 10 s windows", tr.Name)
+		case tr.Metric == "":
+			t.Errorf("%s: a trial measures a metric", tr.Name)
+		case tr.Load != (Load{}) && (tr.Load.Seconds < 10 || tr.Load.Seconds%10 != 0 || tr.Load.Rate < 1):
+			t.Errorf("%s: a load has a positive rate for whole 10 s windows", tr.Name)
 		case tr.Expect != "" && tr.Expect != ExpectPass && tr.Expect != ExpectMiss, tr.Load.Drop && tr.Expect != ExpectMiss:
 			t.Errorf("%s: a control expects PASS or MISS, and one that drops a number MISS", tr.Name)
 		case tr.Method() == "":
@@ -70,6 +72,11 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricCrashLoss, Failure: FailKill, Load: Load{Kind: LoadPtrace}}, ""},
 		{Trial{Metric: MetricCrashLoss, Load: Load{Kind: LoadExec}}, ""},
 		{Trial{Metric: "healthy_ok", Load: Load{Kind: LoadExec}}, ""},
+		{Trial{Metric: MetricRecordMax}, MethodRecord},
+		{Trial{Metric: MetricRecordMax, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricRefusal, Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}}, MethodRefusal},
+		{Trial{Metric: MetricRefusal}, ""},
+		{Trial{Metric: MetricRecordMax, Failure: FailKill}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -85,10 +92,14 @@ func TestTrialLoadIsTheAcceptanceThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tr := range Trials() {
-		if tr.Failure != "" {
-			// Failure controls run at sustained_rate (acceptance crash_loss_ms).
+		if !regexp.MustCompile(`(?m)^id = "` + tr.Metric + `"$`).Match(data) {
+			t.Errorf("%s: no metric %s in acceptance/0.toml", tr.Name, tr.Metric)
+		}
+		switch {
+		case tr.Failure != "":
+			// Failures run at sustained_rate (acceptance crash_loss_ms).
 			tr.Metric, tr.Load.Seconds = "sustained_rate", 600
-		} else if tr.Expect != "" {
+		case tr.Expect != "", tr.Method() != MethodRate:
 			continue
 		}
 		block := regexp.MustCompile(`(?m)^id = "` + tr.Metric + `"\nmin = (\d+)\nunit = "records/s for (\d+) s`).FindSubmatch(data)

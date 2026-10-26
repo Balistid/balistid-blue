@@ -13,6 +13,8 @@ const (
 	LoadExec   = "exec"
 	LoadPtrace = "ptrace"
 	LoadWrite  = "write"
+	// LoadConnect connects to the collector's socket from peers it must refuse (refusal_summary_s).
+	LoadConnect = "connect"
 )
 
 // Failure trials (ADR 0018, point 3): a reset by sysrq b, which boots the run again, or SIGKILL of
@@ -27,15 +29,20 @@ const (
 	MetricSustained = "sustained_rate"
 	MetricBurst     = "burst_rate"
 	MetricCrashLoss = "crash_loss_ms"
+	MetricRecordMax = "record_max_kib"
+	MetricRefusal   = "refusal_summary_s"
 )
 
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
 // numbered events in the store; a writer failure kills or resets the measured writer of a control; a
-// collector failure kills or resets the collector under load.
+// collector failure kills or resets the collector under load; a record trial stores oversized and
+// malformed records, a refusal trial floods the socket from refused peers (ADR 0023).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
 	MethodCollectorFailure = "collector-failure"
+	MethodRecord           = "record"
+	MethodRefusal          = "refusal"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -49,9 +56,13 @@ func (tr Trial) Method() string {
 	case tr.Failure != "":
 		return ""
 	}
-	switch tr.Metric {
-	case MetricSustained, MetricBurst:
+	switch {
+	case tr.Metric == MetricSustained || tr.Metric == MetricBurst:
 		return MethodRate
+	case tr.Metric == MetricRecordMax && tr.Load == (Load{}):
+		return MethodRecord
+	case tr.Metric == MetricRefusal && tr.Load.Kind == LoadConnect:
+		return MethodRefusal
 	}
 	return ""
 }
@@ -131,6 +142,12 @@ var trials = slices.Concat([]Trial{
 		Scratch: StoreScratch, Count: 3, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, 7),
 	repeated(Trial{Name: "reset-collector", Metric: MetricCrashLoss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 2,
 		Scratch: StoreScratch, Count: 3, Failure: FailReset, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, 7),
+	// record_max_kib and refusal_summary_s (ADR 0023, points 3 and 4).
+	[]Trial{
+		{Name: "record-max", Metric: MetricRecordMax, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3},
+		{Name: "refusal-flood", Metric: MetricRefusal, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}},
+	},
 )
 
 // repeated returns n rows of tr named tr.Name-1 to tr.Name-n: a metric needs more trials than one row

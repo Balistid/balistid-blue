@@ -24,7 +24,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | ID | Actor | Threat | Control | Proof | Status |
 |---|---|---|---|---|---|
 | T1 | A1 | Alter or delete shards, keys, units, config | Service uids own them (0007) | test perm_matrix | designed |
-| T2 | A1 | Impersonate Laurel, squat its socket, read the raw stream | systemd-held socket root:_laurel 0660 in root-owned `/run/balistid`, `SO_PEERCRED` (0016) | test peer_refused | designed |
+| T2 | A1 | Impersonate Laurel, squat its socket, read the raw stream | systemd-held socket root:_laurel 0660 in root-owned `/run/balistid`, `SO_PEERCRED` (0016) | refusal-flood: root and a uid in `_laurel`'s group refused and counted (0023) | designed |
 | T3 | A1 | Act through io_uring, unseen by exit rules | io_uring disabled, `kernel.io_uring_disabled=2` (0004) | range smoke test | partial: root can re-enable it at runtime |
 | T4 | A1 | Flood audit to cause loss or fill the store | Loss entries alarm; cap drops new; maintainer expiry | loss_alarm_s, raw_cap_gib, rates by range trials (0018) | partial: blind until handled |
 | T5 | A1 | Change or disable audit rules | Needs root; `-e 2` (0004) | range smoke test, test rules_locked | designed |
@@ -42,7 +42,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T17 | A2 | Start a new log origin to reset history | Pi accepts a new origin only after the old log's final checkpoint | test rollover | designed |
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints | fuzz_hours | partial: a compromised ledger can sign |
-| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries | record_max_kib, rss_mib | designed |
+| T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries | record-max, refusal-flood (0023); rss_mib | designed |
 | T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006) | test pi_reach | designed |
 | T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
