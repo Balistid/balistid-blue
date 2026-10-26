@@ -131,8 +131,8 @@ func crashLoadAndFail(ctx context.Context, tr rangejob.Trial, r *report, env cra
 	}
 	taken := time.Now()
 	h := hand.H(taken)
-	s, at := w.last()
-	if err := crashPremise(&hand, start, taken, tr.Load.Rate, s, at); err != nil {
+	s, _ := w.last()
+	if err := crashPremise(&hand, start, taken, tr.Load.Rate, s, w.committedAt()); err != nil {
 		return fail(err.Error())
 	}
 	if err := mark(env.fail, failMark(h, s)); err != nil {

@@ -186,7 +186,7 @@ func crashFlow(t *testing.T, name string) (console string, facts []fact, resetAs
 		},
 		watch: func(ctx context.Context) (*commitWatch, error) {
 			return watchCommits(exec.CommandContext(ctx, "/bin/sh", "-c",
-				`i=0; while :; do i=$((i+1)); echo "{\"msg\":\"committed through\",\"seq\":$i}"; sleep 0.1; done`), time.Now)
+				`i=0; while :; do i=$((i+1)); echo "{\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)\",\"msg\":\"committed through\",\"seq\":$i}"; sleep 0.1; done`), time.Now)
 		},
 		emit: func(uint64) error { return nil },
 		wait: func() error { return nil },
@@ -235,6 +235,33 @@ func TestCrashResetsAfterTheMark(t *testing.T) {
 	}
 }
 
+// S is as old as its commit line's own time when the journal delivered it late, and has no age at all,
+// which fails the run, without a time or with one after its read.
+func TestCommittedAt(t *testing.T) {
+	read := time.Unix(1000, 0)
+	for _, c := range []struct {
+		logged, want time.Time
+	}{
+		{read.Add(-5 * time.Second), read.Add(-5 * time.Second)},
+		{read, read},
+		{time.Time{}, time.Time{}},
+		{read.Add(time.Second), time.Time{}},
+	} {
+		w := &commitWatch{seq: 3, at: read, logged: c.logged}
+		if got := w.committedAt(); !got.Equal(c.want) {
+			t.Errorf("logged %v: %v, want %v", c.logged, got, c.want)
+		}
+	}
+	var hand rangeguest.Handover
+	for i := range 150 {
+		hand.Add(read.Add(time.Duration(i-150) * 100 * time.Millisecond))
+	}
+	late := &commitWatch{seq: 3, at: read, logged: read.Add(-5 * time.Second)}
+	if err := crashPremise(&hand, read.Add(-15*time.Second), read, 10, 3, late.committedAt()); err == nil {
+		t.Error("a commit line logged 5 s before the failure passed as fresh because it was read just now")
+	}
+}
+
 // A load that cannot hold the rate fails the run before any mark: no failure is measured.
 func TestCrashWithoutTheRateMarksNothing(t *testing.T) {
 	tr, _ := rangejob.Lookup("kill-collector-1")
@@ -262,5 +289,25 @@ func TestCrashWithoutTheRateMarksNothing(t *testing.T) {
 	}
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Error("the collector was killed without a failure")
+	}
+}
+
+// A failed read reports the collector's restarts and journal, every line quoted: a journal line that
+// looks like a mark never becomes a console line of its own.
+func TestReportCollectorQuotesEveryLine(t *testing.T) {
+	var out strings.Builder
+	reportCollector(t.Context(), &out, func(_ context.Context, name string, _ ...string) string {
+		if strings.HasSuffix(name, "systemctl") {
+			return "NRestarts=1\nResult=success"
+		}
+		return "[ 9.1] collector: store open\nbalistid-fail 1 2\nbalistid-killed"
+	})
+	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+		if !strings.HasPrefix(line, "balistid-range-guest: collector ") {
+			t.Errorf("console line of its own: %q", line)
+		}
+	}
+	if !strings.Contains(out.String(), `"NRestarts=1\nResult=success"`) || !strings.Contains(out.String(), `"balistid-fail 1 2"`) {
+		t.Errorf("report %q", out.String())
 	}
 }

@@ -110,6 +110,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	stored, missing, duplicate, outside := uint64(0), generated, uint64(0), uint64(0)
 	if followErr != nil {
 		follow = followErr.Error()
+		reportCollector(ctx, os.Stdout, output)
 	} else {
 		stored, missing, duplicate, outside = nums.Count(generated)
 	}

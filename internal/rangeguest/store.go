@@ -187,6 +187,22 @@ func barrierToken() (string, error) {
 	return "balistid-barrier-" + hex.EncodeToString(b[:]), nil
 }
 
+// CommitTime is the time the collector logged a journal line at (slog's "time", RFC 3339), zero when the
+// line has none or another form.
+func CommitTime(line string) time.Time {
+	var rec struct {
+		Time string `json:"time"`
+	}
+	if json.Unmarshal([]byte(line), &rec) != nil {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, rec.Time)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 // LastCommitted returns the seq of the last "committed through" line in the collector's journal
 // output (one slog JSON object per line), 0 when it has none.
 func LastCommitted(journal string) uint64 {

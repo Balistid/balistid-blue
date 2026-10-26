@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,7 +43,7 @@ func commitFollower(ctx context.Context) *exec.Cmd {
 // channel closes once cmd exited, at once when a line is too long to scan.
 func followCommits(cmd *exec.Cmd) (<-chan uint64, error) {
 	commits := make(chan uint64, 1)
-	err := scanCommits(cmd, func(n uint64) {
+	err := scanCommits(cmd, func(n uint64, _ time.Time) {
 		select {
 		case commits <- n: // only that it moved counts, so a full channel drops the value
 		default:
@@ -54,9 +55,9 @@ func followCommits(cmd *exec.Cmd) (<-chan uint64, error) {
 	return commits, nil
 }
 
-// scanCommits starts cmd, a journal follower, and calls each with the seq of each commit line it prints,
-// then ended once cmd exited, at once when a line is too long to scan.
-func scanCommits(cmd *exec.Cmd, each func(uint64), ended func()) error {
+// scanCommits starts cmd, a journal follower, and calls each with the seq of each commit line it prints
+// and the time the collector logged it, then ended once cmd exited, at once when a line is too long to scan.
+func scanCommits(cmd *exec.Cmd, each func(seq uint64, logged time.Time), ended func()) error {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("journalctl: %w", err)
@@ -69,7 +70,7 @@ func scanCommits(cmd *exec.Cmd, each func(uint64), ended func()) error {
 		sc := bufio.NewScanner(out) // a line over 64 KiB ends the scan, and so the read, never silently
 		for sc.Scan() {
 			if n := rangeguest.LastCommitted(sc.Text()); n != 0 {
-				each(n)
+				each(n, rangeguest.CommitTime(sc.Text()))
 			}
 		}
 		if sc.Err() != nil {
@@ -80,23 +81,25 @@ func scanCommits(cmd *exec.Cmd, each func(uint64), ended func()) error {
 	return nil
 }
 
-// commitWatch keeps the highest seq the collector journaled as committed and when the guest read it:
-// S of a collector failure (ADR 0018, point 3), a value no commit line is dropped from.
+// commitWatch keeps the highest seq the collector journaled as committed, when the guest read the last
+// commit line and when the collector logged it: S of a collector failure (ADR 0018, point 3), a value no
+// commit line is dropped from.
 type commitWatch struct {
-	mu   sync.Mutex
-	seq  uint64
-	at   time.Time
-	now  func() time.Time
-	done chan struct{}
+	mu     sync.Mutex
+	seq    uint64
+	at     time.Time // read by the guest
+	logged time.Time // logged by the collector, zero when the line had no time
+	now    func() time.Time
+	done   chan struct{}
 }
 
 // watchCommits watches the commit lines cmd prints until its context ends; wait returns after that.
 func watchCommits(cmd *exec.Cmd, now func() time.Time) (*commitWatch, error) {
 	w := &commitWatch{now: now, done: make(chan struct{})}
-	err := scanCommits(cmd, func(n uint64) {
+	err := scanCommits(cmd, func(n uint64, logged time.Time) {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		w.seq, w.at = max(w.seq, n), w.now()
+		w.seq, w.at, w.logged = max(w.seq, n), w.now(), logged
 	}, func() { close(w.done) })
 	if err != nil {
 		return nil, err
@@ -109,6 +112,18 @@ func (w *commitWatch) last() (uint64, time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.seq, w.at
+}
+
+// committedAt is how old S may be: the older of when the last commit line was logged and when it was read,
+// as the journal can deliver a line late; zero, which no bound passes, when the line had no time of its own
+// or one after its read (a clock that stepped back).
+func (w *commitWatch) committedAt() time.Time {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.logged.IsZero() || w.at.Before(w.logged) {
+		return time.Time{}
+	}
+	return w.logged
 }
 
 // wait returns once the follower ended.
@@ -131,6 +146,18 @@ func readStore(ctx context.Context, before, after func(rawrecord.Record) error) 
 		},
 	}
 	return sr.Read(ctx, waitLimit, before, after) //nolint:wrapcheck // the reader's errors name the step
+}
+
+// reportCollector prints, when a store read failed, how often systemd restarted the collector and its
+// last journal lines: the store is gone after the run. Each line is quoted, so none becomes a console
+// line of its own such as a mark; the collector journals no record bodies (ENGINEERING.md 7, Logging).
+func reportCollector(ctx context.Context, w io.Writer, run func(ctx context.Context, name string, args ...string) string) {
+	_, _ = fmt.Fprintf(w, "balistid-range-guest: collector %q\n", run(ctx, "/usr/bin/systemctl", "show",
+		"--property=NRestarts,Result,ExecMainCode,ExecMainStatus", collectorUnitName))
+	journal := run(ctx, "/usr/bin/journalctl", "-q", "--no-pager", "-o", "short-monotonic", "-n", "60", "-u", collectorUnitName)
+	for _, line := range strings.Split(journal, "\n") {
+		_, _ = fmt.Fprintf(w, "balistid-range-guest: collector journal %q\n", line)
+	}
 }
 
 // laurelLines reads the store once and returns its Laurel lines, one per line, at most limit bytes of
