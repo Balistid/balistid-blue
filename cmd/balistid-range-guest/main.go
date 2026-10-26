@@ -431,17 +431,6 @@ func appendNew(list []string, v string) []string {
 	return append(list, v)
 }
 
-func waitFor(ok func() bool) bool {
-	deadline := time.Now().Add(waitLimit)
-	for time.Now().Before(deadline) {
-		if ok() {
-			return true
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	return false
-}
-
 // canarySeen is "seen" when the canary exec of token is among the Laurel lines the store read gave,
 // "missing" when it is not or the read lacks its barrier, else the error.
 func canarySeen(execErr, readErr error, lines []byte, token string) string {
