@@ -88,7 +88,11 @@ func runRefusal(ctx context.Context, tr rangejob.Trial, r *report) error {
 
 // ceilMS is ns in whole ms, rounded up: a latency a few µs over the limit is over it.
 func ceilMS(ns uint64) uint64 {
-	return (ns + uint64(time.Millisecond) - 1) / uint64(time.Millisecond)
+	ms := ns / uint64(time.Millisecond)
+	if ns%uint64(time.Millisecond) != 0 {
+		ms++
+	}
+	return ms
 }
 
 // flood runs a flooder child with cred and returns how many connections it made.
@@ -182,8 +186,13 @@ func (s *refusalScan) after(x rawrecord.Record) error {
 	}
 	switch healthKind(x) {
 	case "started":
-		if json.Unmarshal(x.Data, &rec) == nil {
-			s.ruleVersion = rec.RuleVersion
+		var started struct {
+			Info struct {
+				RuleVersion string `json:"rule_version"`
+			} `json:"info"`
+		}
+		if json.Unmarshal(x.Data, &started) == nil {
+			s.ruleVersion = started.Info.RuleVersion
 		}
 		return nil
 	case "refused":
@@ -205,7 +214,7 @@ func (s *refusalScan) after(x rawrecord.Record) error {
 		s.firstMissing("rule_version")
 	case rec.LastUID == nil:
 		s.firstMissing("last_uid")
-	case rec.FirstAt == nil || x.Received < *rec.FirstAt:
+	case rec.FirstAt == nil || *rec.FirstAt < 0 || x.Received < *rec.FirstAt:
 		s.firstMissing("first_at before it was stored")
 	default:
 		s.count += *rec.Count

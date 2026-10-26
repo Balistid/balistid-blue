@@ -70,6 +70,18 @@ func TestRecordScanOfASoundStore(t *testing.T) {
 	}
 }
 
+// A loss the read's stop stores behind the barrier counts, and nothing else there does.
+func TestRecordScanCountsALossBehindTheBarrier(t *testing.T) {
+	s := newRecordScan("balistid-record0f")
+	_ = s.after(rawrecord.New(9, store.LossProvider, 0, 1, []byte(`{}`)))
+	_ = s.after(statsRecord(10, 7, 7))
+	r := &report{}
+	s.report(r)
+	if g := factsString(r.facts); !strings.Contains(g, "lost_records=1") || !strings.Contains(g, "stats_after=no") {
+		t.Errorf("facts %s", g)
+	}
+}
+
 // What a record trial must not take for sound: an argument missing, a record twice, a large record
 // stored whole, a stats record only before its lines.
 func TestRecordScanFindsEachFault(t *testing.T) {
@@ -90,6 +102,12 @@ func TestRecordScanFindsEachFault(t *testing.T) {
 		"large without its tail": {[]rawrecord.Record{func() rawrecord.Record {
 			x := laurelExecOf(t, 1, large.args(tok))
 			x.Data = x.Data[:len(x.Data)/2]
+			return x
+		}()}, "record_6m=truncated without its length or tail"},
+		"last argument only in the head": {[]rawrecord.Record{func() rawrecord.Record {
+			args := large.args(tok)
+			args[1], args[len(args)-1] = args[len(args)-1], args[1] // the last argument near the start
+			x := laurelExecOf(t, 1, args)
 			return x
 		}()}, "record_6m=truncated without its length or tail"},
 		"loss": {[]rawrecord.Record{rawrecord.New(1, store.LossProvider, 0, 1, []byte(`{}`)),

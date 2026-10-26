@@ -72,13 +72,13 @@ func TestJudgeRecord(t *testing.T) {
 func TestJudgeRefusal(t *testing.T) {
 	base := map[string]string{
 		FactAttemptsRoot: "15000", FactAttemptsOther: "14900", FactRefusedCount: "29900", FactRefusedUID: "29900",
-		FactSummaries: "3", FactMaxLatencyMS: "60250", FactSummaryFields: "ok", FactOtherRecords: "0",
+		FactSummaries: "3", FactMaxLatencyMS: "60500", FactSummaryFields: "ok", FactOtherRecords: "0",
 	}
 	run := func(change ...string) Outcome { return probeRun("refusal-flood", refusalFacts, base, change...) }
 	judgeCases(t, "refusal-flood", run, map[string][]string{
 		Miss: {
 			"refused_count=29899", "refused_count=29901", "refused_uid=29899", "summary_fields=rule_version",
-			"summaries=0", "summaries=2", "summaries=6", "max_latency_ms=60251", "other_records=1",
+			"summaries=0", "summaries=2", "summaries=6", "max_latency_ms=60501", "other_records=1",
 		},
 		Invalid: {
 			"attempts_root=14849,refused_count=29749,refused_uid=29749", "attempts_other=0,refused_count=15000,refused_uid=15000",

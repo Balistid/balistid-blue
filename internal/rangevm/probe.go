@@ -49,8 +49,9 @@ const (
 	FactMaxLatencyMS  = "max_latency_ms"
 	FactSummaryFields = "summary_fields"
 	FactOtherRecords  = "other_records"
-	// refusalLimitMS is a minute plus one tick of the collector (store.FlushEvery, ADR 0023 point 4).
-	refusalLimitMS uint64 = 60_000 + 250
+	// refusalLimitMS is a minute plus two ticks of the collector (store.FlushEvery): the tick the minute
+	// ends in and the one whose flush stores the summary (ADR 0023 point 4).
+	refusalLimitMS uint64 = 60_000 + 2*250
 )
 
 var refusalFacts = []string{
@@ -112,7 +113,7 @@ func judgeRecord(tr rangejob.Trial, o Outcome) (string, string) {
 
 // judgeRefusal: each flooder must have made 99 % of its connections and no more than planned, else
 // INVALID. Every connection must be counted once under cause uid, every summary be whole (socket, rule
-// version, one cause) and stored at most a minute and one collector tick after its first refusal, one
+// version, one cause) and stored at most a minute and two collector ticks after its first refusal, one
 // summary for every minute of flood and at most two more, and no other health record during it, else
 // MISS.
 func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {

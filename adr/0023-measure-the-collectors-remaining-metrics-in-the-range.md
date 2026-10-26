@@ -34,9 +34,9 @@ to EOF, writes stats every 60 s on a 250 ms tick and none at stop; a refusal sum
    length and SHA-256), no loss record, and the stats count every truncated and malformed record before them.
 4. refusal_summary_s: root and a uid in `_laurel`'s group each connect 100 times a second for 150 s; under 99 % of
    that or more than planned is INVALID; a flooder stops on time. MISS unless every connection is counted once, each
-   summary has its socket, its run's rule version and one cause `uid`, is stored at most 60 s plus one collector tick
-   (250 ms) after its first refusal (in acceptance/0.toml), one summary per minute and at most two more, and no other
-   health record than refused, stats, health and lag appears during the flood.
+   summary has its socket, its run's rule version and one cause `uid`, is stored at most 60 s plus two collector ticks
+   (500 ms: the minute's tick and the flush's) after its first refusal (in acceptance/0.toml), one summary per minute
+   and at most two more, and no health record but refused, stats, health and lag appears during the flood.
 5. ready_s: from kernel start (realtime minus `/proc/uptime`) to the store's `Received` of the first health record
    OK, after 31 s of uptime, kernel start bounded early; none or over 30 s is a MISS. systemd_exposure: `systemd-analyze
    security` of every Balistid Blue service but the range's own and auditstat, with their range drop-ins. cpu_cores:
@@ -48,7 +48,7 @@ to EOF, writes stats every 60 s on a 250 ms tick and none at stop; a refusal sum
 
 - S from the journal after a reset: journald does not fsync INFO, a stale S weakens the test. The guest judging nothing:
   the host cannot see the load's windows after a reset. A collector change to write stats at stop for record_max_kib:
-  a product change for a test. Strict 60 s for refusals: the tick alone gives false MISS. cpu_cores of the collector
+  a product change for a test. Strict 60 s for refusals: the ticks alone give false MISS. cpu_cores of the collector
   alone: hides the sensor's cost on the host.
 
 ## Consequences

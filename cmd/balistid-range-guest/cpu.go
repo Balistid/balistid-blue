@@ -159,6 +159,7 @@ func unitsState(collector, auditd string) string {
 // before auditd, Laurel and the collector caught up would understate their cost. What Laurel holds
 // without sending is not seen (ADR 0023).
 func drained(w *commitWatch, now func() time.Time, backlog func() string) error {
+	last := ""
 	for deadline := now().Add(cpuDrainWait); now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		seq, at := w.last()
 		switch {
@@ -166,9 +167,15 @@ func drained(w *commitWatch, now func() time.Time, backlog func() string) error 
 			return errors.New("commit line: the journal follower ended")
 		case seq == 0:
 			return errors.New("no commit line during the load")
-		case now().Sub(at) >= cpuDrainQuiet && backlog() == "0":
+		case now().Sub(at) < cpuDrainQuiet:
+			continue
+		}
+		if last = backlog(); last == "0" {
 			return nil
 		}
+	}
+	if last != "" {
+		return fmt.Errorf("the kernel's audit backlog was still %q %s after the load", last, cpuDrainWait)
 	}
 	return fmt.Errorf("the collector still committed %s after the load", cpuDrainWait)
 }

@@ -90,7 +90,7 @@ func runRecord(ctx context.Context, r *report) error {
 	}
 	time.Sleep(statsWait)
 	scan := newRecordScan(token)
-	if err := readStore(ctx, scan.add, nil); err != nil {
+	if err := readStore(ctx, scan.add, scan.after); err != nil {
 		return r.fail("store: " + err.Error())
 	}
 	scan.report(r)
@@ -266,11 +266,9 @@ func (s *recordScan) add(x rawrecord.Record) error {
 			}
 		}
 	case store.LossProvider:
-		s.lost++
+		s.countLoss(x)
 	case store.HealthProvider:
-		if healthKind(x) == "lost" {
-			s.lost++
-		}
+		s.countLoss(x)
 		var rec struct {
 			Kind      string  `json:"kind"`
 			Truncated *uint64 `json:"truncated"`
@@ -284,6 +282,19 @@ func (s *recordScan) add(x rawrecord.Record) error {
 	return nil
 }
 
+// after counts the loss records the read's stop stored behind the barrier: a loss at shutdown is a loss
+// of the trial too. Nothing else behind the barrier is the trial's.
+func (s *recordScan) after(x rawrecord.Record) error {
+	s.countLoss(x)
+	return nil
+}
+
+func (s *recordScan) countLoss(x rawrecord.Record) {
+	if x.Provider == store.LossProvider || healthKind(x) == "lost" {
+		s.lost++
+	}
+}
+
 // argvStored says how the record x of case c with arguments a was stored: a second record of the case
 // is "twice", one within the limit "whole" when it holds every argument, one over it "truncated" when
 // cut with its original length.
@@ -291,8 +302,10 @@ func (s *recordScan) argvStored(c argvCase, a []string, x rawrecord.Record) stri
 	switch {
 	case s.cases[c.fact] != "":
 		return "twice"
-	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0 && bytes.Contains(x.Data, []byte(`"`+a[len(a)-1]+`"`)):
-		return rangevm.RecordTruncated // its first argument in the head, as found, and its last in the tail
+	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0 && len(x.Data) == rawrecord.MaxBytes &&
+		bytes.Contains(x.Data[:rawrecord.MaxBytes/2], []byte(`"`+a[0]+`"`)) &&
+		bytes.Contains(x.Data[rawrecord.MaxBytes/2:], []byte(`"`+a[len(a)-1]+`"`)):
+		return rangevm.RecordTruncated // its first argument in the kept head and its last in the kept tail
 	case x.Truncated() && c.minBytes > 0:
 		return "truncated without its length or tail"
 	case x.Truncated():
