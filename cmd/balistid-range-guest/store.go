@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
@@ -29,29 +30,46 @@ type collectorUnit struct{}
 // Follow runs one journalctl that follows the collector's journal from now on and sends the seq of
 // each commit line; the channel closes once ctx ended and journalctl exited.
 func (collectorUnit) Follow(ctx context.Context) (<-chan uint64, error) {
-	return followCommits(exec.CommandContext(ctx, "/usr/bin/journalctl", "-f", "-n", "0", "-q", "--no-pager", "-o", "cat", "-u", collectorUnitName))
+	return followCommits(commitFollower(ctx))
+}
+
+// commitFollower is one journalctl that prints the collector's journal from now on, until ctx ends.
+func commitFollower(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, "/usr/bin/journalctl", "-f", "-n", "0", "-q", "--no-pager", "-o", "cat", "-u", collectorUnitName)
 }
 
 // followCommits starts cmd, a journal follower, and sends the seq of each commit line it prints; the
 // channel closes once cmd exited, at once when a line is too long to scan.
 func followCommits(cmd *exec.Cmd) (<-chan uint64, error) {
+	commits := make(chan uint64, 1)
+	err := scanCommits(cmd, func(n uint64) {
+		select {
+		case commits <- n: // only that it moved counts, so a full channel drops the value
+		default:
+		}
+	}, func() { close(commits) })
+	if err != nil {
+		return nil, err
+	}
+	return commits, nil
+}
+
+// scanCommits starts cmd, a journal follower, and calls each with the seq of each commit line it prints,
+// then ended once cmd exited, at once when a line is too long to scan.
+func scanCommits(cmd *exec.Cmd, each func(uint64), ended func()) error {
 	out, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("journalctl: %w", err)
+		return fmt.Errorf("journalctl: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("journalctl: %w", err)
+		return fmt.Errorf("journalctl: %w", err)
 	}
-	commits := make(chan uint64, 1)
 	go func() {
-		defer close(commits)
+		defer ended()
 		sc := bufio.NewScanner(out) // a line over 64 KiB ends the scan, and so the read, never silently
 		for sc.Scan() {
 			if n := rangeguest.LastCommitted(sc.Text()); n != 0 {
-				select {
-				case commits <- n: // only that it moved counts, so a full channel drops the value
-				default:
-				}
+				each(n)
 			}
 		}
 		if sc.Err() != nil {
@@ -59,8 +77,42 @@ func followCommits(cmd *exec.Cmd) (<-chan uint64, error) {
 		}
 		_ = cmd.Wait()
 	}()
-	return commits, nil
+	return nil
 }
+
+// commitWatch keeps the highest seq the collector journaled as committed and when the guest read it:
+// S of a collector failure (ADR 0018, point 3), a value no commit line is dropped from.
+type commitWatch struct {
+	mu   sync.Mutex
+	seq  uint64
+	at   time.Time
+	now  func() time.Time
+	done chan struct{}
+}
+
+// watchCommits watches the commit lines cmd prints until its context ends; wait returns after that.
+func watchCommits(cmd *exec.Cmd, now func() time.Time) (*commitWatch, error) {
+	w := &commitWatch{now: now, done: make(chan struct{})}
+	err := scanCommits(cmd, func(n uint64) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.seq, w.at = max(w.seq, n), w.now()
+	}, func() { close(w.done) })
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+// last is the highest committed seq read so far and when the last commit line came, zero before one.
+func (w *commitWatch) last() (uint64, time.Time) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.seq, w.at
+}
+
+// wait returns once the follower ended.
+func (w *commitWatch) wait() { <-w.done }
 
 func (collectorUnit) Stop(ctx context.Context) error {
 	if err := exec.CommandContext(ctx, "/usr/bin/systemctl", "stop", collectorUnitName).Run(); err != nil {

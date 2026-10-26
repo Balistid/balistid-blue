@@ -1,6 +1,10 @@
 package rangejob
 
-import "time"
+import (
+	"fmt"
+	"slices"
+	"time"
+)
 
 // Generators a trial's guest runs (ADR 0018, point 4): every event carries its sequence number, in
 // exec argv or as the address of ptrace(PEEKDATA) of no process, or is handed to the measured writer
@@ -101,7 +105,7 @@ const (
 	Setup = time.Minute
 )
 
-var trials = []Trial{
+var trials = slices.Concat([]Trial{
 	{Name: "rate-sustained", Metric: MetricSustained, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch,
 		Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
 	{Name: "rate-burst", Metric: MetricBurst, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3,
@@ -120,6 +124,24 @@ var trials = []Trial{
 	{Name: "kill-control-buffer2s", Metric: MetricCrashLoss, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
 		Boots: 1, Scratch: StoreScratch, Count: 1, Failure: FailKill,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Hold: 2 * time.Second}}},
+},
+	// crash_loss_ms (ADR 0023): 20 trials each of kill -9 and a reset of the collector under exec load at
+	// sustained_rate, as rows of at most MaxTrials runs.
+	repeated(Trial{Name: "kill-collector", Metric: MetricCrashLoss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 3, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, 7),
+	repeated(Trial{Name: "reset-collector", Metric: MetricCrashLoss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 2,
+		Scratch: StoreScratch, Count: 3, Failure: FailReset, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, 7),
+)
+
+// repeated returns n rows of tr named tr.Name-1 to tr.Name-n: a metric needs more trials than one row
+// may run in a batch (MaxTrials).
+func repeated(tr Trial, n int) []Trial {
+	rows := make([]Trial, n)
+	for i := range rows {
+		rows[i] = tr
+		rows[i].Name = fmt.Sprintf("%s-%d", tr.Name, i+1)
+	}
+	return rows
 }
 
 // Scratch disks for the collector's store (ADR 0022, point 2). StoreScratch holds ext4, the store's
