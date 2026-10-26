@@ -185,8 +185,11 @@ func runJob(ctx context.Context, dev string) error {
 		return fmt.Errorf("job program: %w", err)
 	}
 	// The store's clock is this guest's: what it received from here on is the job's window.
-	lostBefore := rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]
-	overflowBefore := freshOverflow(ctx)
+	sample := func() lossSample {
+		overflow := freshOverflow(ctx) // first: its auditctl signal is not the job's
+		return lossSample{lost: rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"], overflow: overflow}
+	}
+	before := sample()
 	t0 := time.Now().UnixNano()
 	cmd, jobCtx, cancel := jobCommand(ctx, job)
 	defer cancel()
@@ -201,12 +204,8 @@ func runJob(ctx context.Context, dev string) error {
 		add(rangevm.FactJobOut, c)
 	}
 
-	time.Sleep(laurelHold)
-	window, cut, why, err := jobWindow(func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) }, t0, rangevm.JobLaurelCap,
-		func() string {
-			lostAfter := rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]
-			return kernelLoss(lostBefore, lostAfter, overflowBefore, freshOverflow(ctx))
-		})
+	window, cut, why, err := jobEvidence(time.Sleep, func(b, a func(rawrecord.Record) error) error { return readStore(ctx, b, a) },
+		t0, rangevm.JobLaurelCap, before, sample)
 	reportWindow(os.Stdout, cut, why)
 	add("canary", readStatus(err))
 	add(rangevm.FactJobLaurelCut, cut)
