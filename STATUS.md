@@ -9,7 +9,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Part | Does | State |
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
-| Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; on `main` once C1 merges: the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022); not yet run in KVM |
+| Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022); KVM run on 5890be4 |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
@@ -21,14 +21,14 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - B4.1 (#123): the image build fetches modules from proxy.golang.org against the export's go.sum; a path replace,
   a go.mod outside the export and caller proxies are refused; the module cache is capped at 1 GiB.
 - B4.2 (#128): `Store.Committed` rises only when a commit or seal returns; `-log-commits` journals it.
-- C1 = B4.3-B4.5 (feat/collector-in-image): collector, store-setup oneshot and range drop-in in the image, a
+- C1 = B4.3-B4.5 (#131) and its follow-up (#132: exec windows count `audit_lost`, overflow and Laurel's hold): collector, store-setup oneshot and range drop-in in the image, a
   512 MiB scratch disk in every run (4 GiB sustained); Laurel to the socket, guest reads up to a barrier from
   sealed shards only; exec window whole only up to the stopped run's end without loss (T25); no baseline.
   KVM 5890be4: self-test PASS, burst PASS 100000/100000, drop and the three controls as expected; sustained
   MISS: 889009 of 1.2 M generated in 2 vCPU (rate not held, CPU saturated), all stored, scratch enough.
 ## Next step
-1. fix/range-after-c1: exec windows count kernel `audit_lost`, overflow and Laurel's 5 s hold; tree via os.Root.
-2. C2 = B4.6-B4.8 (crash, record, refusal, ready, exposure, cpu trials), then C3 = B4.9 (install, suite).
+1. C2 = B4.6-B4.8 (crash, record, refusal, ready, exposure, cpu trials) on feat/collector-trials, stacked on #133
+   (refusal summary per cause, socket, rule version); then C3 = B4.9 (install, suite).
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #128: a reserve made at one `-headroom` is reused at another without resizing (`reserve()`); B5 measures it.
