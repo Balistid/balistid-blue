@@ -74,11 +74,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 	genErr = errors.Join(genErr, wait())
 	statLoaded := readTrim("/proc/stat")
 
-	storeLost := false
-	followErr := readStore(ctx, rateRecords(counter, &storeLost), storeLoss(&storeLost))
-	if followErr == nil && storeLost {
-		followErr = errStoreLost
-	}
+	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) })
 	nums := counter.Numbers()
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.
@@ -135,6 +131,17 @@ func freshOverflow(ctx context.Context) string {
 // errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
 // scratch disk drops, which says the range sized it wrong, not that the collector lost them: INVALID.
 var errStoreLost = errors.New("the store dropped records: the scratch disk is full")
+
+// rateRead counts a rate trial's numbers from one store read and fails it with errStoreLost when
+// the store dropped records, on either side of the barrier.
+func rateRead(c *rangeguest.Counter, read storeRead) error {
+	storeLost := false
+	err := read(rateRecords(c, &storeLost), storeLoss(&storeLost))
+	if err == nil && storeLost {
+		return errStoreLost
+	}
+	return err
+}
 
 // storeLoss sets *storeLost at a loss record of the store behind the barrier too: the store records a
 // drop before the record after it, so one there dropped only later records, yet the disk was full.
