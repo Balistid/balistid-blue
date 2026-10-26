@@ -134,6 +134,15 @@ func TestJudgeTrialRefusesAnIncompleteReport(t *testing.T) {
 	}
 }
 
+// A trial no method judges is INVALID, whatever its facts say.
+func TestJudgeTrialWithoutAMethodIsInvalid(t *testing.T) {
+	tr := trial(t, "rate-burst")
+	tr.Metric = "healthy_ok"
+	if v, r := JudgeTrial(tr, report(trial(t, "rate-burst")), cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "no method") {
+		t.Fatalf("%s (%s); want INVALID", v, r)
+	}
+}
+
 // Whatever the guest reports, a PASS means a complete, lossless run at the planned rate.
 func FuzzJudgeTrial(f *testing.F) {
 	f.Add("missing=0\nwindow_min=20000")

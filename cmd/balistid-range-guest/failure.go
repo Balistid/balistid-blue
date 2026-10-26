@@ -41,8 +41,7 @@ var errFailNow = errors.New("failure moment reached")
 // the writer had synced, ADR 0019) and resets with sysrq b, or kills the writer and writes
 // "balistid-killed". After a reset boot 2 reports the superblock store-setup read before the mount.
 // Both report what the file holds.
-func runFailure(ctx context.Context, tr rangejob.Trial, boot int, facts []fact) error {
-	r := &report{facts: facts, send: write}
+func runFailure(ctx context.Context, tr rangejob.Trial, boot int, r *report) error {
 	add, fail := r.add, r.fail
 	if !mounted(scratchMount) {
 		return fail("scratch disk not mounted")

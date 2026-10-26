@@ -18,6 +18,40 @@ const (
 	FailKill  = "kill"
 )
 
+// Metrics of acceptance/0.toml the table measures.
+const (
+	MetricSustained = "sustained_rate"
+	MetricBurst     = "burst_rate"
+	MetricCrashLoss = "crash_loss_ms"
+)
+
+// Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
+// numbered events in the store; a writer failure kills or resets the measured writer of a control; a
+// collector failure kills or resets the collector under load.
+const (
+	MethodRate             = "rate"
+	MethodWriterFailure    = "writer-failure"
+	MethodCollectorFailure = "collector-failure"
+)
+
+// Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
+// judges the run INVALID.
+func (tr Trial) Method() string {
+	switch {
+	case tr.Failure != "" && tr.Load.Kind == LoadWrite:
+		return MethodWriterFailure
+	case tr.Failure != "" && tr.Load.Kind == LoadExec:
+		return MethodCollectorFailure
+	case tr.Failure != "":
+		return ""
+	}
+	switch tr.Metric {
+	case MetricSustained, MetricBurst:
+		return MethodRate
+	}
+	return ""
+}
+
 // Verdicts a control must give; they are rangevm's PASS and MISS.
 const (
 	ExpectPass = "PASS"
@@ -68,22 +102,22 @@ const (
 )
 
 var trials = []Trial{
-	{Name: "rate-sustained", Metric: "sustained_rate", Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch,
+	{Name: "rate-sustained", Metric: MetricSustained, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch,
 		Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
-	{Name: "rate-burst", Metric: "burst_rate", Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3,
+	{Name: "rate-burst", Metric: MetricBurst, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3,
 		Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
-	{Name: "rate-control-drop", Metric: "sustained_rate", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+	{Name: "rate-control-drop", Metric: MetricSustained, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
 		Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30, Drop: true}},
 	// Failure controls of crash_loss_ms (ADR 0018, point 4): syncing every 250 ms must keep every
 	// number up to H, a last sync 1500 ms before the reset and records held 2 s before write() under
 	// a kill must lose some.
-	{Name: "reset-control-sync250", Metric: "crash_loss_ms", Expect: ExpectPass, Wall: 5 * time.Minute, Serial: 1 << 20,
+	{Name: "reset-control-sync250", Metric: MetricCrashLoss, Expect: ExpectPass, Wall: 5 * time.Minute, Serial: 1 << 20,
 		Boots: 2, Scratch: StoreScratch, Count: 1, Failure: FailReset,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Sync: 250 * time.Millisecond}}},
-	{Name: "reset-control-lastsync1500", Metric: "crash_loss_ms", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
+	{Name: "reset-control-lastsync1500", Metric: MetricCrashLoss, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
 		Boots: 2, Scratch: StoreScratch, Count: 1, Failure: FailReset,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Sync: 250 * time.Millisecond, LastSync: 1500 * time.Millisecond}}},
-	{Name: "kill-control-buffer2s", Metric: "crash_loss_ms", Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
+	{Name: "kill-control-buffer2s", Metric: MetricCrashLoss, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20,
 		Boots: 1, Scratch: StoreScratch, Count: 1, Failure: FailKill,
 		Load: Load{Kind: LoadWrite, Rate: 2000, Seconds: 20, Writer: WriterPolicy{Hold: 2 * time.Second}}},
 }
