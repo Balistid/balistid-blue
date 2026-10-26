@@ -39,7 +39,7 @@ to EOF, writes stats every 60 s on a 250 ms tick and none at stop; a refusal sum
    and at most two more, and no health record but refused, stats, health and lag appears during the flood.
 5. ready_s: from kernel start (realtime minus `/proc/uptime`) to the store's `Received` of the first health record
    OK, after 31 s of uptime, kernel start bounded early; none or over 30 s is a MISS. systemd_exposure: `systemd-analyze
-   security` of every Balistid Blue service but the range's own and auditstat, with their range drop-ins. cpu_cores:
+   security` of exactly the recorder's services, pinned in the judge, with range drop-ins (not the runner). cpu_cores:
    CPU of the collector's and auditd's cgroups (auditd with Laurel) from before 600 s at 1000 execs a second until the
    audit backlog is empty and commits stop for 3 s, over 600 s; a rate not held, steal over 1 %, a restarted unit or a
    lost record is INVALID. What Laurel holds unsent at that moment is not counted (residual).

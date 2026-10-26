@@ -2,7 +2,9 @@ package rangevm
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -193,28 +195,36 @@ func judgeReady(tr rangejob.Trial, o Outcome) (string, string) {
 	return Pass, fmt.Sprintf("health OK %d ms after kernel start", ms)
 }
 
-// judgeExposure: every Balistid Blue service the range runs, the collector among them, at most 2.5; a
-// report not of the form "unit=N.N,..." is INVALID.
+// ExposureUnits are the units systemd_exposure scores (ADR 0023 point 5): the floor-0 recorder's services
+// in the range image, not the range runner's on the host. A unit added to the recorder joins here, or the
+// exposure trial is INVALID.
+func ExposureUnits() map[string]bool { return map[string]bool{"balistid-collector.service": true} }
+
+// judgeExposure: exactly the ExposureUnits scored, each at most 2.5; a report not of the form
+// "unit=N.N,..." or of another set of units is INVALID.
 func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 	f, _, why := probeFacts(tr, o, exposureFacts, nil)
 	if why != "" {
 		return Invalid, why
 	}
-	collector, worst, worstUnit := false, -1, ""
+	worst, worstUnit, seen := -1, "", map[string]bool{}
 	for _, score := range strings.Split(f[FactExposure], ",") {
 		m := exposureValue.FindStringSubmatch(score)
 		if m == nil {
 			return Invalid, fmt.Sprintf("exposure %q is not unit=N.N", Printable(score, 96))
 		}
+		if seen[m[1]] {
+			return Invalid, fmt.Sprintf("exposure of %s reported twice", m[1])
+		}
 		whole, _ := strconv.Atoi(m[2])
 		if tenths := whole*10 + int(m[3][0]-'0'); tenths > worst {
 			worst, worstUnit = tenths, m[1]
 		}
-		collector = collector || m[1] == "balistid-collector.service"
+		seen[m[1]] = true
 	}
 	switch {
-	case !collector:
-		return Invalid, "no exposure of balistid-collector.service"
+	case !maps.Equal(seen, ExposureUnits()):
+		return Invalid, fmt.Sprintf("exposure of %d units, want exactly %v", len(seen), slices.Sorted(maps.Keys(ExposureUnits())))
 	case worst > exposureLimit:
 		return Miss, fmt.Sprintf("%s has exposure %d.%d, over 2.5", worstUnit, worst/10, worst%10)
 	}

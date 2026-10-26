@@ -264,7 +264,7 @@ max = 2.5
 unit = "systemd-analyze security score, every unit except balistid-auditstat"
 rows = ["T18"]
 adr = "0007"
-method = "systemd-analyze security on the installed units in the range VM."
+method = "systemd-analyze security on the installed units in the range VM: exactly the recorder's services, pinned in the trial judge; the range runner's host units are range infrastructure, not floor 0 (ADR 0023)."
 
 [[metric]]
 id = "systemd_exposure_auditstat"
