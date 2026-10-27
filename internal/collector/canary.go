@@ -60,7 +60,8 @@ func NewCanary(dir string, uid, pid int) (*Canary, error) {
 }
 
 // Probe sends probe n+1 without waiting for its syscall. A probe still outstanding past its deadline is
-// first counted as missed, so a new probe never hides one. While an earlier probe's goroutine has not
+// first counted as missed; a probe for a new store or connection replaces one still within it, which
+// could no longer prove anything. While an earlier probe's goroutine has not
 // returned no syscall starts; a scheduled round then still takes number n+1, which nothing can match,
 // so it misses at its own deadline, one miss per round as with any other probe. It reports whether a
 // syscall went out.
