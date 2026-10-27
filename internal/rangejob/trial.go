@@ -111,7 +111,9 @@ type WriterPolicy struct {
 // Trial is one entry of the closed table of acceptance trials (ADR 0018, point 1). Metric is the
 // acceptance metric it measures; a control instead checks the measurement of that metric and must
 // give Expect, never counting for the metric. Wall bounds all its boots, Serial each boot's output;
-// Count trials of it fit one batch. Failure is FailReset or FailKill for a failure trial.
+// Count trials of it fit one batch. Failure is FailReset or FailKill for a failure trial. A Trend
+// trial measures its metric for comparison between commits and never decides it: that metric is
+// decided outside the range (ADR 0025).
 type Trial struct {
 	Name    string
 	Metric  string
@@ -123,6 +125,7 @@ type Trial struct {
 	Count   int
 	Failure string
 	Load    Load
+	Trend   bool
 }
 
 // Batch bounds one acceptance batch and Setup what each trial adds to its wall clock (ADR 0018,
@@ -164,12 +167,13 @@ var trials = slices.Concat([]Trial{
 		{Name: "refusal-flood", Metric: MetricRefusal, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
 			Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}},
 	},
-	// ready_s, systemd_exposure and cpu_cores (ADR 0023, point 5): ready_s asks for 10 boots.
+	// ready_s, systemd_exposure and cpu_cores (ADR 0023, point 5): ready_s asks for 10 boots. cpu_cores
+	// follows the guest's vCPUs, so the range keeps only its trend (ADR 0025).
 	repeated(Trial{Name: "ready", Metric: MetricReady, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3}, 4),
 	[]Trial{
 		{Name: "exposure", Metric: MetricExposure, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
-			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}},
+			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
 	},
 )
 
