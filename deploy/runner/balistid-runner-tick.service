@@ -21,7 +21,7 @@ Environment=GOMEMLIMIT=192MiB
 # job over it instead of killing it (probe 2026-10-08: 5 min at 2.4G, no oom-kill).
 MemoryMax=2560M
 MemorySwapMax=0
-# Go (about one thread per CPU) plus QEMU (2 vCPUs, main loop, up to 64 block workers), with room.
+# Go (about one thread per CPU) plus QEMU (4 vCPUs, main loop, up to 64 block workers), with room.
 TasksMax=256
 CPUSchedulingPolicy=idle
 # RuntimeMaxSec does nothing for oneshot; 3 trials of 10 min plus setup (MaxTrials, RunTimeout).

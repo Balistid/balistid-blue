@@ -16,11 +16,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started; plan draft outside the repo |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- C1, C2 (ADR 0023), #135 on `main`; KVM 2 vCPU: record, refusal, ready (7.2 s), exposure, cpu, burst 3/3 PASS,
-  sustained MISS. `main` CI go-test failed once after #135 on the tree its PR passed (logs unread): watch it.
+- C1, C2 (ADR 0023), #135, #136 on `main`. KVM 2 vCPU: record, refusal, ready, exposure, cpu, burst PASS, sustained
+  MISS; 4 vCPU (c9fdf5e): sustained, burst, kill-1, reset-1 PASS, cpu-1000 MISS. `main` go-test failed once: watch.
 ## Next step
-1. #136 on `main` (a store that opened takes the waiting records; a dropped probe goes out on the next tick).
-2. ADR 0024 (trials on 4 vCPU, its PR): the maintainer's approve, then the full suite in KVM on 4 vCPU.
+1. ADR 0024 (#137, the range on 4 vCPU): the maintainer's approve, merge; the full suite in KVM on 4 vCPU.
+2. cpu_cores on the range's vCPUs: bound the recorder's threads, measure on the reference host, or the limit (ADR).
 3. Ledger, Tessera and litewitness end to end in CI and in the range (ADR 0006), no Pi and no host yet.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
 4. 2026-11-10 C3 = B4.9: runner reinstall (maintainer), the suite, metric verdicts in status.py; the Pi.
@@ -30,10 +30,10 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Open decisions (maintainer)
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #128: a reserve made at one `-headroom` is reused at another without resizing (`reserve()`); B5 measures it.
-- cpu_cores 0.637 of 0.5 on 4 vCPU (auditd alone about 0.42): the limit, auditd's cost or the method? (ADR 0024)
+- cpu_cores 0.637 of 0.5 on 4 vCPU, 0.468 on 2 (auditd with Laurel about 0.42): it follows the vCPUs (ADR 0024).
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #125: past 16 pids per cause only a count is kept (amend ADR 0017 point 4?); a read error's text is not recorded.
 - Store: btrfs keeps truncated extents, an active filler takes the freed reserve (T10): own filesystem at install.
-- refusal_summary_s held by 2 ms in KVM: a margin to watch in the suite.
+- refusal_summary_s held by 2 ms and ready_s 7.2 s on 2 vCPU: measured again on 4.
 - A collector killed mid-read makes a rate trial INVALID (barrier missing), not MISS: a loss it causes is not a MISS.
 - shellcheck in CI is unpinned (R14).
