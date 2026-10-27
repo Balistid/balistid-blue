@@ -3,6 +3,7 @@ package entry
 import (
 	"bytes"
 	"encoding/hex"
+	"math"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,14 @@ var vectors = []struct {
 		label, "06", atNoon,
 		"15", "62616c69737469642e6465762f6c6f672f32303237",
 	}},
+}
+
+// The limits are part of v1: changing one changes what Decode accepts, so it needs a new label.
+func TestLimitsAreV1s(t *testing.T) {
+	if Label != "balistid/entry/v1" || MaxBytes != 256 || MaxStage != 16 || MaxReason != 64 || MaxOrigin != 128 ||
+		MaxSeq != math.MaxInt64 {
+		t.Fatalf("v1 limits changed: %q %d %d %d %d %d", Label, MaxBytes, MaxStage, MaxReason, MaxOrigin, uint64(MaxSeq))
+	}
 }
 
 func TestEntryVectors(t *testing.T) {

@@ -166,7 +166,7 @@ func (a Announce) check() error {
 
 func (f Final) check() error {
 	if !originPattern.MatchString(f.NextOrigin) {
-		return fmt.Errorf("entry: next origin is not 1 to %d visible ASCII bytes", MaxOrigin)
+		return fmt.Errorf("entry: next origin is not 1 to %d visible ASCII bytes without '+'", MaxOrigin)
 	}
 	return nil
 }
