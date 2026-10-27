@@ -737,8 +737,9 @@ func TestWatchdogFedDuringALongDrain(t *testing.T) {
 }
 
 // A Flush as slow as the tick leaves a tick always due, so the writer only steps; each step still
-// appends a run, so the burst is stored rather than the watchdog fed over a backlog that never shrinks.
-func TestSlowFlushStillAppendsABurst(t *testing.T) {
+// appends a run, so the burst is stored rather than the watchdog fed over a backlog that never shrinks,
+// and stop still gets through.
+func TestSlowFlushStillAppendsAndStops(t *testing.T) {
 	const n = 30
 	r := newRig(t)
 	r.tick = make(chan time.Time, 1)
@@ -753,33 +754,82 @@ func TestSlowFlushStillAppendsABurst(t *testing.T) {
 			}
 		}
 	})
-	t.Cleanup(func() { r.st.set(func(s *fakeStore) { s.onFlush = nil }) }) // before the rig's: lets stop through
 	block := burst(r, n, 10*time.Millisecond, nil)
 	r.tick <- r.clock()
 	close(block)
 	until(t, func() bool { return len(committedSeqs(r)) == n })
 	wantSeqs(t, committedSeqs(r), 1, n)
+	close(r.stop)
+	select {
+	case err := <-r.done:
+		r.done <- err
+	case <-time.After(5 * time.Second):
+		r.st.set(func(s *fakeStore) { s.onFlush = nil }) // lets the rig's cleanup through
+		r.done <- <-r.done
+		t.Fatal("stop waited behind ticks that were always due")
+	}
 }
 
-// Stop during a burst stores all of it. stop and the queue's Ready race in the writer's select, so
-// several runs cover the stop that wins.
 func TestStopDuringABurstStoresItAll(t *testing.T) {
 	const n = 30
-	for range 20 {
-		r := newRig(t)
-		r.start(nil)
-		r.settle()
-		block := burst(r, n, time.Second, nil)
-		close(r.stop)
-		close(block)
-		if err := <-r.done; err != nil {
-			t.Fatal(err)
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	block := burst(r, n, time.Second, nil)
+	close(r.stop)
+	close(block)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	wantSeqs(t, committedSeqs(r), 1, n)
+	if r.st.closed != 1 || len(r.st.kinds("lost")) != 0 {
+		t.Fatalf("closed %d, lost %v", r.st.closed, r.st.kinds("lost"))
+	}
+}
+
+// Stop taken while a burst waits in the writer stores the burst, then what the reader queued after it.
+func TestStopWithABacklogStoresItThenTheQueue(t *testing.T) {
+	r := newRig(t)
+	var holding atomic.Bool
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	notify := r.w.Notify
+	r.w.Notify = func(state string) error {
+		if holding.Load() {
+			held <- struct{}{}
+			<-hold
 		}
-		r.done <- nil
-		wantSeqs(t, committedSeqs(r), 1, n)
-		if r.st.closed != 1 || len(r.st.kinds("lost")) != 0 {
-			t.Fatalf("closed %d, lost %v", r.st.closed, r.st.kinds("lost"))
+		return notify(state)
+	}
+	r.start(nil)
+	r.settle()
+	holding.Store(true)
+	go func() { r.tick <- r.clock() }()
+	<-held // the writer is inside a tick, so the next run takes all 30 at once
+	for i := 1; i <= 30; i++ {
+		r.push(event(i, ""))
+	}
+	var once sync.Once
+	r.st.set(func(s *fakeStore) {
+		s.onAppend = func() { // a second each: the run ends after this record, 29 still wait
+			r.advance(time.Second)
+			once.Do(func() {
+				for i := 31; i <= 40; i++ {
+					r.push(event(i, ""))
+				}
+				close(r.stop)
+			})
 		}
+	})
+	holding.Store(false)
+	close(hold)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	wantSeqs(t, committedSeqs(r), 1, 40)
+	if len(r.st.kinds("lost")) != 0 {
+		t.Fatalf("lost %v", r.st.kinds("lost"))
 	}
 }
 
@@ -841,6 +891,66 @@ func TestReopenedStoreTakesTheRecordsWaiting(t *testing.T) {
 		if lost := r.st.kinds("lost"); len(lost) != 0 {
 			t.Fatalf("lost %v: records counted lost while the store had opened", lost)
 		}
+	}
+}
+
+// A store that opens inside a tick in which Laurel connected is proved by that connection's probe:
+// the tick reads its clock after the appends that opened the store, so the probe is not dated before it.
+func TestStoreOpenedInsideATickIsProvedByTheNextProbe(t *testing.T) {
+	r := newRig(t)
+	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
+	var holding atomic.Bool
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	notify := r.w.Notify
+	r.w.Notify = func(state string) error {
+		if holding.Load() {
+			held <- struct{}{}
+			<-hold
+		}
+		return notify(state)
+	}
+	r.tick = make(chan time.Time, 1)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens, and a scheduled probe
+	r.probeReturned()
+	for len(r.touched) > 0 { // so the probes taken below are this tick's
+		<-r.touched
+	}
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held // the writer is inside a tick
+	r.opens <- nil
+	until(t, func() bool { return len(r.w.opened) == 1 })
+	var once sync.Once
+	openProbe := make(chan struct{})
+	r.st.set(func(s *fakeStore) {
+		s.onAppend = func() { // the open's own probe returns before the tick goes on
+			once.Do(func() {
+				<-r.touched
+				for len(r.w.Canary.inFlight) > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				close(openProbe)
+			})
+		}
+	})
+	r.push(event(1, ""))
+	connect(r, 77)
+	holding.Store(false)
+	r.tick <- r.clock() // the next tick opens the store inside its appends
+	close(hold)
+	select {
+	case <-openProbe:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tick took the record without opening the store first")
+	}
+	n := probed(r) // the connection's probe, sent in the same tick
+	r.push(canaryLine(2, n, 1000, 4242))
+	r.step(0)
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the probe sent after the open was stored", health(r))
 	}
 }
 

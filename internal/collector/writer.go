@@ -261,15 +261,21 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.lastStats, w.lastJournal, w.lastRound, w.health = now, now, now, "UNKNOWN starting"
 	w.note(map[string]any{"kind": "started", "info": w.Started})
 	w.startOpen(ctx)
+	// First stop, which comes after the reader returned (shutdown stores the rest), then a due tick, then
+	// the rest of a burst one run at a time, so neither waits behind appends; a store that opened goes in
+	// before any record is taken (appendQueued).
 	for {
-		select { // a due tick goes before more appends
+		select {
+		case <-stop:
+			return w.shutdown(ctx)
+		default:
+		}
+		select {
 		case <-tick:
 			w.step(ctx)
 			continue
 		default:
 		}
-		// The rest of a burst, one run at a time. stop waits: it comes after the reader returned, and
-		// shutdown stores the rest.
 		if len(w.todo) > 0 {
 			w.appendQueued(ctx, appendBudget)
 			continue
@@ -318,8 +324,8 @@ func (w *Writer) openDone(r openResult) {
 
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
-	now := w.Now()
 	w.appendQueued(ctx, appendBudget)
+	now := w.Now() // after the appends, which can open the store: a probe dated before it proves nothing
 	w.flush(ctx)
 	w.connections(now, true)
 	w.canary(now)
@@ -704,7 +710,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.openDone(<-w.opened)
 	}
 	up := w.st != nil
-	w.appendQueued(ctx, noBudget) // the rest of a burst, if any,
+	w.appendQueued(ctx, noBudget) // the rest of a burst,
 	w.appendQueued(ctx, noBudget) // then what the reader left in the queue
 	w.connections(w.Now(), false)
 	w.refusals()
