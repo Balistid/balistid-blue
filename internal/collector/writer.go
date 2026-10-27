@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
-	"math"
 	"slices"
 	"sync"
 	"time"
@@ -37,8 +36,6 @@ const (
 	// appendBudget bounds one run of appends, so a due tick, which flushes and feeds the watchdog,
 	// waits for at most one run however large a burst (ADR 0017, point 6).
 	appendBudget = store.FlushEvery / 2
-	// noBudget is the shutdown's: what the reader left is stored before the store closes.
-	noBudget     = time.Duration(math.MaxInt64)
 	healthSchema = 1
 	// maxNotes bounds health records waiting for the store: those handed over but not committed (the
 	// store queues at most 64) and as many again; older ones give way and are counted, except loss and
@@ -261,9 +258,9 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.lastStats, w.lastJournal, w.lastRound, w.health = now, now, now, "UNKNOWN starting"
 	w.note(map[string]any{"kind": "started", "info": w.Started})
 	w.startOpen(ctx)
-	// First stop, which comes after the reader returned (shutdown stores the rest), then a due tick, then
-	// the rest of a burst one run at a time, so neither waits behind appends; a store that opened goes in
-	// before any record is taken (appendQueued).
+	// First stop, which comes after the reader returned (shutdown stores the rest in runs), then a due
+	// tick, then the rest of a burst one run at a time, so neither waits behind appends. opened waits for
+	// the rest: an open runs only while the store is down, when runs only count.
 	for {
 		select {
 		case <-stop:
@@ -324,8 +321,8 @@ func (w *Writer) openDone(r openResult) {
 
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
+	now := w.Now()
 	w.appendQueued(ctx, appendBudget)
-	now := w.Now() // after the appends, which can open the store: a probe dated before it proves nothing
 	w.flush(ctx)
 	w.connections(now, true)
 	w.canary(now)
@@ -346,36 +343,38 @@ func (w *Writer) step(ctx context.Context) {
 	if w.st == nil && !w.opening && !now.Before(w.nextOpen) {
 		w.startOpen(ctx)
 	}
-	if err := w.Notify("WATCHDOG=1"); err != nil {
-		w.Log.Error("watchdog notify failed", "err", err)
-	}
+	w.feedWatchdog()
 }
 
-// appendQueued stores the records taken from the queue, or counts them lost while the store is down,
-// until budget has passed; it takes the queue only when none wait, and at least one record per call.
+// appendQueued stores queued records, or counts them lost while the store is down, until budget has
+// passed; at least one record per call, so a backlog always shrinks. It reports whether it took any.
 // Until the first Open returns, records wait in the queue, which drops and counts what does not fit
 // (ADR 0016, point 5).
-func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) {
-	select { // a store that opened takes what waits, which a flood would otherwise count lost
-	case r := <-w.opened:
-		w.openDone(r)
-	default:
-	}
-	if len(w.todo) == 0 {
-		if w.st == nil && w.down == "starting" {
-			return
-		}
-		w.todo = w.Queue.Drain()
-	}
+func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) bool {
 	start := w.Now()
-	for len(w.todo) > 0 {
+	for took := false; ; took = true {
+		if len(w.todo) == 0 {
+			if w.st == nil && w.down == "starting" {
+				return took
+			}
+			if w.todo = w.Queue.Drain(); len(w.todo) == 0 {
+				return took
+			}
+		}
 		r := w.todo[0]
 		w.todo[0] = rawrecord.Record{} // an appended record is freed now, not with the whole burst
 		w.todo = w.todo[1:]
 		w.appendOne(ctx, r)
 		if w.Now().Sub(start) >= budget {
-			return
+			return true
 		}
+	}
+}
+
+// feedWatchdog tells systemd the writer is making progress (ADR 0017, point 6).
+func (w *Writer) feedWatchdog() {
+	if err := w.Notify("WATCHDOG=1"); err != nil {
+		w.Log.Error("watchdog notify failed", "err", err)
 	}
 }
 
@@ -710,8 +709,12 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.openDone(<-w.opened)
 	}
 	up := w.st != nil
-	w.appendQueued(ctx, noBudget) // the rest of a burst,
-	w.appendQueued(ctx, noBudget) // then what the reader left in the queue
+	// The rest of a burst, then what the reader left, in runs with a commit and the watchdog between
+	// them as while running: after the acceptor failed, systemd still holds the watchdog armed.
+	for w.appendQueued(ctx, appendBudget) {
+		w.flush(ctx)
+		w.feedWatchdog()
+	}
 	w.connections(w.Now(), false)
 	w.refusals()
 	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it
