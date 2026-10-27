@@ -133,6 +133,7 @@ Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; t
 - **Forbidden.** `unsafe` and `math/rand` (lint: depguard); cgo (CI: go-static fails on any cgo
   file in the default build); `reflect` on untrusted data.
 - **Dependencies.** Standard library first. A new module needs its own commit, a reason in the pull
-  request and a licence in Apache-2.0, MIT, BSD or ISC; no GPL, AGPL or BSL code is linked (R14).
+  request and a licence in Apache-2.0, MIT, BSD or ISC; no GPL, AGPL or BSL code is linked (R14). The one
+  exception is `github.com/hashicorp/golang-lru/v2` (MPL-2.0, Tessera's, linked unmodified; ADR 0026).
 - **Tests.** Table-driven where cases repeat; failure paths tested as well as success; `t.Parallel()`
   only where tests share no state. A behaviour change still needs a test that fails on the parent (R4).
