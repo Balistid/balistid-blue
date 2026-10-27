@@ -38,7 +38,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
 | T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped | announced_quiet_max_h | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
-| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated | — | partial: Pi parsers are exposed to root |
+| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated; entries decoded strictly (0026) | FuzzDecodeEntry | partial: Pi parsers are exposed to root; ntfy push needs the Pi's outbound internet (0026) |
 | T17 | A2 | Start a new log origin to reset history | Pi accepts a new origin only after the old log's final checkpoint | test rollover | designed |
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints | fuzz_hours | partial: a compromised ledger can sign |
