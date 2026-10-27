@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 )
 
@@ -15,9 +16,13 @@ const (
 	Label = "balistid/entry/v1"
 	// MaxBytes bounds an encoding; the largest entry is far below it.
 	MaxBytes = 256
-	// MaxReason and MaxOrigin bound a health entry's reason and a final entry's origin.
+	// MaxStage, MaxReason and MaxOrigin bound a loss entry's stage, a health entry's reason and a final
+	// entry's origin.
+	MaxStage  = 16
 	MaxReason = 64
 	MaxOrigin = 128
+	// MaxSeq is the highest seq the store issues; it issues none below 1.
+	MaxSeq = math.MaxInt64
 )
 
 // Type is an entry's type byte.
@@ -105,22 +110,27 @@ func (Health) Type() Type   { return TypeHealth }
 func (Announce) Type() Type { return TypeAnnounce }
 func (Final) Type() Type    { return TypeFinal }
 
+// An origin is visible ASCII without '+', which C2SP signed notes keep out of key names (ADR 0026).
 var (
-	stagePattern  = regexp.MustCompile(`^[a-z]{1,16}$`)
-	reasonPattern = regexp.MustCompile(`^[ -~]{1,64}$`)
-	originPattern = regexp.MustCompile(`^[!-~]{1,128}$`)
+	stagePattern  = regexp.MustCompile(fmt.Sprintf(`^[a-z]{1,%d}$`, MaxStage))
+	reasonPattern = regexp.MustCompile(fmt.Sprintf(`^[ -~]{1,%d}$`, MaxReason))
+	originPattern = regexp.MustCompile(fmt.Sprintf(`^[!-*,-~]{1,%d}$`, MaxOrigin))
 )
 
-func (b Batch) check() error {
-	if b.First > b.Last {
-		return errors.New("entry: batch first after last")
-	}
-	return nil
-}
+func (b Batch) check() error { return checkRange("batch", b.First, b.Last, b.Root) }
 
-func (s Seal) check() error {
-	if s.First > s.Last {
-		return errors.New("entry: seal first after last")
+func (s Seal) check() error { return checkRange("seal", s.First, s.Last, s.SHA256) }
+
+// checkRange refuses seqs the store never issues, a range that ends before it starts, and an all-zero
+// hash: no SHA-256 is zero in practice, so zero is a field never filled in.
+func checkRange(kind string, first, last uint64, hash [32]byte) error {
+	switch {
+	case first < 1 || last > MaxSeq:
+		return fmt.Errorf("entry: %s seq outside 1 to %d", kind, uint64(MaxSeq))
+	case first > last:
+		return fmt.Errorf("entry: %s first after last", kind)
+	case hash == [32]byte{}:
+		return fmt.Errorf("entry: %s hash is zero", kind)
 	}
 	return nil
 }
@@ -128,7 +138,7 @@ func (s Seal) check() error {
 func (l Loss) check() error {
 	switch {
 	case !stagePattern.MatchString(l.Stage):
-		return errors.New("entry: loss stage is not 1 to 16 lowercase letters")
+		return fmt.Errorf("entry: loss stage is not 1 to %d lowercase letters", MaxStage)
 	case l.Records == 0:
 		return errors.New("entry: loss of no records")
 	}
@@ -194,8 +204,11 @@ func appendString(out []byte, s string) []byte {
 // declaration order: integers as 8 big-endian bytes, states and announcements as one byte, strings as
 // a length byte and the bytes. It refuses an entry Decode would refuse, so the ledger never logs one.
 func (e Entry) Encode() ([]byte, error) {
-	if e.Body == nil {
-		return nil, errors.New("entry: no body")
+	// Only the body values Decode returns: a pointer would panic when nil and come back as a value.
+	switch e.Body.(type) {
+	case Batch, Seal, Loss, Health, Announce, Final:
+	default:
+		return nil, errors.New("entry: no body, or a body that is not one of the entry values")
 	}
 	if err := e.Body.check(); err != nil {
 		return nil, err

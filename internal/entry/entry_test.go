@@ -132,6 +132,11 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"short hash", batch[:len(batch)-1], short},
 		{"short time", batch[:head-1], short},
 		{"first after last", with(batch, head, 0, 0, 0, 0, 0, 0, 0x10), "batch first after last"},
+		{"first zero", with(batch, head, 0, 0, 0, 0, 0, 0, 0, 0), "batch seq outside"},
+		{"last over MaxSeq", with(batch, head+8, 0x80, 0, 0, 0, 0, 0, 0, 0), "batch seq outside"},
+		{"zero root", with(batch, head+16, make([]byte, 32)...), "batch hash is zero"},
+		{"zero seal hash", with(vectorBytes(t, "seal"), head+16, make([]byte, 32)...), "seal hash is zero"},
+		{"origin with plus", with(final, head+1+8, '+'), "next origin"},
 		{"stage too long", stage(strings.Repeat("q", 17)), stageWrong},
 		{"stage upper", stage("Queue"), stageWrong},
 		{"stage empty", stage(""), stageWrong},
@@ -161,8 +166,17 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 	long := strings.Repeat("a", MaxReason+1)
 	for _, e := range []Entry{
 		{},
-		{Body: Batch{First: 2, Last: 1}},
-		{Body: Seal{First: 2, Last: 1}},
+		{Body: &Batch{First: 1, Last: 1, Root: root}},
+		{Body: (*Batch)(nil)},
+		{Body: (*Final)(nil)},
+		{Body: Batch{First: 2, Last: 1, Root: root}},
+		{Body: Batch{First: 0, Last: 1, Root: root}},
+		{Body: Batch{First: 1, Last: MaxSeq + 1, Root: root}},
+		{Body: Batch{First: 1, Last: 1}},
+		{Body: Seal{First: 2, Last: 1, SHA256: empty}},
+		{Body: Seal{First: 0, Last: 0, SHA256: empty}},
+		{Body: Seal{First: 1, Last: 1}},
+		{Body: Final{NextOrigin: "balistid.dev/log+2027"}},
 		{Body: Loss{Stage: "Queue", Records: 1}},
 		{Body: Loss{Stage: "queue"}},
 		{Body: Loss{Stage: strings.Repeat("q", 17), Records: 1}},
@@ -176,6 +190,20 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 	} {
 		if b, err := e.Encode(); err == nil {
 			t.Errorf("%+v: encoded %x", e, b)
+		}
+	}
+	// One record is a range, the normal batch on a quiet host; the store's whole seq range is one too.
+	for _, e := range []Entry{
+		{Body: Batch{First: 5, Last: 5, Root: root}},
+		{Body: Seal{First: 5, Last: 5, SHA256: empty}},
+		{Body: Batch{First: 1, Last: MaxSeq, Root: root}},
+	} {
+		b, err := e.Encode()
+		if err != nil {
+			t.Fatalf("%+v: %v", e, err)
+		}
+		if back, err := Decode(b); err != nil || back != e {
+			t.Errorf("%+v: decoded %+v, %v", e, back, err)
 		}
 	}
 	// The longest entries fit MaxBytes.
