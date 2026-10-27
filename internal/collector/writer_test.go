@@ -856,6 +856,36 @@ func TestStopWithABacklogStoresItThenTheQueueInRuns(t *testing.T) {
 	}
 }
 
+// A store that fails on a commit between shutdown's runs makes the stop a failure; the records it held
+// and those after it are not reported stored.
+func TestStoreFailingBetweenShutdownRunsFailsTheStop(t *testing.T) {
+	const n, cost = 60, 10 * time.Millisecond
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	var once sync.Once
+	stopped := false // both hooks run on the writer's goroutine
+	r.st.set(func(s *fakeStore) {
+		s.onAppend = func() {
+			r.advance(cost)
+			once.Do(func() { close(r.stop); stopped = true })
+		}
+		s.onFlush = func() {
+			if stopped {
+				r.st.set(func(s *fakeStore) { s.failFlush = true })
+			}
+		}
+	})
+	for i := 1; i <= n; i++ {
+		r.push(event(i, ""))
+	}
+	err := <-r.done
+	r.done <- nil
+	if err == nil || len(committedSeqs(r)) != 0 {
+		t.Fatalf("stop returned %v with %d records committed after the store failed", err, len(committedSeqs(r)))
+	}
+}
+
 // A store that fails inside a burst keeps what it committed; the record that failed and every one
 // after it, still waiting in the writer, count as lost.
 func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
