@@ -16,8 +16,7 @@ const (
 	Label = "balistid/entry/v1"
 	// MaxBytes bounds an encoding; the largest entry is far below it.
 	MaxBytes = 256
-	// MaxStage and MaxOrigin bound a loss entry's stage and a final entry's origin.
-	MaxStage  = 16
+	// MaxOrigin bounds a final entry's origin.
 	MaxOrigin = 128
 	// MaxSeq is the highest seq the store issues; it issues none below 1.
 	MaxSeq = math.MaxInt64
@@ -26,12 +25,11 @@ const (
 // Type is an entry's type byte.
 type Type byte
 
-// The entry types of ADR 0026, point 1. Type 4 is kept for health, which lands with the code that
-// feeds it from the collector.
+// The entry types of ADR 0026, point 1. Types 3 and 4 are kept for loss and health, which land with
+// the code that feeds them from the collector.
 const (
 	TypeBatch    Type = 1
 	TypeSeal     Type = 2
-	TypeLoss     Type = 3
 	TypeAnnounce Type = 5
 	TypeFinal    Type = 6
 )
@@ -43,7 +41,7 @@ type Entry struct {
 	Body Body
 }
 
-// Body is what an entry says: a Batch, Seal, Loss, Announce or Final.
+// Body is what an entry says: a Batch, Seal, Announce or Final.
 type Body interface {
 	Type() Type
 	check() error
@@ -60,12 +58,6 @@ type Batch struct {
 type Seal struct {
 	First, Last uint64
 	SHA256      [32]byte
-}
-
-// Loss counts the records and delivered bytes one stage lost; a loss of none is no entry.
-type Loss struct {
-	Stage          string
-	Records, Bytes uint64
 }
 
 // Announcement is what an announce entry tells the Pi to expect.
@@ -86,15 +78,11 @@ type Final struct{ NextOrigin string }
 // Type is the body's type byte.
 func (Batch) Type() Type    { return TypeBatch }
 func (Seal) Type() Type     { return TypeSeal }
-func (Loss) Type() Type     { return TypeLoss }
 func (Announce) Type() Type { return TypeAnnounce }
 func (Final) Type() Type    { return TypeFinal }
 
 // An origin is visible ASCII without '+', which C2SP signed notes keep out of key names (ADR 0026).
-var (
-	stagePattern  = regexp.MustCompile(fmt.Sprintf(`^[a-z]{1,%d}$`, MaxStage))
-	originPattern = regexp.MustCompile(fmt.Sprintf(`^[!-*,-~]{1,%d}$`, MaxOrigin))
-)
+var originPattern = regexp.MustCompile(fmt.Sprintf(`^[!-*,-~]{1,%d}$`, MaxOrigin))
 
 func (b Batch) check() error { return checkRange("batch", b.First, b.Last, b.Root) }
 
@@ -110,16 +98,6 @@ func checkRange(kind string, first, last uint64, hash [32]byte) error {
 		return fmt.Errorf("entry: %s first after last", kind)
 	case hash == [32]byte{}:
 		return fmt.Errorf("entry: %s hash is zero", kind)
-	}
-	return nil
-}
-
-func (l Loss) check() error {
-	switch {
-	case !stagePattern.MatchString(l.Stage):
-		return fmt.Errorf("entry: loss stage is not 1 to %d lowercase letters", MaxStage)
-	case l.Records == 0:
-		return errors.New("entry: loss of no records")
 	}
 	return nil
 }
@@ -148,11 +126,6 @@ func (s Seal) append(out []byte) []byte {
 	return append(out, s.SHA256[:]...)
 }
 
-func (l Loss) append(out []byte) []byte {
-	out = appendString(out, l.Stage)
-	return binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(out, l.Records), l.Bytes)
-}
-
 func (a Announce) append(out []byte) []byte { return append(out, byte(a.Kind)) }
 
 func (f Final) append(out []byte) []byte { return appendString(out, f.NextOrigin) }
@@ -168,7 +141,7 @@ func appendString(out []byte, s string) []byte {
 func (e Entry) Encode() ([]byte, error) {
 	// Only the body values Decode returns: a pointer would panic when nil and come back as a value.
 	switch e.Body.(type) {
-	case Batch, Seal, Loss, Announce, Final:
+	case Batch, Seal, Announce, Final:
 	default:
 		return nil, errors.New("entry: no body, or a body that is not one of the entry values")
 	}
@@ -197,8 +170,6 @@ func Decode(b []byte) (Entry, error) {
 		e.Body = Batch{First: r.u64(), Last: r.u64(), Root: r.hash()}
 	case TypeSeal:
 		e.Body = Seal{First: r.u64(), Last: r.u64(), SHA256: r.hash()}
-	case TypeLoss:
-		e.Body = Loss{Stage: r.str(), Records: r.u64(), Bytes: r.u64()}
 	case TypeAnnounce:
 		e.Body = Announce{Kind: Announcement(r.u8())}
 	case TypeFinal:
