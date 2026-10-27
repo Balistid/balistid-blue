@@ -17,15 +17,15 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
 
 1. A log entry is one typed ledger event, never one raw record. Encoding `balistid/entry/v1` (`internal/entry`):
    the label, a zero byte, a type byte, the host's time in ns since 1970 UTC (information only, T22), then
-   big-endian fixed-width fields; a string is a length byte and printable ASCII. Types: `batch` (first and last
+   big-endian fixed-width fields; a string is a length byte and visible ASCII. Types: `batch` (first and last
    seq of committed records, and the RFC 6962 Merkle tree hash over D[i] = the 32-byte `rawrecord.Leaf` of seq
    first+i), `seal` (first, last seq and SHA-256 of a sealed shard, the store's index line; its name follows from
-   first), `loss` (stage, records, bytes), `announce` (shutdown or suspend), `final` (the next yearly log's origin,
-   a C2SP origin: no `+`). Seqs are 1 to 2^63-1, as the store issues them. Type 4 is kept for `health`, which
-   lands with the collector-to-ledger code that feeds it: what a run is and what its counts mean is decided against
-   the records the collector actually writes, not ahead of them. Decoding is strict: known label and type, every
-   field in range, no trailing bytes, at most 256 bytes; vectors pin it, a fuzz target covers it (`fuzz_hours`).
-   A changed field needs a new label; a new type keeps v1 and reaches the Pi before the ledger writes it.
+   first), `announce` (shutdown or suspend), `final` (the next yearly log's origin, a C2SP origin: no `+`). Seqs
+   are 1 to 2^63-1, as the store issues them. Types 3 and 4 are kept for `loss` and `health`, which land with the
+   collector-to-ledger code that feeds them: their fields are decided against the records the collector and the
+   store actually write (a store loss record has no stage or bytes today), not ahead of them. Decoding is
+   strict: known label and type, fields in range, no trailing bytes, at most 256 bytes; vectors pin it, a fuzz
+   target covers it (`fuzz_hours`). A changed field needs a new label; a new type keeps v1, reaching the Pi first.
 2. What the Pi checks between entries (batch ranges without gap or overlap, how often health must come, nothing
    after `final`) is decided with the Pi's verifier, against `loss_alarm_s`, `silence_alarm_s` and
    `announced_quiet_max_h`. A seq range declared lost (ADR 0013 point 5) gets its own type with the code that
@@ -55,5 +55,6 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
 - Amends ADR 0006 points 1 and 3 and ENGINEERING.md §7 (the named exception); ADR 0013's `shard-seal` is `seal`.
 - A batch root lets a later proof show one record inside an anchored range; health and loss entries are
   forgeable by root (T14), as ADR 0006 states. Tests: vectors per type, every malformed field refused, round trip.
-- The health type's change has to settle what the collector does not say today: its started record can be stored
-  after other records, dropped from a full queue or stored twice, and counts after the last stats record are lost.
+- Until loss and health land, `truncation_alarm_per_hour` and the cases of `loss_alarm_s` have no entry and
+  cannot pass. Their change settles what the collector does not say today: its started record can be stored after
+  other records, dropped from a full queue or stored twice; counts after the last stats record are lost.

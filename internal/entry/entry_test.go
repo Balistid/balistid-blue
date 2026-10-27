@@ -46,11 +46,6 @@ var vectors = []struct {
 		"0000000000000001", "0000000000100000",
 		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}},
-	{"loss", Entry{At: noon, Body: Loss{Stage: "queue", Records: 3, Bytes: 4096}}, []string{
-		label, "03", atNoon,
-		"05", "7175657565", // stage
-		"0000000000000003", "0000000000001000", // records, bytes
-	}},
 	{"announce before the epoch", Entry{At: -1, Body: Announce{Kind: AnnounceSuspend}}, []string{
 		label, "05", "ffffffffffffffff", "02",
 	}},
@@ -62,8 +57,8 @@ var vectors = []struct {
 
 // The limits are part of v1: changing one changes what Decode accepts, so it needs a new label.
 func TestLimitsAreV1s(t *testing.T) {
-	if Label != "balistid/entry/v1" || MaxBytes != 256 || MaxStage != 16 || MaxOrigin != 128 || MaxSeq != math.MaxInt64 {
-		t.Fatalf("v1 limits changed: %q %d %d %d %d", Label, MaxBytes, MaxStage, MaxOrigin, uint64(MaxSeq))
+	if Label != "balistid/entry/v1" || MaxBytes != 256 || MaxOrigin != 128 || MaxSeq != math.MaxInt64 {
+		t.Fatalf("v1 limits changed: %q %d %d %d", Label, MaxBytes, MaxOrigin, uint64(MaxSeq))
 	}
 }
 
@@ -107,15 +102,9 @@ func with(b []byte, i int, r ...byte) []byte {
 
 func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	head := len(label)/2 + 1 + 8 // label, type, time
-	batch, loss := vectorBytes(t, "batch"), vectorBytes(t, "loss")
+	batch := vectorBytes(t, "batch")
 	announce, final := vectorBytes(t, "announce before the epoch"), vectorBytes(t, "final")
-	stage := func(s string) []byte { // the loss vector with stage s
-		return append(append(append(bytes.Clone(loss[:head]), byte(len(s))), s...), loss[head+1+len("queue"):]...) //nolint:gosec // short test stages
-	}
-	if !bytes.Equal(stage("queue"), loss) {
-		t.Fatal("stage() does not rebuild the loss vector")
-	}
-	const notV1, short, stageWrong = "not a balistid/entry/v1", "ends inside a field", "loss stage"
+	const notV1, short = "not a balistid/entry/v1", "ends inside a field"
 	for _, c := range []struct {
 		name string
 		b    []byte
@@ -126,8 +115,9 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"no terminator", with(batch, len(label)/2-1, 'x'), notV1},
 		{"type zero", with(batch, len(label)/2, 0), "unknown type"},
 		{"unknown type", with(batch, len(label)/2, 7), "unknown type"},
+		{"type kept for loss", with(batch, len(label)/2, 3), "unknown type"},
 		{"type kept for health", with(batch, len(label)/2, 4), "unknown type"},
-		{"loss stage past input", with(loss, head, 0xff), short},
+		{"origin past input", with(final, head, 0xff), short},
 		{"trailing byte", append(bytes.Clone(batch), 0), "bytes after the entry"},
 		{"short hash", batch[:len(batch)-1], short},
 		{"short time", batch[:head-1], short},
@@ -137,11 +127,6 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"zero root", with(batch, head+16, make([]byte, 32)...), "batch hash is zero"},
 		{"zero seal hash", with(vectorBytes(t, "seal"), head+16, make([]byte, 32)...), "seal hash is zero"},
 		{"origin with plus", with(final, head+1+8, '+'), "next origin"},
-		{"stage too long", stage(strings.Repeat("q", 17)), stageWrong},
-		{"stage upper", stage("Queue"), stageWrong},
-		{"stage empty", stage(""), stageWrong},
-		{"stage with a dash", stage("re-sent"), stageWrong},
-		{"no records", with(loss, head+6, 0, 0, 0, 0, 0, 0, 0, 0), "loss of no records"},
 		{"announcement zero", with(announce, len(announce)-1, 0), "unknown announcement"},
 		{"announcement three", with(announce, len(announce)-1, 3), "unknown announcement"},
 		{"origin with space", with(final, head+1+8, ' '), "next origin"},
@@ -150,7 +135,7 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	} {
 		if e, err := Decode(c.b); err == nil || !strings.Contains(err.Error(), c.why) {
 			t.Errorf("%s: %+v, %v; want an error about %q", c.name, e, err, c.why)
-		} else if strings.Contains(err.Error(), "queue") || strings.Contains(err.Error(), "balistid.dev") {
+		} else if strings.Contains(err.Error(), "balistid.dev") {
 			t.Errorf("%s: error quotes the input: %v", c.name, err)
 		}
 	}
@@ -170,9 +155,6 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Seal{First: 0, Last: 0, SHA256: empty}},
 		{Body: Seal{First: 1, Last: 1}},
 		{Body: Final{NextOrigin: "balistid.dev/log+2027"}},
-		{Body: Loss{Stage: "Queue", Records: 1}},
-		{Body: Loss{Stage: "queue"}},
-		{Body: Loss{Stage: strings.Repeat("q", 17), Records: 1}},
 		{Body: Announce{}},
 		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin+1)}},
 		{Body: Final{NextOrigin: "a\nb"}},
