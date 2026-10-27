@@ -175,13 +175,11 @@ func (s *fakeStore) kinds(kind string) []map[string]any {
 
 // snapshot is the writer's state as its own goroutine saw it when it fed the watchdog.
 type snapshot struct {
-	health    string
-	opening   bool
-	up        bool
-	pending   map[Stage]Loss
-	waiting   int
-	at        time.Time // the writer's clock
-	committed uint64    // records the store committed
+	health  string
+	opening bool
+	up      bool
+	pending map[Stage]Loss
+	waiting int
 }
 
 // rig runs a writer on a fake clock; each step sends one tick and waits until the writer fed the
@@ -230,8 +228,7 @@ func newRig(t *testing.T) *rig {
 		},
 		Notify: func(string) error {
 			w := r.w
-			snap := snapshot{health: w.health, opening: w.opening, up: w.st != nil, pending: map[Stage]Loss{},
-				waiting: len(w.notes), at: w.Now(), committed: r.st.Committed()}
+			snap := snapshot{health: w.health, opening: w.opening, up: w.st != nil, pending: map[Stage]Loss{}, waiting: len(w.notes)}
 			for k, v := range w.pending {
 				snap.pending[k] = v
 			}
@@ -633,14 +630,14 @@ func TestWatchdogFedWhileStoreDownAndNotWhileWriterStuck(t *testing.T) {
 }
 
 // burst holds the writer in its first Append while n records queue behind it; each Append then takes
-// a second of the writer's clock. Closing the returned channel lets the writer go on.
-func burst(r *rig, n int, onAppend func()) chan struct{} {
+// cost of the writer's clock, then runs onAppend. Closing the returned channel lets the writer go on.
+func burst(r *rig, n int, cost time.Duration, onAppend func()) chan struct{} {
 	r.t.Helper()
 	block, entered := make(chan struct{}), make(chan struct{}, 1)
 	r.st.set(func(s *fakeStore) {
 		s.block, s.entered = block, entered
 		s.onAppend = func() {
-			r.advance(time.Second)
+			r.advance(cost)
 			if onAppend != nil {
 				onAppend()
 			}
@@ -680,56 +677,108 @@ func wantSeqs(t *testing.T, got []uint64, from, to uint64) {
 	}
 }
 
-// A burst the store takes far longer than WatchdogSec to append goes in runs of appendBudget, and a
-// tick due meanwhile flushes and feeds the watchdog after at most one run (ADR 0017, point 6).
+// stored returns how many records the store took, committed or not.
+func stored(r *rig) int {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	return len(r.st.appended) + len(r.st.committed)
+}
+
+// A burst the store takes far longer than WatchdogSec to append goes in runs of appendBudget. With a
+// tick due every FlushEvery of the writer's clock, as a ticker sends them, the watchdog is fed at most
+// a tick and two runs apart, and the burst is stored whole (ADR 0017, point 6).
 func TestWatchdogFedDuringALongDrain(t *testing.T) {
-	const n = 30
+	const n, cost = 300, 10 * time.Millisecond                                          // 3 s of appends
+	const maxGap = store.FlushEvery + 2*(store.FlushEvery/2+cost) + 80*time.Millisecond // a tick, two runs
 	r := newRig(t)
-	r.tick = make(chan time.Time, 1) // a tick waits while the writer appends
+	r.tick = make(chan time.Time, 1) // a tick waits while the writer appends, as a ticker's does
+	var mu sync.Mutex
+	var fed []time.Time
+	notify := r.w.Notify
+	r.w.Notify = func(state string) error {
+		mu.Lock()
+		fed = append(fed, r.w.Now())
+		mu.Unlock()
+		return notify(state)
+	}
 	r.start(nil)
 	r.settle()
-	block := burst(r, n, nil)
-	select {
-	case <-r.fed:
-	default:
-	}
 	t0 := r.clock()
-	r.tick <- t0
-	close(block)
-	select {
-	case r.last = <-r.fed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the watchdog was not fed")
-	}
-	if d := r.last.at.Sub(t0); d > 3*time.Second || r.last.committed >= n {
-		t.Fatalf("fed after %v of appends with %d of %d committed: the tick waited for the burst", d, r.last.committed, n)
-	}
-	for range 2 * n {
-		if r.step(0); r.last.committed == n {
-			break
+	next := t0.Add(store.FlushEvery)
+	close(burst(r, n, cost, func() { // on the writer's goroutine, inside Append
+		if now := r.clock(); !now.Before(next) {
+			next = now.Add(store.FlushEvery)
+			select {
+			case r.tick <- now:
+			default: // a ticker drops the tick nobody took
+			}
 		}
-	}
+	}))
+	until(t, func() bool { return stored(r) == n })
+	r.step(0)
+	r.step(0) // the tick a run may have left waiting, then the one that commits the rest
 	wantSeqs(t, committedSeqs(r), 1, n)
 	if len(r.st.kinds("lost")) != 0 || len(r.last.pending) != 0 {
 		t.Fatalf("lost %v, pending %v", r.st.kinds("lost"), r.last.pending)
 	}
+	mu.Lock()
+	defer mu.Unlock()
+	last := t0
+	for _, at := range fed {
+		if at.Before(t0) {
+			continue
+		}
+		if gap := at.Sub(last); gap > maxGap {
+			t.Fatalf("the watchdog went %v unfed during the burst, more than %v", gap, maxGap)
+		}
+		last = at
+	}
 }
 
-func TestStopDuringABurstStoresItAll(t *testing.T) {
+// A Flush as slow as the tick leaves a tick always due, so the writer only steps; each step still
+// appends a run, so the burst is stored rather than the watchdog fed over a backlog that never shrinks.
+func TestSlowFlushStillAppendsABurst(t *testing.T) {
 	const n = 30
 	r := newRig(t)
+	r.tick = make(chan time.Time, 1)
 	r.start(nil)
 	r.settle()
-	block := burst(r, n, nil)
-	close(r.stop)
+	r.st.set(func(s *fakeStore) {
+		s.onFlush = func() {
+			r.advance(store.FlushEvery)
+			select {
+			case r.tick <- r.clock():
+			default:
+			}
+		}
+	})
+	t.Cleanup(func() { r.st.set(func(s *fakeStore) { s.onFlush = nil }) }) // before the rig's: lets stop through
+	block := burst(r, n, 10*time.Millisecond, nil)
+	r.tick <- r.clock()
 	close(block)
-	if err := <-r.done; err != nil {
-		t.Fatal(err)
-	}
-	r.done <- nil
+	until(t, func() bool { return len(committedSeqs(r)) == n })
 	wantSeqs(t, committedSeqs(r), 1, n)
-	if r.st.closed != 1 || len(r.st.kinds("lost")) != 0 {
-		t.Fatalf("closed %d, lost %v", r.st.closed, r.st.kinds("lost"))
+}
+
+// Stop during a burst stores all of it. stop and the queue's Ready race in the writer's select, so
+// several runs cover the stop that wins.
+func TestStopDuringABurstStoresItAll(t *testing.T) {
+	const n = 30
+	for range 20 {
+		r := newRig(t)
+		r.start(nil)
+		r.settle()
+		block := burst(r, n, time.Second, nil)
+		close(r.stop)
+		close(block)
+		if err := <-r.done; err != nil {
+			t.Fatal(err)
+		}
+		r.done <- nil
+		wantSeqs(t, committedSeqs(r), 1, n)
+		if r.st.closed != 1 || len(r.st.kinds("lost")) != 0 {
+			t.Fatalf("closed %d, lost %v", r.st.closed, r.st.kinds("lost"))
+		}
 	}
 }
 
@@ -741,7 +790,7 @@ func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
 	r.start(nil)
 	r.settle()
 	calls := 0
-	block := burst(r, n, func() {
+	block := burst(r, n, time.Second, func() {
 		if calls++; calls == k {
 			r.st.set(func(s *fakeStore) { s.failAppend = true })
 		}
