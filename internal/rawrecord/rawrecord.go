@@ -109,5 +109,5 @@ func (r Record) Encode() []byte {
 // EncodedLen is len(r.Encode()), without encoding.
 func (r Record) EncodedLen() int { return len(Label) + 1 + 8*6 + 32 + len(r.Provider) + len(r.Data) }
 
-// Leaf is the SHA-256 of Encode; the log adds its own domain prefix (ADR 0006).
+// Leaf is the SHA-256 of Encode; a batch entry's root is the RFC 6962 tree hash over leaves as data (ADR 0026).
 func (r Record) Leaf() [32]byte { return sha256.Sum256(r.Encode()) }
