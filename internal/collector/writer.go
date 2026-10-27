@@ -199,6 +199,7 @@ type Writer struct {
 	lastJournal time.Time
 	lastRound   time.Time
 	connectedAt time.Time // when the connection being read began; zero while none is
+	probeWanted bool      // the probe of a new store or connection was dropped; the next tick sends it
 	health      string
 	notes       []note // health records waiting to be handed to the store
 	inflight    []note // handed to the store, not yet committed: sent again if the store fails
@@ -260,7 +261,7 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.startOpen(ctx)
 	// First stop, which comes after the reader returned (shutdown stores the rest in runs), then a due
 	// tick, then the rest of a burst one run at a time, so neither waits behind appends. A store that
-	// opened goes in at the start of a run (appendQueued), so a burst does not hold it off.
+	// opened goes in before the next record a run takes (appendQueued), so a burst does not hold it off.
 	for {
 		select {
 		case <-stop:
@@ -315,17 +316,24 @@ func (w *Writer) openDone(r openResult) {
 	}
 	w.st, w.down, w.openedAt = r.st, "", w.Now()
 	w.Log.Info("store open")
-	w.Canary.Probe(w.openedAt, false)
-	w.lastRound = w.openedAt
+	w.probe(w.openedAt)
+}
+
+// probe sends the probe a new store or connection needs. Canary.Probe drops it while another probe's
+// syscall still runs; it then goes out on a later tick (probeWanted), not only with the next round.
+func (w *Writer) probe(at time.Time) {
+	w.probeWanted = !w.Canary.Probe(at, false)
+	if !w.probeWanted {
+		w.lastRound = at // the next round waits a full interval, or it would replace this probe
+	}
 }
 
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
-	changed, connected := w.Links.check(now) // before the appends, which can open the store (connections)
 	w.appendQueued(ctx)
 	w.flush(ctx)
-	w.connections(now, changed, connected, true)
+	w.connections(w.Now()) // after the appends, which can open the store and send its probe
 	w.canary(now)
 	w.losses(false)
 	if now.Sub(w.lastStats) >= statsEvery {
@@ -482,21 +490,18 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
 
-// connections follows the connection state Links.check returned at and, with probe, sends a probe over
-// a new connection at once. The connection dates from at, the probe from after the tick's appends: one
-// sent before a store they opened would not prove it, and when the open's own probe still runs this one
-// is dropped (Canary.Probe), but the open's, sent after at, proves both.
-func (w *Writer) connections(at time.Time, changed, connected, probe bool) {
+// connections follows the connection state, checked at at, and sends a probe over a new connection at
+// once, or the probe a store or connection still waits for.
+func (w *Writer) connections(at time.Time) {
+	changed, connected := w.Links.check(at)
 	switch {
 	case !connected:
 		w.connectedAt = time.Time{}
-	case changed: // a new connection: only a probe sent after it proves it
-		w.connectedAt = at
-		if probe {
-			sent := w.Now()
-			w.Canary.Probe(sent, false)
-			w.lastRound = sent // the next round waits a full interval, or it would replace this probe
-		}
+	case changed: // a new connection, dated from its check: only a probe sent after it proves it
+		w.connectedAt, w.probeWanted = at, true
+	}
+	if w.probeWanted {
+		w.probe(at)
 	}
 }
 
@@ -727,9 +732,6 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.flush(ctx)
 		w.feedWatchdog()
 	}
-	now := w.Now()
-	changed, connected := w.Links.check(now)
-	w.connections(now, changed, connected, false)
 	w.refusals()
 	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it
 	if w.st == nil {
