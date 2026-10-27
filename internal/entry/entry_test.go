@@ -51,18 +51,6 @@ var vectors = []struct {
 		"05", "7175657565", // stage
 		"0000000000000003", "0000000000001000", // records, bytes
 	}},
-	{"health ok", Entry{At: noon, Body: Health{State: StateOK, RunFirst: 1, Truncated: 1}}, []string{
-		label, "04", atNoon,
-		"01", "00", // state, empty reason
-		"0000000000000001",                     // first seq of the collector run
-		"0000000000000001", "0000000000000000", // truncated, malformed
-	}},
-	{"health unknown", Entry{At: noon, Body: Health{State: StateUnknown, Reason: "laurel-disconnected", RunFirst: 4097, Malformed: 2}}, []string{
-		label, "04", atNoon,
-		"02", "13", "6c617572656c2d646973636f6e6e6563746564",
-		"0000000000001001",
-		"0000000000000000", "0000000000000002",
-	}},
 	{"announce before the epoch", Entry{At: -1, Body: Announce{Kind: AnnounceSuspend}}, []string{
 		label, "05", "ffffffffffffffff", "02",
 	}},
@@ -74,9 +62,8 @@ var vectors = []struct {
 
 // The limits are part of v1: changing one changes what Decode accepts, so it needs a new label.
 func TestLimitsAreV1s(t *testing.T) {
-	if Label != "balistid/entry/v1" || MaxBytes != 256 || MaxStage != 16 || MaxReason != 64 || MaxOrigin != 128 ||
-		MaxSeq != math.MaxInt64 {
-		t.Fatalf("v1 limits changed: %q %d %d %d %d %d", Label, MaxBytes, MaxStage, MaxReason, MaxOrigin, uint64(MaxSeq))
+	if Label != "balistid/entry/v1" || MaxBytes != 256 || MaxStage != 16 || MaxOrigin != 128 || MaxSeq != math.MaxInt64 {
+		t.Fatalf("v1 limits changed: %q %d %d %d %d", Label, MaxBytes, MaxStage, MaxOrigin, uint64(MaxSeq))
 	}
 }
 
@@ -120,7 +107,7 @@ func with(b []byte, i int, r ...byte) []byte {
 
 func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	head := len(label)/2 + 1 + 8 // label, type, time
-	batch, loss, health := vectorBytes(t, "batch"), vectorBytes(t, "loss"), vectorBytes(t, "health unknown")
+	batch, loss := vectorBytes(t, "batch"), vectorBytes(t, "loss")
 	announce, final := vectorBytes(t, "announce before the epoch"), vectorBytes(t, "final")
 	stage := func(s string) []byte { // the loss vector with stage s
 		return append(append(append(bytes.Clone(loss[:head]), byte(len(s))), s...), loss[head+1+len("queue"):]...) //nolint:gosec // short test stages
@@ -128,7 +115,7 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	if !bytes.Equal(stage("queue"), loss) {
 		t.Fatal("stage() does not rebuild the loss vector")
 	}
-	const notV1, short, stageWrong, noReason = "not a balistid/entry/v1", "ends inside a field", "loss stage", "needs a reason"
+	const notV1, short, stageWrong = "not a balistid/entry/v1", "ends inside a field", "loss stage"
 	for _, c := range []struct {
 		name string
 		b    []byte
@@ -139,6 +126,8 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"no terminator", with(batch, len(label)/2-1, 'x'), notV1},
 		{"type zero", with(batch, len(label)/2, 0), "unknown type"},
 		{"unknown type", with(batch, len(label)/2, 7), "unknown type"},
+		{"type kept for health", with(batch, len(label)/2, 4), "unknown type"},
+		{"loss stage past input", with(loss, head, 0xff), short},
 		{"trailing byte", append(bytes.Clone(batch), 0), "bytes after the entry"},
 		{"short hash", batch[:len(batch)-1], short},
 		{"short time", batch[:head-1], short},
@@ -153,14 +142,6 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"stage empty", stage(""), stageWrong},
 		{"stage with a dash", stage("re-sent"), stageWrong},
 		{"no records", with(loss, head+6, 0, 0, 0, 0, 0, 0, 0, 0), "loss of no records"},
-		{"state zero", with(health, head, 0), "unknown health state"},
-		{"state three", with(health, head, 3), "unknown health state"},
-		{"unknown, no reason", append(append(bytes.Clone(health[:head+1]), 0), health[head+2+19:]...), noReason},
-		{"ok with a reason", with(health, head, 1), "OK with a reason"},
-		{"run first zero", with(health, head+2+19, 0, 0, 0, 0, 0, 0, 0, 0), "run's first seq outside"},
-		{"run first over MaxSeq", with(health, head+2+19, 0x80, 0, 0, 0, 0, 0, 0, 0), "run's first seq outside"},
-		{"reason control byte", with(health, head+2, '\n'), noReason},
-		{"reason past input", with(health, head+1, 0xff), short},
 		{"announcement zero", with(announce, len(announce)-1, 0), "unknown announcement"},
 		{"announcement three", with(announce, len(announce)-1, 3), "unknown announcement"},
 		{"origin with space", with(final, head+1+8, ' '), "next origin"},
@@ -169,14 +150,13 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	} {
 		if e, err := Decode(c.b); err == nil || !strings.Contains(err.Error(), c.why) {
 			t.Errorf("%s: %+v, %v; want an error about %q", c.name, e, err, c.why)
-		} else if strings.Contains(err.Error(), "laurel") {
+		} else if strings.Contains(err.Error(), "queue") || strings.Contains(err.Error(), "balistid.dev") {
 			t.Errorf("%s: error quotes the input: %v", c.name, err)
 		}
 	}
 }
 
 func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
-	long := strings.Repeat("a", MaxReason+1)
 	for _, e := range []Entry{
 		{},
 		{Body: &Batch{First: 1, Last: 1, Root: root}},
@@ -193,12 +173,6 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Loss{Stage: "Queue", Records: 1}},
 		{Body: Loss{Stage: "queue"}},
 		{Body: Loss{Stage: strings.Repeat("q", 17), Records: 1}},
-		{Body: Health{State: StateOK, Reason: "x", RunFirst: 1}},
-		{Body: Health{State: StateOK}},
-		{Body: Health{State: StateOK, RunFirst: MaxSeq + 1}},
-		{Body: Health{State: StateUnknown, RunFirst: 1}},
-		{Body: Health{State: StateUnknown, Reason: long, RunFirst: 1}},
-		{Body: Health{State: 3, RunFirst: 1}},
 		{Body: Announce{}},
 		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin+1)}},
 		{Body: Final{NextOrigin: "a\nb"}},
@@ -221,14 +195,9 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 			t.Errorf("%+v: decoded %+v, %v", e, back, err)
 		}
 	}
-	// The longest entries fit MaxBytes.
-	for _, e := range []Entry{
-		{Body: Health{State: StateUnknown, Reason: long[:MaxReason], RunFirst: MaxSeq, Truncated: ^uint64(0), Malformed: ^uint64(0)}},
-		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin)}},
-	} {
-		if b, err := e.Encode(); err != nil || len(b) > MaxBytes {
-			t.Errorf("%T: %d bytes, %v", e.Body, len(b), err)
-		}
+	// The longest entry fits MaxBytes.
+	if b, err := (Entry{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin)}}).Encode(); err != nil || len(b) > MaxBytes {
+		t.Errorf("longest final: %d bytes, %v", len(b), err)
 	}
 }
 
