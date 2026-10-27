@@ -29,6 +29,7 @@
 /internal/rangejob/ @Jvc0n
 /internal/rangerun/ @Jvc0n
 /internal/rawrecord/ @Jvc0n
+/internal/entry/ @Jvc0n
 /internal/store/ @Jvc0n
 /internal/shard/ @Jvc0n
 /internal/collector/ @Jvc0n
