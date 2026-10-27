@@ -167,7 +167,7 @@ func qemuArgv(job, withScratch bool, trial string, phase int) []string {
 		qemuPath,
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
-		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "2",
+		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "4",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file=" + ovmfCode,
 		"-drive", "if=pflash,unit=1,format=raw,file=" + inRun + "/" + firmVars,
 		// Only the root disk may boot: bootindex=0 makes OVMF keep this disk's boot option and delete
