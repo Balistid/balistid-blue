@@ -16,11 +16,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started; plan draft outside the repo |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- C1, C2 (ADR 0023), #135, #136 on `main`. KVM 2 vCPU: record, refusal, ready, exposure, cpu, burst PASS, sustained
+- C1, C2 (ADR 0023), #135, #136, #137 on `main`. KVM 2 vCPU: record, refusal, ready, exposure, cpu, burst PASS, sustained
   MISS; 4 vCPU (c9fdf5e): sustained, burst, kill-1, reset-1 PASS, cpu-1000 MISS. `main` go-test failed once: watch.
 ## Next step
-1. ADR 0024 (#137, the range on 4 vCPU): the maintainer's approve, merge; the full suite in KVM on 4 vCPU.
-2. cpu_cores on the range's vCPUs: bound the recorder's threads, measure on the reference host, or the limit (ADR).
+1. ADR 0024 (#137, the range on 4 vCPU) on `main` 9f4a7a7; the full suite in KVM on 4 vCPU before C3.
+2. ADR 0025: cpu_cores decided on the reference host after install; cpu-1000 stays in the range as a trend.
 3. Ledger, Tessera and litewitness end to end in CI and in the range (ADR 0006), no Pi and no host yet.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
 4. 2026-11-10 C3 = B4.9: runner reinstall (maintainer), the suite, metric verdicts in status.py; the Pi.
