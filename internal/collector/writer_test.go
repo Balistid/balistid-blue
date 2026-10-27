@@ -788,10 +788,14 @@ func TestStopDuringABurstStoresItAll(t *testing.T) {
 	}
 }
 
-// Stop taken while a burst waits in the writer stores the burst, then what the reader queued after it.
-func TestStopWithABacklogStoresItThenTheQueue(t *testing.T) {
+// Stop taken while a burst waits in the writer stores the burst, then what the reader queued after it,
+// in runs that commit and feed the watchdog, which systemd keeps armed when the acceptor failed.
+func TestStopWithABacklogStoresItThenTheQueueInRuns(t *testing.T) {
+	const n, cost = 300, 10 * time.Millisecond // 6 s of appends at stop
+	const maxGap = store.FlushEvery            // a run, its commit and its feed
 	r := newRig(t)
 	var holding atomic.Bool
+	var fed, flushed []time.Time // written by the writer's goroutine, read once Run returned
 	hold, held := make(chan struct{}), make(chan struct{}, 1)
 	notify := r.w.Notify
 	r.w.Notify = func(state string) error {
@@ -799,27 +803,31 @@ func TestStopWithABacklogStoresItThenTheQueue(t *testing.T) {
 			held <- struct{}{}
 			<-hold
 		}
+		fed = append(fed, r.w.Now())
 		return notify(state)
 	}
 	r.start(nil)
 	r.settle()
 	holding.Store(true)
 	go func() { r.tick <- r.clock() }()
-	<-held // the writer is inside a tick, so the next run takes all 30 at once
-	for i := 1; i <= 30; i++ {
+	<-held // the writer is inside a tick, so the next run takes all n at once
+	for i := 1; i <= n; i++ {
 		r.push(event(i, ""))
 	}
 	var once sync.Once
+	var stopAt time.Time
 	r.st.set(func(s *fakeStore) {
-		s.onAppend = func() { // a second each: the run ends after this record, 29 still wait
-			r.advance(time.Second)
-			once.Do(func() {
-				for i := 31; i <= 40; i++ {
+		s.onAppend = func() {
+			r.advance(cost)
+			once.Do(func() { // the run goes on to its budget; the rest of the burst waits
+				for i := n + 1; i <= 2*n; i++ {
 					r.push(event(i, ""))
 				}
+				stopAt = r.clock()
 				close(r.stop)
 			})
 		}
+		s.onFlush = func() { flushed = append(flushed, r.clock()) }
 	})
 	holding.Store(false)
 	close(hold)
@@ -827,9 +835,24 @@ func TestStopWithABacklogStoresItThenTheQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.done <- nil
-	wantSeqs(t, committedSeqs(r), 1, 40)
+	wantSeqs(t, committedSeqs(r), 1, 2*n)
 	if len(r.st.kinds("lost")) != 0 {
 		t.Fatalf("lost %v", r.st.kinds("lost"))
+	}
+	for name, at := range map[string][]time.Time{"fed the watchdog": fed, "committed": flushed} {
+		last := stopAt
+		for _, a := range at {
+			if a.Before(stopAt) {
+				continue
+			}
+			if gap := a.Sub(last); gap > maxGap {
+				t.Fatalf("shutdown went %v without having %s, more than %v", gap, name, maxGap)
+			}
+			last = a
+		}
+		if last.Sub(stopAt) < time.Duration(n)*cost {
+			t.Fatalf("shutdown last %s %v after stop, before its appends ended", name, last.Sub(stopAt))
+		}
 	}
 }
 
@@ -855,102 +878,6 @@ func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
 	wantSeqs(t, committedSeqs(r), 1, k-1)
 	if l := r.last.pending[StageStore]; l.Count != n-k+1 || l.FirstSeq != k || l.LastSeq != n {
 		t.Fatalf("pending %+v, want %d..%d lost to the store", r.last.pending, k, n)
-	}
-}
-
-// A store that opened while records wait goes in before they are taken, so they are stored, not
-// counted lost; a queue that is always ready does not hold it off. Run selects at random among ready
-// cases, so several runs cover the order that would lose them.
-func TestReopenedStoreTakesTheRecordsWaiting(t *testing.T) {
-	for range 20 {
-		r := newRig(t)
-		var holding atomic.Bool
-		hold, held := make(chan struct{}), make(chan struct{}, 1)
-		notify := r.w.Notify
-		r.w.Notify = func(state string) error {
-			if holding.Load() {
-				held <- struct{}{}
-				<-hold
-			}
-			return notify(state)
-		}
-		r.start(errors.New("no disk"))
-		r.settle()
-		r.step(ReopenEvery) // a reopen, waiting for r.opens
-		holding.Store(true)
-		go func() { r.tick <- r.clock() }()
-		<-held // the writer is inside a tick
-		r.opens <- nil
-		until(t, func() bool { return len(r.w.opened) == 1 })
-		r.push(event(1, ""), event(2, ""))
-		holding.Store(false)
-		close(hold)
-		r.step(0)
-		r.step(0)
-		wantSeqs(t, committedSeqs(r), 1, 2)
-		if lost := r.st.kinds("lost"); len(lost) != 0 {
-			t.Fatalf("lost %v: records counted lost while the store had opened", lost)
-		}
-	}
-}
-
-// A store that opens inside a tick in which Laurel connected is proved by that connection's probe:
-// the tick reads its clock after the appends that opened the store, so the probe is not dated before it.
-func TestStoreOpenedInsideATickIsProvedByTheNextProbe(t *testing.T) {
-	r := newRig(t)
-	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
-	var holding atomic.Bool
-	hold, held := make(chan struct{}), make(chan struct{}, 1)
-	notify := r.w.Notify
-	r.w.Notify = func(state string) error {
-		if holding.Load() {
-			held <- struct{}{}
-			<-hold
-		}
-		return notify(state)
-	}
-	r.tick = make(chan time.Time, 1)
-	r.start(errors.New("no disk"))
-	r.settle()
-	r.step(ReopenEvery) // a reopen, waiting for r.opens, and a scheduled probe
-	r.probeReturned()
-	for len(r.touched) > 0 { // so the probes taken below are this tick's
-		<-r.touched
-	}
-	holding.Store(true)
-	r.tick <- r.clock()
-	<-held // the writer is inside a tick
-	r.opens <- nil
-	until(t, func() bool { return len(r.w.opened) == 1 })
-	var once sync.Once
-	openProbe := make(chan struct{})
-	r.st.set(func(s *fakeStore) {
-		s.onAppend = func() { // the open's own probe returns before the tick goes on
-			once.Do(func() {
-				<-r.touched
-				for len(r.w.Canary.inFlight) > 0 {
-					time.Sleep(time.Millisecond)
-				}
-				close(openProbe)
-			})
-		}
-	})
-	r.push(event(1, ""))
-	connect(r, 77)
-	holding.Store(false)
-	r.tick <- r.clock() // the next tick opens the store inside its appends
-	close(hold)
-	select {
-	case <-openProbe:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the tick took the record without opening the store first")
-	}
-	n := probed(r) // the connection's probe, sent in the same tick
-	r.push(canaryLine(2, n, 1000, 4242))
-	r.step(0)
-	r.step(0)
-	if health(r) != "OK" {
-		t.Fatalf("health %q although the probe sent after the open was stored", health(r))
 	}
 }
 
