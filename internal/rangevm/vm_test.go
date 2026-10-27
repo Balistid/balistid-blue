@@ -111,7 +111,7 @@ func TestQemuArgv(t *testing.T) {
 		"/usr/bin/qemu-system-x86_64",
 		"-nodefaults", "-nic", "none", "-display", "none", "-no-reboot",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
-		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "2",
+		"-enable-kvm", "-machine", "q35", "-cpu", "host", "-m", "2048", "-smp", "4",
 		"-drive", "if=pflash,unit=0,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd",
 		"-drive", "if=pflash,unit=1,format=raw,file=/range/run/vars.fd",
 		"-fw_cfg", "name=opt/org.tianocore/EFIShellSupport,string=no",
