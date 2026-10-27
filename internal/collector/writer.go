@@ -268,8 +268,8 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 			continue
 		default:
 		}
-		// The rest of a burst, one run at a time. stop and opened wait: stop comes after the reader
-		// returned and shutdown stores the rest; an open runs only while the store is down, when runs only count.
+		// The rest of a burst, one run at a time. stop waits: it comes after the reader returned, and
+		// shutdown stores the rest.
 		if len(w.todo) > 0 {
 			w.appendQueued(ctx, appendBudget)
 			continue
@@ -345,20 +345,24 @@ func (w *Writer) step(ctx context.Context) {
 	}
 }
 
-// appendQueued stores queued records, or counts them lost while the store is down, until budget has
-// passed; at least one record per call, so a backlog always shrinks. Until the first Open returns,
-// records wait in the queue, which drops and counts what does not fit (ADR 0016, point 5).
+// appendQueued stores the records taken from the queue, or counts them lost while the store is down,
+// until budget has passed; it takes the queue only when none wait, and at least one record per call.
+// Until the first Open returns, records wait in the queue, which drops and counts what does not fit
+// (ADR 0016, point 5).
 func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) {
-	start := w.Now()
-	for {
-		if len(w.todo) == 0 {
-			if w.st == nil && w.down == "starting" {
-				return
-			}
-			if w.todo = w.Queue.Drain(); len(w.todo) == 0 {
-				return
-			}
+	select { // a store that opened takes what waits, which a flood would otherwise count lost
+	case r := <-w.opened:
+		w.openDone(r)
+	default:
+	}
+	if len(w.todo) == 0 {
+		if w.st == nil && w.down == "starting" {
+			return
 		}
+		w.todo = w.Queue.Drain()
+	}
+	start := w.Now()
+	for len(w.todo) > 0 {
 		r := w.todo[0]
 		w.todo[0] = rawrecord.Record{} // an appended record is freed now, not with the whole burst
 		w.todo = w.todo[1:]
@@ -700,7 +704,8 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.openDone(<-w.opened)
 	}
 	up := w.st != nil
-	w.appendQueued(ctx, noBudget)
+	w.appendQueued(ctx, noBudget) // the rest of a burst, if any,
+	w.appendQueued(ctx, noBudget) // then what the reader left in the queue
 	w.connections(w.Now(), false)
 	w.refusals()
 	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it

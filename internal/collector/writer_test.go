@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -804,6 +805,42 @@ func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
 	wantSeqs(t, committedSeqs(r), 1, k-1)
 	if l := r.last.pending[StageStore]; l.Count != n-k+1 || l.FirstSeq != k || l.LastSeq != n {
 		t.Fatalf("pending %+v, want %d..%d lost to the store", r.last.pending, k, n)
+	}
+}
+
+// A store that opened while records wait goes in before they are taken, so they are stored, not
+// counted lost; a queue that is always ready does not hold it off. Run selects at random among ready
+// cases, so several runs cover the order that would lose them.
+func TestReopenedStoreTakesTheRecordsWaiting(t *testing.T) {
+	for range 20 {
+		r := newRig(t)
+		var holding atomic.Bool
+		hold, held := make(chan struct{}), make(chan struct{}, 1)
+		notify := r.w.Notify
+		r.w.Notify = func(state string) error {
+			if holding.Load() {
+				held <- struct{}{}
+				<-hold
+			}
+			return notify(state)
+		}
+		r.start(errors.New("no disk"))
+		r.settle()
+		r.step(ReopenEvery) // a reopen, waiting for r.opens
+		holding.Store(true)
+		go func() { r.tick <- r.clock() }()
+		<-held // the writer is inside a tick
+		r.opens <- nil
+		until(t, func() bool { return len(r.w.opened) == 1 })
+		r.push(event(1, ""), event(2, ""))
+		holding.Store(false)
+		close(hold)
+		r.step(0)
+		r.step(0)
+		wantSeqs(t, committedSeqs(r), 1, 2)
+		if lost := r.st.kinds("lost"); len(lost) != 0 {
+			t.Fatalf("lost %v: records counted lost while the store had opened", lost)
+		}
 	}
 }
 
