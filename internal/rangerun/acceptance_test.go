@@ -88,6 +88,39 @@ func TestBaselineRunsDecideNothing(t *testing.T) {
 	}
 }
 
+// cpu-1000 keeps cpu_cores' trend and never decides it (ADR 0025): its MISS does not stand, its
+// INVALIDs do not make the metric INVALID, and it still runs its count for every commit.
+func TestATrendNeverDecidesItsMetric(t *testing.T) {
+	cpu := tableTrial(t, "cpu-1000")
+	a := Acceptance{}.ForCommit(testCommit)
+	for range cpu.Count + 1 {
+		a = a.Record(cpu, counted, rangevm.Invalid, resultID)
+	}
+	if v := a.Verdict("cpu_cores"); v != "" {
+		t.Errorf("INVALID trend runs gave cpu_cores %q", v)
+	}
+	a = Acceptance{}.ForCommit(testCommit).Record(cpu, counted, rangevm.Miss, resultID)
+	if v, r := a.Verdict("cpu_cores"), a.Trials[cpu.Name]; v != "" || r.Miss != "" || r.Valid != 1 {
+		t.Errorf("a trend MISS: verdict %q, runs %+v", v, r)
+	}
+	if r := a.Record(cpu, counted, rangevm.Pass, resultID).Trials[cpu.Name]; r.Passed != 0 || r.Valid != 2 {
+		t.Errorf("a trend PASS: %+v", r)
+	}
+	runs := 0
+	runAll(Acceptance{}.ForCommit(testCommit), func(tr rangejob.Trial) (string, string) {
+		if tr.Name == cpu.Name {
+			runs++
+		}
+		if tr.Expect != "" {
+			return rangevm.LabelControl, tr.Expect
+		}
+		return counted, rangevm.Pass
+	})
+	if runs != cpu.Count {
+		t.Errorf("cpu-1000 ran %d times, want %d", runs, cpu.Count)
+	}
+}
+
 func TestAMissStandsAndStopsTheMetric(t *testing.T) {
 	sustained := tableTrial(t, "rate-sustained")
 	a := Acceptance{}.ForCommit(testCommit).Record(sustained, counted, rangevm.Miss, resultID)
@@ -130,6 +163,8 @@ func TestAcceptanceRoundTripsAndRefusesWhatItWouldNotWrite(t *testing.T) {
 		"passed > valid":  head + `{"rate-burst":{"valid":1,"passed":2,"invalid":0}}}`,
 		"negative":        head + `{"rate-burst":{"valid":0,"passed":0,"invalid":-1}}}`,
 		"control missed":  head + `{"rate-control-drop":{"valid":1,"passed":0,"invalid":0,"miss":"` + resultID + `"}}}`,
+		"trend missed":    head + `{"cpu-1000":{"valid":1,"passed":0,"invalid":0,"miss":"` + resultID + `"}}}`,
+		"trend passed":    head + `{"cpu-1000":{"valid":1,"passed":1,"invalid":0}}}`,
 		"miss not an id":  head + `{"rate-burst":{"valid":1,"passed":0,"invalid":0,"miss":"../x"}}}`,
 		"unknown field":   head + `{},"x":1}`,
 		"no trials":       `{"schema_version":1,"commit":"` + testCommit + `"}`,
@@ -223,7 +258,7 @@ func TestAControlThatCannotMeasureGivesUp(t *testing.T) {
 
 func TestMetricsAreTheTables(t *testing.T) {
 	if got := Metrics(); !slices.Equal(got, []string{"sustained_rate", "burst_rate", "crash_loss_ms", "record_max_kib", "refusal_summary_s",
-		"ready_s", "systemd_exposure", "cpu_cores"}) {
+		"ready_s", "systemd_exposure"}) {
 		t.Errorf("metrics %v", got)
 	}
 }

@@ -39,6 +39,8 @@ func TestTrialTableFitsTheBudget(t *testing.T) {
 			t.Errorf("%s: scratch disk of %d bytes, below the store's %d (ADR 0022, point 2)", tr.Name, tr.Scratch, StoreScratch)
 		case tr.Load.Writer != (WriterPolicy{}) && tr.Load.Kind != LoadWrite:
 			t.Errorf("%s: only a write load has a writer policy", tr.Name)
+		case tr.Trend && tr.Expect != "":
+			t.Errorf("%s: a control checks a measurement, a trend keeps one", tr.Name)
 		}
 		seen[tr.Name] = true
 	}
@@ -92,12 +94,17 @@ func TestMethod(t *testing.T) {
 	}
 }
 
-// cpu_cores is measured at 1000 records a second over 10 min (acceptance/0.toml), in rows that pass
-// the metric only together with ten boots of ready_s.
+// cpu_cores is measured at 1000 records a second over 10 min (acceptance/0.toml) as a trend only (ADR
+// 0025), and ready_s passes only with ten boots.
 func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 	cpu, ok := Lookup("cpu-1000")
-	if !ok || cpu.Load != (Load{Kind: LoadExec, Rate: 1000, Seconds: 600}) {
+	if !ok || cpu.Load != (Load{Kind: LoadExec, Rate: 1000, Seconds: 600}) || !cpu.Trend {
 		t.Errorf("cpu-1000 = %+v", cpu)
+	}
+	for _, tr := range Trials() {
+		if tr.Trend && tr.Name != cpu.Name {
+			t.Errorf("%s is a trend; only cpu_cores is decided outside the range", tr.Name)
+		}
 	}
 	boots := 0
 	for _, tr := range Trials() {

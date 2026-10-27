@@ -63,8 +63,8 @@ func (a Acceptance) ForCommit(commit string) Acceptance {
 
 // Record adds a run of tr with its label and verdict, stored as result id. A control that does not
 // give its expected verdict means the measurement is broken (ADR 0019, point 2): it counts as
-// INVALID. A baseline run measures the sensor, never the collector (ADR 0018, point 4): its PASS
-// passes nothing and its MISS does not stand.
+// INVALID. A baseline run measures the sensor, never the collector (ADR 0018, point 4), and a trend
+// never decides its metric (ADR 0025): the PASS of either passes nothing and its MISS does not stand.
 func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Acceptance {
 	out := Acceptance{Commit: a.Commit, Trials: make(map[string]TrialRuns, len(a.Trials)+1), BatchTurn: a.BatchTurn}
 	for k, v := range a.Trials {
@@ -72,6 +72,7 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 	}
 	r := out.Trials[tr.Name]
 	r.Baseline = r.Baseline || tr.Expect == "" && label == rangevm.LabelBaseline
+	counts := label != rangevm.LabelBaseline && !tr.Trend
 	switch {
 	case tr.Expect != "" && verdict == tr.Expect:
 		r.Valid = min(r.Valid+1, tr.Count)
@@ -79,12 +80,12 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 		r.Invalid = min(r.Invalid+1, maxInvalid)
 	case verdict == rangevm.Pass:
 		r.Valid = min(r.Valid+1, tr.Count)
-		if label != rangevm.LabelBaseline {
+		if counts {
 			r.Passed = min(r.Passed+1, r.Valid)
 		}
 	default: // MISS
 		r.Valid = min(r.Valid+1, tr.Count)
-		if label != rangevm.LabelBaseline && r.Miss == "" {
+		if counts && r.Miss == "" {
 			r.Miss = id
 		}
 	}
@@ -92,9 +93,10 @@ func (a Acceptance) Record(tr rangejob.Trial, label, verdict, id string) Accepta
 	return out
 }
 
-// decides says whether runs of tr, recorded as r, may decide its metric: neither a control nor baseline.
+// decides says whether runs of tr, recorded as r, may decide its metric: neither a control, a trend nor
+// baseline.
 func decides(tr rangejob.Trial, r TrialRuns) bool {
-	return tr.Expect == "" && !r.Baseline
+	return tr.Expect == "" && !tr.Trend && !r.Baseline
 }
 
 // Verdict is metric's verdict so far (ADR 0021): MISS once a run that may decide it missed; INVALID
@@ -129,11 +131,12 @@ func (a Acceptance) Verdict(metric string) string {
 	return ""
 }
 
-// Metrics are the metrics of the trial table, in table order.
+// Metrics are the metrics the trial table decides, in table order: a metric with only trend trials is
+// decided outside the range (ADR 0025).
 func Metrics() []string {
 	var out []string
 	for _, tr := range rangejob.Trials() {
-		if !slices.Contains(out, tr.Metric) {
+		if !tr.Trend && !slices.Contains(out, tr.Metric) {
 			out = append(out, tr.Metric)
 		}
 	}
@@ -230,8 +233,8 @@ func decodeAcceptance(data []byte, commit string) (Acceptance, error) {
 			return Acceptance{}, errors.New("a trial is not in the table")
 		case r.Valid < 0 || r.Valid > tr.Count || r.Passed < 0 || r.Passed > r.Valid || r.Invalid < 0 || r.Invalid > maxInvalid:
 			return Acceptance{}, errors.New("a trial's counts are out of range")
-		case (tr.Expect != "" || r.Baseline) && (r.Passed != 0 || r.Miss != ""):
-			return Acceptance{}, errors.New("a control or baseline passed or missed a metric")
+		case (tr.Expect != "" || tr.Trend || r.Baseline) && (r.Passed != 0 || r.Miss != ""):
+			return Acceptance{}, errors.New("a control, trend or baseline passed or missed a metric")
 		case tr.Expect != "" && r.Baseline:
 			return Acceptance{}, errors.New("a control is baseline")
 		case r.Miss != "" && !resultName.MatchString(r.Miss):
