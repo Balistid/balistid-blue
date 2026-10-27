@@ -51,14 +51,16 @@ var vectors = []struct {
 		"05", "7175657565", // stage
 		"0000000000000003", "0000000000001000", // records, bytes
 	}},
-	{"health ok", Entry{At: noon, Body: Health{State: StateOK, Truncated: 1}}, []string{
+	{"health ok", Entry{At: noon, Body: Health{State: StateOK, RunFirst: 1, Truncated: 1}}, []string{
 		label, "04", atNoon,
 		"01", "00", // state, empty reason
+		"0000000000000001",                     // first seq of the collector run
 		"0000000000000001", "0000000000000000", // truncated, malformed
 	}},
-	{"health unknown", Entry{At: noon, Body: Health{State: StateUnknown, Reason: "laurel-disconnected", Malformed: 2}}, []string{
+	{"health unknown", Entry{At: noon, Body: Health{State: StateUnknown, Reason: "laurel-disconnected", RunFirst: 4097, Malformed: 2}}, []string{
 		label, "04", atNoon,
 		"02", "13", "6c617572656c2d646973636f6e6e6563746564",
+		"0000000000001001",
 		"0000000000000000", "0000000000000002",
 	}},
 	{"announce before the epoch", Entry{At: -1, Body: Announce{Kind: AnnounceSuspend}}, []string{
@@ -155,6 +157,8 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"state three", with(health, head, 3), "unknown health state"},
 		{"unknown, no reason", append(append(bytes.Clone(health[:head+1]), 0), health[head+2+19:]...), noReason},
 		{"ok with a reason", with(health, head, 1), "OK with a reason"},
+		{"run first zero", with(health, head+2+19, 0, 0, 0, 0, 0, 0, 0, 0), "run's first seq outside"},
+		{"run first over MaxSeq", with(health, head+2+19, 0x80, 0, 0, 0, 0, 0, 0, 0), "run's first seq outside"},
 		{"reason control byte", with(health, head+2, '\n'), noReason},
 		{"reason past input", with(health, head+1, 0xff), short},
 		{"announcement zero", with(announce, len(announce)-1, 0), "unknown announcement"},
@@ -189,10 +193,12 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Loss{Stage: "Queue", Records: 1}},
 		{Body: Loss{Stage: "queue"}},
 		{Body: Loss{Stage: strings.Repeat("q", 17), Records: 1}},
-		{Body: Health{State: StateOK, Reason: "x"}},
-		{Body: Health{State: StateUnknown}},
-		{Body: Health{State: StateUnknown, Reason: long}},
-		{Body: Health{State: 3}},
+		{Body: Health{State: StateOK, Reason: "x", RunFirst: 1}},
+		{Body: Health{State: StateOK}},
+		{Body: Health{State: StateOK, RunFirst: MaxSeq + 1}},
+		{Body: Health{State: StateUnknown, RunFirst: 1}},
+		{Body: Health{State: StateUnknown, Reason: long, RunFirst: 1}},
+		{Body: Health{State: 3, RunFirst: 1}},
 		{Body: Announce{}},
 		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin+1)}},
 		{Body: Final{NextOrigin: "a\nb"}},
@@ -217,7 +223,7 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 	}
 	// The longest entries fit MaxBytes.
 	for _, e := range []Entry{
-		{Body: Health{State: StateUnknown, Reason: long[:MaxReason], Truncated: ^uint64(0), Malformed: ^uint64(0)}},
+		{Body: Health{State: StateUnknown, Reason: long[:MaxReason], RunFirst: MaxSeq, Truncated: ^uint64(0), Malformed: ^uint64(0)}},
 		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin)}},
 	} {
 		if b, err := e.Encode(); err != nil || len(b) > MaxBytes {

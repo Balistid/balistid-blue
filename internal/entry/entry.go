@@ -79,11 +79,13 @@ const (
 	StateUnknown State = 2
 )
 
-// Health is the recorder's state, with the reason when it is UNKNOWN, and the records stored truncated
-// and malformed since the previous health entry.
+// Health is the recorder's state, with the reason when it is UNKNOWN. RunFirst is the first seq of the
+// collector run it reports, and Truncated and Malformed count that run's records so far, as its stats
+// records do: a new RunFirst is a restart, whose counts start again from zero.
 type Health struct {
 	State                State
 	Reason               string
+	RunFirst             uint64
 	Truncated, Malformed uint64
 }
 
@@ -153,6 +155,8 @@ func (h Health) check() error {
 		return fmt.Errorf("entry: health UNKNOWN needs a reason of 1 to %d printable ASCII bytes", MaxReason)
 	case h.State != StateOK && h.State != StateUnknown:
 		return errors.New("entry: unknown health state")
+	case h.RunFirst < 1 || h.RunFirst > MaxSeq:
+		return fmt.Errorf("entry: health run's first seq outside 1 to %d", uint64(MaxSeq))
 	}
 	return nil
 }
@@ -187,7 +191,7 @@ func (l Loss) append(out []byte) []byte {
 }
 
 func (h Health) append(out []byte) []byte {
-	out = appendString(append(out, byte(h.State)), h.Reason)
+	out = binary.BigEndian.AppendUint64(appendString(append(out, byte(h.State)), h.Reason), h.RunFirst)
 	return binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(out, h.Truncated), h.Malformed)
 }
 
@@ -238,7 +242,7 @@ func Decode(b []byte) (Entry, error) {
 	case TypeLoss:
 		e.Body = Loss{Stage: r.str(), Records: r.u64(), Bytes: r.u64()}
 	case TypeHealth:
-		e.Body = Health{State: State(r.u8()), Reason: r.str(), Truncated: r.u64(), Malformed: r.u64()}
+		e.Body = Health{State: State(r.u8()), Reason: r.str(), RunFirst: r.u64(), Truncated: r.u64(), Malformed: r.u64()}
 	case TypeAnnounce:
 		e.Body = Announce{Kind: Announcement(r.u8())}
 	case TypeFinal:
