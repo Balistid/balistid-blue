@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math"
 	"slices"
 	"sync"
 	"time"
@@ -32,7 +33,12 @@ const (
 	// statsEvery is how often stats and the refusal summary are stored (refusal_summary_s).
 	statsEvery = time.Minute
 	// lagBudget is the longest handover-to-commit time before it is a health event (crash_loss_ms).
-	lagBudget    = time.Second
+	lagBudget = time.Second
+	// appendBudget bounds one run of appends, so a due tick, which flushes and feeds the watchdog,
+	// waits for at most one run however large a burst (ADR 0017, point 6).
+	appendBudget = store.FlushEvery / 2
+	// noBudget is the shutdown's: what the reader left is stored before the store closes.
+	noBudget     = time.Duration(math.MaxInt64)
 	healthSchema = 1
 	// maxNotes bounds health records waiting for the store: those handed over but not committed (the
 	// store queues at most 64) and as many again; older ones give way and are counted, except loss and
@@ -185,6 +191,7 @@ type Writer struct {
 	down        string // why the store is not open; "" while it is
 	opened      chan openResult
 	opening     bool
+	todo        []rawrecord.Record // taken from the queue, not yet appended; non-empty only once the first Open returned
 	cancelOpen  context.CancelFunc
 	nextOpen    time.Time
 	batch       Loss      // records appended since the last commit, lost at most if a store call fails
@@ -255,11 +262,23 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.note(map[string]any{"kind": "started", "info": w.Started})
 	w.startOpen(ctx)
 	for {
+		select { // a due tick goes before more appends
+		case <-tick:
+			w.step(ctx)
+			continue
+		default:
+		}
+		// The rest of a burst, one run at a time. stop and opened wait: stop comes after the reader
+		// returned and shutdown stores the rest; an open runs only while the store is down, when runs only count.
+		if len(w.todo) > 0 {
+			w.appendQueued(ctx, appendBudget)
+			continue
+		}
 		select {
 		case <-tick:
 			w.step(ctx)
 		case <-w.Queue.Ready():
-			w.appendQueued(ctx)
+			w.appendQueued(ctx, appendBudget)
 		case r := <-w.opened:
 			w.openDone(r)
 		case <-stop:
@@ -300,7 +319,7 @@ func (w *Writer) openDone(r openResult) {
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
-	w.appendQueued(ctx)
+	w.appendQueued(ctx, appendBudget)
 	w.flush(ctx)
 	w.connections(now, true)
 	w.canary(now)
@@ -326,37 +345,55 @@ func (w *Writer) step(ctx context.Context) {
 	}
 }
 
-// appendQueued stores every queued record, or counts it lost while the store is down. Until the first
-// Open returns, records wait in the queue, which drops and counts what does not fit (ADR 0016, point 5).
-func (w *Writer) appendQueued(ctx context.Context) {
-	if w.st == nil && w.down == "starting" {
+// appendQueued stores queued records, or counts them lost while the store is down, until budget has
+// passed; at least one record per call, so a backlog always shrinks. Until the first Open returns,
+// records wait in the queue, which drops and counts what does not fit (ADR 0016, point 5).
+func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) {
+	start := w.Now()
+	for {
+		if len(w.todo) == 0 {
+			if w.st == nil && w.down == "starting" {
+				return
+			}
+			if w.todo = w.Queue.Drain(); len(w.todo) == 0 {
+				return
+			}
+		}
+		r := w.todo[0]
+		w.todo[0] = rawrecord.Record{} // an appended record is freed now, not with the whole burst
+		w.todo = w.todo[1:]
+		w.appendOne(ctx, r)
+		if w.Now().Sub(start) >= budget {
+			return
+		}
+	}
+}
+
+// appendOne stores r, or counts it lost while the store is down.
+func (w *Writer) appendOne(ctx context.Context, r rawrecord.Record) {
+	if w.st == nil {
+		w.Losses.Add(StageStore, r)
 		return
 	}
-	for _, r := range w.Queue.Drain() {
-		if w.st == nil {
-			w.Losses.Add(StageStore, r)
-			continue
+	stored, sealed, err := w.st.Append(ctx, r)
+	switch {
+	case errors.Is(err, store.ErrRefused):
+		w.Log.Error("record refused", "err", err)
+		w.Losses.Add(StageFraming, r)
+	case err != nil:
+		if len(sealed) > 0 { // the seal before the failure committed what came before
+			w.committed()
 		}
-		stored, sealed, err := w.st.Append(ctx, r)
-		switch {
-		case errors.Is(err, store.ErrRefused):
-			w.Log.Error("record refused", "err", err)
-			w.Losses.Add(StageFraming, r)
-		case err != nil:
-			if len(sealed) > 0 { // the seal before the failure committed what came before
-				w.committed()
-			}
-			w.Losses.Add(StageStore, r)
-			w.fail(ctx, "store-append", err)
-		case !stored:
-			w.capped.add(r)
-		default:
-			if len(sealed) > 0 { // the seal committed everything handed over before this record
-				w.committed()
-			}
-			w.batch.add(r)
-			w.Canary.Observe(r, w.Now())
+		w.Losses.Add(StageStore, r)
+		w.fail(ctx, "store-append", err)
+	case !stored:
+		w.capped.add(r)
+	default:
+		if len(sealed) > 0 { // the seal committed everything handed over before this record
+			w.committed()
 		}
+		w.batch.add(r)
+		w.Canary.Observe(r, w.Now())
 	}
 }
 
@@ -663,7 +700,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.openDone(<-w.opened)
 	}
 	up := w.st != nil
-	w.appendQueued(ctx)
+	w.appendQueued(ctx, noBudget)
 	w.connections(w.Now(), false)
 	w.refusals()
 	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it
