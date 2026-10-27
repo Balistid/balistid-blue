@@ -21,16 +21,17 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
    seq of committed records, and the RFC 6962 Merkle tree hash over D[i] = the 32-byte `rawrecord.Leaf` of seq
    first+i), `seal` (first, last seq and SHA-256 of a sealed shard, the store's index line; its name follows from
    first), `loss` (stage, records, bytes), `health` (OK, or UNKNOWN with its reason; records stored truncated and
-   malformed since the previous health entry, from zero after a restart), `announce` (shutdown or suspend),
+   malformed the collector counted since its previous health record; a collector restart counts from zero, and
+   what it counted but never reported stays only in its stats records), `announce` (shutdown or suspend),
    `final` (the next yearly log's origin, a C2SP origin: no `+`). Seqs are 1 to 2^63-1, as the store issues them.
    Decoding is strict: known label and type, every field in range, no trailing bytes, at most 256 bytes; vectors
    pin it, a fuzz target covers it (`fuzz_hours`). A changed field needs a new label; a new type keeps v1 and
    reaches the Pi before the ledger writes it. Loss and health records stay raw records in the store too.
-2. What the Pi checks between entries: batches cover seqs without gap or overlap (a gap alarms; a seq range the
-   maintainer declares lost, ADR 0013 point 5, gets its own type with the code that records it); a health entry
-   at least every 60 s and on every change, none for 120 s is UNKNOWN (R6); nothing follows `final`, whose origin
-   differs from the log's. The ledger writes a `batch` at least every second while records commit
-   (`anchor_interval_s`) and checkpoints every 5 s; the Pi polls every 30 s. These are defaults, not acceptance.
+2. What the Pi checks between entries (batch ranges without gap or overlap, how often health must come, nothing
+   after `final`) is decided with the Pi's verifier, against `anchor_interval_s`, `loss_alarm_s`,
+   `silence_alarm_s` and `announced_quiet_max_h`; v1 carries what those checks read. A seq range declared lost
+   (ADR 0013 point 5) gets its own type with the code that records it. Checkpoints every 5 s and a Pi poll every
+   30 s are defaults, not acceptance numbers.
 3. Tessera v1.0.4 as decided, with one exception to ENGINEERING.md §7: `github.com/hashicorp/golang-lru/v2`,
    MPL-2.0, linked unmodified only as Tessera's dependency, never imported by our code. MPL-2.0 is copyleft per
    file: binaries and packages name it, its licence and its source (MPL §3.2), and our code keeps Apache-2.0 (a
@@ -56,5 +57,4 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
 
 - Amends ADR 0006 points 1 and 3 and ENGINEERING.md §7 (the named exception); ADR 0013's `shard-seal` is `seal`.
 - A batch root lets a later proof show one record inside an anchored range; health and loss entries are
-  forgeable by root (T14), as ADR 0006 states. Tests: vectors per type, refusal of every malformed field, an
-  unknown type or label and trailing bytes; decode then encode gives the same bytes.
+  forgeable by root (T14), as ADR 0006 states. Tests: vectors per type, every malformed field refused, round trip.
