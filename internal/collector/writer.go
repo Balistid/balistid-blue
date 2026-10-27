@@ -177,7 +177,7 @@ type Writer struct {
 	Canary   *Canary
 	Open     func(ctx context.Context) (Store, error)
 	Now      func() time.Time
-	Notify   func(state string) error // sd_notify; the tick feeds the watchdog
+	Notify   func(state string) error // sd_notify; the tick and each run at stop feed the watchdog
 	Log      *slog.Logger
 	Started  map[string]string // version, boot id, rule version for the started record
 	// LogCommits journals each new Committed of the store: the range reads it as the barrier and
@@ -274,14 +274,14 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 		default:
 		}
 		if len(w.todo) > 0 {
-			w.appendQueued(ctx, appendBudget)
+			w.appendQueued(ctx)
 			continue
 		}
 		select {
 		case <-tick:
 			w.step(ctx)
 		case <-w.Queue.Ready():
-			w.appendQueued(ctx, appendBudget)
+			w.appendQueued(ctx)
 		case r := <-w.opened:
 			w.openDone(r)
 		case <-stop:
@@ -322,7 +322,7 @@ func (w *Writer) openDone(r openResult) {
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
-	w.appendQueued(ctx, appendBudget)
+	w.appendQueued(ctx)
 	w.flush(ctx)
 	w.connections(now, true)
 	w.canary(now)
@@ -346,11 +346,11 @@ func (w *Writer) step(ctx context.Context) {
 	w.feedWatchdog()
 }
 
-// appendQueued stores queued records, or counts them lost while the store is down, until budget has
-// passed; at least one record per call, so a backlog always shrinks. It reports whether it took any.
+// appendQueued stores queued records, or counts them lost while the store is down, for one run of
+// appendBudget; at least one record per call, so a backlog always shrinks. It reports whether it took any.
 // Until the first Open returns, records wait in the queue, which drops and counts what does not fit
 // (ADR 0016, point 5).
-func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) bool {
+func (w *Writer) appendQueued(ctx context.Context) bool {
 	start := w.Now()
 	for took := false; ; took = true {
 		if len(w.todo) == 0 {
@@ -365,7 +365,7 @@ func (w *Writer) appendQueued(ctx context.Context, budget time.Duration) bool {
 		w.todo[0] = rawrecord.Record{} // an appended record is freed now, not with the whole burst
 		w.todo = w.todo[1:]
 		w.appendOne(ctx, r)
-		if w.Now().Sub(start) >= budget {
+		if w.Now().Sub(start) >= appendBudget {
 			return true
 		}
 	}
@@ -711,7 +711,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 	up := w.st != nil
 	// The rest of a burst, then what the reader left, in runs with a commit and the watchdog between
 	// them as while running: after the acceptor failed, systemd still holds the watchdog armed.
-	for w.appendQueued(ctx, appendBudget) {
+	for w.appendQueued(ctx) {
 		w.flush(ctx)
 		w.feedWatchdog()
 	}
