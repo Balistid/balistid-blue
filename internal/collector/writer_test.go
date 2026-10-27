@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,8 @@ type fakeStore struct {
 	commitThenFail           bool          // the next Flush commits, then fails; Close then has nothing left to lose
 	sealThenFail             bool          // the next Append seals, committing what came before, then fails
 	block                    chan struct{} // Append waits on it when set
+	entered                  chan struct{} // Append signals it, if it has room, before it waits on block
+	onAppend                 func()        // runs inside Append after block, as a slow insert would
 	onFlush                  func()        // runs inside Flush, as a slow commit would
 	noteCap                  int           // NoteHealth refuses past this many queued, as the store's 64; 0 is none
 	flushErr                 bool          // Flush fails and keeps what it holds, for Close
@@ -41,10 +44,17 @@ type fakeStore struct {
 
 func (s *fakeStore) Append(_ context.Context, r rawrecord.Record) (bool, []store.Seal, error) {
 	s.mu.Lock()
-	block := s.block
+	block, entered, onAppend := s.block, s.entered, s.onAppend
 	s.mu.Unlock()
+	select {
+	case entered <- struct{}{}:
+	default:
+	}
 	if block != nil {
 		<-block
+	}
+	if onAppend != nil {
+		onAppend()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,11 +175,13 @@ func (s *fakeStore) kinds(kind string) []map[string]any {
 
 // snapshot is the writer's state as its own goroutine saw it when it fed the watchdog.
 type snapshot struct {
-	health  string
-	opening bool
-	up      bool
-	pending map[Stage]Loss
-	waiting int
+	health    string
+	opening   bool
+	up        bool
+	pending   map[Stage]Loss
+	waiting   int
+	at        time.Time // the writer's clock
+	committed uint64    // records the store committed
 }
 
 // rig runs a writer on a fake clock; each step sends one tick and waits until the writer fed the
@@ -218,7 +230,8 @@ func newRig(t *testing.T) *rig {
 		},
 		Notify: func(string) error {
 			w := r.w
-			snap := snapshot{health: w.health, opening: w.opening, up: w.st != nil, pending: map[Stage]Loss{}, waiting: len(w.notes)}
+			snap := snapshot{health: w.health, opening: w.opening, up: w.st != nil, pending: map[Stage]Loss{},
+				waiting: len(w.notes), at: w.Now(), committed: r.st.Committed()}
 			for k, v := range w.pending {
 				snap.pending[k] = v
 			}
@@ -617,6 +630,132 @@ func TestWatchdogFedWhileStoreDownAndNotWhileWriterStuck(t *testing.T) {
 	}
 	close(block)
 	<-r.fed
+}
+
+// burst holds the writer in its first Append while n records queue behind it; each Append then takes
+// a second of the writer's clock. Closing the returned channel lets the writer go on.
+func burst(r *rig, n int, onAppend func()) chan struct{} {
+	r.t.Helper()
+	block, entered := make(chan struct{}), make(chan struct{}, 1)
+	r.st.set(func(s *fakeStore) {
+		s.block, s.entered = block, entered
+		s.onAppend = func() {
+			r.advance(time.Second)
+			if onAppend != nil {
+				onAppend()
+			}
+		}
+	})
+	r.push(event(1, ""))
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		r.t.Fatal("the writer did not append")
+	}
+	for i := 2; i <= n; i++ {
+		r.push(event(i, ""))
+	}
+	return block
+}
+
+// committedSeqs returns the provider seqs the store committed, in order.
+func committedSeqs(r *rig) []uint64 {
+	r.st.mu.Lock()
+	defer r.st.mu.Unlock()
+	var seqs []uint64
+	for _, rec := range r.st.committed {
+		seqs = append(seqs, rec.ProviderSeq)
+	}
+	return seqs
+}
+
+func wantSeqs(t *testing.T, got []uint64, from, to uint64) {
+	t.Helper()
+	var want []uint64
+	for s := from; s <= to; s++ {
+		want = append(want, s)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("committed %v, want %d..%d in order", got, from, to)
+	}
+}
+
+// A burst the store takes far longer than WatchdogSec to append goes in runs of appendBudget, and a
+// tick due meanwhile flushes and feeds the watchdog after at most one run (ADR 0017, point 6).
+func TestWatchdogFedDuringALongDrain(t *testing.T) {
+	const n = 30
+	r := newRig(t)
+	r.tick = make(chan time.Time, 1) // a tick waits while the writer appends
+	r.start(nil)
+	r.settle()
+	block := burst(r, n, nil)
+	select {
+	case <-r.fed:
+	default:
+	}
+	t0 := r.clock()
+	r.tick <- t0
+	close(block)
+	select {
+	case r.last = <-r.fed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the watchdog was not fed")
+	}
+	if d := r.last.at.Sub(t0); d > 3*time.Second || r.last.committed >= n {
+		t.Fatalf("fed after %v of appends with %d of %d committed: the tick waited for the burst", d, r.last.committed, n)
+	}
+	for range 2 * n {
+		if r.step(0); r.last.committed == n {
+			break
+		}
+	}
+	wantSeqs(t, committedSeqs(r), 1, n)
+	if len(r.st.kinds("lost")) != 0 || len(r.last.pending) != 0 {
+		t.Fatalf("lost %v, pending %v", r.st.kinds("lost"), r.last.pending)
+	}
+}
+
+func TestStopDuringABurstStoresItAll(t *testing.T) {
+	const n = 30
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	block := burst(r, n, nil)
+	close(r.stop)
+	close(block)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	wantSeqs(t, committedSeqs(r), 1, n)
+	if r.st.closed != 1 || len(r.st.kinds("lost")) != 0 {
+		t.Fatalf("closed %d, lost %v", r.st.closed, r.st.kinds("lost"))
+	}
+}
+
+// A store that fails inside a burst keeps what it committed; the record that failed and every one
+// after it, still waiting in the writer, count as lost.
+func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
+	const n, k = 30, 5
+	r := newRig(t)
+	r.start(nil)
+	r.settle()
+	calls := 0
+	block := burst(r, n, func() {
+		if calls++; calls == k {
+			r.st.set(func(s *fakeStore) { s.failAppend = true })
+		}
+	})
+	close(block)
+	for range 2 * n {
+		if r.step(0); !r.last.up && r.last.pending[StageStore].Count == n-k+1 {
+			break
+		}
+	}
+	wantSeqs(t, committedSeqs(r), 1, k-1)
+	if l := r.last.pending[StageStore]; l.Count != n-k+1 || l.FirstSeq != k || l.LastSeq != n {
+		t.Fatalf("pending %+v, want %d..%d lost to the store", r.last.pending, k, n)
+	}
 }
 
 func TestShutdownStopsAPendingOpen(t *testing.T) {
