@@ -114,7 +114,7 @@ max = 0.5
 unit = "cores, all Balistid Blue processes at 1000 records/s"
 rows = ["T20"]
 adr = "0007"
-method = "On the reference host after the install (ADR 0025): CPU time of the collector's and auditd's units (auditd with Laurel) over 600 s of 1000 numbered execs a second, divided by the wall time; a rate not held, a lost record or a restarted unit is INVALID. Who computes the binding result is decided in 9.5, as for healthy_ok (T33). The range's cpu-1000 is a trend and never decides it."
+method = "On the reference host after the install (ADR 0025): CPU time of every Balistid Blue unit on the host (the collector's, auditd's with Laurel, balistid-auditstat's and every other installed floor-0 unit) from before 600 s of 1000 numbered execs a second until the audit backlog is empty and commits stop for 3 s, divided by 600 s; a rate not held in any 10 s window, a lost record or a restarted unit is INVALID. Who computes the binding result is decided in 9.5, as for healthy_ok (T33). The range's cpu-1000 is a trend and never decides it."
 
 # --- Store lifecycle (ADR 0005, R5) ---
 
