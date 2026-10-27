@@ -911,39 +911,32 @@ func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
 	}
 }
 
-// A store that opened while records wait goes in before they are taken, so they are stored, not
-// counted lost; a queue that is always ready does not hold it off. Run selects at random among ready
-// cases, so several runs cover the order that would lose them.
+// A store that opened while records wait goes in before the next tick takes them, so they are stored,
+// not counted lost; a tick is due when the writer comes back, so it is the tick that takes them.
 func TestReopenedStoreTakesTheRecordsWaiting(t *testing.T) {
-	for range 20 {
-		r := newRig(t)
-		var holding atomic.Bool
-		hold, held := make(chan struct{}), make(chan struct{}, 1)
-		notify := r.w.Notify
-		r.w.Notify = func(state string) error {
-			if holding.Load() {
-				held <- struct{}{}
-				<-hold
-			}
-			return notify(state)
-		}
-		r.start(errors.New("no disk"))
-		r.settle()
-		r.step(ReopenEvery) // a reopen, waiting for r.opens
-		holding.Store(true)
-		go func() { r.tick <- r.clock() }()
-		<-held // the writer is inside a tick
-		r.opens <- nil
-		until(t, func() bool { return len(r.w.opened) == 1 })
-		r.push(event(1, ""), event(2, ""))
-		holding.Store(false)
-		close(hold)
-		r.step(0)
-		r.step(0)
-		wantSeqs(t, committedSeqs(r), 1, 2)
-		if lost := r.st.kinds("lost"); len(lost) != 0 {
-			t.Fatalf("lost %v: records counted lost while the store had opened", lost)
-		}
+	r := newRig(t)
+	var holding atomic.Bool
+	var ticks atomic.Int32
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	heldTick(r, &holding, &ticks, held, hold)
+	r.tick = make(chan time.Time, 1)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held // the writer is inside a tick
+	r.opens <- nil
+	until(t, func() bool { return len(r.w.opened) == 1 })
+	r.push(event(1, ""), event(2, ""))
+	holding.Store(false)
+	r.tick <- r.clock() // due before the writer's select can take the open
+	close(hold)
+	r.step(0)
+	r.step(0)
+	wantSeqs(t, committedSeqs(r), 1, 2)
+	if lost := r.st.kinds("lost"); len(lost) != 0 {
+		t.Fatalf("lost %v: records counted lost while the store had opened", lost)
 	}
 }
 
@@ -1007,15 +1000,9 @@ func TestStoreOpenedInsideATickIsProvedByTheNextProbe(t *testing.T) {
 	}
 }
 
-// A store that opens inside a tick in which Laurel connected, while the open's own probe still runs, is
-// proved together with the connection by that probe: the connection's probe is dropped then, so the
-// connection must not date from after the open.
-func TestStoreOpenedInsideATickWhileItsProbeRunsProvesTheConnection(t *testing.T) {
-	r := newRig(t)
-	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
-	var holding, blocking atomic.Bool
-	var ticks atomic.Int32 // ticks the writer finished
-	hold, held, release := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+// blockingTouch makes the canary's probe syscalls wait on release while blocking is set, as an audited
+// syscall sleeps while the kernel backlog is full.
+func blockingTouch(r *rig, blocking *atomic.Bool, release <-chan struct{}) {
 	r.w.Canary.touch = func(_ string, n uint64) error {
 		r.touched <- n
 		if blocking.Load() {
@@ -1023,6 +1010,23 @@ func TestStoreOpenedInsideATickWhileItsProbeRunsProvesTheConnection(t *testing.T
 		}
 		return nil
 	}
+}
+
+// touchedNow returns the number of a probe whose syscall started, without waiting for it to return.
+func touchedNow(r *rig) uint64 {
+	r.t.Helper()
+	select {
+	case n := <-r.touched:
+		return n
+	case <-time.After(5 * time.Second):
+		r.t.Fatal("no probe sent")
+		return 0
+	}
+}
+
+// heldTick makes the writer wait inside a tick's watchdog feed while holding is set; ticks counts the
+// ticks it finished.
+func heldTick(r *rig, holding *atomic.Bool, ticks *atomic.Int32, held chan<- struct{}, hold <-chan struct{}) {
 	notify := r.w.Notify
 	r.w.Notify = func(state string) error {
 		if holding.Load() {
@@ -1032,6 +1036,18 @@ func TestStoreOpenedInsideATickWhileItsProbeRunsProvesTheConnection(t *testing.T
 		defer ticks.Add(1)
 		return notify(state)
 	}
+}
+
+// A store that opens inside a tick while Laurel connected: the open's probe still runs when the
+// connection's would go out, so that one goes out on the next tick, not 30 s later with the round.
+func TestConnectionProbeDroppedBesideTheOpensGoesOutOnTheNextTick(t *testing.T) {
+	r := newRig(t)
+	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
+	var holding, blocking atomic.Bool
+	var ticks atomic.Int32
+	hold, held, release := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	blockingTouch(r, &blocking, release)
+	heldTick(r, &holding, &ticks, held, hold)
 	r.tick = make(chan time.Time, 1)
 	r.start(errors.New("no disk"))
 	r.settle()
@@ -1052,21 +1068,220 @@ func TestStoreOpenedInsideATickWhileItsProbeRunsProvesTheConnection(t *testing.T
 	done := ticks.Load() + 2 // the held tick, then the one that opens the store
 	r.tick <- r.clock()
 	close(hold)
+	open := touchedNow(r) // the open's probe, still running through the tick
 	until(t, func() bool { return ticks.Load() >= done })
-	var n uint64
-	select {
-	case n = <-r.touched: // the open's probe, still running through the tick
-	default:
-		t.Fatal("the tick did not open the store before its appends")
+	blocking.Store(false)
+	close(release)
+	r.probeReturned()
+	r.push(canaryLine(2, open, 1000, 4242))
+	r.step(0) // stores the open's probe and sends the connection's
+	n := probed(r)
+	r.push(canaryLine(3, n, 1000, 4242))
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the connection's probe was stored", health(r))
+	}
+}
+
+// A connection that begins during a tick's appends, after the store opened inside them, is not proved
+// by the open's probe, which went out before it began.
+func TestConnectionDuringTheAppendsIsNotProvedByTheOpensProbe(t *testing.T) {
+	r := newRig(t)
+	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() }
+	var holding, blocking atomic.Bool
+	var ticks atomic.Int32
+	hold, held, release := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	blockingTouch(r, &blocking, release)
+	heldTick(r, &holding, &ticks, held, hold)
+	r.tick = make(chan time.Time, 1)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery)
+	r.probeReturned()
+	for len(r.touched) > 0 {
+		<-r.touched
+	}
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held
+	r.opens <- nil
+	until(t, func() bool { return len(r.w.opened) == 1 })
+	var once sync.Once
+	r.st.set(func(s *fakeStore) {
+		s.onAppend = func() { once.Do(func() { connect(r, 77) }) } // after the open's probe went out
+	})
+	r.push(event(1, ""))
+	blocking.Store(true)
+	holding.Store(false)
+	done := ticks.Load() + 2
+	r.tick <- r.clock()
+	close(hold)
+	open := touchedNow(r)
+	until(t, func() bool { return ticks.Load() >= done })
+	blocking.Store(false)
+	close(release)
+	r.probeReturned()
+	r.push(canaryLine(2, open, 1000, 4242))
+	r.step(0)
+	if health(r) == "OK" {
+		t.Fatal("health OK proved by a probe sent before the connection began")
+	}
+}
+
+// A connection that comes while the probe of a store opened between ticks still runs gets its probe on
+// the next tick, not with the round 30 s later.
+func TestDroppedConnectionProbeGoesOutOnTheNextTick(t *testing.T) {
+	r := newRig(t)
+	var blocking atomic.Bool
+	release := make(chan struct{})
+	blockingTouch(r, &blocking, release)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens, and a scheduled probe
+	r.probeReturned()
+	for len(r.touched) > 0 {
+		<-r.touched
+	}
+	blocking.Store(true)
+	r.opens <- nil
+	open := touchedNow(r) // the open's probe, sent from Run's select, still running
+	connect(r, 77)
+	r.step(store.FlushEvery) // the connection's probe is dropped
+	blocking.Store(false)
+	close(release)
+	r.probeReturned()
+	r.push(canaryLine(1, open, 1000, 4242))
+	r.step(store.FlushEvery) // and goes out now
+	n := probed(r)
+	r.push(canaryLine(2, n, 1000, 4242))
+	r.step(store.FlushEvery)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the connection's probe was stored", health(r))
+	}
+}
+
+// A store that reopens while the round's probe still runs gets its own probe on the next tick, not with
+// the next round.
+func TestReopenWhileARoundsProbeRunsProbesOnTheNextTick(t *testing.T) {
+	r := newRig(t)
+	var blocking atomic.Bool
+	release := make(chan struct{})
+	blockingTouch(r, &blocking, release)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.push(canaryLine(1, probed(r), 1000, 4242))
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q", health(r))
+	}
+	r.st.set(func(s *fakeStore) { s.failFlush = true })
+	r.push(event(2, ""))
+	r.step(time.Second)
+	r.st.set(func(s *fakeStore) { s.failFlush = false })
+	blocking.Store(true)
+	r.step(ReopenEvery) // the round's probe goes out and stays in its syscall; the reopen starts
+	touchedNow(r)
+	r.opens <- nil
+	for range 50 { // the open's probe is dropped
+		if r.step(0); r.last.up {
+			break
+		}
+		time.Sleep(time.Millisecond)
 	}
 	blocking.Store(false)
 	close(release)
 	r.probeReturned()
-	r.push(canaryLine(2, n, 1000, 4242))
+	r.step(store.FlushEvery) // the store's probe goes out now
+	r.push(canaryLine(3, probed(r), 1000, 4242))
+	r.step(store.FlushEvery)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the reopened store's probe was stored", health(r))
+	}
+}
+
+// Laurel disconnecting during a tick's appends makes that tick's health UNKNOWN.
+func TestDisconnectDuringATicksAppendsIsUnknown(t *testing.T) {
+	r := newRig(t)
+	var holding atomic.Bool
+	var ticks atomic.Int32
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	heldTick(r, &holding, &ticks, held, hold)
+	var mu sync.Mutex
+	var healths []string // each tick's health, as its watchdog feed sees it
+	feed := r.w.Notify
+	r.w.Notify = func(state string) error {
+		mu.Lock()
+		healths = append(healths, r.w.health)
+		mu.Unlock()
+		return feed(state)
+	}
+	r.tick = make(chan time.Time, 1)
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
 	r.step(0)
+	r.push(canaryLine(1, probed(r), 1000, 4242))
 	r.step(0)
 	if health(r) != "OK" {
-		t.Fatalf("health %q although the probe the open sent after the connection was stored", health(r))
+		t.Fatalf("setup: health %q", health(r))
+	}
+	var once sync.Once
+	r.st.set(func(s *fakeStore) { s.onAppend = func() { once.Do(func() { r.w.Links.Disconnected(nil) }) } })
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held // inside a tick
+	r.push(event(2, ""))
+	holding.Store(false)
+	done := ticks.Load() + 2 // the held tick, then the one whose append sees Laurel go
+	r.tick <- r.clock()
+	close(hold)
+	until(t, func() bool { return ticks.Load() >= done })
+	mu.Lock()
+	defer mu.Unlock()
+	if h := healths[len(healths)-1]; h == "OK" {
+		t.Fatalf("health OK in the tick whose appends saw Laurel disconnect")
+	}
+}
+
+// A store that opens in the middle of a run takes the rest of the run's records: only those taken
+// before it opened count lost.
+func TestStoreOpenedInsideARunTakesTheRestOfIt(t *testing.T) {
+	const n = 10
+	r := newRig(t)
+	var holding, armed atomic.Bool
+	var ticks, reads atomic.Int32
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	heldTick(r, &holding, &ticks, held, hold)
+	r.w.Now = func() time.Time {
+		if armed.Load() && reads.Add(1) == 2 { // the run's budget check after its first record
+			r.opens <- nil
+			for i := 0; i < 500 && len(r.w.opened) == 0; i++ { // the writer's goroutine: no t.Fatal here
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+		return r.clock()
+	}
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens
+	holding.Store(true)
+	go func() { r.tick <- r.clock() }()
+	<-held // the writer is inside a tick; the queue fills, so one run takes it all
+	for i := 1; i <= n; i++ {
+		r.push(event(i, ""))
+	}
+	armed.Store(true)
+	holding.Store(false)
+	close(hold)
+	until(t, func() bool { return reads.Load() > 2 })
+	r.step(0)
+	r.step(0)
+	wantSeqs(t, committedSeqs(r), 2, n)
+	if lost := r.st.kinds("lost"); len(lost) != 1 || lost[0]["stage"] != "store" || lost[0]["count"] != 1.0 ||
+		lost[0]["first_seq"] != 1.0 {
+		t.Fatalf("lost %v, want only the first record lost to the store", lost)
 	}
 }
 

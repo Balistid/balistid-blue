@@ -62,8 +62,9 @@ func NewCanary(dir string, uid, pid int) (*Canary, error) {
 // Probe sends probe n+1 without waiting for its syscall. A probe still outstanding past its deadline is
 // first counted as missed, so a new probe never hides one. While an earlier probe's goroutine has not
 // returned no syscall starts; a scheduled round then still takes number n+1, which nothing can match,
-// so it misses at its own deadline, one miss per round as with any other probe.
-func (c *Canary) Probe(now time.Time, scheduled bool) {
+// so it misses at its own deadline, one miss per round as with any other probe. It reports whether a
+// syscall went out.
+func (c *Canary) Probe(now time.Time, scheduled bool) bool {
 	c.expire(now)
 	select {
 	case c.inFlight <- struct{}{}:
@@ -72,7 +73,7 @@ func (c *Canary) Probe(now time.Time, scheduled bool) {
 			c.n++
 			c.sent, c.seen = now, false
 		}
-		return
+		return false
 	}
 	c.n++
 	c.sent, c.seen = now, false
@@ -86,6 +87,7 @@ func (c *Canary) Probe(now time.Time, scheduled bool) {
 			}
 		}
 	}()
+	return true
 }
 
 // touch creates c-<n> and removes every other c-* file, also one a stuck probe left behind a round
