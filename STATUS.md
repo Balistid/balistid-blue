@@ -13,7 +13,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006) | signed log, cosigned off the host | not started; plan draft outside the repo |
+| Ledger, relay, Pi witness (0006, 0026) | signed log, cosigned off the host | entry encoding v1 in review (ADR 0026, `internal/entry`: batch, seal, announce, final); Tessera, ledger core next |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - C1, C2 (ADR 0023), #135, #136, #137 on `main`. KVM 2 vCPU: record, refusal, ready, exposure, cpu, burst PASS, sustained
@@ -21,7 +21,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Next step
 1. ADR 0024 (#137, the range on 4 vCPU) on `main` 9f4a7a7; the full suite in KVM on 4 vCPU before C3.
 2. ADR 0025: cpu_cores decided on the reference host after install; cpu-1000 stays in the range as a trend.
-3. Ledger, Tessera and litewitness end to end in CI and in the range (ADR 0006), no Pi and no host yet.
+3. Ledger: ADR 0026 in review; then Tessera with the ledger core (R14), loss and health (types 3, 4) with the collector-to-ledger code, litewitness end to end in CI and range.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
 4. 2026-11-10 C3 = B4.9: runner reinstall (maintainer), the suite, metric verdicts in status.py; the Pi.
    2026-11-15 checkpoint: how far the witness is end to end, and the prerequisites of 9.5.
