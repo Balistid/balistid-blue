@@ -20,18 +20,19 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
    big-endian fixed-width fields; a string is a length byte and printable ASCII. Types: `batch` (first and last
    seq of committed records, and the RFC 6962 Merkle tree hash over D[i] = the 32-byte `rawrecord.Leaf` of seq
    first+i), `seal` (first, last seq and SHA-256 of a sealed shard, the store's index line; its name follows from
-   first), `loss` (stage, records, bytes), `health` (OK, or UNKNOWN with its reason; records stored truncated and
-   malformed the collector counted since its previous health record; a collector restart counts from zero, and
-   what it counted but never reported stays only in its stats records), `announce` (shutdown or suspend),
-   `final` (the next yearly log's origin, a C2SP origin: no `+`). Seqs are 1 to 2^63-1, as the store issues them.
+   first), `loss` (stage, records, bytes), `health` (OK, or UNKNOWN with its reason; the first seq of the
+   collector run it reports, and that run's truncated and malformed records so far, as its stats records count
+   them; a new first seq is a restart; what a crashed run counted after its last stats record is in no count,
+   only in the records), `announce` (shutdown or suspend), `final` (the next yearly log's origin, a C2SP
+   origin: no `+`). Seqs are 1 to 2^63-1, as the store issues them.
    Decoding is strict: known label and type, every field in range, no trailing bytes, at most 256 bytes; vectors
    pin it, a fuzz target covers it (`fuzz_hours`). A changed field needs a new label; a new type keeps v1 and
    reaches the Pi before the ledger writes it. Loss and health records stay raw records in the store too.
 2. What the Pi checks between entries (batch ranges without gap or overlap, how often health must come, nothing
-   after `final`) is decided with the Pi's verifier, against `anchor_interval_s`, `loss_alarm_s`,
-   `silence_alarm_s` and `announced_quiet_max_h`; v1 carries what those checks read. A seq range declared lost
-   (ADR 0013 point 5) gets its own type with the code that records it. Checkpoints every 5 s and a Pi poll every
-   30 s are defaults, not acceptance numbers.
+   after `final`) is decided with the Pi's verifier, against `loss_alarm_s`, `silence_alarm_s` and
+   `announced_quiet_max_h`; v1 carries what those checks read. `anchor_interval_s` is measured in the range from
+   the entries' times, never alerted on by the Pi. A seq range declared lost (ADR 0013 point 5) gets its own type
+   with the code that records it. Checkpoints every 5 s and a Pi poll every 30 s are defaults, not acceptance.
 3. Tessera v1.0.4 as decided, with one exception to ENGINEERING.md §7: `github.com/hashicorp/golang-lru/v2`,
    MPL-2.0, linked unmodified only as Tessera's dependency, never imported by our code. MPL-2.0 is copyleft per
    file: binaries and packages name it, its licence and its source (MPL §3.2), and our code keeps Apache-2.0 (a
@@ -48,9 +49,8 @@ and ISC, so ADR 0006 cannot be built as decided. It also leaves the push channel
 ## Alternatives considered
 
 - One entry per raw record: over the log cap within days. One per shard: anchoring would wait for a seal.
-- A lean log on `golang.org/x/mod/sumdb/tlog` (one BSD module, about 500 lines of our own crash-safe tile
-  writing): crash-safe files are what the store failed two critic rounds on (ADR 0013); the fallback if this
-  exception is refused. Forking Tessera to drop the LRU: a fork to maintain for one import.
+- A lean log on `golang.org/x/mod/sumdb/tlog` (one BSD module, ~500 lines of our own crash-safe tiles, what the
+  store failed two critic rounds on, ADR 0013): the fallback if this exception is refused. A Tessera fork: no.
 - Automatic origin rollover on the Pi: code that changes trust from host data, once a year.
 
 ## Consequences
