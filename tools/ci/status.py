@@ -131,6 +131,13 @@ def adr_state(status: str, merged: bool) -> str:
     raise ValueError(f"unknown ADR status {clean(status, 60)!r}")
 
 
+def adr_amends(text: str, own: str) -> list[str]:
+    """The ADR numbers an "Amends ..." sentence names: ADRs cite each other as four digits from 0."""
+    flat = " ".join(text.split())
+    clauses = re.findall(r"\b[Aa]mends\b(.*?)(?:\.\s|\.$|$)", flat)
+    return sorted({n for c in clauses for n in re.findall(r"\b0\d{3}\b", c)} - {own})
+
+
 def main_ref(repo: Path) -> str | None:
     """The main branch to compare with: the remote's if fetched, else the local one."""
     for ref in ("refs/remotes/origin/main", "refs/heads/main"):
@@ -146,12 +153,16 @@ def parse_adrs(repo: Path) -> list[dict]:
     for p in sorted((repo / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
         if p.name.startswith("0000-"):
             continue
-        num, title, status, date = adr_fields(p.read_text(encoding="utf-8"), p.name)
+        text = p.read_text(encoding="utf-8")
+        num, title, status, date = adr_fields(text, p.name)
         on_main = ref and subprocess.run(["git", "-C", str(repo), "show", f"{ref}:adr/{p.name}"],
                                          capture_output=True, text=True)
         main_status = on_main and on_main.returncode == 0 and re.search(r"^- Status: (.+)$", on_main.stdout, re.M)
         merged = bool(main_status) and main_status.group(1).strip() == status
-        out.append({"num": num, "title": title, "state": adr_state(status, merged), "date": date})
+        out.append({"num": num, "title": title, "state": adr_state(status, merged), "date": date,
+                    "amends": adr_amends(text, num)})
+    for a in out:
+        a["amended_by"] = [b["num"] for b in out if a["num"] in b["amends"]]
     return out
 
 
@@ -352,7 +363,9 @@ def render(repo: Path, results: Path, done: Path, want_prs: bool, all_metrics: b
     width = max(len(p[0]) for p in status["parts"])
     lines += [f"  {part:<{width}}  " + paint(state, part_color(state)) for part, _, state in status["parts"]]
     head(f"ADRs ({len(adrs)})")
-    lines += [f"  {a['num']}  " + paint(f"{a['state']:<10}", COLORS[a["state"]]) + f" {a['title']}" for a in adrs]
+    lines += [f"  {a['num']}  " + paint(f"{a['state']:<10}", COLORS[a["state"]]) + f" {a['title']}"
+              + (paint(f"  (amended by {', '.join(a['amended_by'])})", "2") if a["amended_by"] else "")
+              for a in adrs]
     by_adr: dict[str, list[str]] = {}
     for adr, mid in acc["metrics"]:
         by_adr.setdefault(adr, []).append(mid)

@@ -165,6 +165,16 @@ class StatusTest(Fixture):
         self.commit("one more")
         self.assertIn(f"STATUS.md is {status.STALE_COMMITS + 1} commits behind HEAD", self.warns())
 
+    def test_an_adr_shows_which_later_adrs_amend_it(self) -> None:
+        self.write("adr/0003-third.md", ADR.format(num="0003", title="Third", status="proposed", date="2026-10-08")
+                   + "\n## Consequences\n\n- Amends ADR 0001 point 2 and\n  0002 points 1 and 3, and ADR 0099 point 1.\n"
+                   + "- The range holds 2000/s on 0.5 cores; ADR 0001 stays as it is.\n")
+        adrs = {a["num"]: a for a in status.parse_adrs(self.repo)}
+        self.assertEqual([adrs[n]["amended_by"] for n in ("0001", "0002", "0003")], [["0003"], ["0003"], []])
+        out = self.render()
+        self.assertIn("First  (amended by 0003)", out)
+        self.assertNotIn("Third  (amended", out)
+
     def test_old_proposed_adr_warns(self) -> None:
         out = self.warns(dt.date(2026, 10, 23))
         self.assertIn("ADR 0003 proposed for 15 days", out)
