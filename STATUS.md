@@ -19,8 +19,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - C1 (#131-#133), C2 (#134, ADR 0023) on `main`. KVM: record, refusal, ready (7.2 s), exposure (0.8), cpu PASS;
   sustained MISS in 2 vCPU, so kill/reset INVALID; burst 2 of 3 lost to systemd's 10 s watchdog (journal in report).
 ## Next step
-1. #135 (writer appends in runs, stop first, runs at stop; review closed): KVM rate-burst 3 times on 2 vCPU, the
-   maintainer's approve, merge. Then its own PR: a store that opens while records wait can lose them (Codex).
+1. #135 on `main` (writer appends in runs, stop first, runs at stop; KVM rate-burst 3 of 3 PASS on 2 vCPU).
+   Its own PR now: a store that opens while records wait can lose them (Codex).
 2. One trial run on 4 vCPU, then an ADR on vCPUs for trials in its own PR (maintainer decides).
 3. Ledger, Tessera and litewitness end to end in CI and in the range (ADR 0006), no Pi and no host yet.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
