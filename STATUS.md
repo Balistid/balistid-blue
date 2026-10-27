@@ -18,7 +18,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - C1 (#131-#133), C2 (#134, ADR 0023) on `main`. KVM: record, refusal, ready (7.2 s), exposure (0.8), cpu PASS;
   sustained MISS in 2 vCPU, so kill/reset INVALID; burst 2 of 3 lost to systemd's 10 s watchdog (journal in report).
-## Next step (plan of the 2026-10-27 checkpoint: floor 0 first, the witness before the remaining metrics)
+## Next step
 1. Collector: a writer tick appends the whole queue before it feeds the watchdog (writer.go step), so a burst
    outlasts WatchdogSec=10s; bound a tick's work (own PR, test), then KVM rate-burst 3 times on 2 vCPU.
 2. One trial run on 4 vCPU, then an ADR on vCPUs for trials in its own PR (maintainer decides).
