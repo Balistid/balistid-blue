@@ -911,6 +911,165 @@ func TestStoreFailingInABurstCountsTheRest(t *testing.T) {
 	}
 }
 
+// A store that opened while records wait goes in before they are taken, so they are stored, not
+// counted lost; a queue that is always ready does not hold it off. Run selects at random among ready
+// cases, so several runs cover the order that would lose them.
+func TestReopenedStoreTakesTheRecordsWaiting(t *testing.T) {
+	for range 20 {
+		r := newRig(t)
+		var holding atomic.Bool
+		hold, held := make(chan struct{}), make(chan struct{}, 1)
+		notify := r.w.Notify
+		r.w.Notify = func(state string) error {
+			if holding.Load() {
+				held <- struct{}{}
+				<-hold
+			}
+			return notify(state)
+		}
+		r.start(errors.New("no disk"))
+		r.settle()
+		r.step(ReopenEvery) // a reopen, waiting for r.opens
+		holding.Store(true)
+		go func() { r.tick <- r.clock() }()
+		<-held // the writer is inside a tick
+		r.opens <- nil
+		until(t, func() bool { return len(r.w.opened) == 1 })
+		r.push(event(1, ""), event(2, ""))
+		holding.Store(false)
+		close(hold)
+		r.step(0)
+		r.step(0)
+		wantSeqs(t, committedSeqs(r), 1, 2)
+		if lost := r.st.kinds("lost"); len(lost) != 0 {
+			t.Fatalf("lost %v: records counted lost while the store had opened", lost)
+		}
+	}
+}
+
+// A store that opens inside a tick in which Laurel connected is proved by that connection's probe:
+// the tick reads its clock after the appends that opened the store, so the probe is not dated before it.
+func TestStoreOpenedInsideATickIsProvedByTheNextProbe(t *testing.T) {
+	r := newRig(t)
+	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
+	var holding atomic.Bool
+	hold, held := make(chan struct{}), make(chan struct{}, 1)
+	notify := r.w.Notify
+	r.w.Notify = func(state string) error {
+		if holding.Load() {
+			held <- struct{}{}
+			<-hold
+		}
+		return notify(state)
+	}
+	r.tick = make(chan time.Time, 1)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens, and a scheduled probe
+	r.probeReturned()
+	for len(r.touched) > 0 { // so the probes taken below are this tick's
+		<-r.touched
+	}
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held // the writer is inside a tick
+	r.opens <- nil
+	until(t, func() bool { return len(r.w.opened) == 1 })
+	var once sync.Once
+	openProbe := make(chan struct{})
+	r.st.set(func(s *fakeStore) {
+		s.onAppend = func() { // the open's own probe returns before the tick goes on
+			once.Do(func() {
+				<-r.touched
+				for len(r.w.Canary.inFlight) > 0 {
+					time.Sleep(time.Millisecond)
+				}
+				close(openProbe)
+			})
+		}
+	})
+	r.push(event(1, ""))
+	connect(r, 77)
+	holding.Store(false)
+	r.tick <- r.clock() // the next tick opens the store inside its appends
+	close(hold)
+	select {
+	case <-openProbe:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tick took the record without opening the store first")
+	}
+	n := probed(r) // the connection's probe, sent in the same tick
+	r.push(canaryLine(2, n, 1000, 4242))
+	r.step(0)
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the probe sent after the open was stored", health(r))
+	}
+}
+
+// A store that opens inside a tick in which Laurel connected, while the open's own probe still runs, is
+// proved together with the connection by that probe: the connection's probe is dropped then, so the
+// connection must not date from after the open.
+func TestStoreOpenedInsideATickWhileItsProbeRunsProvesTheConnection(t *testing.T) {
+	r := newRig(t)
+	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
+	var holding, blocking atomic.Bool
+	var ticks atomic.Int32 // ticks the writer finished
+	hold, held, release := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+	r.w.Canary.touch = func(_ string, n uint64) error {
+		r.touched <- n
+		if blocking.Load() {
+			<-release
+		}
+		return nil
+	}
+	notify := r.w.Notify
+	r.w.Notify = func(state string) error {
+		if holding.Load() {
+			held <- struct{}{}
+			<-hold
+		}
+		defer ticks.Add(1)
+		return notify(state)
+	}
+	r.tick = make(chan time.Time, 1)
+	r.start(errors.New("no disk"))
+	r.settle()
+	r.step(ReopenEvery) // a reopen, waiting for r.opens, and a scheduled probe
+	r.probeReturned()
+	for len(r.touched) > 0 {
+		<-r.touched
+	}
+	holding.Store(true)
+	r.tick <- r.clock()
+	<-held // the writer is inside a tick
+	r.opens <- nil
+	until(t, func() bool { return len(r.w.opened) == 1 })
+	r.push(event(1, ""))
+	connect(r, 77)
+	blocking.Store(true)
+	holding.Store(false)
+	done := ticks.Load() + 2 // the held tick, then the one that opens the store
+	r.tick <- r.clock()
+	close(hold)
+	until(t, func() bool { return ticks.Load() >= done })
+	var n uint64
+	select {
+	case n = <-r.touched: // the open's probe, still running through the tick
+	default:
+		t.Fatal("the tick did not open the store before its appends")
+	}
+	blocking.Store(false)
+	close(release)
+	r.probeReturned()
+	r.push(canaryLine(2, n, 1000, 4242))
+	r.step(0)
+	r.step(0)
+	if health(r) != "OK" {
+		t.Fatalf("health %q although the probe the open sent after the connection was stored", health(r))
+	}
+}
+
 func TestShutdownStopsAPendingOpen(t *testing.T) {
 	r := newRig(t)
 	r.start(errors.New("no disk"))

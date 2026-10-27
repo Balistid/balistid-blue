@@ -259,8 +259,8 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.note(map[string]any{"kind": "started", "info": w.Started})
 	w.startOpen(ctx)
 	// First stop, which comes after the reader returned (shutdown stores the rest in runs), then a due
-	// tick, then the rest of a burst one run at a time, so neither waits behind appends. opened waits for
-	// the rest: an open runs only while the store is down, when runs only count.
+	// tick, then the rest of a burst one run at a time, so neither waits behind appends. A store that
+	// opened goes in at the start of a run (appendQueued), so a burst does not hold it off.
 	for {
 		select {
 		case <-stop:
@@ -322,9 +322,10 @@ func (w *Writer) openDone(r openResult) {
 // step is one tick: append, flush, probe, health, stats, watchdog.
 func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
+	changed, connected := w.Links.check(now) // before the appends, which can open the store (connections)
 	w.appendQueued(ctx)
 	w.flush(ctx)
-	w.connections(now, true)
+	w.connections(now, changed, connected, true)
 	w.canary(now)
 	w.losses(false)
 	if now.Sub(w.lastStats) >= statsEvery {
@@ -349,10 +350,18 @@ func (w *Writer) step(ctx context.Context) {
 // appendQueued stores queued records, or counts them lost while the store is down, for one run of
 // appendBudget; at least one record per call, so a backlog always shrinks. It reports whether it took any.
 // Until the first Open returns, records wait in the queue, which drops and counts what does not fit
-// (ADR 0016, point 5).
+// (ADR 0016, point 5). A store that opened goes in before the next record is taken, so a flood that
+// keeps the writer from its select does not count records lost beside a usable store.
 func (w *Writer) appendQueued(ctx context.Context) bool {
 	start := w.Now()
 	for took := false; ; took = true {
+		if w.opening {
+			select {
+			case r := <-w.opened:
+				w.openDone(r)
+			default:
+			}
+		}
 		if len(w.todo) == 0 {
 			if w.st == nil && w.down == "starting" {
 				return took
@@ -473,17 +482,20 @@ func (w *Writer) fail(ctx context.Context, reason string, err error) {
 	w.st, w.down, w.nextOpen = nil, reason, w.Now().Add(ReopenEvery)
 }
 
-// connections follows the connection state and, with probe, sends a probe over a new connection at once.
-func (w *Writer) connections(now time.Time, probe bool) {
-	changed, connected := w.Links.check(now)
+// connections follows the connection state Links.check returned at and, with probe, sends a probe over
+// a new connection at once. The connection dates from at, the probe from after the tick's appends: one
+// sent before a store they opened would not prove it, and when the open's own probe still runs this one
+// is dropped (Canary.Probe), but the open's, sent after at, proves both.
+func (w *Writer) connections(at time.Time, changed, connected, probe bool) {
 	switch {
 	case !connected:
 		w.connectedAt = time.Time{}
 	case changed: // a new connection: only a probe sent after it proves it
-		w.connectedAt = now
+		w.connectedAt = at
 		if probe {
-			w.Canary.Probe(now, false)
-			w.lastRound = now // the next round waits a full interval, or it would replace this probe
+			sent := w.Now()
+			w.Canary.Probe(sent, false)
+			w.lastRound = sent // the next round waits a full interval, or it would replace this probe
 		}
 	}
 }
@@ -715,7 +727,9 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		w.flush(ctx)
 		w.feedWatchdog()
 	}
-	w.connections(w.Now(), false)
+	now := w.Now()
+	changed, connected := w.Links.check(now)
+	w.connections(now, changed, connected, false)
 	w.refusals()
 	w.flush(ctx) // the store's own health queue drains, so the last hand-over fits in it
 	if w.st == nil {
