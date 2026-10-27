@@ -16,10 +16,8 @@ const (
 	Label = "balistid/entry/v1"
 	// MaxBytes bounds an encoding; the largest entry is far below it.
 	MaxBytes = 256
-	// MaxStage, MaxReason and MaxOrigin bound a loss entry's stage, a health entry's reason and a final
-	// entry's origin.
+	// MaxStage and MaxOrigin bound a loss entry's stage and a final entry's origin.
 	MaxStage  = 16
-	MaxReason = 64
 	MaxOrigin = 128
 	// MaxSeq is the highest seq the store issues; it issues none below 1.
 	MaxSeq = math.MaxInt64
@@ -28,12 +26,12 @@ const (
 // Type is an entry's type byte.
 type Type byte
 
-// The entry types of ADR 0026, point 1.
+// The entry types of ADR 0026, point 1. Type 4 is kept for health, which lands with the code that
+// feeds it from the collector.
 const (
 	TypeBatch    Type = 1
 	TypeSeal     Type = 2
 	TypeLoss     Type = 3
-	TypeHealth   Type = 4
 	TypeAnnounce Type = 5
 	TypeFinal    Type = 6
 )
@@ -45,7 +43,7 @@ type Entry struct {
 	Body Body
 }
 
-// Body is what an entry says: a Batch, Seal, Loss, Health, Announce or Final.
+// Body is what an entry says: a Batch, Seal, Loss, Announce or Final.
 type Body interface {
 	Type() Type
 	check() error
@@ -70,25 +68,6 @@ type Loss struct {
 	Records, Bytes uint64
 }
 
-// State is a health entry's state.
-type State byte
-
-// States of a health entry.
-const (
-	StateOK      State = 1
-	StateUnknown State = 2
-)
-
-// Health is the recorder's state, with the reason when it is UNKNOWN. RunFirst is the first seq of the
-// collector run it reports, and Truncated and Malformed count that run's records so far, as its stats
-// records do: a new RunFirst is a restart, whose counts start again from zero.
-type Health struct {
-	State                State
-	Reason               string
-	RunFirst             uint64
-	Truncated, Malformed uint64
-}
-
 // Announcement is what an announce entry tells the Pi to expect.
 type Announcement byte
 
@@ -108,14 +87,12 @@ type Final struct{ NextOrigin string }
 func (Batch) Type() Type    { return TypeBatch }
 func (Seal) Type() Type     { return TypeSeal }
 func (Loss) Type() Type     { return TypeLoss }
-func (Health) Type() Type   { return TypeHealth }
 func (Announce) Type() Type { return TypeAnnounce }
 func (Final) Type() Type    { return TypeFinal }
 
 // An origin is visible ASCII without '+', which C2SP signed notes keep out of key names (ADR 0026).
 var (
 	stagePattern  = regexp.MustCompile(fmt.Sprintf(`^[a-z]{1,%d}$`, MaxStage))
-	reasonPattern = regexp.MustCompile(fmt.Sprintf(`^[ -~]{1,%d}$`, MaxReason))
 	originPattern = regexp.MustCompile(fmt.Sprintf(`^[!-*,-~]{1,%d}$`, MaxOrigin))
 )
 
@@ -143,20 +120,6 @@ func (l Loss) check() error {
 		return fmt.Errorf("entry: loss stage is not 1 to %d lowercase letters", MaxStage)
 	case l.Records == 0:
 		return errors.New("entry: loss of no records")
-	}
-	return nil
-}
-
-func (h Health) check() error {
-	switch {
-	case h.State == StateOK && h.Reason != "":
-		return errors.New("entry: health OK with a reason")
-	case h.State == StateUnknown && !reasonPattern.MatchString(h.Reason):
-		return fmt.Errorf("entry: health UNKNOWN needs a reason of 1 to %d printable ASCII bytes", MaxReason)
-	case h.State != StateOK && h.State != StateUnknown:
-		return errors.New("entry: unknown health state")
-	case h.RunFirst < 1 || h.RunFirst > MaxSeq:
-		return fmt.Errorf("entry: health run's first seq outside 1 to %d", uint64(MaxSeq))
 	}
 	return nil
 }
@@ -190,11 +153,6 @@ func (l Loss) append(out []byte) []byte {
 	return binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(out, l.Records), l.Bytes)
 }
 
-func (h Health) append(out []byte) []byte {
-	out = binary.BigEndian.AppendUint64(appendString(append(out, byte(h.State)), h.Reason), h.RunFirst)
-	return binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64(out, h.Truncated), h.Malformed)
-}
-
 func (a Announce) append(out []byte) []byte { return append(out, byte(a.Kind)) }
 
 func (f Final) append(out []byte) []byte { return appendString(out, f.NextOrigin) }
@@ -205,12 +163,12 @@ func appendString(out []byte, s string) []byte {
 }
 
 // Encode returns the label, a zero byte, the type byte, At big-endian, then the body's fields in
-// declaration order: integers as 8 big-endian bytes, states and announcements as one byte, strings as
+// declaration order: integers as 8 big-endian bytes, an announcement as one byte, strings as
 // a length byte and the bytes. It refuses an entry Decode would refuse, so the ledger never logs one.
 func (e Entry) Encode() ([]byte, error) {
 	// Only the body values Decode returns: a pointer would panic when nil and come back as a value.
 	switch e.Body.(type) {
-	case Batch, Seal, Loss, Health, Announce, Final:
+	case Batch, Seal, Loss, Announce, Final:
 	default:
 		return nil, errors.New("entry: no body, or a body that is not one of the entry values")
 	}
@@ -241,8 +199,6 @@ func Decode(b []byte) (Entry, error) {
 		e.Body = Seal{First: r.u64(), Last: r.u64(), SHA256: r.hash()}
 	case TypeLoss:
 		e.Body = Loss{Stage: r.str(), Records: r.u64(), Bytes: r.u64()}
-	case TypeHealth:
-		e.Body = Health{State: State(r.u8()), Reason: r.str(), RunFirst: r.u64(), Truncated: r.u64(), Malformed: r.u64()}
 	case TypeAnnounce:
 		e.Body = Announce{Kind: Announcement(r.u8())}
 	case TypeFinal:
