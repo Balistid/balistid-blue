@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-28 by claude/opus-5.5
+Updated: 2026-10-29 by claude/opus-5.5
 
 ## Where we are
 
@@ -9,17 +9,19 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Part | Does | State |
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
-| Range, runner (0009-0011, 0018-0021) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022) |
+| Range, runner (0009-0011, 0018-0021, 0028) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; CI job `range-kvm` self-tests every pull request on GitHub's KVM (#146, advisory); on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022) |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
 | Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- #142 merged (ff8398c). R1 merged as #144 (2e2f7de) after Opus critic and two Codex security rounds: the relay carries checkpoints to the witness and keeps the cosigned one;
-  range/witness pins torchwood v0.10.0 as its own module, built per module against its own go.sum.
+- R1 merged as #144 (2e2f7de): the relay carries checkpoints to a pinned witness and keeps the cosigned one.
+- #146 (ADR 0028): `range-kvm` builds and self-tests each pull request on GitHub's KVM (PASS at a875251 and 90460fd,
+  a wrong guest fact FAILed at eb0272e), instead of the maintainer's manual KVM run; no artifact upload.
 ## Next step
-1. An ADR for the runner building a commit an agent asks for (the maintainer runs every KVM check today), then retention from cosign times, announce/final and the Pi (ledger-PLAN L7-L12).
+1. Retention from cosign times, announce/final and the Pi (ledger-PLAN L7-L12), checked in KVM by `range-kvm`.
+   `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.

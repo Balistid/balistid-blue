@@ -17,7 +17,7 @@ Team (commit 388942ad) has 423 Linux tests, about 97 % `sh`/`bash`, non-maliciou
 ## Decision
 
 1. The VM is the isolation boundary. The range runs as the maintainer's user; no dedicated uid,
-   no libvirt, no root at run time.
+   no libvirt, no root at run time. It also runs on GitHub's runners (amended by ADR 0028).
 2. QEMU runs with `-nodefaults -nic none -display none -no-reboot -sandbox on,obsolete=deny,
    elevateprivileges=deny,spawn=deny,resourcecontrol=deny`, `-enable-kvm`, a fresh qcow2 overlay per run
    (`qemu-img create -f qcow2 -b base -F raw`) and `format=` set on every `-drive`.
