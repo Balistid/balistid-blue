@@ -12,7 +12,8 @@ checked in the range, under the maintainer's uid, before review: what ADR 0010's
 that builds a commit an agent names would run that commit's PKGBUILD, mkosi configuration and assembly on the
 host at the runner's uid, which also writes evidence (ADR 0011 points 3 and 7, T37). The repository is public;
 GitHub's standard `ubuntu-24.04` runner has 4 vCPUs, 16 GB RAM and a 14 GB SSD, and its Linux runners expose
-KVM after a udev rule (docs.github.com runner reference and changelog 2024-04-02, read 2026-10-28; not yet run).
+KVM after a udev rule (docs.github.com runner reference and changelog 2024-04-02, read 2026-10-28). Measured on
+pull request #146 at a875251: build and self-test PASS in 4 min, 87 GiB free in the runner's work directory.
 
 ## Decision
 
@@ -41,7 +42,7 @@ KVM after a udev rule (docs.github.com runner reference and changelog 2024-04-02
 - The range build downloads the image snapshot, Go modules and Laurel in CI, as it does locally (T23).
 - A pull request runs its own workflow and script, so an agent can make its job pass; the result is trusted only
   as far as review of the commit and GitHub (T33, T37), which is why it is advisory.
-- 14 GB of disk fits the self-test, not the 16 GiB scratch of the sustained trial: trials stay local.
-- Nested KVM on a shared Azure host is slower and noisier than the reference host: no timing metric is read.
+- Nested KVM on a shared Azure host is slower and noisier than the reference host, so trials and timing
+  metrics stay with the runner even where the disk would hold them.
 - Tests: `test_range_kvm.py` (pins, no secret or privilege, refusal off GitHub, missing KVM, disk, a FAIL);
-  the job's first PASS on its pull request accepts this ADR, and one commit whose guest withholds a fact FAILs.
+  the job's first PASS on its pull request accepts this ADR, and one commit whose guest reports a wrong fact FAILs.
