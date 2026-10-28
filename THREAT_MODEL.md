@@ -34,7 +34,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet; sha256 proves CI provenance, not review, of unowned source (0015) |
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom, free space a second cap (0013); auditd `disk_full_action` set, `-f 1` | test reserve | partial: a writer that keeps filling a shared filesystem takes the freed reserve; btrfs frees no part of it (UNKNOWN at once) |
 | T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie |
-| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006) | test fork_refused | designed |
+| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006) | fork_refused (range, pinned litewitness) | partial: the Pi's verifier not built |
 | T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
 | T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped | announced_quiet_max_h | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
@@ -43,7 +43,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints; only the collector's uid connects (0027) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger can sign |
 | T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries, ledger link and log caps (0027) | record-max, refusal-flood (0023); rss_mib; cpu_cores on the reference host (0025) | designed |
-| T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006) | test pi_reach | designed |
+| T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006); relay unit: witness address only | test_relay_deploy; pi_reach | partial: no WireGuard, uid rule |
 | T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
 | T24 | A6 | Crash or power loss loses committed records | WAL `FULL`, a commit at every Flush (250 ms) or 2 MiB, sealing barrier (0005, 0013); the ledger logs a prefix, a re-issued seq fails its handshake (0027) | crash_loss_ms: kill -9 and reset of the collector under load, every seq it journaled committed survives (0018, 0023) | designed; hole: a device's volatile write cache is not modelled |

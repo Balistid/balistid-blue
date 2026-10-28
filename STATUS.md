@@ -13,15 +13,15 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay and Pi not started |
+| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on feat/relay: `ledger_cosigned`, `fork_refused` (KVM PASS at 8989d16); Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- #142: Tessera v1.0.4 with pinned licences in go_gate, x/crypto v0.52.0, otel v1.41.0, Go 1.27.3 (advisories); four
-  review rounds (Opus critic, Codex security), the round-2 defect redesigned under R7 by the maintainer's choice;
-  merged after the maintainer's approval, CI green on ff8398c.
+- #142 merged (ff8398c). R1 on feat/relay: the relay carries checkpoints to the witness and keeps the cosigned one;
+  range/witness pins torchwood v0.10.0 as its own module, built per module against its own go.sum.
 ## Next step
-1. The relay and the Pi witness on top of the ledger core (ledger-PLAN L6-L12). /security-audit of floor 0 as a
-   whole before 9.5, not per pull request (maintainer, 2026-10-28).
+1. R1: review (Opus critic, Codex security), the maintainer's approval, merge. Then an ADR for the runner building
+   a commit an agent asks for, then retention from cosign times, announce/final and the Pi (ledger-PLAN L7-L12).
+   /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
