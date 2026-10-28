@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/shard"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -132,6 +133,13 @@ func (s *fakeStore) NoteHealth(b []byte) error {
 }
 
 func (s *fakeStore) Health() string { return "" }
+
+// The ledger stream is tested against a real store (ledger_test.go); the fake has nothing to read.
+func (s *fakeStore) Leaves(context.Context, uint64, int) ([]shard.Leaf, []store.Seal, error) {
+	return nil, nil, nil
+}
+
+func (s *fakeStore) Seals() []store.Seal { return nil }
 
 func (s *fakeStore) Committed() uint64 {
 	s.mu.Lock()

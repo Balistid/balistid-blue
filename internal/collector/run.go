@@ -37,6 +37,8 @@ type Config struct {
 	Started   map[string]string
 	// LogCommits journals the store's last durable seq on every change (Writer.LogCommits).
 	LogCommits bool
+	// Ledger streams to the ledger (ADR 0027); nil runs without one.
+	Ledger *Ledger
 }
 
 // Run collects until ctx is done: the acceptor and reader start before the store opens, READY=1 goes
@@ -55,7 +57,7 @@ func Run(ctx context.Context, cfg Config) error {
 	w := &Writer{
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started,
-		LogCommits: cfg.LogCommits,
+		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger,
 	}
 
 	var wg sync.WaitGroup
@@ -74,6 +76,9 @@ func Run(ctx context.Context, cfg Config) error {
 		defer wg.Done()
 		writeErr = w.Run(context.WithoutCancel(ctx), ticker.C, stop)
 	}()
+	if cfg.Ledger != nil {
+		wg.Go(func() { cfg.Ledger.Run(ctx) })
+	}
 	go func() { // ends a pending accept on stop
 		defer wg.Done()
 		select {

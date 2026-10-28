@@ -12,7 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/shard"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -51,6 +53,8 @@ type Store interface {
 	Health() string
 	Close(ctx context.Context) ([]store.Seal, error)
 	Committed() uint64
+	Leaves(ctx context.Context, after uint64, max int) ([]shard.Leaf, []store.Seal, error)
+	Seals() []store.Seal
 }
 
 // maxLinkPIDs bounds the distinct pids kept per cause until a summary record takes the counts; the
@@ -183,6 +187,8 @@ type Writer struct {
 	// LogCommits journals each new Committed of the store: the range reads it as the barrier and
 	// the last durable seq (ADR 0022). Off on the host.
 	LogCommits bool
+	// Ledger takes the stream of committed records and health (ADR 0027); nil without a ledger.
+	Ledger *Ledger
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -213,6 +219,19 @@ type Writer struct {
 	noteErr       error  // why the store last refused a health record, for the journal
 	refuse        tally  // refusals not yet in a summary record
 	loggedCommit  uint64 // the Committed last journaled
+	ledgerState
+}
+
+// ledgerState is the writer's side of the stream to the ledger (ADR 0027).
+type ledgerState struct {
+	epoch        uint64      // the ledger connection the stream belongs to; 0 before the first
+	hello        *link.Hello // the ledger's resume point, until checked against the store
+	sent         uint64      // the last seq handed to the ledger
+	stopped      string      // why the stream stopped for good (R6), or ""
+	healthSent   string
+	unstoredSent uint64
+	healthAt     time.Time
+	leavesErr    string // the last error reading leaves, journaled once
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what
@@ -342,6 +361,7 @@ func (w *Writer) step(ctx context.Context) {
 	w.summaries(false)
 	w.setHealth()
 	w.writeNotes()
+	w.stream(ctx)
 	// While the store is down, the journal is where losses leave the collector (ADR 0017, point 7).
 	if (w.st == nil || len(w.notes) > 0 || w.lostNotes != w.journaledLost) && now.Sub(w.lastJournal) >= time.Minute {
 		counts, losses := w.backlog(slices.Concat(w.inflight, w.notes))
@@ -633,6 +653,8 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
+	case w.stopped != "":
+		h = "UNKNOWN ledger-stopped"
 	}
 	if h != w.health {
 		w.health = h
