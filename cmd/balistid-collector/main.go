@@ -8,9 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"os/user"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -37,6 +35,7 @@ func run() int {
 	// The range image alone sets these two (ADR 0022): its root has no room for the host's reserve.
 	headroomBytes := flag.Int64("headroom", headroom, "bytes the store reserves for its own records")
 	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
+	ledgerSocket := flag.String("ledger", "", "the ledger's socket; empty runs without a ledger (ADR 0027)")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -50,8 +49,12 @@ func run() int {
 		log.Error("no socket from systemd", "err", err)
 		return 1
 	}
+	var ledger *collector.Ledger
+	if *ledgerSocket != "" {
+		ledger = collector.NewLedger(collector.DialLedger(*ledgerSocket, uidOf("balistid-ledger", log)), log)
+	}
 	err = collector.Run(ctx, collector.Config{
-		Listener: ln, LaurelUID: laurelUID(log), CanaryDir: *canaryDir,
+		Listener: ln, LaurelUID: uidOf("_laurel", log), CanaryDir: *canaryDir, Ledger: ledger,
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
 		LogCommits: *logCommits,
@@ -63,17 +66,11 @@ func run() int {
 	return 0
 }
 
-// laurelUID resolves Laurel's account; -1 when it cannot, so every peer is refused (R6).
-func laurelUID(log *slog.Logger) int {
-	u, err := user.Lookup("_laurel")
+// uidOf resolves a peer's account; -1 when it cannot, so every peer is refused (R6).
+func uidOf(name string, log *slog.Logger) int {
+	uid, err := unixsock.LookupUID(name)
 	if err != nil {
-		log.Error("_laurel not resolved, refusing every peer", "err", err)
-		return -1
-	}
-	uid, err := strconv.Atoi(u.Uid)
-	if err != nil {
-		log.Error("_laurel uid not a number, refusing every peer", "uid", u.Uid)
-		return -1
+		log.Error("account not resolved, refusing every peer", "account", name, "err", err)
 	}
 	return uid
 }

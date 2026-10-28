@@ -84,3 +84,12 @@ func TestNotify(t *testing.T) {
 		t.Fatalf("without NOTIFY_SOCKET: %v", err)
 	}
 }
+
+func TestLookupUID(t *testing.T) {
+	if uid, err := LookupUID("root"); err != nil || uid != 0 {
+		t.Fatalf("root: %d, %v", uid, err)
+	}
+	if uid, err := LookupUID("balistid-no-such-account"); err == nil || uid != -1 {
+		t.Fatalf("missing account: %d, %v", uid, err)
+	}
+}

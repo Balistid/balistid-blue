@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
+	"strconv"
 	"syscall"
 )
 
@@ -33,6 +35,19 @@ func PeerCred(c *net.UnixConn) (Peer, error) {
 		return Peer{UID: -1}, errors.New("unixsock: peer: no credentials")
 	}
 	return Peer{UID: int(cred.Uid), PID: int(cred.Pid)}, nil
+}
+
+// LookupUID resolves the account a socket admits as its peer; a caller refuses every peer when it fails (R6).
+func LookupUID(name string) (int, error) {
+	u, err := user.Lookup(name)
+	if err != nil {
+		return -1, fmt.Errorf("unixsock: %s: %w", name, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return -1, fmt.Errorf("unixsock: %s: uid %q: %w", name, u.Uid, err)
+	}
+	return uid, nil
 }
 
 // Notify sends state to systemd over NOTIFY_SOCKET (sd_notify); without the variable it does nothing.
