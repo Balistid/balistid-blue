@@ -275,7 +275,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("mkosi: %w", err)
 	}
 	if err := wholefile.Write(filepath.Join(built, "commit"), []byte(commit+"\n"), 0o600); err != nil {
-		return "", err
+		return "", fmt.Errorf("image commit: %w", err)
 	}
 	sum, err := fileSHA256(ctx, filepath.Join(built, "image.raw"))
 	if err != nil {
@@ -1016,7 +1016,7 @@ func check(ctx context.Context, image, cache, state, trial, label string, boot f
 		return Result{}, fmt.Errorf("encode result: %w", err)
 	}
 	if err := wholefile.Write(filepath.Join(out, "result.json"), data, 0o600); err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("save result: %w", err)
 	}
 	return res, nil
 }
