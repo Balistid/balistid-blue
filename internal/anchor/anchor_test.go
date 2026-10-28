@@ -209,6 +209,8 @@ func TestLossesPrecedeTheirBatchOnce(t *testing.T) {
 		t.Fatalf("loss carried by another record: %v", err)
 	}
 	closeLog(t, l)
+	l = openLog(t, config(dir, k, c)) // the batch is logged now: the tail no longer holds the loss
+	closeLog(t, l)
 	got, _ := logged(t, dir, k)
 	if want := []entry.Body{loss, entry.Batch{First: 1, Last: 1, Root: rootOver(t, 1, 1)}}; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("log %v, want %v", got, want)
@@ -371,8 +373,9 @@ func TestCheckpointsExtendEachOtherAcrossRestarts(t *testing.T) {
 	}
 }
 
-// A killed ledger leaves a log whose batches run gap-free from 1 and whose newer checkpoint extends
-// the older: kill -9 lands anywhere, after an Add, during integration or before a checkpoint.
+// A killed ledger leaves a log whose batches run gap-free from 1, with every loss and seal once in its
+// place, and whose newer checkpoint extends the older: kill -9 lands anywhere, after an Add, during
+// integration, between a loss and its batch, between a batch and its seal, or before a checkpoint.
 func TestAKilledLedgerLeavesAPrefix(t *testing.T) {
 	if dir := os.Getenv("BALISTID_ANCHOR_CHILD"); dir != "" {
 		appendForever(t, dir)
@@ -398,15 +401,7 @@ func TestAKilledLedgerLeavesAPrefix(t *testing.T) {
 		published(t, dir, k.keys, l.size) // integrated before the kill, published after the restart
 		closeLog(t, l)
 		got, cp := logged(t, dir, k.keys)
-		next := uint64(1)
-		for _, b := range got {
-			if batch, ok := b.(entry.Batch); ok {
-				if batch.First != next || batch.Root != rootOver(t, batch.First, batch.Last) {
-					t.Fatalf("round %d: batch %d-%d after %d", round, batch.First, batch.Last, next-1)
-				}
-				next = batch.Last + 1
-			}
-		}
+		next := checkStream(t, round, got)
 		if resume.Last != next-1 {
 			t.Fatalf("round %d: resumes after %d, log's batches end at %d", round, resume.Last, next-1)
 		}
@@ -433,6 +428,50 @@ func published(t *testing.T, dir string, k keys, size uint64) {
 			t.Fatalf("checkpoint %+v, %v; want size %d", cp, err, size)
 		}
 	}
+}
+
+// checkStream checks the log the killed children left: batches gap-free from 1, every fifth record's loss
+// once and before its batch, every ninth record's seal once and right after the batch ending at it (the
+// last batch's seal may wait for the next child). It returns the seq after the last batch.
+func checkStream(t *testing.T, round int, got []entry.Body) uint64 {
+	t.Helper()
+	next, losses, seals, sealDue := uint64(1), map[uint64]int{}, map[uint64]int{}, uint64(0)
+	for _, b := range got {
+		switch b := b.(type) {
+		case entry.Batch:
+			if b.First != next || b.Root != rootOver(t, b.First, b.Last) || sealDue != 0 {
+				t.Fatalf("round %d: batch %d-%d after %d, seal due at %d", round, b.First, b.Last, next-1, sealDue)
+			}
+			for s := b.First; s <= b.Last; s++ {
+				if s%5 == 0 && losses[s] != 1 {
+					t.Fatalf("round %d: record %d's loss logged %d times before its batch", round, s, losses[s])
+				}
+			}
+			if next = b.Last + 1; b.Last%9 == 0 {
+				sealDue = b.Last
+			}
+		case entry.Loss:
+			if b.Seq < next || b.Seq%5 != 0 || b != childLoss(b.Seq) {
+				t.Fatalf("round %d: loss %+v after the batches through %d", round, b, next-1)
+			}
+			losses[b.Seq]++
+		case entry.Seal:
+			if b != childSeal(next-1) || seals[b.Last] > 0 {
+				t.Fatalf("round %d: seal %d-%d after the batch through %d", round, b.First, b.Last, next-1)
+			}
+			seals[b.Last]++
+			sealDue = 0
+		}
+	}
+	return next
+}
+
+func childLoss(seq uint64) entry.Loss {
+	return entry.Loss{Seq: seq, Stage: entry.StageQueue, Records: seq}
+}
+
+func childSeal(last uint64) entry.Seal {
+	return entry.Seal{First: last - 8, Last: last, SHA256: sha256.Sum256([]byte("shard " + strconv.FormatUint(last, 10)))}
 }
 
 type keyFile struct {
@@ -468,8 +507,19 @@ func appendForever(t *testing.T, dir string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// As the collector does: the seal ending where the log resumes goes first, the ledger drops a resend.
+	if last := l.Resume().Last; last > 0 && last%9 == 0 {
+		if err := l.Seal(t.Context(), childSeal(last)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for seq := l.Resume().Last + 1; ; seq++ {
-		if err := l.Record(t.Context(), link.Record{Seq: seq, Leaf: leaf(seq)}); err != nil {
+		r := link.Record{Seq: seq, Leaf: leaf(seq)}
+		if seq%5 == 0 {
+			loss := childLoss(seq)
+			r.Loss = &loss
+		}
+		if err := l.Record(t.Context(), r); err != nil {
 			t.Fatal(err)
 		}
 		if seq%3 == 0 {
@@ -477,5 +527,25 @@ func appendForever(t *testing.T, dir string) {
 				t.Fatal(err)
 			}
 		}
+		if seq%9 == 0 {
+			if err := l.Seal(t.Context(), childSeal(seq)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+// A loss resent after a kill with another count than the one logged breaks the log.
+func TestALossResentWithAnotherCountBreaksTheLog(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, config(dir, k, c))
+	if err := l.Record(t.Context(), link.Record{Seq: 1, Leaf: leaf(1), Loss: &entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	die(t, l)
+	l = openLog(t, config(dir, k, c))
+	defer func() { _ = l.Close(t.Context()) }()
+	if err := l.Record(t.Context(), link.Record{Seq: 1, Leaf: leaf(1), Loss: &entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 4}}); err == nil || l.Broken() == nil {
+		t.Fatalf("a resent loss with another count: %v", err)
 	}
 }
