@@ -71,6 +71,7 @@ CI_ONLY = (
     ("commit-lint", "commit_lint.py"),
     ("secrets", 'gitleaks" git'),
     ("workflow-lint", 'actionlint" -color'),
+    ("range-kvm", "range_kvm.py --work"),
 )
 AS_LIMIT = 4 << 30
 # Seconds to read what is left after a timeout; a descendant outside the group may hold the pipe.

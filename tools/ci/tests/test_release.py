@@ -164,12 +164,14 @@ class ManifestTest(unittest.TestCase):
         self.assertIn("docs-budget", RELEASE_JOB.split("needs:")[1].splitlines()[0])
 
     # The bundle is uploaded only after every other check of the same run passed, a job added later included.
+    # range-kvm alone is advisory until the maintainer makes it required (ADR 0028, point 4).
     def test_release_needs_every_other_job(self):
         ci = (REPO / ".github/workflows/ci.yml").read_text()
         jobs = set(re.findall(r"(?m)^  ([a-z0-9-]+):$", ci[ci.index("\njobs:"):]))
         needs = re.findall(r"(?m)^    needs: \[(.*)\]$", RELEASE_JOB)
         self.assertEqual(len(needs), 1)
-        self.assertEqual(set(needs[0].split(", ")), jobs - {"go-release"})
+        self.assertIn("range-kvm", jobs)
+        self.assertEqual(set(needs[0].split(", ")), jobs - {"go-release", "range-kvm"})
 
     # -X with a path that names no variable is ignored silently; CI runs no built binary to see it.
     def test_version_flag_names_the_real_variable(self):
