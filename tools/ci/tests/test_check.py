@@ -289,6 +289,26 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(box.calls("go", "test"), [])
             self.assertEqual(box.calls("gofmt"), [])
 
+    def test_status_inputs_run_the_status_selftest(self):
+        passing = "import unittest\n\n\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n"
+        for test, changed, rc, line in ((passing, "STATUS.md", 0, "ok   status selftest"),
+                                        (passing.replace("pass", "self.fail()"), "adr/0001-x.md", 1,
+                                         "FAIL status selftest"),
+                                        (passing, "README.md", 0, None)):
+            with self.subTest(changed=changed, rc=rc), tempfile.TemporaryDirectory() as tmp:
+                box = Sandbox(tmp)
+                box.write("tools/ci/tests/test_status.py", test)
+                git(box.repo, "add", "-A")
+                git(box.repo, "commit", "-q", "--no-verify", "-m", "status test")
+                git(box.repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+                box.write(changed, "changed\n")
+                got, lines = box.run()
+                self.assertEqual(got, rc, lines)
+                if line:
+                    self.assertIn(line, lines)
+                else:
+                    self.assertFalse([x for x in lines if "status selftest" in x], lines)
+
     def test_unknown_path_or_module_file_selects_everything(self):
         for path in ("deploy/x.conf", "go.mod", ".golangci.yml", "range/new.conf", "tools/ci/seccomp_exec.py"):
             with self.subTest(path), tempfile.TemporaryDirectory() as tmp:
