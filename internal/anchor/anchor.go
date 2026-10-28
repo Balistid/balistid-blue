@@ -68,9 +68,9 @@ type Log struct {
 	maxSize    uint64
 	size       uint64
 	resume     Resume
-	tailLoss   map[lossKey]bool // loss entries logged after the last batch
-	tailSeal   *entry.Seal      // the seal logged after the last batch
-	health     entry.Health     // the last health logged by this process
+	tailLoss   map[lossKey]entry.Loss // loss entries logged after the last batch
+	tailSeal   *entry.Seal            // the seal logged after the last batch
+	health     entry.Health           // the last health logged by this process
 	batch      *entry.Root
 	batchFirst uint64
 	lastCut    time.Time
@@ -89,7 +89,7 @@ func Open(ctx context.Context, cfg Config) (*Log, error) {
 	}
 	bg, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	l := &Log{cancel: cancel, lock: lock, now: cfg.Now, maxSize: cfg.CapBytes / entryBytes,
-		tailLoss: map[lossKey]bool{}, lastCut: cfg.Now()}
+		tailLoss: map[lossKey]entry.Loss{}, lastCut: cfg.Now()}
 	fail := func(err error) (*Log, error) {
 		cancel()
 		return nil, errors.Join(err, lock.Close())
@@ -165,7 +165,7 @@ func (l *Log) tail(after []entry.Entry) error {
 			if body.Seq <= l.resume.Last {
 				return fmt.Errorf("loss of record %d after the batch through %d", body.Seq, l.resume.Last)
 			}
-			l.tailLoss[lossKey{body.Seq, body.Stage}] = true
+			l.tailLoss[lossKey{body.Seq, body.Stage}] = body
 		case entry.Seal:
 			if body.Last != l.resume.Last || l.tailSeal != nil {
 				return fmt.Errorf("seal through %d after the batch through %d", body.Last, l.resume.Last)
@@ -200,11 +200,17 @@ func (l *Log) Record(ctx context.Context, r link.Record) error {
 	if r.Loss != nil && r.Loss.Seq != r.Seq {
 		return fmt.Errorf("%w: loss of record %d carried by %d", ErrStream, r.Loss.Seq, r.Seq)
 	}
-	if loss := r.Loss; loss != nil && !l.tailLoss[lossKey{loss.Seq, loss.Stage}] { // else logged before a restart
-		if err := l.append(ctx, *loss); err != nil {
-			return err
+	if loss := r.Loss; loss != nil {
+		switch logged, ok := l.tailLoss[lossKey{loss.Seq, loss.Stage}]; {
+		case ok && logged != *loss: // the same record's loss again, with another count
+			l.broken = fmt.Errorf("anchor: loss %+v resent as %+v", logged, *loss)
+			return l.broken
+		case !ok:
+			if err := l.append(ctx, *loss); err != nil {
+				return err
+			}
+			l.tailLoss[lossKey{loss.Seq, loss.Stage}] = *loss
 		}
-		l.tailLoss[lossKey{loss.Seq, loss.Stage}] = true
 	}
 	if l.batch == nil {
 		l.batch, l.batchFirst = entry.NewRoot(), r.Seq
