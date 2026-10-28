@@ -72,7 +72,7 @@ jobs:
           golangci-lint run ./...
       - name: Every package of the range binaries, the runner, the client and the collector is code-owned (ADR 0011, 0015)
         run: |
-          go list -deps -json ./cmd/balistid-range ./cmd/balistid-range-guest ./cmd/balistid-runner ./cmd/balistid ./cmd/balistid-collector > "$RUNNER_TEMP/deps.json"
+          go list -deps -json ./cmd/balistid-range ./cmd/balistid-range-guest ./cmd/balistid-runner ./cmd/balistid ./cmd/balistid-collector ./cmd/balistid-ledger > "$RUNNER_TEMP/deps.json"
           python3 tools/ci/go_gate.py owned --deps "$RUNNER_TEMP/deps.json" \
             --codeowners .github/CODEOWNERS --go-mod go.mod
       - name: Known vulnerabilities (govulncheck module checked against its pinned hash first)
