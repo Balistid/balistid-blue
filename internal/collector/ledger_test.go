@@ -525,3 +525,30 @@ func TestAHelloOverTheRecordCapStopsBeforeAnyRead(t *testing.T) {
 		t.Fatalf("stopped %q, leaves error %q", w.stopped, w.leavesErr)
 	}
 }
+
+// A hello whose last batch spans one record fewer than the cap is checked, not stopped.
+func TestAHelloJustUnderTheRecordCapIsChecked(t *testing.T) {
+	w, l := streamWriter(committedStore{openStore(t, 1)})
+	l.hello <- helloOf{1, link.Hello{Last: maxBatchCheck, First: 1, Root: [32]byte{1}}}
+	w.stream(t.Context())
+	if w.stopped != "" || w.leavesErr != "read" { // committedStore's read fails: the check began
+		t.Fatalf("stopped %q, leaves error %q", w.stopped, w.leavesErr)
+	}
+}
+
+// failingStore fails every read of leaves after the resume point.
+type failingStore struct{ *store.Store }
+
+func (failingStore) Leaves(context.Context, uint64, int, int64) ([]shard.Leaf, []store.Seal, error) {
+	return nil, nil, errors.New("disk")
+}
+
+// A failed leaf read is reason 6 where health would be OK.
+func TestAFailedLeafReadIsReasonStream(t *testing.T) {
+	w, l := streamWriter(failingStore{openStore(t, 2)})
+	l.hello <- helloOf{1, link.Hello{}}
+	w.stream(t.Context())
+	if _, others := taken(l); fmt.Sprint(healthOf(others)) != fmt.Sprint([]entry.Health{{State: entry.StateUnknown, Reason: entry.ReasonStream}}) {
+		t.Fatalf("a failed leaf read: %+v", others)
+	}
+}

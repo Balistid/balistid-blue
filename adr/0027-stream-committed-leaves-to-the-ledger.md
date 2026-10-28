@@ -39,9 +39,9 @@ alone). Tessera v1.0.4 resolves an `Add` only once the entry is integrated, so i
    full filesystem, and the collector's cap stage), 2 queue, 3 framing, 4 store, 5 shutdown (the collector's lost
    records, their count), 6 truncated (a committed record whose original length exceeds its data, 1). Type 4
    `health`: state (1 OK, 2 UNKNOWN), reason (0 none, 1 starting, 2 store down, 3 Laurel disconnected, 4 canary
-   missed, 5 canary pending, 6 stream stopped or catching up) and the records counted lost and not stored; sent on
-   connect, on change and after its stream stopped. Nothing fills lost bytes or kernel and dispatcher loss yet; a
-   new stage or reason widens decoding, so it reaches the Pi first.
+   missed, 5 canary pending, 6 stream stopped, cannot read leaves or reading back the last batch, named only where
+   health would otherwise be OK) and the records counted lost and not stored; sent on connect and on change. A new
+   stage or reason widens decoding, so it reaches the Pi first; nothing fills lost bytes or kernel loss yet.
 
 ## Alternatives considered
 

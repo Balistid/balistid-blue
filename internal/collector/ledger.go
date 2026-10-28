@@ -300,7 +300,8 @@ func healthEntry(h string, unstored uint64) (entry.Health, error) {
 	return e, nil
 }
 
-// streamUnknown is the writer's health while its stream to the ledger stopped or cannot read leaves.
+// streamUnknown is the writer's health while its stream to the ledger stopped, cannot read leaves, or is still
+// reading back the ledger's last batch.
 const streamUnknown = "UNKNOWN ledger-stream"
 
 // maxBatchCheck bounds the batch a hello may ask the writer to read back: the ledger cuts a batch every
