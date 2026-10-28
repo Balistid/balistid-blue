@@ -2,7 +2,7 @@ module github.com/Balistid/balistid-blue
 
 go 1.27
 
-toolchain go1.27.2
+toolchain go1.27.3
 
 require (
 	github.com/transparency-dev/formats v0.0.0-20251017110053-404c0d5b696c
