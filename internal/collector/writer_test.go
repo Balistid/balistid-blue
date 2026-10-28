@@ -2022,3 +2022,18 @@ func TestAStoppedStreamKeepsRecordingTheCanary(t *testing.T) {
 		t.Fatalf("health %q with a stopped stream and a stuck canary syscall", health(r))
 	}
 }
+
+// Where health would be OK, a stopped stream is what the store's own health record says.
+func TestAStoppedStreamIsRecordedWhereHealthWouldBeOK(t *testing.T) {
+	r := newRig(t)
+	r.w.stopped = "the ledger's batch is not the store's"
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.push(canaryLine(1, probed(r), 1000, 4242))
+	r.step(0)
+	if health(r) != streamUnknown {
+		t.Fatalf("health %q with a stopped stream and everything else OK", health(r))
+	}
+}
