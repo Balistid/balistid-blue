@@ -24,6 +24,9 @@ const (
 	// The raw store's caps: raw_cap_gib 150, headroom_gib 2, and shards of 512 MiB so that sealing
 	// one stays within crash_loss_ms (ADR 0016, point 6).
 	rawCap, headroom, shardMax = 150 << 30, 2 << 30, 512 << 20
+	// ledgerSocket is where the ledger's unit listens (RuntimeDirectory); the collector always streams
+	// to it (ADR 0027) and redials while it is down.
+	ledgerSocket = "/run/balistid-ledger/ledger.sock"
 )
 
 func main() { os.Exit(run()) }
@@ -35,7 +38,6 @@ func run() int {
 	// The range image alone sets these two (ADR 0022): its root has no room for the host's reserve.
 	headroomBytes := flag.Int64("headroom", headroom, "bytes the store reserves for its own records")
 	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
-	ledgerSocket := flag.String("ledger", "", "the ledger's socket; empty runs without a ledger (ADR 0027)")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -49,10 +51,7 @@ func run() int {
 		log.Error("no socket from systemd", "err", err)
 		return 1
 	}
-	var ledger *collector.Ledger
-	if *ledgerSocket != "" {
-		ledger = collector.NewLedger(collector.DialLedger(*ledgerSocket, uidOf("balistid-ledger", log)), log)
-	}
+	ledger := collector.NewLedger(collector.DialLedger(ledgerSocket, uidOf("balistid-ledger", log)), log)
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: uidOf("_laurel", log), CanaryDir: *canaryDir, Ledger: ledger,
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
