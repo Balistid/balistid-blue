@@ -12,6 +12,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // MaxAcceptanceBytes caps the acceptance file; one entry per table trial is well under a KiB.
@@ -174,7 +175,7 @@ func LoadAcceptance(path, commit string) (Acceptance, error) {
 	return a, nil
 }
 
-// SaveAcceptance replaces the file at path through rangevm.WriteFileAtomic (mode 0600). It refuses,
+// SaveAcceptance replaces the file at path through wholefile.Write (mode 0600). It refuses,
 // leaving the old file, a suite LoadAcceptance would refuse.
 func SaveAcceptance(path string, a Acceptance) error {
 	trials := a.Trials
@@ -188,7 +189,7 @@ func SaveAcceptance(path string, a Acceptance) error {
 	if _, err := decodeAcceptance(data, a.Commit); err != nil {
 		return fmt.Errorf("save acceptance %s: %w", path, err)
 	}
-	if err := rangevm.WriteFileAtomic(path, data, 0o600); err != nil {
+	if err := wholefile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("save acceptance: %w", err)
 	}
 	return nil

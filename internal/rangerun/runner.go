@@ -20,6 +20,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // EvidenceEvery is how often the runner proves its own image (ADR 0011, point 5).
@@ -74,7 +75,7 @@ func (r *Runner) Build(ctx context.Context, objects string, log io.Writer) error
 		return fmt.Errorf("build: %w", buildErr)
 	}
 	// A retention error comes with a stored image, which is recorded all the same.
-	if err := rangevm.WriteFileAtomic(r.imagePath(), []byte(image+"\n"), 0o600); err != nil {
+	if err := wholefile.Write(r.imagePath(), []byte(image+"\n"), 0o600); err != nil {
 		return fmt.Errorf("build: %w", errors.Join(buildErr, err))
 	}
 	if _, err := LoadLedger(r.ledgerPath()); errors.Is(err, ErrNoLedger) {
@@ -387,7 +388,7 @@ func (e *Evidence) fail(commit, id string) {
 // before the VM starts. A FAIL is saved to the ledger before its result is written, so the ledger
 // record goes before serial.txt can use up the disk; if that save fails, a FAIL result.json lets
 // settle record it. A FAIL is lost when neither reaches the disk: both writes fail before their
-// rename (WriteFileAtomic can also fail after it), or the runner dies after the VM's end and before
+// rename (wholefile.Write can also fail after it), or the runner dies after the VM's end and before
 // the save, or after a failed save and before result.json. settle then finds the INVALID that begin
 // left, and as evidence is still due a later Tick runs it again. After the save, the recorded
 // FAIL's result may still say INVALID: result.json failed before its rename, or the runner died first.
