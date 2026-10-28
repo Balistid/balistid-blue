@@ -386,6 +386,44 @@ func TestRelayAsksAgainAfterAWitnessAheadOfTheLog(t *testing.T) {
 	}
 }
 
+// The ledger's uid writes the log: an oversized checkpoint or tile is refused unread, so the relay's
+// memory stays bounded whatever the log holds.
+func TestRelayRefusesOversizedLogFiles(t *testing.T) {
+	for _, tc := range []struct{ name, under string }{
+		{"checkpoint", "checkpoint"},
+		{"tile", "tile"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.grow(t, 3)
+			r := f.relay(t)
+			if err := r.Step(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			f.grow(t, 300) // the next step needs a consistency proof from the tiles
+			padded := 0
+			err := filepath.WalkDir(filepath.Join(f.dir, tc.under), func(p string, d fs.DirEntry, err error) error {
+				if err != nil || !d.Type().IsRegular() {
+					return err
+				}
+				g, err := os.OpenFile(p, os.O_WRONLY|os.O_APPEND, 0) //nolint:gosec // test temp dir
+				if err != nil {
+					return err
+				}
+				padded++
+				_, err = g.Write(make([]byte, 1<<20))
+				return errors.Join(err, g.Close())
+			})
+			if err != nil || padded == 0 {
+				t.Fatalf("padded %d files under %s: %v", padded, tc.under, err)
+			}
+			if err := r.Step(t.Context()); err == nil || !strings.Contains(err.Error(), "over") {
+				t.Fatalf("an oversized %s was read: %v", tc.name, err)
+			}
+		})
+	}
+}
+
 // A signature line in the log's checkpoint that names the witness's key (only the ledger's uid or
 // root can write it) is neither sent nor stored: the stored note holds verified lines only.
 func TestRelayStoresOnlyVerifiedLines(t *testing.T) {
