@@ -7,19 +7,24 @@ package relay
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 
@@ -31,8 +36,11 @@ import (
 const CosignedName = "checkpoint.cosigned"
 
 const (
-	maxProof    = 63       // tlog-witness: the client must not send more lines
-	maxResponse = 64 << 10 // a few signature lines; anything longer is refused unread
+	maxProof = 63 // tlog-witness: the client must not send more lines
+	// The ledger's uid writes the log: its files are read with a cap, never whole (ENGINEERING 7, T20).
+	maxCheckpoint = 16 << 10                       // a checkpoint note with a few signatures
+	maxTile       = layout.TileWidth * sha256.Size // a full tile's hashes
+	maxResponse   = 64 << 10                       // a few signature lines; anything longer is refused unread
 )
 
 var sizeLine = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})\n$`)
@@ -51,7 +59,6 @@ type Config struct {
 // Relay submits checkpoints one at a time; it is not safe for concurrent use.
 type Relay struct {
 	cfg Config
-	log client.FileFetcher
 	// cosigned is the last checkpoint text the witness's key verified: the only state the relay
 	// trusts. A 409's size is unsigned, so it steers one request and is never kept.
 	cosigned string
@@ -69,7 +76,7 @@ func New(cfg Config) (*Relay, error) {
 		cfg.Witness == nil || cfg.HTTP == nil || cfg.HTTP.Timeout <= 0 {
 		return nil, errors.New("relay: incomplete config")
 	}
-	return &Relay{cfg: cfg, log: client.FileFetcher{Root: cfg.Log}}, nil
+	return &Relay{cfg: cfg}, nil
 }
 
 // Run submits the log's checkpoint every interval until ctx ends. A failed step is logged and retried
@@ -98,7 +105,7 @@ func (e errConflict) Error() string { return fmt.Sprintf("witness cosigned size 
 // checkpoint. A 409 corrects the old size for one more request in this step only; a witness ahead of
 // the log means the log lost cosigned history (T12), and every step reports it again.
 func (r *Relay) Step(ctx context.Context) error {
-	cp, _, n, err := client.FetchCheckpoint(ctx, r.log.ReadCheckpoint, r.cfg.LogKey, r.cfg.Origin)
+	cp, _, n, err := client.FetchCheckpoint(ctx, r.readCheckpoint, r.cfg.LogKey, r.cfg.Origin)
 	if err != nil {
 		return fmt.Errorf("relay: ledger checkpoint: %w", err)
 	}
@@ -133,11 +140,42 @@ func (r *Relay) Step(ctx context.Context) error {
 	return errors.New("relay: the witness's size changed twice in one step")
 }
 
+func (r *Relay) readCheckpoint(context.Context) ([]byte, error) {
+	return readCapped(filepath.Join(r.cfg.Log, layout.CheckpointPath), maxCheckpoint)
+}
+
+// readTile reads a tile as Tessera's FileFetcher does, a partial one falling back to the full one,
+// with a cap.
+func (r *Relay) readTile(_ context.Context, level, index uint64, p uint8) ([]byte, error) {
+	b, err := readCapped(filepath.Join(r.cfg.Log, layout.TilePath(level, index, p)), maxTile)
+	if errors.Is(err, fs.ErrNotExist) && p > 0 {
+		return readCapped(filepath.Join(r.cfg.Log, layout.TilePath(level, index, 0)), maxTile)
+	}
+	return b, err
+}
+
+// readCapped refuses a file over limit bytes before holding more than limit+1 of it.
+func readCapped(path string, limit int) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // a path inside the ledger's log
+	if err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
+	}
+	if len(b) > limit {
+		return nil, fmt.Errorf("relay: %s is over %d bytes", path, limit)
+	}
+	return b, nil
+}
+
 // submit posts one add-checkpoint request from old and returns the witness's verified cosignature lines.
 func (r *Relay) submit(ctx context.Context, old, size uint64, signed []byte, text string) ([]byte, error) {
 	body := fmt.Appendf(nil, "old %d\n", old)
 	if old != 0 && old != size {
-		pb, err := client.NewProofBuilder(ctx, size, r.log.ReadTile)
+		pb, err := client.NewProofBuilder(ctx, size, r.readTile)
 		if err != nil {
 			return nil, fmt.Errorf("relay: proof: %w", err)
 		}
