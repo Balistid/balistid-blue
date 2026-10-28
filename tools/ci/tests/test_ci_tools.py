@@ -454,6 +454,15 @@ class GoLayoutTest(unittest.TestCase):
     def test_non_ascii_go_mod_fails(self):
         self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
 
+    # range/witness is under range/ (root-installed): its go.mod and go.sum take the root's grammar
+    # instead of the printable-line rule, so a tab passes and anything outside the grammar fails.
+    def test_range_witness_module_takes_the_root_grammar(self):
+        tabbed = GO_MOD + "\nrequire (\n\tgolang.org/x/sys v0.20.0 // indirect\n)\n"
+        self.assert_budget({"range/witness/go.mod": tabbed, "range/witness/go.sum": GO_SUM_LINE + "\n"}, 0)
+        self.assert_budget({"range/witness/go.mod": GO_MOD + "replace x => ../x\n"}, 1)
+        self.assert_budget({"range/witness/go.sum": GO_SUM_LINE + "\n# comment\n"}, 1)
+        self.assert_budget({"range/witness/go.work": "go 1.27\n"}, 1)
+
 
 
 class GoLayoutMoreTest(unittest.TestCase):

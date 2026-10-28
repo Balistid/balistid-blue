@@ -102,6 +102,13 @@ LAYOUT: tuple[str, ...] = (
     # Relay, by exact name (ADR 0006, 0026).
     "deploy/relay/sysusers.conf",
     "deploy/relay/balistid-relay.service",
+    # The relay and a pinned litewitness in the range image, its own module (ADR 0026, point 5).
+    "range/balistid-relay-range.conf",
+    "range/balistid-range-witness-key.service",
+    "range/balistid-range-witness-agent.service",
+    "range/balistid-range-witness.service",
+    "range/witness/go.mod",
+    "range/witness/go.sum",
 )
 
 REGULAR_MODES = {"100644", "100755"}
@@ -155,6 +162,9 @@ CONTENT_GRAMMAR = {
         rf"(?: // indirect)?|\)|)$"
     ),
 }
+# The range witness module's files take the root's grammar.
+CONTENT_GRAMMAR["range/witness/go.sum"] = CONTENT_GRAMMAR["go.sum"]
+CONTENT_GRAMMAR["range/witness/go.mod"] = CONTENT_GRAMMAR["go.mod"]
 
 # Files gitleaks skips that no grammar can make safe: every reviewed version is pinned, so any change is a
 # change here, in code-owned tools/ci (ADR 0003, point 4), and --range still passes the older commits.
@@ -321,7 +331,8 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
                 if problem:
                     violations.append(f"{path}: {problem}")
                     continue
-        if path.startswith(ROOT_INSTALLED) and (number := unreadable_line(blob(repo, sha))):
+        # a file with a content grammar (range/witness/go.mod) is checked by it, tabs included
+        if path.startswith(ROOT_INSTALLED) and path not in CONTENT_GRAMMAR and (number := unreadable_line(blob(repo, sha))):
             violations.append(f"{path}: line {number} is not printable ASCII of at most 200 bytes")
             continue
         cap = doc_cap(path)

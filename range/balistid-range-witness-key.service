@@ -1,0 +1,15 @@
+# Range image only (ADR 0026, point 5), never on a host: the witness's key, made in the VM at boot after
+# the ledger's. The seed is root's 0600 file the agent loads as a credential; the verifier key is the
+# relay's, and witness.env names the fingerprint and the ledger's key for litewitness and witnessctl.
+[Unit]
+Description=Balistid Blue range: the witness's key
+DefaultDependencies=no
+Requires=balistid-range-ledger-key.service
+After=local-fs.target balistid-range-ledger-key.service
+ConditionPathExists=!/etc/balistid/witness-key
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/usr/lib/balistid-range/guest witness-key
