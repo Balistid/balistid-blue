@@ -15,6 +15,7 @@ import (
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // Labels of a result (ADR 0011, point 7): an agent job's verdict is advisory; evidence is only a
@@ -190,7 +191,7 @@ func WriteResult(dir string, r Result) error {
 	if err != nil {
 		return fmt.Errorf("encode result: %w", err)
 	}
-	if err := rangevm.WriteFileAtomic(filepath.Join(dir, "result.json"), data, resultPerm); err != nil {
+	if err := wholefile.Write(filepath.Join(dir, "result.json"), data, resultPerm); err != nil {
 		return fmt.Errorf("write result: %w", err)
 	}
 	return nil
@@ -203,7 +204,7 @@ func WriteText(dir, name string, data []byte) error {
 		return fmt.Errorf("%q is not a result text file name", name)
 	}
 	text := rangevm.Printable(string(data), 4*len(data))
-	if err := rangevm.WriteFileAtomic(filepath.Join(dir, name), []byte(text), resultPerm); err != nil {
+	if err := wholefile.Write(filepath.Join(dir, name), []byte(text), resultPerm); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
 	return nil

@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
-	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // MaxLedgerBytes caps the ledger file; a ledger at every other cap is about 0.32 MiB.
@@ -54,14 +54,14 @@ func LoadLedger(path string) (Ledger, error) {
 	return l, nil
 }
 
-// SaveLedger replaces the ledger at path through rangevm.WriteFileAtomic (mode 0600). It refuses,
+// SaveLedger replaces the ledger at path through wholefile.Write (mode 0600). It refuses,
 // leaving the old file, a ledger LoadLedger would refuse.
 func SaveLedger(path string, l Ledger) error {
 	data, err := encodeLedger(l)
 	if err != nil {
 		return fmt.Errorf("save ledger %s: %w", path, err)
 	}
-	if err := rangevm.WriteFileAtomic(path, data, 0o600); err != nil {
+	if err := wholefile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("save ledger: %w", err)
 	}
 	return nil

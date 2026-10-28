@@ -227,26 +227,6 @@ func TestHashStopsWhenCancelled(t *testing.T) {
 	}
 }
 
-// The mode is the one asked for whatever the umask: 0600 for private state, 0640 for results the
-// maintainer's group reads.
-func TestWriteFileAtomicSetsTheMode(t *testing.T) {
-	old := syscall.Umask(0o077)
-	defer syscall.Umask(old)
-	for _, perm := range []os.FileMode{0o600, 0o640} {
-		path := filepath.Join(t.TempDir(), "result.json")
-		if err := WriteFileAtomic(path, []byte("{}"), perm); err != nil {
-			t.Fatal(err)
-		}
-		st, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st.Mode().Perm() != perm {
-			t.Fatalf("mode %v, want %v", st.Mode().Perm(), perm)
-		}
-	}
-}
-
 func TestCleanRevision(t *testing.T) {
 	rev := strings.Repeat("c", 40)
 	cases := []struct {
