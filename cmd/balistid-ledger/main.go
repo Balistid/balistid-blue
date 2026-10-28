@@ -101,7 +101,9 @@ func serve(dir, sock, keyPath string, log *slog.Logger) error {
 	return errors.Join(err, l.Close(closeCtx))
 }
 
-// readSigner reads the note signing key from path, a regular file no one else may read (ENGINEERING 3).
+// readSigner reads the note signing key from path, a regular file only its owner may write and no other
+// user read (ENGINEERING 3). Group read stays: systemd grants a credential to the service's uid by an ACL
+// on a 0400 file, whose mask shows as the group's bits.
 func readSigner(path string) (note.Signer, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the key's path is configuration
 	if err != nil {
@@ -112,8 +114,8 @@ func readSigner(path string) (note.Signer, error) {
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("signing key: %w", err)
-	case !fi.Mode().IsRegular() || fi.Mode().Perm()&0o077 != 0:
-		return nil, fmt.Errorf("signing key %s is not a regular file only its owner reads (%v)", path, fi.Mode())
+	case !fi.Mode().IsRegular() || fi.Mode().Perm()&0o037 != 0:
+		return nil, fmt.Errorf("signing key %s is not a regular file closed to other users (%v)", path, fi.Mode())
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxKeyBytes+1))
 	if err != nil || len(b) > maxKeyBytes {

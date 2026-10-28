@@ -26,8 +26,9 @@ func keyFile(t *testing.T, mode os.FileMode) string {
 	return path
 }
 
-func TestReadSignerTakesAKeyOnlyItsOwnerReads(t *testing.T) {
-	for _, mode := range []os.FileMode{0o600, 0o400} {
+// 0440 is how a systemd credential looks: 0400 with an ACL for the service's uid, its mask in the group bits.
+func TestReadSignerTakesAKeyClosedToOtherUsers(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o400, 0o440} {
 		s, err := readSigner(keyFile(t, mode))
 		if err != nil || s.Name() != "balistid.test/log" {
 			t.Fatalf("mode %v: %v, %v", mode, s, err)
@@ -50,7 +51,7 @@ func TestReadSignerRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, path := range map[string]string{
-		"group-readable": keyFile(t, 0o640), "world-readable": keyFile(t, 0o604), "a symlink": link,
+		"group-writable": keyFile(t, 0o660), "world-readable": keyFile(t, 0o604), "a symlink": link,
 		"a directory": t.TempDir(), "missing": filepath.Join(t.TempDir(), "none"), "not a key": garbage, "too large": huge,
 	} {
 		if s, err := readSigner(path); err == nil {
