@@ -201,7 +201,7 @@ func cosigned(lv, wv note.Verifier) (log.Checkpoint, error) {
 }
 
 // forkRefused is "yes" when the witness refuses, under the ledger's own key, a checkpoint of its
-// cosigned size with another root (422) and one smaller than its cosigned size (400): T12.
+// cosigned size with another root (422) and a rollback to a smaller size (409 naming its own): T12.
 func forkRefused(ctx context.Context) string {
 	s, err := note.NewSigner(readTrim(filepath.Join(ledgerKeyDir, "ledger-key")))
 	if err != nil {
@@ -226,12 +226,18 @@ func forkRefused(ctx context.Context) string {
 		if status != http.StatusUnprocessableEntity {
 			return fmt.Sprintf("error: fork at size %d: status %d", size, status)
 		}
-		status, _, err = addCheckpoint(ctx, s, size, size-1, other[:])
-		switch {
-		case err != nil:
+		// a rollback from the witness's own record: only a witness that kept size answers 409 with it;
+		// size 1 would probe the empty tree, whose root the witness checks on its own
+		if size < 2 {
+			return fmt.Sprintf("error: witness size %d too small for a rollback probe", size)
+		}
+		status, body, err = addCheckpoint(ctx, s, size-1, size-1, other[:])
+		if err != nil {
 			return "error: " + err.Error()
-		case status != http.StatusBadRequest:
-			return fmt.Sprintf("error: rollback to size %d: status %d", size-1, status)
+		}
+		// the relay may have moved the witness on meanwhile: its record is then larger, never smaller
+		if got, perr := parseSize(body); status != http.StatusConflict || perr != nil || got < size {
+			return fmt.Sprintf("error: rollback to size %d: status %d, size %q", size-1, status, body)
 		}
 		return "yes"
 	}

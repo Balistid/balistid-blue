@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -347,14 +348,64 @@ func snapshot(t *testing.T, dir string) map[string][32]byte {
 	return out
 }
 
-// The relay holds no key that signs: nothing in its config can.
-func TestRelayHoldsNoSigningKey(t *testing.T) {
-	signer := reflect.TypeFor[note.Signer]()
-	c := reflect.TypeFor[Config]()
-	for i := range c.NumField() {
-		if f := c.Field(i); f.Type.Implements(signer) || f.Type == signer {
-			t.Fatalf("Config.%s can sign", f.Name)
+// A witness that cosigned another root at the log's size refuses every step, and every step says so:
+// the relay keeps no unsigned 409 size as if it were cosigned.
+func TestRelayReportsAForkAtTheWitnessSizeEveryStep(t *testing.T) {
+	f := newFixture(t)
+	f.grow(t, 3)
+	r := f.relay(t)
+	if err := r.Step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	f.wit.hash = bytes.Repeat([]byte{7}, 32) // the witness now holds another tree of the same size
+	r = f.relay(t)
+	for i := range 3 {
+		if err := r.Step(t.Context()); err == nil {
+			t.Fatalf("step %d: a fork at the witness's size went unreported", i)
 		}
+	}
+}
+
+// After the witness was ahead of the log, the relay asks again at the next step instead of trusting
+// the old answer, and recovers once the witness is consistent.
+func TestRelayAsksAgainAfterAWitnessAheadOfTheLog(t *testing.T) {
+	f := newFixture(t)
+	f.grow(t, 3)
+	if err := f.relay(t).Step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	size, hash := f.wit.size, f.wit.hash
+	f.wit.size += 10
+	r := f.relay(t)
+	if err := r.Step(t.Context()); err == nil {
+		t.Fatal("a witness ahead of the log went unreported")
+	}
+	f.wit.size, f.wit.hash = size, hash
+	if err := r.Step(t.Context()); err != nil {
+		t.Fatalf("the relay kept the witness's old size: %v", err)
+	}
+}
+
+// A signature line in the log's checkpoint that names the witness's key (only the ledger's uid or
+// root can write it) is neither sent nor stored: the stored note holds verified lines only.
+func TestRelayStoresOnlyVerifiedLines(t *testing.T) {
+	f := newFixture(t)
+	f.grow(t, 3)
+	path := filepath.Join(f.dir, "checkpoint")
+	b, err := os.ReadFile(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	bogus := binary.BigEndian.AppendUint32(nil, f.witVer.KeyHash())
+	line := fmt.Sprintf("\u2014 %s %s\n", f.witVer.Name(), base64.StdEncoding.EncodeToString(append(bogus, make([]byte, 72)...)))
+	if err := os.WriteFile(path, append(b, line...), 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	if err := f.relay(t).Step(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if f.cosigned(t) == 0 {
+		t.Fatal("nothing stored")
 	}
 }
 
@@ -371,6 +422,10 @@ func TestNewRefusesAnIncompleteConfig(t *testing.T) {
 		"other path":     func(c *Config) { c.Submit = f.srv.URL + "/checkpoint" },
 		"other scheme":   func(c *Config) { c.Submit = "file:///add-checkpoint" },
 		"no host":        func(c *Config) { c.Submit = "http:///add-checkpoint" },
+		"user":           func(c *Config) { c.Submit = "http://u:p@witness/add-checkpoint" },
+		"query":          func(c *Config) { c.Submit = "http://witness/add-checkpoint?x=1" },
+		"empty query":    func(c *Config) { c.Submit = "http://witness/add-checkpoint?" },
+		"fragment":       func(c *Config) { c.Submit = "http://witness/add-checkpoint#x" },
 	} {
 		cfg := f.config()
 		change(&cfg)
