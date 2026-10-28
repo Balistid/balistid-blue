@@ -548,6 +548,7 @@ func diagnose(ctx context.Context) {
 		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-u", "auditd", "-u", "audit-rules", "-u", "systemd-sysctl"},
 		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-n", "200", "-u", "balistid-range-store", "-u", "balistid-collector.socket", "-u", "balistid-collector"},
 		{"/usr/bin/systemctl", "status", "--no-pager", "-l", "-n", "0", "balistid-range-store", "balistid-collector.socket", "balistid-collector"},
+		{"/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "short-monotonic", "-n", "100", "-u", "balistid-range-ledger-key", "-u", "balistid-ledger"},
 		{"/usr/bin/findmnt", "-n", "/var/lib/balistid-range/scratch"},
 		{"/usr/bin/ls", "-ln", "/var/lib/balistid-range/scratch", "/usr/local/lib/balistid"},
 		{"/usr/bin/auditctl", "-s"},
