@@ -183,7 +183,7 @@ func taken(l *Ledger) (seqs []uint64, others []link.Message) {
 
 func rootOf(t *testing.T, st *store.Store, first, last uint64) [32]byte {
 	t.Helper()
-	leaves, _, err := st.Leaves(t.Context(), first-1, int(last-first+1)) //nolint:gosec // a few test records
+	leaves, _, err := st.Leaves(t.Context(), first-1, int(last-first+1), 1<<40) //nolint:gosec // a few test records
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,4 +382,67 @@ func FuzzLossOf(f *testing.F) {
 			t.Fatalf("lossOf(%q) = %+v, which the ledger refuses: %v", data, loss, err)
 		}
 	})
+}
+
+// Streaming as the writer does it, one record per tick: a shard sealed when the next record arrives ends
+// at a record the ledger already has, and its seal still goes, once, before the records after it.
+func TestTheLiveStreamSendsEverySealInPlace(t *testing.T) {
+	st := openStore(t, 0)
+	w, l := streamWriter(st)
+	l.hello <- helloOf{1, link.Hello{}}
+	var order []string
+	for i := range 24 {
+		data := bytes.Repeat([]byte{byte(i)}, 20<<10)
+		if stored, _, err := st.Append(t.Context(), rawrecord.New(0, store.SensorProvider, uint64(i)+1, 1, data)); err != nil || !stored {
+			t.Fatalf("append: %v %v", stored, err)
+		}
+		if _, err := st.Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		w.stream(t.Context())
+		for drained := false; !drained; {
+			select {
+			case g := <-l.out:
+				for _, m := range g.msgs {
+					switch m := m.(type) {
+					case link.Records:
+						order = append(order, fmt.Sprintf("r%d-%d", m[0].Seq, m[len(m)-1].Seq))
+					case entry.Seal:
+						order = append(order, fmt.Sprintf("s%d", m.Last))
+					}
+				}
+			default:
+				drained = true
+			}
+		}
+	}
+	seals := st.Seals()
+	if len(seals) < 3 {
+		t.Fatalf("only %d shards sealed", len(seals))
+	}
+	got := strings.Join(order, " ")
+	for _, s := range seals {
+		// The seal right after the frame that ends at its last record, and once.
+		if want := fmt.Sprintf("-%d s%d ", s.Last, s.Last); !strings.Contains(got+" ", want) || strings.Count(got, fmt.Sprintf("s%d ", s.Last)) > 1 {
+			t.Fatalf("seal %d-%d not sent once in place: %s", s.First, s.Last, got)
+		}
+	}
+}
+
+// shortStore reads one leaf fewer than asked, as a byte budget cuts a batch larger than the ledger cuts.
+type shortStore struct{ *store.Store }
+
+func (s shortStore) Leaves(ctx context.Context, after uint64, max int, budget int64) ([]shard.Leaf, []store.Seal, error) {
+	l, seals, err := s.Store.Leaves(ctx, after, max, budget)
+	return l[:len(l)-1], seals, err
+}
+
+func TestStreamStopsOnAResumeBatchOverTheByteBudget(t *testing.T) {
+	st := openStore(t, 4)
+	w, l := streamWriter(shortStore{st})
+	l.hello <- helloOf{1, link.Hello{Last: 3, First: 1, Root: rootOf(t, st, 1, 3)}}
+	w.stream(t.Context())
+	if seqs, _ := taken(l); seqs != nil || !strings.Contains(w.stopped, "more data") {
+		t.Fatalf("sent %v, stopped %q", seqs, w.stopped)
+	}
 }

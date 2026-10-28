@@ -135,7 +135,7 @@ func (s *fakeStore) NoteHealth(b []byte) error {
 func (s *fakeStore) Health() string { return "" }
 
 // The ledger stream is tested against a real store (ledger_test.go); the fake has nothing to read.
-func (s *fakeStore) Leaves(context.Context, uint64, int) ([]shard.Leaf, []store.Seal, error) {
+func (s *fakeStore) Leaves(context.Context, uint64, int, int64) ([]shard.Leaf, []store.Seal, error) {
 	return nil, nil, nil
 }
 

@@ -53,7 +53,7 @@ type Store interface {
 	Health() string
 	Close(ctx context.Context) ([]store.Seal, error)
 	Committed() uint64
-	Leaves(ctx context.Context, after uint64, max int) ([]shard.Leaf, []store.Seal, error)
+	Leaves(ctx context.Context, after uint64, max int, budget int64) ([]shard.Leaf, []store.Seal, error)
 	Seals() []store.Seal
 }
 
@@ -227,6 +227,7 @@ type ledgerState struct {
 	epoch        uint64      // the ledger connection the stream belongs to; 0 before the first
 	hello        *link.Hello // the ledger's resume point, until checked against the store
 	sent         uint64      // the last seq handed to the ledger
+	sealSent     uint64      // the last seq of the last seal handed to the ledger
 	stopped      string      // why the stream stopped for good (R6), or ""
 	healthSent   string
 	unstoredSent uint64
