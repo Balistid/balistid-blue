@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -27,10 +28,23 @@ import (
 
 const origin = "balistid.test/log"
 
-type clock struct{ t time.Time }
+// clock is a fake clock a test advances while a connection's goroutine reads it.
+type clock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *clock) now() time.Time          { return c.t }
-func (c *clock) advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *clock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *clock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
 
 type keys struct {
 	signer   note.Signer
@@ -133,7 +147,7 @@ func logged(t *testing.T, dir string, k keys) ([]entry.Body, log.Checkpoint) {
 }
 
 func TestBatchesCoverTheStreamInCuts(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	if l.Resume() != (Resume{}) {
 		t.Fatalf("empty log resumes at %+v", l.Resume())
@@ -157,7 +171,7 @@ func TestBatchesCoverTheStreamInCuts(t *testing.T) {
 }
 
 func TestStreamResumesFromTheLog(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	records(t, l, 1, 3)
 	closeLog(t, l)
@@ -179,7 +193,7 @@ func TestStreamResumesFromTheLog(t *testing.T) {
 
 // A loss entry precedes the batch covering its record; resent after a kill, it is not logged again.
 func TestLossesPrecedeTheirBatchOnce(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	loss := entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}
 	carried := link.Record{Seq: 1, Leaf: leaf(1), Loss: &loss}
@@ -202,7 +216,7 @@ func TestLossesPrecedeTheirBatchOnce(t *testing.T) {
 }
 
 func TestSealFollowsTheBatchEndingAtIt(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	seal := entry.Seal{First: 1, Last: 3, SHA256: sha256.Sum256([]byte("shard"))}
 	l := openLog(t, config(dir, k, c))
 	records(t, l, 1, 3)
@@ -239,7 +253,7 @@ func TestSealConflictsBreakTheLog(t *testing.T) {
 		"past the records": {First: 1, Last: 4, SHA256: seal.SHA256},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+			dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 			l := openLog(t, config(dir, k, c))
 			defer func() { _ = l.Close(t.Context()) }() // a broken log's Close reports why it broke
 			records(t, l, 1, 3)
@@ -259,7 +273,7 @@ func TestSealConflictsBreakTheLog(t *testing.T) {
 }
 
 func TestHealthIsLoggedOnChange(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	down := entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown, Unstored: 2}
 	up := entry.Health{State: entry.StateOK}
@@ -275,7 +289,7 @@ func TestHealthIsLoggedOnChange(t *testing.T) {
 }
 
 func TestASecondLedgerIsRefused(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	if second, err := Open(t.Context(), config(dir, k, c)); err == nil {
 		_ = second.Close(t.Context())
@@ -286,7 +300,7 @@ func TestASecondLedgerIsRefused(t *testing.T) {
 }
 
 func TestTheCapStopsAppending(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	cfg := config(dir, k, c)
 	cfg.CapBytes = 2 * entryBytes
 	l := openLog(t, cfg)
@@ -302,7 +316,7 @@ func TestTheCapStopsAppending(t *testing.T) {
 }
 
 func TestIncompleteConfigIsRefused(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	for _, change := range []func(*Config){
 		func(cfg *Config) { cfg.Signer = nil },
 		func(cfg *Config) { cfg.CapBytes = entryBytes - 1 },
@@ -334,7 +348,7 @@ func consistent(t *testing.T, dir string, older, newer log.Checkpoint) error {
 }
 
 func TestCheckpointsExtendEachOtherAcrossRestarts(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	records(t, l, 1, 3)
 	closeLog(t, l)
@@ -378,7 +392,7 @@ func TestAKilledLedgerLeavesAPrefix(t *testing.T) {
 		time.Sleep(time.Duration(300+round*170) * time.Millisecond)
 		_ = cmd.Process.Signal(syscall.SIGKILL)
 		_ = cmd.Wait()
-		c := &clock{time.Now()}
+		c := &clock{t: time.Now()}
 		l := openLog(t, config(dir, k.keys, c)) // reopening reads the tail back
 		resume := l.Resume()
 		published(t, dir, k.keys, l.size) // integrated before the kill, published after the restart

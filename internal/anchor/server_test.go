@@ -96,7 +96,7 @@ func recs(first, last uint64) link.Records {
 }
 
 func TestAConnectionStreamsIntoTheLog(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	seal := entry.Seal{First: 1, Last: 3, SHA256: sha256.Sum256([]byte("shard"))}
 	health := entry.Health{State: entry.StateOK}
@@ -128,20 +128,22 @@ func TestAConnectionStreamsIntoTheLog(t *testing.T) {
 
 func TestAConnectionCutsBatchesOnItsTick(t *testing.T) {
 	dir, k := t.TempDir(), newKeys(t)
-	c := &clock{time.Unix(1e9, 0)}
+	c := &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
-	defer closeLog(t, l)
 	conn, _, done := session(t, l)
 	send(t, conn, recs(1, 2))
 	c.advance(CutEvery)
-	for deadline := time.Now().Add(5 * time.Second); l.Resume().Last != 2; time.Sleep(TickEvery) {
-		if time.Now().After(deadline) {
-			t.Fatal("no batch cut while the connection stayed open")
-		}
-	}
+	time.Sleep(5 * TickEvery) // a tick cuts 1-2 now; without it, the end of the connection would cut 1-3
+	send(t, conn, recs(3, 3))
 	_ = conn.Close()
 	if err := result(t, done); err != nil {
 		t.Fatal(err)
+	}
+	closeLog(t, l)
+	got, _ := logged(t, dir, k)
+	want := []entry.Body{entry.Batch{First: 1, Last: 2, Root: rootOver(t, 1, 2)}, entry.Batch{First: 3, Last: 3, Root: rootOver(t, 3, 3)}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("log %v, want %v", got, want)
 	}
 }
 
@@ -151,7 +153,7 @@ func TestAStreamErrorEndsTheConnectionNotTheLog(t *testing.T) {
 		"a hello from the client": link.Hello{},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+			dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 			l := openLog(t, config(dir, k, c))
 			defer closeLog(t, l)
 			conn, _, done := session(t, l)
@@ -167,7 +169,7 @@ func TestAStreamErrorEndsTheConnectionNotTheLog(t *testing.T) {
 }
 
 func TestAMalformedFrameEndsTheConnection(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	defer closeLog(t, l)
 	conn, _, done := session(t, l)
@@ -180,7 +182,7 @@ func TestAMalformedFrameEndsTheConnection(t *testing.T) {
 }
 
 func TestAConflictingSealBreaksTheLog(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	defer func() { _ = l.Close(t.Context()) }()
 	conn, _, done := session(t, l)
@@ -209,7 +211,7 @@ func TestAdmit(t *testing.T) {
 
 // Serve refuses a peer that is not the collector without a hello, then serves the collector.
 func TestServeTakesOnlyTheCollector(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	sock := filepath.Join(t.TempDir(), "ledger.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
 	unixSockets(t, err)
