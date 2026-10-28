@@ -1,6 +1,7 @@
 package anchor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -246,4 +248,23 @@ func TestServeTakesOnlyTheCollector(t *testing.T) {
 		}
 	}
 	_ = ln.Close()
+}
+
+func TestRefusalSummaryNamesItsRule(t *testing.T) {
+	var buf bytes.Buffer
+	ref := &refusals{causes: map[string]uint64{}}
+	ref.add(CauseUID, 1000)
+	ref.add(CauseUID, 1001)
+	ref.report(slog.New(slog.NewJSONHandler(&buf, nil)))
+	got := buf.String()
+	for _, want := range []string{`"uid":2`, `"last_uid":1001`, `"rule_version":"` + RuleVersion + `"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %s lacks %s", got, want)
+		}
+	}
+	buf.Reset()
+	ref.report(slog.New(slog.NewJSONHandler(&buf, nil)))
+	if buf.Len() != 0 {
+		t.Errorf("a minute without refusals logged %s", buf.String())
+	}
 }

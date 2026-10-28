@@ -24,6 +24,9 @@ const (
 	writeTimeout = 5 * time.Second
 )
 
+// RuleVersion names the socket's admission rule in every decision the journal records (ENGINEERING 3).
+const RuleVersion = "adr-0027-v1"
+
 // Refusal causes, as the journal's summary names them.
 const (
 	CauseUID       = "uid"
@@ -59,7 +62,7 @@ func (r *refusals) report(log *slog.Logger) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.causes) > 0 {
-		log.Warn("ledger socket refused connections", "causes", r.causes, "last_uid", r.uid)
+		log.Warn("ledger socket refused connections", "causes", r.causes, "last_uid", r.uid, "rule_version", RuleVersion)
 		r.causes = map[string]uint64{}
 	}
 }
@@ -99,6 +102,7 @@ func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, 
 			_ = c.Close()
 			continue
 		}
+		log.Info("ledger socket admitted the collector", "peer_uid", p.UID, "peer_pid", p.PID, "rule_version", RuleVersion)
 		err = serveConn(ctx, c, l)
 		if l.Broken() != nil {
 			return l.Broken()
