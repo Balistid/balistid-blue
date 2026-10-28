@@ -1,0 +1,58 @@
+# Carries the ledger's checkpoints to the witness and keeps the cosigned one (ADR 0006, 0026). It reads
+# the log through the ledger's group, holds only public keys, and reaches only the witness's address.
+[Unit]
+Description=Balistid Blue relay: the ledger's checkpoints to the witness
+After=balistid-ledger.service network.target
+StartLimitIntervalSec=0
+
+[Service]
+# READY=1 once the keys are read; the first checkpoint goes out within a second.
+Type=notify
+Restart=always
+RestartSec=5s
+User=balistid-relay
+Group=balistid-relay
+# The log's tiles are 0640/0750 of the ledger's group: read, never write (ProtectSystem=strict).
+SupplementaryGroups=balistid-ledger
+# balistid-install writes BALISTID_WITNESS_URL and the address it names into IPAddressAllow (drop-in).
+EnvironmentFile=/etc/balistid/relay.env
+ExecStart=/usr/local/lib/balistid/balistid-relay -submit ${BALISTID_WITNESS_URL}
+StateDirectory=balistid/relay
+StateDirectoryMode=0750
+UMask=0077
+MemoryMax=48M
+MemorySwapMax=0
+NoExecPaths=/ /var/lib/balistid /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-relay
+# No address until the install allows the witness's: fail closed.
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

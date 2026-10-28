@@ -99,6 +99,9 @@ LAYOUT: tuple[str, ...] = (
     # The ledger in the range image, with a key made in the VM (ADR 0027).
     "range/balistid-range-ledger-key.service",
     "range/balistid-ledger-range.conf",
+    # Relay, by exact name (ADR 0006, 0026).
+    "deploy/relay/sysusers.conf",
+    "deploy/relay/balistid-relay.service",
 )
 
 REGULAR_MODES = {"100644", "100755"}

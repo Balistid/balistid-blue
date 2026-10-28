@@ -70,6 +70,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `cmd/balistid-runner/` | Range runner: `build` its image at install, `tick` one evidence run or agent job (ADR 0011) |
 | `cmd/balistid-collector/` | Collector daemon: the socket systemd passes, Laurel's lines into the raw store (ADR 0016, 0017) |
 | `cmd/balistid-ledger/` | Ledger daemon: the collector's stream into the signed log, over its own socket (ADR 0027) |
+| `cmd/balistid-relay/` | Relay daemon: the ledger's checkpoints to the witness, the cosigned one kept (ADR 0006, 0026) |
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
@@ -91,6 +92,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
 | `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
+| `deploy/relay/` | Relay's service unit and its user; the witness's address comes from the install (ADR 0026) |
 | `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
