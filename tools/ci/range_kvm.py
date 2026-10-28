@@ -6,12 +6,14 @@ The runner is a throwaway VM, so this script changes it with sudo: /dev/kvm for 
 unprivileged user namespaces for bwrap and mkosi. The Arch tools run in an archlinux container pinned
 by digest, with packages from a dated archive snapshot (R14), as an unprivileged user with the
 runner's uid. The verdict is advisory; only the local runner records evidence (ADR 0011, point 7).
+The runner check below only keeps the script off other machines by mistake; it proves nothing.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import shutil
 import stat
 import subprocess
@@ -94,11 +96,12 @@ def prepare_host(run: Runner, kvm: Path, sysctl: Path) -> None:
 
 
 def docker_argv(repo: Path, state: Path, cache: Path, uid: int) -> list[str]:
-    """The container: KVM, no extra capabilities, the source read-only, state and cache from the work
+    """The container: KVM, no added capability, the source read-only, state and cache from the work
     directory. seccomp, AppArmor and the masked /proc paths stay off because bwrap and mkosi make
-    user namespaces and mount a fresh /proc in them."""
+    user namespaces and mount a fresh /proc in them. Without them, container root (the pacman step)
+    can write the host's /proc/sys: on a hosted runner that is no more than the step's own sudo."""
     return [
-        "docker", "run", "--rm", "--pull=always",
+        "docker", "run", "--rm",
         "--device", "/dev/kvm",
         "--security-opt", "seccomp=unconfined",
         "--security-opt", "apparmor=unconfined",
@@ -130,7 +133,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     except (RangeError, OSError, subprocess.CalledProcessError) as err:
         print(f"range-kvm: {err}", file=sys.stderr)
         return 1
-    done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid()), check=False)
+    # The build prints package and crate output; with workflow commands off, none of it can become an
+    # annotation in the run whose log root reads the bundle sha256 from (ADR 0011, point 1).
+    token = secrets.token_hex(16)
+    print(f"::stop-commands::{token}", flush=True)
+    try:
+        done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid()), check=False)
+    finally:
+        print(f"::{token}::", flush=True)
     if done.returncode != 0:
         print(f"range-kvm: the build or self-test failed (exit {done.returncode})", file=sys.stderr)
         return 1

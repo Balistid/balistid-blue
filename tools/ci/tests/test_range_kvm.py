@@ -4,6 +4,8 @@ fails the job instead of skipping it (R6)."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import subprocess
 import sys
@@ -29,6 +31,8 @@ class Recorder:
 
     def __call__(self, argv, **_kw) -> subprocess.CompletedProcess:
         self.calls.append(list(argv))
+        if argv[0] == "docker":
+            print("docker ran")
         return subprocess.CompletedProcess(argv, self.exit if argv[0] == "docker" else 0)
 
 
@@ -49,7 +53,7 @@ class Pins(unittest.TestCase):
         self.assertIn("archive.archlinux.org/repos/%s/", range_kvm.CONTAINER_SCRIPT)
         self.assertNotIn("pacman -Sy ", range_kvm.CONTAINER_SCRIPT)
 
-    def test_docker_gets_kvm_and_no_privilege(self) -> None:
+    def test_docker_gets_kvm_and_no_added_privilege(self) -> None:
         argv = range_kvm.docker_argv(Path("/r"), Path("/s"), Path("/c"), 1001)
         self.assertIn("/dev/kvm", argv)
         self.assertIn("/r:/src:ro", argv)
@@ -120,18 +124,33 @@ class FailsClosed(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(rec.calls[0][:3], ["sudo", "tee", "/etc/udev/rules.d/99-kvm4all.rules"])
 
+    def test_workflow_commands_are_off_while_the_build_prints(self) -> None:
+        for exit in (0, 1):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.main(run=Recorder(exit=exit), kvm=Path("/dev/null"))
+            lines = out.getvalue().splitlines()
+            at = lines.index("docker ran")
+            stop = re.fullmatch(r"::stop-commands::([0-9a-f]{32})", lines[at - 1])
+            self.assertIsNotNone(stop, lines)
+            self.assertEqual(lines[at + 1], f"::{stop[1]}::")
+
 
 class Workflow(unittest.TestCase):
     def test_job_runs_the_script_with_no_secret_or_write_permission(self) -> None:
         job = ci_job("range-kvm")
-        self.assertIn("python3 tools/ci/range_kvm.py --work", job)
+        runs = re.findall(r"(?m)^\s+(?:- )?run: (.*)$", job)
+        self.assertEqual(runs, ['python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range"'])
         self.assertIn("persist-credentials: false", job)
-        self.assertNotIn("secrets.", job)
-        self.assertNotIn("permissions:", job)  # the workflow's contents: read applies
-        self.assertRegex(CI.read_text(encoding="utf-8"), r"(?m)^permissions:\n  contents: read\n")
+        # The workflow's contents: read applies, and the state directory the tested code writes is never uploaded.
+        for needle in ("secrets.", "github.token", "permissions:", "continue-on-error", "|| true", "actions/upload-artifact@"):
+            self.assertNotIn(needle, job)
+        self.assertNotRegex(job, r"(?m)^    if:")
+        self.assertRegex(CI.read_text(encoding="utf-8"), r"(?m)^permissions:\n  contents: read\n\n")
 
-    def test_job_checks_out_the_pull_requests_head(self) -> None:
-        self.assertIn("ref: ${{ github.event.pull_request.head.sha || github.sha }}", ci_job("range-kvm"))
+    def test_job_tests_the_tree_that_would_land(self) -> None:
+        # Like every other job: the merge commit, whose workflow then runs its own script.
+        self.assertNotIn("ref:", ci_job("range-kvm"))
 
 
 if __name__ == "__main__":
