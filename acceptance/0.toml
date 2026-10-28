@@ -180,7 +180,7 @@ max = 60
 unit = "s per refusal summary record (count per socket and reason, rule version, one sample) in the raw store"
 rows = ["T20"]
 adr = "0007"
-method = "Test floods every socket with invalid requests: every minute with refusals has one summary record, stored at most two collector ticks (500 ms) after the minute (ADR 0023); nothing else grows (Laurel's socket stores malformed lines as evidence, ADR 0016)."
+method = "Test floods every collector socket with invalid requests (the ledger sums its refusals in its journal, ADR 0027): every minute with refusals has one summary record, stored at most two collector ticks (500 ms) after the minute (ADR 0023); nothing else grows (Laurel's socket stores malformed lines as evidence, ADR 0016)."
 
 # --- Anchoring and the Pi (ADR 0006) ---
 
