@@ -24,6 +24,12 @@ const (
 	// leavesPerTick bounds what one tick reads for the ledger: eight ticks of sustained_rate, so a
 	// stream that fell behind catches up while a tick stays short (BenchmarkLeaves).
 	leavesPerTick = 4096
+	// leavesBytesPerTick bounds the record data one tick walks past to read leaves: about 30 ms warm
+	// (BenchmarkLeaves), far inside the 10 s watchdog, when large records fill the backlog.
+	leavesBytesPerTick = 64 << 20
+	// checkBytes bounds the ledger's last batch the writer reads back: a batch covers what four ticks of
+	// leavesBytesPerTick send in CutEvery, so a larger one is a ledger that lies.
+	checkBytes = 256 << 20
 	// ledgerQueue bounds the groups waiting for the connection; when full the writer sends them later.
 	ledgerQueue   = 16
 	redialEvery   = time.Second
@@ -52,8 +58,7 @@ type Ledger struct {
 	log   *slog.Logger
 	out   chan group
 	hello chan helloOf
-	mu    sync.Mutex
-	epoch uint64 // numbers connections: a group queued for an earlier one is dropped
+	epoch uint64 // numbers connections: a group queued for an earlier one is dropped; Run's alone
 }
 
 // NewLedger returns the stream's end that dial connects.
@@ -116,10 +121,8 @@ func (l *Ledger) session(ctx context.Context) error {
 	if err != nil || !ok {
 		return errors.Join(fmt.Errorf("collector: ledger sent %T first", m), err)
 	}
-	l.mu.Lock()
 	l.epoch++
 	epoch := l.epoch
-	l.mu.Unlock()
 	select { // a hello the writer has not taken yet is stale now
 	case <-l.hello:
 	default:
@@ -326,10 +329,10 @@ func (w *Writer) stream(ctx context.Context) {
 		w.check(ctx)
 	}
 	defer w.sendHealth() // also after the stream stopped: the ledger logs why (ADR 0027, point 3)
-	if w.st == nil || w.hello != nil || w.stopped != "" {
+	if w.st == nil || w.hello != nil || w.stopped != "" || !w.sealAtSent() {
 		return
 	}
-	leaves, seals, err := w.st.Leaves(ctx, w.sent, leavesPerTick)
+	leaves, seals, err := w.st.Leaves(ctx, w.sent, leavesPerTick, leavesBytesPerTick)
 	if err != nil {
 		if err.Error() != w.leavesErr {
 			w.Log.Error("ledger stream: leaves not read", "err", err)
@@ -347,47 +350,70 @@ func (w *Writer) stream(ctx context.Context) {
 		if !w.Ledger.send(g) {
 			return
 		}
-		w.sent = g.last
+		if w.sent = g.last; len(g.msgs) == 2 { // the frame and the seal ending it
+			w.sealSent = g.last
+		}
 	}
 }
 
 // check holds the ledger's resume point against the store: the ledger may not be ahead of it, and its
 // last batch's root must be the store's own leaves; otherwise the stream stops (ADR 0027, point 3).
-func (w *Writer) check(ctx context.Context) bool {
+func (w *Writer) check(ctx context.Context) {
 	h := *w.hello
 	switch {
 	case h.Last > w.st.Committed():
 		w.stop(fmt.Errorf("ledger resumes after %d, the store committed %d", h.Last, w.st.Committed()))
-		return false
+		return
 	case h.Last-h.First >= maxBatchCheck:
 		w.stop(fmt.Errorf("ledger's last batch %d-%d is larger than any it cuts", h.First, h.Last))
-		return false
+		return
 	}
 	if h.Last > 0 {
-		leaves, _, err := w.st.Leaves(ctx, h.First-1, int(h.Last-h.First+1)) //nolint:gosec // below maxBatchCheck
-		if err != nil {
-			w.Log.Error("ledger stream: resume point not read", "err", err)
-			return false
+		span := h.Last - h.First + 1
+		leaves, _, err := w.st.Leaves(ctx, h.First-1, int(span), checkBytes) //nolint:gosec // below maxBatchCheck
+		if err != nil {                                                      // the resume point unread is a stream that cannot go on: UNKNOWN until it reads
+			if err.Error() != w.leavesErr {
+				w.Log.Error("ledger stream: resume point not read", "err", err)
+			}
+			w.leavesErr = err.Error()
+			return
+		}
+		if uint64(len(leaves)) != span {
+			w.stop(fmt.Errorf("ledger's last batch %d-%d holds more data than any it cuts", h.First, h.Last))
+			return
 		}
 		r := entry.NewRoot()
 		for _, l := range leaves {
 			if err := r.Add(l.Hash); err != nil {
 				w.stop(err)
-				return false
+				return
 			}
 		}
 		if root, err := r.Sum(); err != nil || root != h.Root {
 			w.stop(errors.Join(fmt.Errorf("ledger's batch %d-%d is not the store's", h.First, h.Last), err))
-			return false
-		}
-		// A seal ending where the ledger resumes may be missing after a crash; the ledger drops a resend.
-		for _, s := range w.st.Seals() {
-			if s.Last == h.Last && !w.Ledger.send(group{epoch: w.epoch, msgs: []link.Message{sealEntry(s)}}) {
-				return false
-			}
+			return
 		}
 	}
-	w.hello, w.sent = nil, h.Last
+	// The seal ending where the ledger resumes may be missing after a crash; sealAtSent resends it.
+	w.hello, w.sent, w.sealSent, w.leavesErr = nil, h.Last, 0, ""
+}
+
+// sealAtSent hands the ledger the seal of a shard whose last record it already has: a shard sealed when the
+// next record arrived (rotation in Append) ends at sent, which Leaves, reading after sent, never returns.
+// It reports whether the stream may go on to the records after it.
+func (w *Writer) sealAtSent() bool {
+	if w.sent == 0 || w.sealSent == w.sent {
+		return true
+	}
+	seals := w.st.Seals()
+	i := slices.IndexFunc(seals, func(s store.Seal) bool { return s.Last == w.sent })
+	if i < 0 {
+		return true
+	}
+	if !w.Ledger.send(group{epoch: w.epoch, msgs: []link.Message{sealEntry(seals[i])}}) {
+		return false
+	}
+	w.sealSent = w.sent
 	return true
 }
 

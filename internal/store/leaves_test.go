@@ -37,7 +37,7 @@ func threeDays(t *testing.T, dir string) *Store {
 
 func leavesOf(t *testing.T, s *Store, after uint64, max int) ([]shard.Leaf, []Seal) {
 	t.Helper()
-	got, seals, err := s.Leaves(t.Context(), after, max)
+	got, seals, err := s.Leaves(t.Context(), after, max, 1<<40)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestLeavesReadThroughAnOpenTransaction(t *testing.T) {
 	}
 	done := make(chan []shard.Leaf, 1)
 	go func() {
-		got, _, err := s.Leaves(t.Context(), 0, 10)
+		got, _, err := s.Leaves(t.Context(), 0, 10, 1<<40)
 		if err != nil {
 			t.Error(err)
 		}
@@ -155,7 +155,7 @@ func TestLeavesReadThroughAnOpenTransaction(t *testing.T) {
 func TestLeavesOfAFailedStoreFail(t *testing.T) {
 	s := threeDays(t, t.TempDir())
 	s.unknown = "seal index: no space"
-	if got, _, err := s.Leaves(t.Context(), 0, 10); err == nil {
+	if got, _, err := s.Leaves(t.Context(), 0, 10, 1<<40); err == nil {
 		t.Fatalf("UNKNOWN store gave %d leaves", len(got))
 	}
 }
@@ -163,7 +163,7 @@ func TestLeavesOfAFailedStoreFail(t *testing.T) {
 func TestLeavesRefuseASeqInNoShard(t *testing.T) {
 	s := threeDays(t, t.TempDir())
 	s.seals = s.seals[1:] // the first shard's index line, as if lost
-	if got, _, err := s.Leaves(t.Context(), 0, 10); err == nil {
+	if got, _, err := s.Leaves(t.Context(), 0, 10, 1<<40); err == nil {
 		t.Fatalf("seq 1 without its shard gave %d leaves", len(got))
 	}
 }
@@ -204,10 +204,37 @@ func BenchmarkLeaves(b *testing.B) {
 				b.Fatal(err)
 			}
 			for b.Loop() {
-				if got, _, err := s.Leaves(b.Context(), 0, c.n); err != nil || len(got) != c.n {
+				if got, _, err := s.Leaves(b.Context(), 0, c.n, 1<<40); err != nil || len(got) != c.n {
 					b.Fatalf("leaves: %d, %v", len(got), err)
 				}
 			}
 		})
+	}
+}
+
+// Reading a leaf walks past its record's data, so a read stops once that data reaches the budget, after at
+// least one record, and names a seal only if it reached the seal's last record.
+func TestLeavesStopAtTheByteBudget(t *testing.T) {
+	s := threeDays(t, t.TempDir())
+	all, allSeals := leavesOf(t, s, 0, 1000)
+	var sizes int64
+	for _, l := range all[:2] {
+		sizes += l.Size
+	}
+	got, seals, err := s.Leaves(t.Context(), 0, 1000, sizes)
+	if err != nil || len(got) != 2 || len(seals) != 0 {
+		t.Fatalf("budget of two records: %d leaves, seals %v, %v", len(got), seals, err)
+	}
+	if got, _, err := s.Leaves(t.Context(), 0, 1000, 1); err != nil || len(got) != 1 {
+		t.Fatalf("a budget below one record: %d leaves, %v", len(got), err)
+	}
+	var upToSeal int64
+	for _, l := range all {
+		if upToSeal += l.Size; l.Seq == allSeals[0].Last {
+			break
+		}
+	}
+	if _, seals, err := s.Leaves(t.Context(), 0, 1000, upToSeal); err != nil || len(seals) != 1 {
+		t.Fatalf("a budget through the first shard: seals %v, %v", seals, err)
 	}
 }
