@@ -622,6 +622,9 @@ func (s *Store) Leaves(ctx context.Context, after uint64, max int, budget int64)
 	if s.unknown != "" { // a seal whose index line failed holds seqs no index names: the reopen recovers it
 		return nil, nil, errors.New("store: " + s.unknown)
 	}
+	if budget <= 0 { // a zero budget would read nothing forever, unseen
+		return nil, nil, fmt.Errorf("store: leaves budget %d", budget)
+	}
 	if max <= 0 || after >= s.committed {
 		return nil, nil, nil
 	}

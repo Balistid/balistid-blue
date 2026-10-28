@@ -80,7 +80,7 @@ type Log struct {
 // Open locks dir for the process's lifetime, opens its log and reads back where the stream resumes.
 // Close it before cancelling ctx's parent: Tessera finishes its work only on Close.
 func Open(ctx context.Context, cfg Config) (*Log, error) {
-	if cfg.Signer == nil || cfg.CapBytes < entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
+	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
 		return nil, errors.New("anchor: incomplete config")
 	}
 	lock, err := lockDir(cfg.Dir)

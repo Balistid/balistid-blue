@@ -324,6 +324,8 @@ func TestIncompleteConfigIsRefused(t *testing.T) {
 		func(cfg *Config) { cfg.CapBytes = entryBytes - 1 },
 		func(cfg *Config) { cfg.CheckpointInterval = 0 },
 		func(cfg *Config) { cfg.Now = nil },
+		func(cfg *Config) { cfg.Dir = "" },
+		func(cfg *Config) { cfg.Dir = "relative/log" },
 	} {
 		cfg := config(dir, k, c)
 		change(&cfg)
