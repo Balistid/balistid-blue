@@ -13,13 +13,15 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core in #142, waiting for approval: ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); review round 4 GO |
+| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay and Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - #142: Tessera v1.0.4 with pinned licences in go_gate, x/crypto v0.52.0, otel v1.41.0, Go 1.27.3 (advisories); four
-  review rounds (Opus critic, Codex security), the round-2 defect redesigned under R7 by the maintainer's choice.
+  review rounds (Opus critic, Codex security), the round-2 defect redesigned under R7 by the maintainer's choice;
+  merged after the maintainer's approval, CI green on ff8398c.
 ## Next step
-1. #142: the maintainer's approval and /security-audit, then merge; next the relay and the Pi (ledger-PLAN L6-L12).
+1. The relay and the Pi witness on top of the ledger core (ledger-PLAN L6-L12). /security-audit of floor 0 as a
+   whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
