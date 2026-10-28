@@ -19,6 +19,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
+	"github.com/Balistid/balistid-blue/internal/link"
 )
 
 const (
@@ -50,13 +51,6 @@ type Config struct {
 type Resume struct {
 	Last, First uint64
 	Root        [32]byte
-}
-
-// Record is one committed record of the stream and the loss entries it carries.
-type Record struct {
-	Seq    uint64
-	Leaf   [32]byte
-	Losses []entry.Loss
 }
 
 type lossKey struct {
@@ -195,26 +189,22 @@ func (l *Log) next() uint64 {
 	return l.resume.Last + 1
 }
 
-// Record adds the next record: first the loss entries it carries, which precede the batch covering it.
-func (l *Log) Record(ctx context.Context, r Record) error {
+// Record adds the next record: first the loss entry it carries, which precedes the batch covering it.
+func (l *Log) Record(ctx context.Context, r link.Record) error {
 	if l.broken != nil {
 		return l.broken
 	}
 	if want := l.next(); r.Seq != want || r.Seq > entry.MaxSeq {
 		return fmt.Errorf("%w: record %d, want %d", ErrStream, r.Seq, want)
 	}
-	for _, loss := range r.Losses {
-		k := lossKey{loss.Seq, loss.Stage}
-		if loss.Seq != r.Seq {
-			return fmt.Errorf("%w: loss of record %d carried by %d", ErrStream, loss.Seq, r.Seq)
-		}
-		if l.tailLoss[k] { // logged before the stream restarted
-			continue
-		}
-		if err := l.append(ctx, loss); err != nil {
+	if r.Loss != nil && r.Loss.Seq != r.Seq {
+		return fmt.Errorf("%w: loss of record %d carried by %d", ErrStream, r.Loss.Seq, r.Seq)
+	}
+	if loss := r.Loss; loss != nil && !l.tailLoss[lossKey{loss.Seq, loss.Stage}] { // else logged before a restart
+		if err := l.append(ctx, *loss); err != nil {
 			return err
 		}
-		l.tailLoss[k] = true
+		l.tailLoss[lossKey{loss.Seq, loss.Stage}] = true
 	}
 	if l.batch == nil {
 		l.batch, l.batchFirst = entry.NewRoot(), r.Seq

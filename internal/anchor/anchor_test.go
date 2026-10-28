@@ -22,6 +22,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
+	"github.com/Balistid/balistid-blue/internal/link"
 )
 
 const origin = "balistid.test/log"
@@ -85,7 +86,7 @@ func leaf(seq uint64) [32]byte { return sha256.Sum256([]byte(strconv.FormatUint(
 func records(t *testing.T, l *Log, first, last uint64) {
 	t.Helper()
 	for s := first; s <= last; s++ {
-		if err := l.Record(t.Context(), Record{Seq: s, Leaf: leaf(s)}); err != nil {
+		if err := l.Record(t.Context(), link.Record{Seq: s, Leaf: leaf(s)}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -165,7 +166,7 @@ func TestStreamResumesFromTheLog(t *testing.T) {
 		t.Fatalf("resume %+v", l.Resume())
 	}
 	for _, seq := range []uint64{3, 5, 0, entry.MaxSeq + 1} {
-		if err := l.Record(t.Context(), Record{Seq: seq, Leaf: leaf(seq)}); !errors.Is(err, ErrStream) {
+		if err := l.Record(t.Context(), link.Record{Seq: seq, Leaf: leaf(seq)}); !errors.Is(err, ErrStream) {
 			t.Fatalf("record %d after 3: %v", seq, err)
 		}
 	}
@@ -181,7 +182,7 @@ func TestLossesPrecedeTheirBatchOnce(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
 	loss := entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}
-	carried := Record{Seq: 1, Leaf: leaf(1), Losses: []entry.Loss{loss}}
+	carried := link.Record{Seq: 1, Leaf: leaf(1), Loss: &loss}
 	if err := l.Record(t.Context(), carried); err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func TestLossesPrecedeTheirBatchOnce(t *testing.T) {
 	if err := l.Record(t.Context(), carried); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.Record(t.Context(), Record{Seq: 2, Leaf: leaf(2), Losses: []entry.Loss{{Seq: 1, Stage: entry.StageCap, Records: 1}}}); !errors.Is(err, ErrStream) {
+	if err := l.Record(t.Context(), link.Record{Seq: 2, Leaf: leaf(2), Loss: &entry.Loss{Seq: 1, Stage: entry.StageCap, Records: 1}}); !errors.Is(err, ErrStream) {
 		t.Fatalf("loss carried by another record: %v", err)
 	}
 	closeLog(t, l)
@@ -250,7 +251,7 @@ func TestSealConflictsBreakTheLog(t *testing.T) {
 			if err := l.Seal(t.Context(), s); err == nil || l.Broken() == nil {
 				t.Fatalf("seal %+v: %v", s, err)
 			}
-			if err := l.Record(t.Context(), Record{Seq: 4, Leaf: leaf(4)}); err == nil {
+			if err := l.Record(t.Context(), link.Record{Seq: 4, Leaf: leaf(4)}); err == nil {
 				t.Fatal("a broken log took a record")
 			}
 		})
@@ -454,7 +455,7 @@ func appendForever(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	for seq := l.Resume().Last + 1; ; seq++ {
-		if err := l.Record(t.Context(), Record{Seq: seq, Leaf: leaf(seq)}); err != nil {
+		if err := l.Record(t.Context(), link.Record{Seq: seq, Leaf: leaf(seq)}); err != nil {
 			t.Fatal(err)
 		}
 		if seq%3 == 0 {
