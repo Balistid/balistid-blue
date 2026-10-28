@@ -8,7 +8,8 @@ same:      two release builds are byte-identical.
 owned:     every package the range binaries, the runner and the client compile, and the paths that go into the range image,
            is in the main module and code-owned (ADR 0011): an agent change there would run on
            the host or in the evidence image, so it waits for the maintainer. A package from another
-           module passes only if that module, at that version and not replaced, is in ALLOWED_MODULES.
+           module passes only if that module, at that version and not replaced, is in ALLOWED_MODULES with
+           an allowed licence whose file has the pinned SHA-256.
 """
 
 from __future__ import annotations
@@ -55,18 +56,64 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
 OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid",
                "cmd/balistid-collector")
 OWNED_PATHS = ("range", "deploy", "packaging")
-# The store's whole compiled closure (SQLite without cgo, ADR 0003), exactly as go.mod requires it; a
-# module bump moves this list in the same code-owned change. Go checks each module's h1 against go.sum.
-ALLOWED_MODULES = frozenset({
-    "github.com/dustin/go-humanize@v1.0.1",
-    "github.com/google/uuid@v1.6.0",
-    "github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
-    "golang.org/x/sys@v0.48.0",
-    "modernc.org/libc@v1.77.1",
-    "modernc.org/mathutil@v1.7.1",
-    "modernc.org/memory@v1.12.1",
-    "modernc.org/sqlite@v1.60.1",
-})
+# Every module a gated binary compiles, at its exact version and not replaced, with the licence its file
+# states and that file's SHA-256 (R14, ENGINEERING.md 7): a bump or a relicence moves this table in the same
+# code-owned change. Go checks each module's h1 against go.sum.
+ALLOWED_MODULES: dict[str, tuple[str, str, str]] = {
+    "github.com/cenkalti/backoff/v5@v5.0.3":
+        ("LICENSE", "MIT", "5c0476add4c38b55d0ed5ac11b85e00c38f26e1caee20dfe3ab58190103d1fbc"),
+    "github.com/cespare/xxhash/v2@v2.3.0":
+        ("LICENSE.txt", "MIT", "f566a9f97bacdaf00d9f21dd991e81dc11201c4e016c86b470799429a1c9a79c"),
+    "github.com/dustin/go-humanize@v1.0.1":
+        ("LICENSE", "MIT", "a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71"),
+    "github.com/go-logr/logr@v1.4.3":
+        ("LICENSE", "Apache-2.0", "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"),
+    "github.com/go-logr/stdr@v1.2.2":
+        ("LICENSE", "Apache-2.0", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
+    "github.com/google/uuid@v1.6.0":
+        ("LICENSE", "BSD-3-Clause", "0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d"),
+    "github.com/hashicorp/golang-lru/v2@v2.0.7":
+        ("LICENSE", "MPL-2.0", "6c7088eb877b5d7e6e0e9d27e822ea25fcda2e83f9eba59bb5f1418a656796e0"),
+    "github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec":
+        ("LICENSE", "BSD-3-Clause", "dd26a7abddd02e2d0aba97805b31f248ef7835d9e10da289b22e3b8ab78b324d"),
+    "github.com/transparency-dev/formats@v0.0.0-20251017110053-404c0d5b696c":
+        ("LICENSE", "Apache-2.0", "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
+    "github.com/transparency-dev/merkle@v0.0.2":
+        ("LICENSE", "Apache-2.0", "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"),
+    "github.com/transparency-dev/tessera@v1.0.4":
+        ("LICENSE", "Apache-2.0", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
+    "go.opentelemetry.io/auto/sdk@v1.2.1":
+        ("LICENSE", "Apache-2.0", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
+    "go.opentelemetry.io/otel@v1.40.0":
+        ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
+    "go.opentelemetry.io/otel/metric@v1.40.0":
+        ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
+    "go.opentelemetry.io/otel/trace@v1.40.0":
+        ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
+    "golang.org/x/crypto@v0.48.0":
+        ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
+    "golang.org/x/exp@v0.0.0-20240325151524-a685a6edb6d8":
+        ("LICENSE", "BSD-3-Clause", "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"),
+    "golang.org/x/mod@v0.41.0":
+        ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
+    "golang.org/x/sync@v0.23.0":
+        ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
+    "golang.org/x/sys@v0.48.0":
+        ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
+    "k8s.io/klog/v2@v2.130.1":
+        ("LICENSE", "Apache-2.0", "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"),
+    "modernc.org/libc@v1.77.1":
+        ("LICENSE", "BSD-3-Clause", "95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600"),
+    "modernc.org/mathutil@v1.7.1":
+        ("LICENSE", "BSD-3-Clause", "bfa9bf72a72ca009fd62a8f84fca3dca67e51d93af96352723646599898b6cf5"),
+    "modernc.org/memory@v1.12.1":
+        ("LICENSE", "BSD-3-Clause", "59895e669f48f168b6b858358f6005779cdf40a265f7828813061b56af67b496"),
+    "modernc.org/sqlite@v1.60.1":
+        ("LICENSE", "BSD-3-Clause", "c6fe05491a60ae13bcd223088d2705e36dede24e5587226231d2459ada5c4822"),
+}
+LICENCES = frozenset({"Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Apache-2.0 AND BSD-3-Clause"})
+# The one exception (ADR 0026): Tessera's dependency, linked unmodified; depguard keeps our code from importing it.
+LICENCE_EXCEPTION = ("github.com/hashicorp/golang-lru/v2@v2.0.7", "MPL-2.0")
 MAINTAINER = "@Jvc0n"
 # Every line is an anchored plain path owned by the maintainer alone. GitHub lets a later line take
 # an owner away (a glob, a child path, an empty or invalid owner, an inline comment); refusing all of
@@ -119,6 +166,20 @@ def allowed_module(path: str, module: dict) -> bool:
             and (path == mod or path.startswith(mod + "/")))
 
 
+def licence_problems(key: str, module_dir: str) -> list[str]:
+    """A listed module's licence is allowed and its file in the module directory is the one pinned."""
+    name, spdx, want = ALLOWED_MODULES[key]
+    if spdx not in LICENCES and (key, spdx) != LICENCE_EXCEPTION:
+        return [f"{key}: licence {spdx} is not allowed (ENGINEERING.md 7)"]
+    if not module_dir:
+        return [f"{key}: no module directory to read its licence from"]
+    try:
+        got = hashlib.sha256((Path(module_dir) / name).read_bytes()).hexdigest()
+    except OSError as err:
+        return [f"{key}: licence file: {err}"]
+    return [] if got == want else [f"{key}: {name} has sha256 {got}, pinned {want}"]
+
+
 def owned_problems(deps_json: str, codeowners: str, go_mod: str) -> list[str]:
     rules, problems = codeowners_rules(codeowners)
     module_path = go_module(go_mod)
@@ -128,13 +189,17 @@ def owned_problems(deps_json: str, codeowners: str, go_mod: str) -> list[str]:
         packages = go_list_packages(deps_json)
     except ValueError as err:
         return problems + [f"go list output is not JSON: {err}"]
-    seen = set()
+    seen, licensed = set(), set()
     for pkg in packages:
         path = pkg.get("ImportPath", "")
         if pkg.get("Standard") is True:
             continue
         module = pkg.get("Module") or {}
         if allowed_module(path, module):
+            key = f"{module['Path']}@{module.get('Version')}"
+            if key not in licensed:
+                licensed.add(key)
+                problems += licence_problems(key, module.get("Dir", ""))
             continue
         main_module = module.get("Path") == module_path and module.get("Main") is True
         if not main_module or not path.startswith(module_path + "/"):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -637,7 +639,17 @@ class OwnedDepsTest(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertTrue(self.problems(owners=self.OWNERS + line + "\n"))
 
-    SQLITE = {"Path": "modernc.org/sqlite", "Version": "v1.60.1"}
+    def setUp(self):
+        # The listed module's licence file lives in a temporary module directory, pinned by its hash.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.licence = Path(tmp.name) / "LICENSE"
+        self.licence.write_bytes(b"BSD licence\n")
+        pin = ("LICENSE", "BSD-3-Clause", hashlib.sha256(b"BSD licence\n").hexdigest())
+        patcher = mock.patch.dict(go_gate.ALLOWED_MODULES, {"modernc.org/sqlite@v1.60.1": pin})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.SQLITE = {"Path": "modernc.org/sqlite", "Version": "v1.60.1", "Dir": tmp.name}
 
     def test_listed_module_at_its_version_passes(self):
         deps = self.deps({"ImportPath": "modernc.org/sqlite", "Module": self.SQLITE},
@@ -664,7 +676,41 @@ class OwnedDepsTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         go_mod = (root / "go.mod").read_text()
         required = {f"{m}@{v}" for m, v in re.findall(r"^\s*(?:require )?(\S+) (v\S+)", go_mod, re.M)}
-        self.assertEqual(go_gate.ALLOWED_MODULES - required, set())
+        self.assertEqual(set(go_gate.ALLOWED_MODULES) - required, set())
+
+    def test_changed_or_missing_licence_file_fails(self):
+        sqlite = {"ImportPath": "modernc.org/sqlite", "Module": self.SQLITE}
+        self.assertEqual(self.problems(deps=self.deps(sqlite)), [])
+        self.licence.write_bytes(b"GPL licence\n")
+        self.assertTrue(self.problems(deps=self.deps(sqlite)))
+        self.licence.unlink()
+        self.assertTrue(self.problems(deps=self.deps(sqlite)))
+        nodir = {"ImportPath": "modernc.org/sqlite", "Module": {"Path": "modernc.org/sqlite", "Version": "v1.60.1"}}
+        self.assertTrue(self.problems(deps=self.deps(nodir)))
+
+    def test_licence_off_the_list_fails(self):
+        sqlite = {"ImportPath": "modernc.org/sqlite", "Module": self.SQLITE}
+        digest = hashlib.sha256(self.licence.read_bytes()).hexdigest()
+        lru = "github.com/hashicorp/golang-lru/v2"
+        cases = {"modernc.org/sqlite@v1.60.1": ("modernc.org/sqlite", "v1.60.1", "GPL-3.0-only"),
+                 "modernc.org/sqlite@v1.60.1 ": ("modernc.org/sqlite", "v1.60.1", "MPL-2.0"),
+                 f"{lru}@v2.0.8": (lru, "v2.0.8", "MPL-2.0")}
+        for name, (path, version, spdx) in cases.items():
+            with self.subTest(case=name), mock.patch.dict(go_gate.ALLOWED_MODULES,
+                                                         {f"{path}@{version}": ("LICENSE", spdx, digest)}):
+                pkg = {"ImportPath": path, "Module": {**self.SQLITE, "Path": path, "Version": version}}
+                self.assertTrue(self.problems(deps=self.deps(pkg)))
+        self.assertEqual(self.problems(deps=self.deps(sqlite)), [])
+
+    def test_every_pinned_licence_is_allowed(self):
+        for key, (_, spdx, digest) in go_gate.ALLOWED_MODULES.items():
+            with self.subTest(module=key):
+                self.assertTrue(spdx in go_gate.LICENCES or (key, spdx) == go_gate.LICENCE_EXCEPTION)
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_our_code_cannot_import_the_mpl_module(self):
+        root = Path(__file__).resolve().parents[3]
+        self.assertIn("pkg: github.com/hashicorp/golang-lru", (root / ".golangci.yml").read_text())
 
     # The binaries root installs are in the gate, and CI lists exactly the gate's roots (ADR 0011).
     def test_gate_roots_match_ci(self):

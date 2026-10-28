@@ -27,6 +27,8 @@ linters:
               desc: "ENGINEERING.md 7: use crypto/rand"
             - pkg: log$
               desc: "ENGINEERING.md 7: use log/slog"
+            - pkg: github.com/hashicorp/golang-lru
+              desc: "ADR 0026: MPL-2.0, linked only as Tessera's dependency, never imported by our code"
     forbidigo:
       analyze-types: true
       forbid:
