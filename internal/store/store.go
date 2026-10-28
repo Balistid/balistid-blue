@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -613,6 +614,43 @@ func (s *Store) NoteHealth(data []byte) error {
 // Seals returns the index, oldest first. The seals Append, Flush and Close return are only the new
 // ones; the collector can always catch up from here, after the last seal the ledger reports.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
+
+// Leaves returns up to max committed records after seq after, in seq order, with the seal of each shard
+// whose last record is among them, which the ledger logs after that record (ADR 0027, points 1 and 4).
+// Call it after a Flush that returned no error: the current shard's records are then committed.
+func (s *Store) Leaves(ctx context.Context, after uint64, max int) ([]shard.Leaf, []Seal, error) {
+	if s.unknown != "" { // a seal whose index line failed holds seqs no index names: the reopen recovers it
+		return nil, nil, errors.New("store: " + s.unknown)
+	}
+	if max <= 0 || after >= s.committed {
+		return nil, nil, nil
+	}
+	end := min(s.committed, after+uint64(max))
+	var out []shard.Leaf
+	var seals []Seal
+	for after < end {
+		i := sort.Search(len(s.seals), func(i int) bool { return s.seals[i].Last > after })
+		var got []shard.Leaf
+		var err error
+		switch {
+		case i < len(s.seals) && s.seals[i].First <= after+1:
+			l := s.seals[i]
+			got, err = shard.Leaves(ctx, filepath.Join(s.dir, l.Name), SensorProvider, after, min(end, l.Last))
+			if err == nil && l.Last <= end {
+				seals = append(seals, l)
+			}
+		case s.cur != nil && s.curFirst <= after+1:
+			got, err = s.cur.Leaves(ctx, SensorProvider, after, end)
+		default:
+			err = fmt.Errorf("seq %d is in no shard", after+1)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("store: leaves: %w", err)
+		}
+		out, after = append(out, got...), got[len(got)-1].Seq
+	}
+	return out, seals, nil
+}
 
 // Committed is the last seq the store has made durable: through it, a crash loses no record. It
 // rises only when a commit or a seal returns (a seal Append makes on the way included), never for

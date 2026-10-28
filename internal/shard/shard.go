@@ -276,6 +276,81 @@ func Read(ctx context.Context, path string, want [32]byte, fn func(rawrecord.Rec
 	return records(ctx, db, fn)
 }
 
+// Leaf is what the ledger takes of a stored record (ADR 0027, points 1 and 6): its seq and stored leaf,
+// its provider, whether it was stored truncated, and its data unless it is the sensor's.
+type Leaf struct {
+	Seq       uint64
+	Hash      [32]byte
+	Provider  string
+	Truncated bool
+	Data      []byte
+}
+
+// Leaves returns the records after seq after through upto of the sealed shard at path, opened read-only.
+// Unlike Read it does not hash the file on every call: the ledger anchors the stored leaves, and a
+// collector able to swap a shard could forge them anyway (T18).
+func Leaves(ctx context.Context, path, sensor string, after, upto uint64) ([]Leaf, error) {
+	db, err := open(path, "mode=ro&immutable=1")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close() //nolint:errcheck // read-only
+	return leaves(ctx, db, sensor, after, upto)
+}
+
+// Leaves is Leaves on the shard being written, for committed seqs only. An open transaction holds the one
+// connection, so the read goes through it rather than wait; uncancelled, as Append's writes are.
+func (w *Writer) Leaves(ctx context.Context, sensor string, after, upto uint64) ([]Leaf, error) {
+	switch {
+	case w.db == nil:
+		return nil, errors.New("shard is sealed")
+	case w.broken != nil:
+		return nil, w.broken
+	case w.tx != nil:
+		return leaves(context.WithoutCancel(ctx), w.tx, sensor, after, upto)
+	}
+	return leaves(ctx, w.db, sensor, after, upto)
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// leaves reads seqs after+1 to upto of db and refuses anything but exactly those, in order.
+func leaves(ctx context.Context, db querier, sensor string, after, upto uint64) ([]Leaf, error) {
+	if after >= upto || upto > math.MaxInt64 {
+		return nil, fmt.Errorf("leaves after %d through %d: not a seq range", after, upto)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT seq, leaf, provider, orig_len != length(data),
+		CASE WHEN provider = ? THEN NULL ELSE data END FROM records WHERE seq > ? AND seq <= ? ORDER BY seq`,
+		sensor, int64(after), int64(upto)) //nolint:gosec // after < upto <= MaxInt64
+	if err != nil {
+		return nil, fmt.Errorf("read shard leaves: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only; rows.Err reports a failed read
+	out := make([]Leaf, 0, upto-after)
+	for rows.Next() {
+		var seq int64
+		var l Leaf
+		var leaf []byte
+		if err := rows.Scan(&seq, &leaf, &l.Provider, &l.Truncated, &l.Data); err != nil {
+			return nil, fmt.Errorf("read shard leaf: %w", err)
+		}
+		if want := after + uint64(len(out)) + 1; seq < 0 || uint64(seq) != want || len(leaf) != 32 {
+			return nil, fmt.Errorf("shard leaf %d: want seq %d with a 32-byte leaf", seq, want)
+		}
+		l.Seq, l.Hash = uint64(seq), [32]byte(leaf)
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read shard leaves: %w", err)
+	}
+	if uint64(len(out)) != upto-after {
+		return nil, fmt.Errorf("shard holds %d of the leaves after %d through %d", len(out), after, upto)
+	}
+	return out, nil
+}
+
 // records checks the meta row and calls fn with every record of db in seq order, as Read describes.
 func records(ctx context.Context, db *sql.DB, fn func(rawrecord.Record) error) error {
 	var version, metaRows int
