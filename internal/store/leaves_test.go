@@ -238,3 +238,12 @@ func TestLeavesStopAtTheByteBudget(t *testing.T) {
 		t.Fatalf("a budget through the first shard: seals %v, %v", seals, err)
 	}
 }
+
+func TestLeavesRefuseANoBudget(t *testing.T) {
+	s := threeDays(t, t.TempDir())
+	for _, budget := range []int64{0, -1} {
+		if got, _, err := s.Leaves(t.Context(), 0, 10, budget); err == nil {
+			t.Fatalf("budget %d: %d leaves, no error", budget, len(got))
+		}
+	}
+}
