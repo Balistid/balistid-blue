@@ -13,14 +13,14 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core in #142 (draft): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at f06dd98); review round 2 stopped under R7 |
+| Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core in #142, waiting for approval: ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); review round 4 GO |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- #142: Tessera v1.0.4 with pinned licences in go_gate, x/crypto v0.52.0 and otel v1.41.0 (advisories); review round 1
-  (Opus critic, Codex security) closed; round 2 found a defect its fix brought in (below).
+- #142: Tessera v1.0.4 with pinned licences in go_gate, x/crypto v0.52.0, otel v1.41.0, Go 1.27.3 (advisories); four
+  review rounds (Opus critic, Codex security), the round-2 defect redesigned under R7 by the maintainer's choice.
 ## Next step
-1. #142: redesign the collector's check of the ledger's last batch (maintainer decides, R7), then review round 3 only on it.
-2. #142: Go 1.27.3 pin (GO-2026-6809 in crypto/x509, reachable through Tessera's net/http) needs the maintainer's push.
+1. #142: the maintainer's approval and /security-audit, then merge; next the relay and the Pi (ledger-PLAN L6-L12).
+2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
 4. 2026-11-10 C3 = B4.9: runner reinstall (maintainer), the suite, metric verdicts in status.py; the Pi, the relay.
@@ -28,7 +28,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 5. Host install (9.5) only when every metric the range decides passes, with balistid-install, R2 keys, an own
    filesystem for the store, x32 and io_uring, alarms and a build unit with a syscall filter. Floor 2 after acceptance/2.toml.
 ## Open decisions (maintainer)
-- #142 R7: the 256 MiB read-back bound can stop a valid stream for good (critic, Codex round 2); and health precedence.
 - #142: seal continuity left to the Pi; no rollover yet (R5 exception, ADR 0027); appends wait each (about 45 ms on btrfs).
 - #142: the ledger socket is 0666 and serves one connection; a local flood can delay the collector's reconnect.
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
