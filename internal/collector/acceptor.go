@@ -2,20 +2,17 @@ package collector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
 // maxLaurelConns is how many of Laurel's connections are held at once: an old one still being read and
 // a new one (ADR 0016, point 1). Further connections wait in the listen backlog.
 const maxLaurelConns = 2
-
-// Peer is what the kernel reports about the process at the other end of a connection.
-type Peer struct{ UID, PID int }
 
 // Listener yields the connections systemd's socket accepts; *net.UnixListener satisfies it.
 type Listener interface {
@@ -25,7 +22,7 @@ type Listener interface {
 // Conn is one of Laurel's connections with the peer the kernel reported for it.
 type Conn struct {
 	*net.UnixConn
-	Peer Peer
+	Peer unixsock.Peer
 }
 
 // socketName names the one socket the collector accepts on (ADR 0016, point 1) in its refusal summaries,
@@ -85,7 +82,7 @@ func (r *Refusals) Take() Refused {
 }
 
 // refusal is why the peer p is refused, or "" for Laurel's uid.
-func refusal(p Peer, err error, laurelUID int) string {
+func refusal(p unixsock.Peer, err error, laurelUID int) string {
 	switch {
 	case err != nil:
 		return CausePeerError
@@ -102,7 +99,7 @@ func refusal(p Peer, err error, laurelUID int) string {
 type Acceptor struct {
 	ln        Listener
 	laurelUID int
-	peer      func(*net.UnixConn) (Peer, error)
+	peer      func(*net.UnixConn) (unixsock.Peer, error)
 	now       func() time.Time
 	refused   *Refusals
 	slots     chan struct{}
@@ -113,7 +110,7 @@ type Acceptor struct {
 // account could not be resolved, so every peer is refused (R6).
 func NewAcceptor(ln Listener, laurelUID int, refused *Refusals, now func() time.Time) *Acceptor {
 	return &Acceptor{
-		ln: ln, laurelUID: laurelUID, peer: peerCred, now: now, refused: refused,
+		ln: ln, laurelUID: laurelUID, peer: unixsock.PeerCred, now: now, refused: refused,
 		slots: make(chan struct{}, maxLaurelConns), conns: make(chan Conn, maxLaurelConns),
 	}
 }
@@ -151,26 +148,4 @@ func (a *Acceptor) Run(ctx context.Context) error {
 		}
 		a.conns <- Conn{UnixConn: c, Peer: p}
 	}
-}
-
-// peerCred asks the kernel for the peer's credentials (SO_PEERCRED).
-func peerCred(c *net.UnixConn) (Peer, error) {
-	raw, err := c.SyscallConn()
-	if err != nil {
-		return Peer{UID: -1}, fmt.Errorf("collector: peer: %w", err)
-	}
-	var cred *syscall.Ucred
-	var credErr error
-	if err := raw.Control(func(fd uintptr) {
-		cred, credErr = syscall.GetsockoptUcred(int(fd), syscall.SOL_SOCKET, syscall.SO_PEERCRED)
-	}); err != nil {
-		return Peer{UID: -1}, fmt.Errorf("collector: peer: %w", err)
-	}
-	if credErr != nil {
-		return Peer{UID: -1}, fmt.Errorf("collector: peer: %w", credErr)
-	}
-	if cred == nil {
-		return Peer{UID: -1}, errors.New("collector: peer: no credentials")
-	}
-	return Peer{UID: int(cred.Uid), PID: int(cred.Pid)}, nil
 }

@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
 // pair returns a connected socket pair: the collector's end as a *net.UnixConn and the peer's end.
@@ -45,7 +47,7 @@ func (l fakeListener) AcceptUnix() (*net.UnixConn, error) {
 	return c, nil
 }
 
-func startAcceptor(t *testing.T, ln fakeListener, uid int, peer func(*net.UnixConn) (Peer, error)) (*Acceptor, *Refusals) {
+func startAcceptor(t *testing.T, ln fakeListener, uid int, peer func(*net.UnixConn) (unixsock.Peer, error)) (*Acceptor, *Refusals) {
 	t.Helper()
 	refused := &Refusals{}
 	a := NewAcceptor(ln, uid, refused, clock)
@@ -98,7 +100,7 @@ func TestPeerOtherUidRefusedAndCounted(t *testing.T) {
 
 func TestUnresolvedLaurelRefusesEveryone(t *testing.T) {
 	ln := make(fakeListener, 1)
-	_, refused := startAcceptor(t, ln, -1, func(*net.UnixConn) (Peer, error) { return Peer{UID: -1}, nil })
+	_, refused := startAcceptor(t, ln, -1, func(*net.UnixConn) (unixsock.Peer, error) { return unixsock.Peer{UID: -1}, nil })
 	server, client := pair(t)
 	ln <- server
 	_ = client.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -111,16 +113,16 @@ func TestUnresolvedLaurelRefusesEveryone(t *testing.T) {
 // Each refused peer is counted under its one cause, and Laurel's uid under none.
 func TestRefusalCause(t *testing.T) {
 	for _, c := range []struct {
-		peer      Peer
+		peer      unixsock.Peer
 		err       error
 		laurelUID int
 		want      string
 	}{
-		{Peer{UID: 7}, nil, 7, ""},
-		{Peer{UID: 0}, nil, 7, CauseUID},
-		{Peer{UID: -1}, errors.New("no creds"), 7, CausePeerError},
-		{Peer{UID: 7}, nil, -1, CauseUnresolved},
-		{Peer{UID: -1}, errors.New("no creds"), -1, CausePeerError},
+		{unixsock.Peer{UID: 7}, nil, 7, ""},
+		{unixsock.Peer{UID: 0}, nil, 7, CauseUID},
+		{unixsock.Peer{UID: -1}, errors.New("no creds"), 7, CausePeerError},
+		{unixsock.Peer{UID: 7}, nil, -1, CauseUnresolved},
+		{unixsock.Peer{UID: -1}, errors.New("no creds"), -1, CausePeerError},
 	} {
 		if got := refusal(c.peer, c.err, c.laurelUID); got != c.want {
 			t.Errorf("refusal(%+v, %v, %d) = %q, want %q", c.peer, c.err, c.laurelUID, got, c.want)
@@ -131,11 +133,11 @@ func TestRefusalCause(t *testing.T) {
 func TestRefusalWhileLaurelConnected(t *testing.T) {
 	ln := make(fakeListener, 2)
 	var calls atomic.Int32
-	a, refused := startAcceptor(t, ln, os.Getuid(), func(c *net.UnixConn) (Peer, error) {
+	a, refused := startAcceptor(t, ln, os.Getuid(), func(c *net.UnixConn) (unixsock.Peer, error) {
 		if calls.Add(1) == 1 {
-			return peerCred(c)
+			return unixsock.PeerCred(c)
 		}
-		return Peer{UID: os.Getuid() + 1, PID: 1}, nil
+		return unixsock.Peer{UID: os.Getuid() + 1, PID: 1}, nil
 	})
 	first, _ := pair(t)
 	ln <- first
