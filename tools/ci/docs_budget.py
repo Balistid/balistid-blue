@@ -96,6 +96,9 @@ LAYOUT: tuple[str, ...] = (
     # The collector in the range image (ADR 0022).
     "range/balistid-range-store.service",
     "range/balistid-collector-range.conf",
+    # The ledger in the range image, with a key made in the VM (ADR 0027).
+    "range/balistid-range-ledger-key.service",
+    "range/balistid-ledger-range.conf",
 )
 
 REGULAR_MODES = {"100644", "100755"}

@@ -7,6 +7,8 @@ After=dev-disk-by\x2did-virtio\x2dbalistid\x2dresults.device auditd.service audi
 After=systemd-sysctl.service
 # The collector the guest reads its records from (ADR 0022); a collector that did not start shows in them.
 After=balistid-collector.service
+# The ledger the guest checks the collector's stream in (ADR 0027).
+After=balistid-ledger.service
 SuccessAction=poweroff-force
 FailureAction=poweroff-force
 

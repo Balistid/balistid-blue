@@ -49,7 +49,7 @@ func main() {
 		}
 		return
 	}
-	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain} {
+	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain, ledgerKeyArg: ledgerKeyMain} {
 		if len(os.Args) > 1 && os.Args[1] == arg {
 			if err := sub(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "balistid-range-guest %s: %v\n", arg, err)
@@ -134,6 +134,9 @@ func run() error {
 	add("io_uring_off", ioUringSetup())
 	add("io_uring_on", withIoUring("0"))
 	_ = withIoUring("2")
+
+	// The ledger anchored what the collector committed, under the range key (ADR 0027).
+	add("ledger_anchored", ledgerAnchored(ctx))
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)
