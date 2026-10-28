@@ -429,20 +429,59 @@ func TestTheLiveStreamSendsEverySealInPlace(t *testing.T) {
 	}
 }
 
-// shortStore reads one leaf fewer than asked, as a byte budget cuts a batch larger than the ledger cuts.
-type shortStore struct{ *store.Store }
+// oneLeafStore reads one leaf a call, as the byte budget does when large records fill the backlog.
+type oneLeafStore struct{ *store.Store }
 
-func (s shortStore) Leaves(ctx context.Context, after uint64, max int, budget int64) ([]shard.Leaf, []store.Seal, error) {
-	l, seals, err := s.Store.Leaves(ctx, after, max, budget)
-	return l[:len(l)-1], seals, err
+func (s oneLeafStore) Leaves(ctx context.Context, after uint64, _ int, budget int64) ([]shard.Leaf, []store.Seal, error) {
+	return s.Store.Leaves(ctx, after, 1, budget)
 }
 
-func TestStreamStopsOnAResumeBatchOverTheByteBudget(t *testing.T) {
-	st := openStore(t, 4)
-	w, l := streamWriter(shortStore{st})
+func healthOf(others []link.Message) []entry.Health {
+	var out []entry.Health
+	for _, m := range others {
+		if h, ok := m.(entry.Health); ok {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// The ledger's last batch is read back over as many ticks as it takes: UNKNOWN meanwhile, then the stream
+// goes on from it, and a batch that is not the store's stops the stream once it is read.
+func TestStreamChecksTheResumeBatchOverTicks(t *testing.T) {
+	st := openStore(t, 5)
+	w, l := streamWriter(oneLeafStore{st})
 	l.hello <- helloOf{1, link.Hello{Last: 3, First: 1, Root: rootOf(t, st, 1, 3)}}
-	w.stream(t.Context())
-	if seqs, _ := taken(l); seqs != nil || !strings.Contains(w.stopped, "more data") {
-		t.Fatalf("sent %v, stopped %q", seqs, w.stopped)
+	var seqs []uint64
+	var health []entry.Health
+	for range 4 {
+		w.stream(t.Context())
+		s, o := taken(l)
+		seqs, health = append(seqs, s...), append(health, healthOf(o)...)
+	}
+	unknown := entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStream}
+	if w.stopped != "" || len(seqs) == 0 || seqs[0] != 4 || len(health) != 2 || health[0] != unknown || health[1].State != entry.StateOK {
+		t.Fatalf("stopped %q, records %v, health %+v", w.stopped, seqs, health)
+	}
+	w, l = streamWriter(oneLeafStore{st})
+	l.hello <- helloOf{1, link.Hello{Last: 3, First: 1, Root: rootOf(t, st, 1, 2)}}
+	for range 4 {
+		w.stream(t.Context())
+	}
+	if seqs, _ := taken(l); seqs != nil || !strings.Contains(w.stopped, "not the store's") {
+		t.Fatalf("a wrong root read over ticks: sent %v, stopped %q", seqs, w.stopped)
+	}
+}
+
+// A stream fault takes precedence over every other UNKNOWN reason in what the ledger hears.
+func TestStreamFaultTakesPrecedence(t *testing.T) {
+	for _, h := range []string{"UNKNOWN laurel-disconnected", "UNKNOWN canary-missed", "UNKNOWN canary-pending", "UNKNOWN store: store-open"} {
+		w, l := streamWriter(openStore(t, 2))
+		w.health, w.stopped = h, "a stop"
+		l.hello <- helloOf{1, link.Hello{}}
+		w.stream(t.Context())
+		if _, others := taken(l); fmt.Sprint(healthOf(others)) != fmt.Sprint([]entry.Health{{State: entry.StateUnknown, Reason: entry.ReasonStream}}) {
+			t.Errorf("%s with a stopped stream: %+v", h, others)
+		}
 	}
 }

@@ -226,7 +226,8 @@ func TestServeTakesOnlyTheCollector(t *testing.T) {
 			defer closeLog(t, l)
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
-			go func() { done <- Serve(ctx, ln, l, uid, slog.New(slog.DiscardHandler)) }()
+			var journal bytes.Buffer // read only after Serve returned
+			go func() { done <- Serve(ctx, ln, l, uid, slog.New(slog.NewJSONHandler(&journal, nil))) }()
 			conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 			if err != nil {
 				t.Fatal(err)
@@ -240,6 +241,11 @@ func TestServeTakesOnlyTheCollector(t *testing.T) {
 			cancel()
 			if err := result(t, done); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Serve = %v", err)
+			}
+			admitted := strings.Contains(journal.String(), "admitted the collector") &&
+				strings.Contains(journal.String(), `"rule_version":"`+RuleVersion+`"`)
+			if refused := uid != os.Getuid(); admitted == refused {
+				t.Fatalf("journal %s: admitted %v for a refused peer %v", journal.String(), admitted, refused)
 			}
 		})
 		ln, err = net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"}) // Serve closed it

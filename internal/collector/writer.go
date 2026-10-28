@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/shard"
@@ -232,7 +233,9 @@ type ledgerState struct {
 	healthSent   string
 	unstoredSent uint64
 	healthAt     time.Time
-	leavesErr    string // the last error reading leaves, journaled once
+	leavesErr    string      // the last error reading leaves, journaled once
+	checkRoot    *entry.Root // the root of the ledger's last batch while it is read back, over ticks
+	checkAt      uint64      // the last seq added to checkRoot
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what
@@ -646,6 +649,8 @@ func (w *Writer) setHealth() {
 	failing := w.Canary.Due(w.Now())
 	h := "OK"
 	switch {
+	case w.streamFault():
+		h = streamUnknown
 	case w.st == nil:
 		h = "UNKNOWN store: " + w.down
 	case w.connectedAt.IsZero():
@@ -654,8 +659,6 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
-	case w.stopped != "" || w.leavesErr != "":
-		h = streamUnknown
 	}
 	if h != w.health {
 		w.health = h

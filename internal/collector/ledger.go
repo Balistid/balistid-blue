@@ -27,9 +27,6 @@ const (
 	// leavesBytesPerTick bounds the record data one tick walks past to read leaves: about 30 ms warm
 	// (BenchmarkLeaves), far inside the 10 s watchdog, when large records fill the backlog.
 	leavesBytesPerTick = 64 << 20
-	// checkBytes bounds the ledger's last batch the writer reads back: a batch covers what four ticks of
-	// leavesBytesPerTick send in CutEvery, so a larger one is a ledger that lies.
-	checkBytes = 256 << 20
 	// ledgerQueue bounds the groups waiting for the connection; when full the writer sends them later.
 	ledgerQueue   = 16
 	redialEvery   = time.Second
@@ -318,7 +315,7 @@ func (w *Writer) stream(ctx context.Context) {
 	}
 	select {
 	case h := <-w.Ledger.hello:
-		w.epoch, w.hello, w.healthSent = h.epoch, &h.hello, ""
+		w.epoch, w.hello, w.healthSent, w.checkRoot = h.epoch, &h.hello, "", nil
 	default:
 	}
 	if w.epoch == 0 {
@@ -368,28 +365,35 @@ func (w *Writer) check(ctx context.Context) {
 		w.stop(fmt.Errorf("ledger's last batch %d-%d is larger than any it cuts", h.First, h.Last))
 		return
 	}
+	// The batch is read back over as many ticks as its data takes, leavesBytesPerTick each, so neither a
+	// large batch nor a lying hello holds a tick past the watchdog; until the root is complete the stream
+	// waits and its health is UNKNOWN (sendHealth).
 	if h.Last > 0 {
-		span := h.Last - h.First + 1
-		leaves, _, err := w.st.Leaves(ctx, h.First-1, int(span), checkBytes) //nolint:gosec // below maxBatchCheck
-		if err != nil {                                                      // the resume point unread is a stream that cannot go on: UNKNOWN until it reads
+		if w.checkRoot == nil {
+			w.checkRoot, w.checkAt = entry.NewRoot(), h.First-1
+		}
+		leaves, _, err := w.st.Leaves(ctx, w.checkAt, int(h.Last-w.checkAt), leavesBytesPerTick) //nolint:gosec // below maxBatchCheck
+		if err != nil {
 			if err.Error() != w.leavesErr {
 				w.Log.Error("ledger stream: resume point not read", "err", err)
 			}
 			w.leavesErr = err.Error()
 			return
 		}
-		if uint64(len(leaves)) != span {
-			w.stop(fmt.Errorf("ledger's last batch %d-%d holds more data than any it cuts", h.First, h.Last))
-			return
-		}
-		r := entry.NewRoot()
+		w.leavesErr = ""
 		for _, l := range leaves {
-			if err := r.Add(l.Hash); err != nil {
+			if err := w.checkRoot.Add(l.Hash); err != nil {
 				w.stop(err)
 				return
 			}
+			w.checkAt = l.Seq
 		}
-		if root, err := r.Sum(); err != nil || root != h.Root {
+		if w.checkAt < h.Last {
+			return
+		}
+		root, err := w.checkRoot.Sum()
+		w.checkRoot = nil
+		if err != nil || root != h.Root {
 			w.stop(errors.Join(fmt.Errorf("ledger's batch %d-%d is not the store's", h.First, h.Last), err))
 			return
 		}
@@ -421,7 +425,7 @@ func (w *Writer) sealAtSent() bool {
 // alone goes at most every healthEvery.
 func (w *Writer) sendHealth() {
 	unstored, now, h := w.unstored(), w.Now(), w.health
-	if h == "OK" && (w.stopped != "" || w.leavesErr != "") { // the tick's health predates this tick's stream
+	if w.streamFault() { // over any other state, and the tick's health predates this tick's stream
 		h = streamUnknown
 	}
 	if h == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
@@ -435,6 +439,12 @@ func (w *Writer) sendHealth() {
 	if w.Ledger.send(group{epoch: w.epoch, msgs: []link.Message{e}}) {
 		w.healthSent, w.unstoredSent, w.healthAt = h, unstored, now
 	}
+}
+
+// streamFault reports a stream that stopped, cannot read leaves, or is still checking the ledger's resume
+// point; it takes precedence over every other UNKNOWN reason.
+func (w *Writer) streamFault() bool {
+	return w.stopped != "" || w.leavesErr != "" || w.checkRoot != nil
 }
 
 // unstored counts the records the collector counted lost whose loss record the store has not committed.
