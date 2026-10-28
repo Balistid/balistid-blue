@@ -17,6 +17,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/collector"
 	"github.com/Balistid/balistid-blue/internal/store"
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
 const (
@@ -51,7 +52,7 @@ func run() int {
 	}
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: laurelUID(log), CanaryDir: *canaryDir,
-		OpenStore: openStore(*storeDir, *headroomBytes), Notify: collector.Notify, Log: log,
+		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
 		LogCommits: *logCommits,
 	})

@@ -37,17 +37,3 @@ func ListenFD() (*net.UnixListener, error) {
 	}
 	return ul, nil
 }
-
-// Notify sends state to systemd over NOTIFY_SOCKET (sd_notify); without the variable it does nothing.
-func Notify(state string) error {
-	path := os.Getenv("NOTIFY_SOCKET")
-	if path == "" {
-		return nil
-	}
-	c, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
-	if err != nil {
-		return fmt.Errorf("collector: notify: %w", err)
-	}
-	_, err = c.Write([]byte(state))
-	return errors.Join(err, c.Close())
-}

@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
 // closingListener is a fakeListener its owner can close once.
@@ -169,29 +171,6 @@ func TestListenFD(t *testing.T) {
 	}
 }
 
-func TestNotify(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "notify")
-	c, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: path, Net: "unixgram"})
-	unixSockets(t, err)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("NOTIFY_SOCKET", path)
-	if err := Notify("WATCHDOG=1"); err != nil {
-		t.Fatal(err)
-	}
-	b := make([]byte, 64)
-	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-	n, err := c.Read(b)
-	if err != nil || string(b[:n]) != "WATCHDOG=1" {
-		t.Fatalf("read %q, %v", b[:n], err)
-	}
-	t.Setenv("NOTIFY_SOCKET", "")
-	if err := Notify("READY=1"); err != nil {
-		t.Fatalf("without NOTIFY_SOCKET: %v", err)
-	}
-}
-
 // A connection's end is counted by how it ended: EOF and the stop deadline as eof, a failed read as
 // read-error.
 func TestReadOneCountsHowTheConnectionEnded(t *testing.T) {
@@ -210,7 +189,7 @@ func TestReadOneCountsHowTheConnectionEnded(t *testing.T) {
 		links, done := &Links{}, make(chan struct{})
 		go func() {
 			defer close(done)
-			readOne(ctx, NewReader(NewQueue(1<<20, &Losses{}), time.Now), links, Conn{UnixConn: server, Peer: Peer{PID: 42}},
+			readOne(ctx, NewReader(NewQueue(1<<20, &Losses{}), time.Now), links, Conn{UnixConn: server, Peer: unixsock.Peer{PID: 42}},
 				slog.New(slog.NewTextHandler(io.Discard, nil)))
 		}()
 		time.Sleep(20 * time.Millisecond) // the reader waits in its read
