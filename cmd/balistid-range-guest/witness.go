@@ -37,7 +37,7 @@ const (
 	witnessName     = "balistid-range/witness"
 	witnessEnv      = "/etc/balistid-range/witness.env"
 	witnessSock     = "/run/balistid-range-witness/agent.sock"
-	witnessSubmit   = "http://localhost:7380/add-checkpoint"
+	witnessSubmit   = "http://127.0.0.1:7380/add-checkpoint"
 	relayState      = "/var/lib/balistid/relay"
 	maxWitnessReply = 4 << 10
 )
@@ -65,7 +65,7 @@ func witnessKey(dir, env string) error {
 	if err != nil {
 		return fmt.Errorf("witness key: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(env), 0o755); err != nil { //nolint:gosec // root's /etc, readable as /etc is
+	if err := mkdirOpen(filepath.Dir(env)); err != nil {
 		return fmt.Errorf("witness key: %w", err)
 	}
 	for _, f := range []struct {
@@ -81,6 +81,15 @@ func witnessKey(dir, env string) error {
 		}
 	}
 	return nil
+}
+
+// mkdirOpen makes dir 0755 whatever the umask: MkdirAll under the key units' UMask=0077 would leave it
+// 0700, and the relay's uid could not reach the public keys in it.
+func mkdirOpen(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // root's /etc, readable as /etc is
+		return err //nolint:wrapcheck // the caller names the step
+	}
+	return os.Chmod(dir, 0o755) //nolint:gosec,wrapcheck // as above; the caller names the step
 }
 
 // writeNew creates path, which must not exist, with exactly mode: the key units run under UMask=0077,

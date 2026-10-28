@@ -34,7 +34,7 @@ func ledgerKey(dir string) error {
 	if err != nil {
 		return fmt.Errorf("ledger key: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // root's /etc, readable as /etc is
+	if err := mkdirOpen(dir); err != nil {
 		return fmt.Errorf("ledger key: %w", err)
 	}
 	for _, f := range []struct {

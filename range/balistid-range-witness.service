@@ -13,7 +13,7 @@ EnvironmentFile=/etc/balistid-range/witness.env
 ExecStartPre=/usr/lib/balistid-range/witnessctl add-log -db %S/balistid-range-witness/witness.db -origin balistid-range/log
 ExecStartPre=/usr/lib/balistid-range/witnessctl add-key -db %S/balistid-range-witness/witness.db -origin balistid-range/log -key ${LEDGER_VKEY}
 ExecStart=/usr/lib/balistid-range/litewitness -name balistid-range/witness -db %S/balistid-range-witness/witness.db \
-  -ssh-agent /run/balistid-range-witness/agent.sock -key ${WITNESS_KEY} -listen localhost:7380
+  -ssh-agent /run/balistid-range-witness/agent.sock -key ${WITNESS_KEY} -listen 127.0.0.1:7380
 IPAddressAllow=localhost
 IPAddressDeny=any
 NoNewPrivileges=yes

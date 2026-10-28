@@ -28,6 +28,7 @@ func TestKeyFilesKeepTheirModeUnderTheUnitsUmask(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, want := range map[string]os.FileMode{
+		dir: 0o755, filepath.Dir(env): 0o755, // the relay's uid must reach the public keys
 		filepath.Join(dir, "ledger-key"): 0o600, filepath.Join(dir, "ledger-key.pub"): 0o644,
 		filepath.Join(dir, "witness-key"): 0o600, filepath.Join(dir, "witness.vkey"): 0o644, env: 0o644,
 	} {
