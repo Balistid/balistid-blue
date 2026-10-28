@@ -128,7 +128,10 @@ func TestHealthEntryForEveryState(t *testing.T) {
 			t.Errorf("%q: %+v, %v", h, got, err)
 		}
 	}
-	if got, err := healthEntry("UNKNOWN ledger-stopped", 0); err == nil {
+	if got, err := healthEntry(streamUnknown, 3); err != nil || got != (entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStream, Unstored: 3}) {
+		t.Errorf("stream stopped: %+v, %v", got, err)
+	}
+	if got, err := healthEntry("UNKNOWN something-new", 0); err == nil {
 		t.Errorf("a state the ledger cannot take: %+v", got)
 	}
 }
@@ -214,7 +217,7 @@ func TestStreamFromAnEmptyLedger(t *testing.T) {
 	if uint64(len(seqs)) != st.Committed() || seqs[0] != 1 || w.sent != st.Committed() {
 		t.Fatalf("sent %v, sent mark %d, committed %d", seqs, w.sent, st.Committed())
 	}
-	if _, ok := others[0].(entry.Health); !ok || len(others) != 1+len(st.Seals()) {
+	if _, ok := others[len(others)-1].(entry.Health); !ok || len(others) != 1+len(st.Seals()) { // the health goes last
 		t.Fatalf("others %+v, %d seals", others, len(st.Seals()))
 	}
 	w.stream(t.Context()) // nothing new committed, health unchanged
@@ -233,7 +236,7 @@ func TestStreamResumesAfterTheLedgersBatch(t *testing.T) {
 	if seqs[0] != seal.Last+1 || w.stopped != "" {
 		t.Fatalf("resumed at %v, stopped %q", seqs[:1], w.stopped)
 	}
-	if fmt.Sprint(others[1]) != fmt.Sprint(sealEntry(seal)) { // the seal ending at the resume point, resent
+	if fmt.Sprint(others[0]) != fmt.Sprint(sealEntry(seal)) { // the seal ending at the resume point, resent first
 		t.Fatalf("others %+v", others)
 	}
 }
@@ -249,8 +252,10 @@ func TestStreamStopsWhenLedgerAndStoreDisagree(t *testing.T) {
 		l.hello <- helloOf{1, h}
 		w.stream(t.Context())
 		w.stream(t.Context())
-		if seqs, _ := taken(l); seqs != nil || w.stopped == "" {
-			t.Errorf("%s: sent %v, stopped %q", name, seqs, w.stopped)
+		seqs, others := taken(l) // the ledger hears why, and never an OK first
+		if want := []link.Message{entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStream}}; seqs != nil ||
+			w.stopped == "" || fmt.Sprint(others) != fmt.Sprint(want) {
+			t.Errorf("%s: sent %v %+v, stopped %q", name, seqs, others, w.stopped)
 		}
 	}
 }
@@ -259,7 +264,7 @@ func TestStreamWaitsOnAFullQueueWithoutAGap(t *testing.T) {
 	st := openStore(t, 12)
 	w, l := streamWriter(st)
 	l.hello <- helloOf{1, link.Hello{}}
-	for range ledgerQueue - 1 { // one place left: the health takes it
+	for range ledgerQueue { // no room for the records nor the health
 		l.out <- group{epoch: 9}
 	}
 	w.stream(t.Context())

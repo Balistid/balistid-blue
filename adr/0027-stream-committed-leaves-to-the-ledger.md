@@ -33,15 +33,15 @@ alone). Tessera v1.0.4 resolves an `Add` only once the entry is integrated, so i
    first seq and another hash, or out of position, is refused and turns the ledger UNKNOWN. This replaces ADR 0013
    point 3's resend after the last seal.
 5. A batch covers at most 1 s of leaves. Tessera's POSIX log runs without antispam, checkpoints every 5 s, signed
-   with Ed25519; the ledger locks its directory for its lifetime. A tree over `host_log_cap_gib` turns it UNKNOWN
-   and it appends nothing more (R5), tested by a lowered cap; rollover comes with the Pi's verifier (ADR 0026, 2).
+   with Ed25519; the ledger locks its directory. A tree over `host_log_cap_gib` turns it UNKNOWN and it appends no
+   more: until rollover comes with the Pi's verifier (ADR 0026, 2), this cap is its only exit, an R5 exception.
 6. Type 3 `loss`: the seq of the record carrying it, stage, records. Stages: 1 cap (the store's loss record, cap or
    full filesystem, and the collector's cap stage), 2 queue, 3 framing, 4 store, 5 shutdown (the collector's lost
    records, their count), 6 truncated (a committed record whose original length exceeds its data, 1). Type 4
    `health`: state (1 OK, 2 UNKNOWN), reason (0 none, 1 starting, 2 store down, 3 Laurel disconnected, 4 canary
-   missed, 5 canary pending) and the records counted lost and not yet stored; the writer sends it on connect and on
-   change, beside the store. Nothing fills lost bytes or kernel and dispatcher loss yet; a new stage or reason
-   widens decoding, so it reaches the Pi first.
+   missed, 5 canary pending, 6 stream stopped) and the records counted lost and not stored; the writer sends it on
+   connect, on change and after its stream stopped. Nothing fills lost bytes or kernel and dispatcher loss yet; a
+   new stage or reason widens decoding, so it reaches the Pi first.
 
 ## Alternatives considered
 
@@ -52,8 +52,8 @@ alone). Tessera v1.0.4 resolves an `Add` only once the entry is integrated, so i
 ## Consequences
 
 - Amends ADR 0013 point 3, ADR 0026 point 1 (types 3 and 4) and the method of `refusal_summary_s`. The started
-  record's order and counts after the last stats record (ADR 0026) stay collector issues. The Pi counts truncated
-  entries per hour of its own clock; any other loss stage or UNKNOWN alarms.
+  record's order and counts after the last stats record stay collector issues. The Pi counts truncated entries
+  per hour of its own clock, alarms on any other stage or UNKNOWN, and checks that seals tile the seqs.
 - Tests: leaves equal `rawrecord.Leaf` across a rotation, never past `Committed`; a stalled ledger never stops a
   tick; resume from L; L above `Committed` and a wrong root refused; kill -9 of the ledger after `Add`, after
   integration, between a batch and its seal or a loss and its batch: no gap, no overlap, and a consistency proof

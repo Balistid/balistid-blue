@@ -292,11 +292,16 @@ func healthEntry(h string, unstored uint64) (entry.Health, error) {
 		e.Reason = entry.ReasonCanaryMissed
 	case h == "UNKNOWN canary-pending":
 		e.Reason = entry.ReasonCanaryPending
+	case h == streamUnknown:
+		e.Reason = entry.ReasonStream
 	default:
 		return entry.Health{}, fmt.Errorf("collector: no health entry for %q", h)
 	}
 	return e, nil
 }
+
+// streamUnknown is the writer's health while its stream to the ledger stopped or cannot read leaves.
+const streamUnknown = "UNKNOWN ledger-stream"
 
 // maxBatchCheck bounds the batch a hello may ask the writer to read back: the ledger cuts a batch every
 // CutEvery, far below this, and a larger one would let it make the collector read the whole store.
@@ -313,21 +318,26 @@ func (w *Writer) stream(ctx context.Context) {
 		w.epoch, w.hello, w.healthSent = h.epoch, &h.hello, ""
 	default:
 	}
-	if w.epoch == 0 || w.stopped != "" {
+	if w.epoch == 0 {
 		return
 	}
-	w.sendHealth()
-	if w.st == nil || (w.hello != nil && !w.check(ctx)) {
+	// The resume point is checked before any health goes, so a stream that stops never logs OK first.
+	if w.st != nil && w.hello != nil && w.stopped == "" {
+		w.check(ctx)
+	}
+	defer w.sendHealth() // also after the stream stopped: the ledger logs why (ADR 0027, point 3)
+	if w.st == nil || w.hello != nil || w.stopped != "" {
 		return
 	}
 	leaves, seals, err := w.st.Leaves(ctx, w.sent, leavesPerTick)
 	if err != nil {
 		if err.Error() != w.leavesErr {
-			w.leavesErr = err.Error()
 			w.Log.Error("ledger stream: leaves not read", "err", err)
 		}
+		w.leavesErr = err.Error()
 		return
 	}
+	w.leavesErr = ""
 	gs, err := groups(w.epoch, leaves, seals)
 	if err != nil {
 		w.stop(err)
@@ -384,17 +394,20 @@ func (w *Writer) check(ctx context.Context) bool {
 // sendHealth hands the ledger the writer's health on connect and on change; a changed unstored count
 // alone goes at most every healthEvery.
 func (w *Writer) sendHealth() {
-	unstored, now := w.unstored(), w.Now()
-	if w.health == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
+	unstored, now, h := w.unstored(), w.Now(), w.health
+	if h == "OK" && (w.stopped != "" || w.leavesErr != "") { // the tick's health predates this tick's stream
+		h = streamUnknown
+	}
+	if h == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
 		return
 	}
-	e, err := healthEntry(w.health, unstored)
+	e, err := healthEntry(h, unstored)
 	if err != nil {
 		w.stop(err)
 		return
 	}
 	if w.Ledger.send(group{epoch: w.epoch, msgs: []link.Message{e}}) {
-		w.healthSent, w.unstoredSent, w.healthAt = w.health, unstored, now
+		w.healthSent, w.unstoredSent, w.healthAt = h, unstored, now
 	}
 }
 

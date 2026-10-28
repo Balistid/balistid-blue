@@ -92,7 +92,8 @@ const (
 	StateUnknown State = 2
 )
 
-// Reason says why the collector is UNKNOWN; OK has none. A new reason widens Decode: the Pi gets it first.
+// Reason says why the collector is UNKNOWN; OK has none. ReasonStream: its stream to the ledger stopped or
+// cannot read the store's leaves. A new reason widens Decode: the Pi gets it first.
 type Reason byte
 
 // The reasons of the collector's health (ADR 0017, ADR 0027 point 6).
@@ -103,6 +104,7 @@ const (
 	ReasonLaurelDisconnected Reason = 3
 	ReasonCanaryMissed       Reason = 4
 	ReasonCanaryPending      Reason = 5
+	ReasonStream             Reason = 6
 )
 
 // Health is the collector's state, sent beside the store (ADR 0017, point 7); Unstored counts the
@@ -174,7 +176,7 @@ func (l Loss) check() error {
 func (h Health) check() error {
 	switch {
 	case h.State == StateOK && h.Reason == ReasonNone:
-	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonCanaryPending:
+	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonStream:
 	default:
 		return errors.New("entry: health state and reason do not match")
 	}
