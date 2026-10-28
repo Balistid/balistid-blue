@@ -1,0 +1,22 @@
+# Range image only (ADR 0026, point 5): litewitness signs only through ssh-agent, so the guest serves the
+# witness key on a socket of this unit, to the same dynamic user litewitness runs as.
+[Unit]
+Description=Balistid Blue range: the witness's key agent
+Requires=balistid-range-witness-key.service
+After=balistid-range-witness-key.service
+
+[Service]
+Type=notify
+DynamicUser=yes
+User=balistid-range-witness
+LoadCredential=witness-key:/etc/balistid/witness-key
+RuntimeDirectory=balistid-range-witness
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/lib/balistid-range/guest witness-agent
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes

@@ -1296,6 +1296,7 @@ func replacingRepo(t *testing.T, goSum, replace string, files map[string]string)
 		"cmd/balistid-range-guest/main.go": "package main\n\nimport \"" + fixturePath + "\"\n\nfunc main() { _ = fixture.X }\n",
 		"cmd/balistid-collector/main.go":   "package main\n\nfunc main() {}\n",
 		"cmd/balistid-ledger/main.go":      "package main\n\nfunc main() {}\n",
+		"cmd/balistid-relay/main.go":       "package main\n\nfunc main() {}\n",
 	}
 	maps.Copy(all, files)
 	for name, body := range all {
@@ -1322,7 +1323,7 @@ func buildWithProxy(t *testing.T, root, commit, proxy string) (string, error) {
 // buildInCache is buildWithProxy with cache as the build cache, which holds the stage.
 func buildInCache(t *testing.T, cache, root, commit, proxy string) (string, error) {
 	t.Helper()
-	cfg := defaultBuild()
+	cfg := fixtureBuild()
 	cfg.proxy = proxy
 	return buildWith(t, cache, root, commit, cfg)
 }
@@ -1364,6 +1365,53 @@ func TestStageGoHasTelemetryOff(t *testing.T) {
 	out, err := cmd.Output()
 	if err != nil || strings.TrimSpace(string(out)) != "off" {
 		t.Fatalf("go env GOTELEMETRY in the stage = %q, %v; want off", out, err)
+	}
+}
+
+// fixtureBuild is defaultBuild for the test repositories: they hold the repository's own programs but
+// no range/witness module.
+func fixtureBuild() buildConfig {
+	cfg := defaultBuild()
+	cfg.programs = guestPrograms
+	return cfg
+}
+
+// The witness programs come from their own module in the export, range/witness, checked against its
+// own go.sum and refused with a path replace or without a go.mod of its own, as the root module is.
+func TestBuildBuildsProgramsOfANestedModule(t *testing.T) {
+	zipped := fixtureZip(fixtureSource)
+	zipped[fixturePath+"@"+fixtureVersion+"/cmd/tool/main.go"] = "package main\n\nfunc main() {}\n"
+	nested := "module w\n\ngo 1.24\n\nrequire " + fixturePath + " " + fixtureVersion + "\n"
+	for _, tc := range []struct {
+		name, want string
+		files      map[string]string
+	}{
+		{"builds", "image file", map[string]string{"range/witness/go.mod": nested, "range/witness/go.sum": fixtureSum(zipped, false)}},
+		{"module missing from its go.sum", "download modules of range/witness", map[string]string{
+			"range/witness/go.mod": nested, "range/witness/go.sum": fixtureSum(zipped, true)}},
+		{"path replace", "a replace to a path is refused", map[string]string{"range/witness/go.mod": nested + "\nreplace " + fixturePath + " => ../../vendor/fixture\n",
+			"range/witness/go.sum": fixtureSum(zipped, false)}},
+		{"no go.mod of its own", "read go.mod", map[string]string{"range/witness/x.go": "package w\n"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, commit := replacingRepo(t, fixtureSum(zipped, false), "", tc.files)
+			cfg := fixtureBuild()
+			cfg.proxy = fileProxy(t, zipped)
+			cfg.programs = append(slices.Clone(guestPrograms), imageProgram{"witness program", "range/witness", fixturePath + "/cmd/tool", "usr/lib/balistid-range/litewitness"})
+			log, err := buildWith(t, t.TempDir(), root, commit, cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("build = %v, want %q; log:\n%s", err, tc.want, log)
+			}
+		})
+	}
+}
+
+// The production list builds the witness from range/witness and everything else from the repository.
+func TestDefaultBuildTakesTheWitnessFromItsModule(t *testing.T) {
+	for _, p := range defaultBuild().programs {
+		if witness := strings.HasPrefix(p.pkg, "filippo.io/"); witness != (p.mod == "range/witness") {
+			t.Errorf("%s: module %q", p.name, p.mod)
+		}
 	}
 }
 
@@ -1414,7 +1462,7 @@ func TestImageTreeIsOpenToOtherUsers(t *testing.T) {
 		files[f.src] = "x\n"
 	}
 	root, commit := replacingRepo(t, fixtureSum(zipped, false), "", files)
-	cfg := defaultBuild()
+	cfg := fixtureBuild()
 	cfg.proxy = fileProxy(t, zipped)
 	var wrong []string
 	reached := false
@@ -1436,7 +1484,7 @@ func TestImageTreeIsOpenToOtherUsers(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		for _, p := range imagePrograms {
+		for _, p := range guestPrograms {
 			if st, err := os.Stat(filepath.Join(tree, p.dst)); err != nil || st.Mode().Perm() != 0o755 {
 				wrong = append(wrong, fmt.Sprintf("%s %v", p.dst, err))
 			}
@@ -1465,7 +1513,7 @@ func TestOpenTreeChangesNothingOutsideTheTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	tree := t.TempDir()
-	for _, p := range imagePrograms {
+	for _, p := range guestPrograms {
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(tree, p.dst)), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1476,17 +1524,17 @@ func TestOpenTreeChangesNothingOutsideTheTree(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(tree, "usr", "out")); err != nil {
 		t.Fatal(err)
 	}
-	if err := openTree(tree); err != nil {
+	if err := openTree(tree, guestPrograms); err != nil {
 		t.Fatalf("a tree with a link to a directory outside: %v", err)
 	}
-	program := filepath.Join(tree, imagePrograms[1].dst)
+	program := filepath.Join(tree, guestPrograms[1].dst)
 	if err := os.Remove(program); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(secret, program); err != nil {
 		t.Fatal(err)
 	}
-	if err := openTree(tree); err == nil {
+	if err := openTree(tree, guestPrograms); err == nil {
 		t.Error("a program linked out of the tree was accepted")
 	}
 	for path, want := range map[string]os.FileMode{outside: 0o700, secret: 0o600} {
@@ -1568,7 +1616,7 @@ func TestBuildCapsTheModuleCache(t *testing.T) {
 		limit int64
 		want  string
 	}{{1 << 20, "modules take more than 1048576 bytes on disk"}, {16 << 20, "image file"}} {
-		cfg := defaultBuild()
+		cfg := fixtureBuild()
 		cfg.proxy, cfg.moduleCache = proxy, tc.limit
 		log, err := buildWith(t, t.TempDir(), root, commit, cfg)
 		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "build guest program") {
@@ -1649,7 +1697,7 @@ func TestModuleCacheCapCountsBlocksAndRefusesWhatItCannotRead(t *testing.T) {
 func TestBuildFetchesNothingAfterTheCap(t *testing.T) {
 	zipped := fixtureZip(fixtureSource)
 	root, commit := moduleRepo(t, fixtureSum(zipped, false))
-	cfg := defaultBuild()
+	cfg := fixtureBuild()
 	cfg.proxy = fileProxy(t, zipped)
 	cfg.afterCap = func(stage string) {
 		if err := os.Rename(moduleCache(stage), moduleCache(stage)+".gone"); err != nil {

@@ -62,6 +62,12 @@ var imageFiles = []struct {
 	{"deploy/ledger/tmpfiles.conf", "usr/lib/tmpfiles.d/balistid-ledger.conf", 0o644},
 	{"range/balistid-range-ledger-key.service", "usr/lib/systemd/system/balistid-range-ledger-key.service", 0o644},
 	{"range/balistid-ledger-range.conf", "usr/lib/systemd/system/balistid-ledger.service.d/range.conf", 0o644},
+	{"deploy/relay/balistid-relay.service", "usr/lib/systemd/system/balistid-relay.service", 0o644},
+	{"deploy/relay/sysusers.conf", "usr/lib/sysusers.d/balistid-relay.conf", 0o644},
+	{"range/balistid-relay-range.conf", "usr/lib/systemd/system/balistid-relay.service.d/range.conf", 0o644},
+	{"range/balistid-range-witness-key.service", "usr/lib/systemd/system/balistid-range-witness-key.service", 0o644},
+	{"range/balistid-range-witness-agent.service", "usr/lib/systemd/system/balistid-range-witness-agent.service", 0o644},
+	{"range/balistid-range-witness.service", "usr/lib/systemd/system/balistid-range-witness.service", 0o644},
 	{"deploy/audit/balistid.rules", "etc/audit/rules.d/balistid.rules", 0o640},
 	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
 	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},
@@ -69,11 +75,23 @@ var imageFiles = []struct {
 	{"deploy/sysctl/balistid.conf", "etc/sysctl.d/90-balistid.conf", 0o644},
 }
 
-// imagePrograms are built from the export into the image, at the paths their units name.
-var imagePrograms = []struct{ name, pkg, dst string }{
-	{"guest program", "./cmd/balistid-range-guest", "usr/lib/balistid-range/guest"},
-	{"collector program", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
-	{"ledger program", "./cmd/balistid-ledger", "usr/local/lib/balistid/balistid-ledger"},
+// imageProgram is built from the export into the image, at the path its unit names. mod is the
+// directory of its Go module in the export: the repository's own, or range/witness, which pins the
+// witness the range runs (ADR 0026, point 5) outside the product's go.mod.
+type imageProgram struct{ name, mod, pkg, dst string }
+
+// guestPrograms are the repository's own programs in the image.
+var guestPrograms = []imageProgram{
+	{"guest program", ".", "./cmd/balistid-range-guest", "usr/lib/balistid-range/guest"},
+	{"collector program", ".", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
+	{"ledger program", ".", "./cmd/balistid-ledger", "usr/local/lib/balistid/balistid-ledger"},
+	{"relay program", ".", "./cmd/balistid-relay", "usr/local/lib/balistid/balistid-relay"},
+}
+
+// witnessPrograms are the pinned litewitness and its control tool, from range/witness.
+var witnessPrograms = []imageProgram{
+	{"witness program", "range/witness", "filippo.io/torchwood/cmd/litewitness", "usr/lib/balistid-range/litewitness"},
+	{"witness control program", "range/witness", "filippo.io/torchwood/cmd/witnessctl", "usr/lib/balistid-range/witnessctl"},
 }
 
 // proxyEnv are the only variables makepkg and mkosi inherit besides their own paths: network
@@ -128,10 +146,12 @@ type buildConfig struct {
 	moduleCache int64              // bytes allocated on disk
 	afterCap    func(stage string) // a test seam: runs after the cap, before go build
 	afterTree   func(tree string)  // a test seam: runs once the tree mkosi copies into the image is complete
+	programs    []imageProgram
 }
 
 func defaultBuild() buildConfig {
-	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy, moduleCache: maxModuleCache}
+	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy, moduleCache: maxModuleCache,
+		programs: slices.Concat(guestPrograms, witnessPrograms)}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -176,23 +196,35 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	// go build reads go.mod and go.sum from the export, never from root; the modules they name are
 	// fetched from cfg.proxy into the stage's empty module cache and checked against that go.sum.
 	goTool := newGoTool(ctx, stage, cfg.proxy, log)
-	if err := requireExportModule(goTool, src); err != nil {
-		return "", err
+	// Every module the image's programs need comes down in this step, one go list per Go module of
+	// the export, so the cache is measured once, before go build. go list loads the packages as go
+	// build does, under -mod=readonly: a module missing from that module's go.sum fails here. go mod
+	// download would instead ask the checksum database.
+	var mods []string
+	for _, p := range cfg.programs {
+		if !slices.Contains(mods, p.mod) {
+			mods = append(mods, p.mod)
+		}
 	}
-	if err := refusePathReplace(goTool, src); err != nil {
-		return "", err
-	}
-	// Every module the image's programs need comes down in this one step, so the cache is measured
-	// once, before go build. go list loads the packages as go build does, under -mod=readonly: a module
-	// missing from go.sum fails here. go mod download would instead ask the checksum database.
-	list := []string{"list", "-deps"}
-	for _, p := range imagePrograms {
-		list = append(list, p.pkg)
-	}
-	download := goTool(src, "/usr/bin/go", list...)
-	download.Stdout = io.Discard
-	if err := download.Run(); err != nil {
-		return "", fmt.Errorf("build guest program: download modules: %w", err)
+	for _, m := range mods {
+		dir := filepath.Join(src, m)
+		if err := requireExportModule(goTool, dir); err != nil {
+			return "", err
+		}
+		if err := refusePathReplace(goTool, dir); err != nil {
+			return "", err
+		}
+		list := []string{"list", "-deps"}
+		for _, p := range cfg.programs {
+			if p.mod == m {
+				list = append(list, p.pkg)
+			}
+		}
+		download := goTool(dir, "/usr/bin/go", list...)
+		download.Stdout = io.Discard
+		if err := download.Run(); err != nil {
+			return "", fmt.Errorf("build guest program: download modules of %s: %w", m, err)
+		}
 	}
 	if err := capModuleCache(moduleCache(stage), cfg.moduleCache); err != nil {
 		return "", err
@@ -201,8 +233,8 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	if cfg.afterCap != nil {
 		cfg.afterCap(stage)
 	}
-	for _, p := range imagePrograms {
-		goBuild := goTool(src, "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, p.dst), p.pkg)
+	for _, p := range cfg.programs {
+		goBuild := goTool(filepath.Join(src, p.mod), "/usr/bin/go", "build", "-trimpath", "-buildvcs=false", "-o", filepath.Join(tree, p.dst), p.pkg)
 		goBuild.Env = append(goBuild.Env, "GOPROXY=off") // the last value wins: nothing past the cap is fetched
 		if err := goBuild.Run(); err != nil {
 			return "", fmt.Errorf("build %s: %w", p.name, err)
@@ -213,7 +245,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 			return "", err
 		}
 	}
-	if err := openTree(tree); err != nil {
+	if err := openTree(tree, cfg.programs); err != nil {
 		return "", err
 	}
 	if cfg.afterTree != nil {
@@ -1097,7 +1129,7 @@ func copyInto(src, dst string, mode os.FileMode) error {
 // reach and exec its binary. It works through an os.Root, so a link in the stage, which a process at
 // the builder's uid can plant, never changes a file outside the tree (T34): the walk does not follow
 // links, and a program that is a link out of the tree fails the build.
-func openTree(tree string) (err error) {
+func openTree(tree string, programs []imageProgram) (err error) {
 	r, err := os.OpenRoot(tree)
 	if err != nil {
 		return fmt.Errorf("image tree: %w", err)
@@ -1109,7 +1141,7 @@ func openTree(tree string) (err error) {
 		}
 		return r.Chmod(path, 0o755)
 	})
-	for _, p := range imagePrograms {
+	for _, p := range programs {
 		err = errors.Join(err, r.Chmod(p.dst, 0o755))
 	}
 	if err != nil {

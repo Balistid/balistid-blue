@@ -69,7 +69,7 @@ func TestRequiredFactsArePinned(t *testing.T) {
 	want := []string{
 		FactNet, FactPCINet, "audit_enabled", "audit_failure", "audit_backlog_limit", "audit_rate_limit",
 		"audit_lost", "laurel_user", "laurel_cap_prm", "laurel_cap_eff", "laurel_cap_amb", "collector_user",
-		"collector_cap_prm", "collector_cap_eff", "collector_cap_amb", "collector_canary", "ledger_anchored", "canary",
+		"collector_cap_prm", "collector_cap_eff", "collector_cap_amb", "collector_canary", "ledger_anchored", "ledger_cosigned", "fork_refused", "canary",
 		"audit_enabled_after_e0", "e0_recorded", "io_uring_sysctl", "io_uring_off",
 		"io_uring_on", "overflow_before", "overflow_after", "overflow_journal", "audit_lost_after",
 	}

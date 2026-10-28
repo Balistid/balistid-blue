@@ -1,0 +1,22 @@
+# Range image only (ADR 0026, point 5): the pinned litewitness (range/witness) stands in for the Pi's.
+# It trusts the range ledger's key for its origin and listens on localhost, where only the relay calls it.
+[Unit]
+Description=Balistid Blue range: litewitness
+Requires=balistid-range-witness-agent.service
+After=balistid-range-witness-agent.service
+
+[Service]
+DynamicUser=yes
+User=balistid-range-witness
+StateDirectory=balistid-range-witness
+EnvironmentFile=/etc/balistid-range/witness.env
+ExecStartPre=/usr/lib/balistid-range/witnessctl add-log -db %S/balistid-range-witness/witness.db -origin balistid-range/log
+ExecStartPre=/usr/lib/balistid-range/witnessctl add-key -db %S/balistid-range-witness/witness.db -origin balistid-range/log -key ${LEDGER_VKEY}
+ExecStart=/usr/lib/balistid-range/litewitness -name balistid-range/witness -db %S/balistid-range-witness/witness.db \
+  -ssh-agent /run/balistid-range-witness/agent.sock -key ${WITNESS_KEY} -listen localhost:7380
+IPAddressAllow=localhost
+IPAddressDeny=any
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes

@@ -49,7 +49,8 @@ func main() {
 		}
 		return
 	}
-	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain, ledgerKeyArg: ledgerKeyMain} {
+	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain, ledgerKeyArg: ledgerKeyMain,
+		witnessKeyArg: witnessKeyMain, witnessAgentArg: witnessAgentMain} {
 		if len(os.Args) > 1 && os.Args[1] == arg {
 			if err := sub(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "balistid-range-guest %s: %v\n", arg, err)
@@ -137,6 +138,15 @@ func run() error {
 
 	// The ledger anchored what the collector committed, under the range key (ADR 0027).
 	add("ledger_anchored", ledgerAnchored(ctx))
+	// The witness cosigned it, then refuses a fork and a rollback (T12). Only after a cosignature: a
+	// witness that never cosigned would take the probe's checkpoint as its first.
+	cos := ledgerCosigned(ctx)
+	add("ledger_cosigned", cos)
+	fork := "skipped: nothing cosigned"
+	if cos == "yes" {
+		fork = forkRefused(ctx)
+	}
+	add("fork_refused", fork)
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)
