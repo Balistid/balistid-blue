@@ -24,8 +24,10 @@ IMAGE = "docker.io/library/archlinux@sha256:624bdc7fc6615155d67bc34cf7146c0c9fd0
 # Host tools from this day of the Arch archive (go 1.27.3, mkosi 27.1); the image's own packages
 # come from the snapshot in range/mkosi.conf.
 SNAPSHOT = "2026/10/27"
-# What the range build and run call besides base-devel (makepkg): internal/rangevm/session.go, vm.go.
-PACKAGES = ("git", "go", "mkosi", "qemu-base", "edk2-ovmf", "bubblewrap", "dosfstools", "mtools")
+# What the range build and run call besides base-devel (makepkg): internal/rangevm/session.go, vm.go,
+# and the mkosi optional dependencies a bootable disk image needs (python-pefile, ukify, cpio, mkfs).
+PACKAGES = ("git", "go", "mkosi", "qemu-base", "edk2-ovmf", "bubblewrap", "dosfstools", "mtools",
+            "python-pefile", "systemd-ukify", "cpio", "e2fsprogs")
 # Measured locally: a 1.5 GiB image, a build stage, the run's overlay and scratch disk (4 GiB cap).
 MIN_FREE = 12 << 30
 KVM = Path("/dev/kvm")
