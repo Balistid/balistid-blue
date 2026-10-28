@@ -46,6 +46,14 @@ var vectors = []struct {
 		"0000000000000001", "0000000000100000",
 		"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 	}},
+	{"loss", Entry{At: noon, Body: Loss{Seq: 42, Stage: StageQueue, Records: 3}}, []string{
+		label, "03", atNoon,
+		"000000000000002a", "02", "0000000000000003", // seq, stage, records
+	}},
+	{"health", Entry{At: noon, Body: Health{State: StateUnknown, Reason: ReasonStoreDown, Unstored: 7}}, []string{
+		label, "04", atNoon,
+		"02", "02", "0000000000000007", // state, reason, unstored
+	}},
 	{"announce before the epoch", Entry{At: -1, Body: Announce{Kind: AnnounceSuspend}}, []string{
 		label, "05", "ffffffffffffffff", "02",
 	}},
@@ -104,6 +112,7 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 	head := len(label)/2 + 1 + 8 // label, type, time
 	batch := vectorBytes(t, "batch")
 	announce, final := vectorBytes(t, "announce before the epoch"), vectorBytes(t, "final")
+	loss, health := vectorBytes(t, "loss"), vectorBytes(t, "health")
 	const notV1, short = "not a balistid/entry/v1", "ends inside a field"
 	for _, c := range []struct {
 		name string
@@ -115,8 +124,20 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"no terminator", with(batch, len(label)/2-1, 'x'), notV1},
 		{"type zero", with(batch, len(label)/2, 0), "unknown type"},
 		{"unknown type", with(batch, len(label)/2, 7), "unknown type"},
-		{"type kept for loss", with(batch, len(label)/2, 3), "unknown type"},
-		{"type kept for health", with(batch, len(label)/2, 4), "unknown type"},
+		{"batch read as loss", with(batch, len(label)/2, 3), "bytes after the entry"},
+		{"loss seq zero", with(loss, head, 0, 0, 0, 0, 0, 0, 0, 0), "loss seq outside"},
+		{"loss seq over MaxSeq", with(loss, head, 0x80), "loss seq outside"},
+		{"loss stage zero", with(loss, head+8, 0), "unknown loss stage"},
+		{"loss stage seven", with(loss, head+8, 7), "unknown loss stage"},
+		{"loss of no records", with(loss, head+9+7, 0), "loss of no records"},
+		{"truncated loss of two", with(with(loss, head+8, 6), head+9+7, 2), "truncated loss"},
+		{"short loss", loss[:len(loss)-1], short},
+		{"health OK with a reason", with(health, head, 1), "state and reason"},
+		{"health UNKNOWN without a reason", with(health, head+1, 0), "state and reason"},
+		{"health reason six", with(health, head+1, 6), "state and reason"},
+		{"health state three", with(health, head, 3), "state and reason"},
+		{"health state zero", with(health, head, 0, 0), "state and reason"},
+		{"short health", health[:len(health)-1], short},
 		{"origin past input", with(final, head, 0xff), short},
 		{"trailing byte", append(bytes.Clone(batch), 0), "bytes after the entry"},
 		{"short hash", batch[:len(batch)-1], short},
@@ -156,6 +177,12 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Seal{First: 1, Last: 1}},
 		{Body: Final{NextOrigin: "balistid.dev/log+2027"}},
 		{Body: Announce{}},
+		{Body: Loss{}},
+		{Body: &Loss{Seq: 1, Stage: StageCap, Records: 1}},
+		{Body: Loss{Seq: 1, Stage: StageTruncated, Records: 2}},
+		{Body: Health{}},
+		{Body: Health{State: StateOK, Reason: ReasonStarting}},
+		{Body: (*Health)(nil)},
 		{Body: Final{NextOrigin: strings.Repeat("o", MaxOrigin+1)}},
 		{Body: Final{NextOrigin: "a\nb"}},
 	} {
@@ -168,6 +195,10 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Batch{First: 5, Last: 5, Root: root}},
 		{Body: Seal{First: 5, Last: 5, SHA256: empty}},
 		{Body: Batch{First: 1, Last: MaxSeq, Root: root}},
+		{Body: Loss{Seq: MaxSeq, Stage: StageTruncated, Records: 1}},
+		{Body: Loss{Seq: 1, Stage: StageCap, Records: math.MaxUint64}},
+		{Body: Health{State: StateOK, Unstored: math.MaxUint64}},
+		{Body: Health{State: StateUnknown, Reason: ReasonCanaryPending}},
 	} {
 		b, err := e.Encode()
 		if err != nil {
