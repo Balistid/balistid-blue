@@ -15,8 +15,8 @@ alone). Tessera v1.0.4 resolves an `Add` only once the entry is integrated, so i
 ## Decision
 
 1. After each `Flush` that returns without error, the collector's writer reads seq, leaf, and what point 6 needs,
-   of the records in (sent, `Committed`], in seq order and capped per tick, through the store's connection (an open
-   transaction is an error, never a wait); sealed shards are opened read-only. A bounded channel takes them to a
+   of the records in (sent, `Committed`], in seq order and capped per tick, through the store's one connection
+   (inside its open transaction if there is one, so it never waits); sealed shards are opened read-only. A bounded channel takes them to a
    link goroutine; when full, `sent` stays, so the writer never waits for the ledger. Live, resend and restart are
    this one path. Seqs that a seal committed but whose index line failed wait for the reopen to recover the shard.
 2. The ledger listens on its own socket, not one systemd passes (`SO_PEERCRED` would show systemd's uid), and takes
