@@ -64,14 +64,14 @@ func run() int {
 }
 
 func serve(dir, sock, keyPath string, log *slog.Logger) error {
+	creds := os.Getenv("CREDENTIALS_DIRECTORY")
 	if keyPath == "" {
-		creds := os.Getenv("CREDENTIALS_DIRECTORY")
 		if creds == "" {
 			return errors.New("no -key and no CREDENTIALS_DIRECTORY")
 		}
 		keyPath = filepath.Join(creds, "ledger-key")
 	}
-	signer, err := readSigner(keyPath)
+	signer, err := readSigner(keyPath, creds)
 	if err != nil {
 		return err
 	}
@@ -101,10 +101,14 @@ func serve(dir, sock, keyPath string, log *slog.Logger) error {
 	return errors.Join(err, l.Close(closeCtx))
 }
 
-// readSigner reads the note signing key from path, a regular file only its owner may write and no other
-// user read (ENGINEERING 3). Group read stays: systemd grants a credential to the service's uid by an ACL
-// on a 0400 file, whose mask shows as the group's bits.
-func readSigner(path string) (note.Signer, error) {
+// readSigner reads the note signing key from path, a regular file only its owner may read and write
+// (ENGINEERING 3). In creds, systemd's credentials directory, group read stays: systemd grants a credential
+// to the service's uid by an ACL on a 0400 file, whose mask shows as the group's bits.
+func readSigner(path, creds string) (note.Signer, error) {
+	closed := os.FileMode(0o077)
+	if creds != "" && filepath.Dir(path) == filepath.Clean(creds) {
+		closed = 0o037
+	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the key's path is configuration
 	if err != nil {
 		return nil, fmt.Errorf("signing key: %w", err)
@@ -114,7 +118,7 @@ func readSigner(path string) (note.Signer, error) {
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("signing key: %w", err)
-	case !fi.Mode().IsRegular() || fi.Mode().Perm()&0o037 != 0:
+	case !fi.Mode().IsRegular() || fi.Mode().Perm()&closed != 0:
 		return nil, fmt.Errorf("signing key %s is not a regular file closed to other users (%v)", path, fi.Mode())
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxKeyBytes+1))

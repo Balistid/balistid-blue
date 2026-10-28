@@ -26,13 +26,27 @@ func keyFile(t *testing.T, mode os.FileMode) string {
 	return path
 }
 
-// 0440 is how a systemd credential looks: 0400 with an ACL for the service's uid, its mask in the group bits.
-func TestReadSignerTakesAKeyClosedToOtherUsers(t *testing.T) {
-	for _, mode := range []os.FileMode{0o600, 0o400, 0o440} {
-		s, err := readSigner(keyFile(t, mode))
+func TestReadSignerTakesAKeyOnlyItsOwnerReads(t *testing.T) {
+	for _, mode := range []os.FileMode{0o600, 0o400} {
+		s, err := readSigner(keyFile(t, mode), "")
 		if err != nil || s.Name() != "balistid.test/log" {
 			t.Fatalf("mode %v: %v, %v", mode, s, err)
 		}
+	}
+}
+
+// 0440 is how a systemd credential looks: 0400 with an ACL for the service's uid, its mask in the group
+// bits. Only there does group read pass.
+func TestReadSignerTakesGroupReadOnlyAsACredential(t *testing.T) {
+	path := keyFile(t, 0o440)
+	if s, err := readSigner(path, filepath.Dir(path)); err != nil || s.Name() != "balistid.test/log" {
+		t.Fatalf("credential: %v, %v", s, err)
+	}
+	if s, err := readSigner(path, ""); err == nil {
+		t.Fatalf("group-readable key outside the credentials directory: %v", s.Name())
+	}
+	if s, err := readSigner(path, t.TempDir()); err == nil {
+		t.Fatalf("group-readable key outside another credentials directory: %v", s.Name())
 	}
 }
 
@@ -54,7 +68,7 @@ func TestReadSignerRefuses(t *testing.T) {
 		"group-writable": keyFile(t, 0o660), "world-readable": keyFile(t, 0o604), "a symlink": link,
 		"a directory": t.TempDir(), "missing": filepath.Join(t.TempDir(), "none"), "not a key": garbage, "too large": huge,
 	} {
-		if s, err := readSigner(path); err == nil {
+		if s, err := readSigner(path, filepath.Dir(path)); err == nil {
 			t.Errorf("%s: signer %v", name, s.Name())
 		} else if strings.Contains(err.Error(), "PRIVATE+KEY") {
 			t.Errorf("%s: error quotes the key: %v", name, err)
