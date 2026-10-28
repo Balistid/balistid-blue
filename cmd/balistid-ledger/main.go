@@ -126,14 +126,14 @@ func readSigner(path string) (note.Signer, error) {
 	return s, nil
 }
 
-// listen binds the socket, then opens it to its group (the collector's, by the unit): it starts as the
-// umask leaves it, closed to the group, so it is never more open than that.
+// listen binds the socket and lets any uid connect: SO_PEERCRED decides right after accept, before a
+// byte is read, and counts the refusals (ADR 0007, point 2); the collector's unit has no group to share.
 func listen(path string) (*net.UnixListener, error) {
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
-	if err := os.Chmod(path, 0o660); err != nil { //nolint:gosec // the collector connects through the group; SO_PEERCRED decides
+	if err := os.Chmod(path, 0o666); err != nil { //nolint:gosec // SO_PEERCRED admits only the collector's uid
 		return nil, errors.Join(fmt.Errorf("listen: %w", err), ln.Close())
 	}
 	return ln, nil

@@ -85,6 +85,10 @@ LAYOUT: tuple[str, ...] = (
     "deploy/collector/tmpfiles.conf",
     "deploy/collector/balistid-collector.service",
     "deploy/collector/balistid-collector.socket",
+    # Ledger, by exact name (ADR 0027).
+    "deploy/ledger/sysusers.conf",
+    "deploy/ledger/tmpfiles.conf",
+    "deploy/ledger/balistid-ledger.service",
     # Attack range (ADR 0009).
     "range/mkosi.conf",
     "range/balistid-range-guest.service",

@@ -88,6 +88,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/laurel/` | Laurel configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
+| `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
 | `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |

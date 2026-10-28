@@ -1,0 +1,65 @@
+# Appends the collector's stream to the signed log (ADR 0006, 0026, 0027). It listens on its own socket in
+# /run/balistid-ledger: any uid may connect, the ledger takes only the collector's (SO_PEERCRED).
+[Unit]
+Description=Balistid Blue ledger: the collector's stream into the signed log
+# Early boot beside the collector, which redials it every second until it listens.
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service systemd-sysusers.service
+Before=shutdown.target
+Conflicts=shutdown.target
+StartLimitIntervalSec=0
+
+[Service]
+# READY=1 once the log is open and the socket listens.
+Type=notify
+Restart=always
+RestartSec=1s
+User=balistid-ledger
+Group=balistid-ledger
+ExecStart=/usr/local/lib/balistid/balistid-ledger -log /var/lib/balistid/ledger/log -socket /run/balistid-ledger/ledger.sock
+# The signing key, root's 0600 file, reaches the ledger alone in $CREDENTIALS_DIRECTORY (ADR 0006, point 1).
+LoadCredential=ledger-key:/etc/balistid/ledger-key
+# Tessera's tiles: a 0750 directory of the service and umask 0027 (ENGINEERING.md 7).
+StateDirectory=balistid/ledger
+StateDirectoryMode=0750
+RuntimeDirectory=balistid-ledger
+RuntimeDirectoryMode=0755
+UMask=0027
+# Its share of rss_mib (512 MiB for floor 0) beside the collector's 384M; the binary's heap stays at 96 MiB.
+MemoryMax=128M
+MemorySwapMax=0
+# Tessera takes up to 60 s to publish the checkpoint over the last batch.
+TimeoutStopSec=90s
+NoExecPaths=/ /var/lib/balistid/ledger /run/balistid-ledger /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-ledger
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=sysinit.target
