@@ -1,0 +1,14 @@
+# Range image only (ADR 0027), never on a host: the ledger's checkpoint key, made in the VM at boot, since
+# the range has no balistid-install. The private half is root's 0600 file the ledger loads as a credential.
+[Unit]
+Description=Balistid Blue range: the ledger's checkpoint key
+DefaultDependencies=no
+After=local-fs.target
+Before=balistid-ledger.service
+ConditionPathExists=!/etc/balistid/ledger-key
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/usr/lib/balistid-range/guest ledger-key

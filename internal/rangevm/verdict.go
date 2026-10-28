@@ -55,7 +55,8 @@ const capsNone = "0000000000000000"
 // binds, so a slow driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
 // Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
-// _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, -e 2 refusing and recording a
+// _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, the
+// ledger's signed batches through the collector's last commit (ADR 0027), -e 2 refusing and recording a
 // disable, io_uring refused with a control that the probe tells both states apart, and a
 // plugin-queue overflow reported while the kernel loses nothing.
 var expected = map[string]string{
@@ -75,6 +76,7 @@ var expected = map[string]string{
 	"collector_cap_eff":      capsNone,
 	"collector_cap_amb":      capsNone,
 	"collector_canary":       "yes",
+	"ledger_anchored":        "yes",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

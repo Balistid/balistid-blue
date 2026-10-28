@@ -1315,6 +1315,7 @@ func replacingRepo(t *testing.T, goSum, replace string, files map[string]string)
 		"go.sum":                           goSum,
 		"cmd/balistid-range-guest/main.go": "package main\n\nimport \"" + fixturePath + "\"\n\nfunc main() { _ = fixture.X }\n",
 		"cmd/balistid-collector/main.go":   "package main\n\nfunc main() {}\n",
+		"cmd/balistid-ledger/main.go":      "package main\n\nfunc main() {}\n",
 	}
 	maps.Copy(all, files)
 	for name, body := range all {

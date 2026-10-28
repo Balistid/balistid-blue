@@ -56,6 +56,11 @@ var imageFiles = []struct {
 	{"deploy/collector/balistid-collector.socket", "usr/lib/systemd/system/balistid-collector.socket", 0o644},
 	{"deploy/collector/sysusers.conf", "usr/lib/sysusers.d/balistid-collector.conf", 0o644},
 	{"deploy/collector/tmpfiles.conf", "usr/lib/tmpfiles.d/balistid-collector.conf", 0o644},
+	{"deploy/ledger/balistid-ledger.service", "usr/lib/systemd/system/balistid-ledger.service", 0o644},
+	{"deploy/ledger/sysusers.conf", "usr/lib/sysusers.d/balistid-ledger.conf", 0o644},
+	{"deploy/ledger/tmpfiles.conf", "usr/lib/tmpfiles.d/balistid-ledger.conf", 0o644},
+	{"range/balistid-range-ledger-key.service", "usr/lib/systemd/system/balistid-range-ledger-key.service", 0o644},
+	{"range/balistid-ledger-range.conf", "usr/lib/systemd/system/balistid-ledger.service.d/range.conf", 0o644},
 	{"deploy/audit/balistid.rules", "etc/audit/rules.d/balistid.rules", 0o640},
 	{"deploy/auditd/auditd.conf", "etc/audit/auditd.conf", 0o640},
 	{"deploy/auditd/laurel-plugin.conf", "etc/audit/plugins.d/laurel.conf", 0o640},
@@ -67,6 +72,7 @@ var imageFiles = []struct {
 var imagePrograms = []struct{ name, pkg, dst string }{
 	{"guest program", "./cmd/balistid-range-guest", "usr/lib/balistid-range/guest"},
 	{"collector program", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
+	{"ledger program", "./cmd/balistid-ledger", "usr/local/lib/balistid/balistid-ledger"},
 }
 
 // proxyEnv are the only variables makepkg and mkosi inherit besides their own paths: network
