@@ -11,7 +11,8 @@ variable is dropped. gofmt also gets every changed .go file, whether or not go l
 Versions are compared with the pins in ci.yml: golangci-lint must match (FAIL); go is compared without
 a distribution suffix such as -X:nodwarf5, and a difference is a WARN. go test runs under RLIMIT_AS
 and a timeout, with -short (a test that skips under it runs only in CI) and never fuzzes (seed
-corpora only). The last line is the verdict and names the checks
+corpora only). When STATUS.md, adr/, acceptance/, status.py or its test change, it also runs
+tools/ci/tests/test_status.py as CI selftest does; the rest of selftest is CI-only. The last line is the verdict and names the checks
 that only CI runs. Not called from githooks: it builds and runs project code, which a hook must not.
 """
 
@@ -48,8 +49,8 @@ WHOLE_MODULE = {"go.mod", "go.sum", "go.work", "go.work.sum", ".golangci.yml", C
 # because tests read deploy/, range/, acceptance/ and tools/ci/ files.
 NO_GO = ("*.md", "githooks/*", ".github/*", "LICENSE", ".gitignore", ".editorconfig",
          ".gitattributes", ".gitleaks.toml", "zizmor.yml")
-# What status.py reads; a change to one runs its test here, the one selftest module that needs no
-# tool missing from a sandbox. The rest of selftest stays CI-only.
+# What status.py reads; a change to one runs test_status.py here (renaming or deleting it fails).
+# Other selftest modules stay CI-only: two need gitleaks or zizmor, the rest read deploy/, range/, cmd/, adr/.
 STATUS_INPUTS = ("STATUS.md", "adr/*", "acceptance/*", "tools/ci/status.py", "tools/ci/tests/test_status.py")
 # (label, text in ci.yml that shows CI runs it); check.py runs none of these. Covers every job.
 CI_ONLY = (
