@@ -36,7 +36,10 @@
 /internal/shard/ @Jvc0n
 /internal/collector/ @Jvc0n
 /internal/unixsock/ @Jvc0n
+/internal/relay/ @Jvc0n
+/internal/wholefile/ @Jvc0n
 /cmd/balistid-collector/ @Jvc0n
 /cmd/balistid-ledger/ @Jvc0n
+/cmd/balistid-relay/ @Jvc0n
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n
