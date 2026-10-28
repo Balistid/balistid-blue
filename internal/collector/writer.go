@@ -653,8 +653,8 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
-	case w.stopped != "":
-		h = "UNKNOWN ledger-stopped"
+	case w.stopped != "" || w.leavesErr != "":
+		h = streamUnknown
 	}
 	if h != w.health {
 		w.health = h

@@ -134,7 +134,7 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"short loss", loss[:len(loss)-1], short},
 		{"health OK with a reason", with(health, head, 1), "state and reason"},
 		{"health UNKNOWN without a reason", with(health, head+1, 0), "state and reason"},
-		{"health reason six", with(health, head+1, 6), "state and reason"},
+		{"health reason seven", with(health, head+1, 7), "state and reason"},
 		{"health state three", with(health, head, 3), "state and reason"},
 		{"health state zero", with(health, head, 0, 0), "state and reason"},
 		{"short health", health[:len(health)-1], short},
@@ -199,6 +199,7 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Loss{Seq: 1, Stage: StageCap, Records: math.MaxUint64}},
 		{Body: Health{State: StateOK, Unstored: math.MaxUint64}},
 		{Body: Health{State: StateUnknown, Reason: ReasonCanaryPending}},
+		{Body: Health{State: StateUnknown, Reason: ReasonStream}},
 	} {
 		b, err := e.Encode()
 		if err != nil {
