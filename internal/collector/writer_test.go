@@ -2003,3 +2003,22 @@ func TestEventBetweenCheckAndTakeKeepsItsTimesAndProbe(t *testing.T) {
 		t.Fatalf("taken %d events, first_at %v, last_at %v, want both at %v", c.count, c.firstAt, c.lastAt, at(3).UnixNano())
 	}
 }
+
+// A stopped stream to the ledger names the health only where it would be OK: a missed canary is still
+// recorded as such (ADR 0017, point 5).
+func TestAStoppedStreamKeepsRecordingTheCanary(t *testing.T) {
+	r := newRig(t)
+	stuck := make(chan struct{})
+	t.Cleanup(func() { close(stuck) })
+	r.w.Canary.touch = func(string, uint64) error { <-stuck; return nil }
+	r.w.stopped = "the ledger's batch is not the store's"
+	r.start(nil)
+	r.settle()
+	connect(r, 77)
+	r.step(0)
+	r.step(CanaryEvery)
+	r.step(CanaryEvery)
+	if health(r) != "UNKNOWN canary-missed" {
+		t.Fatalf("health %q with a stopped stream and a stuck canary syscall", health(r))
+	}
+}

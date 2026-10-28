@@ -649,8 +649,6 @@ func (w *Writer) setHealth() {
 	failing := w.Canary.Due(w.Now())
 	h := "OK"
 	switch {
-	case w.streamFault():
-		h = streamUnknown
 	case w.st == nil:
 		h = "UNKNOWN store: " + w.down
 	case w.connectedAt.IsZero():
@@ -659,6 +657,8 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
+	case w.streamFault(): // last: every other reason stays recorded as it changes (ADR 0017, point 5)
+		h = streamUnknown
 	}
 	if h != w.health {
 		w.health = h

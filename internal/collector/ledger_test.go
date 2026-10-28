@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -473,15 +474,54 @@ func TestStreamChecksTheResumeBatchOverTicks(t *testing.T) {
 	}
 }
 
-// A stream fault takes precedence over every other UNKNOWN reason in what the ledger hears.
-func TestStreamFaultTakesPrecedence(t *testing.T) {
-	for _, h := range []string{"UNKNOWN laurel-disconnected", "UNKNOWN canary-missed", "UNKNOWN canary-pending", "UNKNOWN store: store-open"} {
+// A stream fault names the health only where it would be OK; another UNKNOWN reason keeps its name.
+func TestStreamFaultShowsWhereHealthWouldBeOK(t *testing.T) {
+	for h, want := range map[string]entry.Reason{"OK": entry.ReasonStream, "UNKNOWN laurel-disconnected": entry.ReasonLaurelDisconnected,
+		"UNKNOWN canary-missed": entry.ReasonCanaryMissed, "UNKNOWN store: store-open": entry.ReasonStoreDown} {
 		w, l := streamWriter(openStore(t, 2))
 		w.health, w.stopped = h, "a stop"
 		l.hello <- helloOf{1, link.Hello{}}
 		w.stream(t.Context())
-		if _, others := taken(l); fmt.Sprint(healthOf(others)) != fmt.Sprint([]entry.Health{{State: entry.StateUnknown, Reason: entry.ReasonStream}}) {
+		if _, others := taken(l); fmt.Sprint(healthOf(others)) != fmt.Sprint([]entry.Health{{State: entry.StateUnknown, Reason: want}}) {
 			t.Errorf("%s with a stopped stream: %+v", h, others)
 		}
+	}
+}
+
+// A new hello in the middle of a read-back starts over on its own batch, not on the old one's root.
+func TestANewHelloMidCheckStartsOver(t *testing.T) {
+	st := openStore(t, 6)
+	w, l := streamWriter(oneLeafStore{st})
+	l.hello <- helloOf{1, link.Hello{Last: 3, First: 1, Root: rootOf(t, st, 1, 3)}}
+	w.stream(t.Context())
+	w.stream(t.Context())
+	l.hello <- helloOf{2, link.Hello{Last: 4, First: 2, Root: rootOf(t, st, 2, 4)}}
+	var seqs []uint64
+	for range 5 {
+		w.stream(t.Context())
+		s, _ := taken(l)
+		seqs = append(seqs, s...)
+	}
+	if w.stopped != "" || len(seqs) == 0 || seqs[0] != 5 {
+		t.Fatalf("stopped %q, records %v", w.stopped, seqs)
+	}
+}
+
+// committedStore claims more committed records than any batch the ledger cuts, and fails a read.
+type committedStore struct{ *store.Store }
+
+func (committedStore) Committed() uint64 { return maxBatchCheck + 10 }
+
+func (committedStore) Leaves(context.Context, uint64, int, int64) ([]shard.Leaf, []store.Seal, error) {
+	return nil, nil, errors.New("read")
+}
+
+// A hello whose last batch spans more records than the ledger ever cuts stops before any read.
+func TestAHelloOverTheRecordCapStopsBeforeAnyRead(t *testing.T) {
+	w, l := streamWriter(committedStore{openStore(t, 1)})
+	l.hello <- helloOf{1, link.Hello{Last: maxBatchCheck + 1, First: 1, Root: [32]byte{1}}}
+	w.stream(t.Context())
+	if !strings.Contains(w.stopped, "larger than any it cuts") || w.leavesErr != "" {
+		t.Fatalf("stopped %q, leaves error %q", w.stopped, w.leavesErr)
 	}
 }
