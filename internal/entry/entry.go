@@ -92,8 +92,8 @@ const (
 	StateUnknown State = 2
 )
 
-// Reason says why the collector is UNKNOWN; OK has none. ReasonStream: its stream to the ledger stopped or
-// cannot read the store's leaves. A new reason widens Decode: the Pi gets it first.
+// Reason says why the collector is UNKNOWN; OK has none. ReasonStream: its stream to the ledger stopped,
+// cannot read the store's leaves, or is still reading back the ledger's last batch. A new reason widens Decode: the Pi gets it first.
 type Reason byte
 
 // The reasons of the collector's health (ADR 0017, ADR 0027 point 6).

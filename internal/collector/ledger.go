@@ -425,7 +425,7 @@ func (w *Writer) sealAtSent() bool {
 // alone goes at most every healthEvery.
 func (w *Writer) sendHealth() {
 	unstored, now, h := w.unstored(), w.Now(), w.health
-	if w.streamFault() { // over any other state, and the tick's health predates this tick's stream
+	if h == "OK" && w.streamFault() { // the tick's health predates this tick's stream
 		h = streamUnknown
 	}
 	if h == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
@@ -441,8 +441,8 @@ func (w *Writer) sendHealth() {
 	}
 }
 
-// streamFault reports a stream that stopped, cannot read leaves, or is still checking the ledger's resume
-// point; it takes precedence over every other UNKNOWN reason.
+// streamFault reports a stream that stopped, cannot read leaves, or is still reading back the ledger's last
+// batch. It shows only where health would be OK: another UNKNOWN reason keeps its name, and alarms the same.
 func (w *Writer) streamFault() bool {
 	return w.stopped != "" || w.leavesErr != "" || w.checkRoot != nil
 }
