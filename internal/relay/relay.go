@@ -33,7 +33,6 @@ const CosignedName = "checkpoint.cosigned"
 const (
 	maxProof    = 63       // tlog-witness: the client must not send more lines
 	maxResponse = 64 << 10 // a few signature lines; anything longer is refused unread
-	maxSizeBody = 21       // up to 20 decimal digits and the newline
 )
 
 var sizeLine = regexp.MustCompile(`^(0|[1-9][0-9]{0,19})\n$`)
@@ -51,17 +50,20 @@ type Config struct {
 
 // Relay submits checkpoints one at a time; it is not safe for concurrent use.
 type Relay struct {
-	cfg   Config
-	log   client.FileFetcher
-	size  uint64 // what the witness last told it cosigned
-	known bool   // false until the witness answered once: the first request asks with old 0
+	cfg Config
+	log client.FileFetcher
+	// cosigned is the last checkpoint text the witness's key verified: the only state the relay
+	// trusts. A 409's size is unsigned, so it steers one request and is never kept.
+	cosigned string
+	size     uint64 // cosigned's size; the first request after a start asks with old 0
 }
 
 // New checks cfg; it opens nothing.
 func New(cfg Config) (*Relay, error) {
 	u, err := url.Parse(cfg.Submit)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || !strings.HasSuffix(u.Path, "/add-checkpoint") {
-		return nil, errors.New("relay: submit URL must be http(s)://host/.../add-checkpoint")
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" ||
+		u.Fragment != "" || u.ForceQuery || !strings.HasSuffix(u.Path, "/add-checkpoint") {
+		return nil, errors.New("relay: submit URL must be http(s)://host/.../add-checkpoint, no user, query or fragment")
 	}
 	if !filepath.IsAbs(cfg.Log) || !filepath.IsAbs(cfg.State) || cfg.Origin == "" || cfg.LogKey == nil ||
 		cfg.Witness == nil || cfg.HTTP == nil || cfg.HTTP.Timeout <= 0 {
@@ -92,44 +94,47 @@ type errConflict struct{ size uint64 }
 
 func (e errConflict) Error() string { return fmt.Sprintf("witness cosigned size %d", e.size) }
 
-// Step submits the log's current checkpoint unless the witness already cosigned its size. A 409
-// corrects the old size once; a witness ahead of the log means the log lost cosigned history (T12).
+// Step submits the log's current checkpoint unless the witness's key already verified this very
+// checkpoint. A 409 corrects the old size for one more request in this step only; a witness ahead of
+// the log means the log lost cosigned history (T12), and every step reports it again.
 func (r *Relay) Step(ctx context.Context) error {
-	cp, raw, n, err := client.FetchCheckpoint(ctx, r.log.ReadCheckpoint, r.cfg.LogKey, r.cfg.Origin)
+	cp, _, n, err := client.FetchCheckpoint(ctx, r.log.ReadCheckpoint, r.cfg.LogKey, r.cfg.Origin)
 	if err != nil {
 		return fmt.Errorf("relay: ledger checkpoint: %w", err)
 	}
-	if r.known && r.size == cp.Size {
+	if r.cosigned == n.Text {
 		return nil
 	}
+	// only verified lines go out and get stored: the ledger's from the log's note, the witness's from its answer
+	signed, err := note.Sign(&note.Note{Text: n.Text, Sigs: n.Sigs})
+	if err != nil {
+		return fmt.Errorf("relay: ledger checkpoint: %w", err)
+	}
+	old := r.size
 	for range 2 {
-		if r.known && r.size > cp.Size {
-			return fmt.Errorf("relay: witness cosigned size %d, the log has %d: cosigned history is gone", r.size, cp.Size)
+		if old > cp.Size {
+			return fmt.Errorf("relay: witness cosigned size %d, the log has %d: cosigned history is gone", old, cp.Size)
 		}
-		sigs, err := r.submit(ctx, cp.Size, raw, n.Text)
+		sigs, err := r.submit(ctx, old, cp.Size, signed, n.Text)
 		var c errConflict
 		if errors.As(err, &c) {
-			r.size, r.known = c.size, true
+			old = c.size
 			continue
 		}
 		if err != nil {
 			return err
 		}
-		if err := wholefile.Write(filepath.Join(r.cfg.State, CosignedName), append(bytes.Clone(raw), sigs...), 0o600); err != nil {
+		if err := wholefile.Write(filepath.Join(r.cfg.State, CosignedName), append(signed, sigs...), 0o600); err != nil {
 			return fmt.Errorf("relay: %w", err)
 		}
-		r.size, r.known = cp.Size, true
+		r.cosigned, r.size = n.Text, cp.Size
 		return nil
 	}
 	return errors.New("relay: the witness's size changed twice in one step")
 }
 
-// submit posts one add-checkpoint request and returns the witness's verified cosignature lines.
-func (r *Relay) submit(ctx context.Context, size uint64, raw []byte, text string) ([]byte, error) {
-	old := uint64(0)
-	if r.known {
-		old = r.size
-	}
+// submit posts one add-checkpoint request from old and returns the witness's verified cosignature lines.
+func (r *Relay) submit(ctx context.Context, old, size uint64, signed []byte, text string) ([]byte, error) {
 	body := fmt.Appendf(nil, "old %d\n", old)
 	if old != 0 && old != size {
 		pb, err := client.NewProofBuilder(ctx, size, r.log.ReadTile)
@@ -147,7 +152,7 @@ func (r *Relay) submit(ctx context.Context, size uint64, raw []byte, text string
 			body = append(base64.StdEncoding.AppendEncode(body, h), '\n')
 		}
 	}
-	body = append(append(body, '\n'), raw...)
+	body = append(append(body, '\n'), signed...)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.cfg.Submit, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("relay: request: %w", err)
@@ -173,7 +178,7 @@ func (r *Relay) submit(ctx context.Context, size uint64, raw []byte, text string
 }
 
 func conflict(contentType string, body []byte) error {
-	if contentType != "text/x.tlog.size" || len(body) > maxSizeBody || !sizeLine.Match(body) {
+	if contentType != "text/x.tlog.size" || !sizeLine.Match(body) {
 		return errors.New("relay: witness 409 without a size")
 	}
 	size, err := strconv.ParseUint(string(bytes.TrimSuffix(body, []byte("\n"))), 10, 64)

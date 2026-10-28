@@ -64,7 +64,7 @@ func serve(logDir, state, logKeyPath, witnessKeyPath, submit string) error {
 		return err
 	}
 	r, err := relay.New(relay.Config{Log: logDir, State: state, Origin: lv.Name(), LogKey: lv, Witness: wv,
-		Submit: submit, HTTP: &http.Client{Timeout: httpTimeout, CheckRedirect: noRedirect}})
+		Submit: submit, HTTP: newClient()})
 	if err != nil {
 		return err //nolint:wrapcheck // relay errors carry their context
 	}
@@ -75,6 +75,13 @@ func serve(logDir, state, logKeyPath, witnessKeyPath, submit string) error {
 	}
 	r.Run(ctx, every)
 	return nil
+}
+
+// newClient reaches the witness directly: no proxy from the environment, no redirect.
+func newClient() *http.Client {
+	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // the standard library's own type
+	t.Proxy = nil
+	return &http.Client{Timeout: httpTimeout, CheckRedirect: noRedirect, Transport: t}
 }
 
 // noRedirect keeps the relay on the one witness URL it was given: a redirect would send the checkpoint
