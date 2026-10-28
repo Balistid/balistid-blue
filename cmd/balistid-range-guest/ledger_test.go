@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,6 +14,28 @@ import (
 	"github.com/Balistid/balistid-blue/internal/anchor"
 	"github.com/Balistid/balistid-blue/internal/link"
 )
+
+// The key units run under UMask=0077: the public halves must still be readable by the relay's uid.
+func TestKeyFilesKeepTheirModeUnderTheUnitsUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	defer syscall.Umask(old)
+	dir := filepath.Join(t.TempDir(), "etc")
+	env := filepath.Join(t.TempDir(), "range", "witness.env")
+	if err := ledgerKey(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := witnessKey(dir, env); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(dir, "ledger-key"): 0o600, filepath.Join(dir, "ledger-key.pub"): 0o644,
+		filepath.Join(dir, "witness-key"): 0o600, filepath.Join(dir, "witness.vkey"): 0o644, env: 0o644,
+	} {
+		if st, err := os.Stat(path); err != nil || st.Mode().Perm() != want {
+			t.Errorf("%s: %v, %v; want %v", filepath.Base(path), st.Mode().Perm(), err, want)
+		}
+	}
+}
 
 func TestLedgerKeyWritesAPairOnce(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "etc")

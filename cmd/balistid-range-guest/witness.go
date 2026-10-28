@@ -83,13 +83,15 @@ func witnessKey(dir, env string) error {
 	return nil
 }
 
+// writeNew creates path, which must not exist, with exactly mode: the key units run under UMask=0077,
+// which would leave a public key unreadable to the relay, so the mode is set on the open file.
 func writeNew(path, body string, mode os.FileMode) error {
-	w, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode) //nolint:gosec // fixed names in root's directories
+	w, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // fixed names in root's directories
 	if err != nil {
 		return err //nolint:wrapcheck // the caller names the step
 	}
 	_, err = w.WriteString(body)
-	return errors.Join(err, w.Sync(), w.Close())
+	return errors.Join(err, w.Chmod(mode), w.Sync(), w.Close())
 }
 
 func witnessKeyMain(args []string) error {

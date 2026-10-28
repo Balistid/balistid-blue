@@ -142,6 +142,12 @@ func run() error {
 	// witness that never cosigned would take the probe's checkpoint as its first.
 	cos := ledgerCosigned(ctx)
 	add("ledger_cosigned", cos)
+	if cos != "yes" {
+		for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", "balistid-relay.service", "-u",
+			"balistid-range-witness.service", "-o", "cat", "--no-pager", "-n", "40"), "\n") {
+			fmt.Printf("balistid-range-guest: witness: %.400q\n", line)
+		}
+	}
 	fork := "skipped: nothing cosigned"
 	if cos == "yes" {
 		fork = forkRefused(ctx)

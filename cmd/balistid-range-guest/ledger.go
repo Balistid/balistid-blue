@@ -41,12 +41,7 @@ func ledgerKey(dir string) error {
 		name, body string
 		mode       os.FileMode
 	}{{"ledger-key", skey, 0o600}, {"ledger-key.pub", vkey, 0o644}} {
-		w, err := os.OpenFile(filepath.Join(dir, f.name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode) //nolint:gosec // fixed names in root's directory
-		if err != nil {
-			return fmt.Errorf("ledger key: %w", err)
-		}
-		_, err = w.WriteString(f.body + "\n")
-		if err = errors.Join(err, w.Sync(), w.Close()); err != nil {
+		if err := writeNew(filepath.Join(dir, f.name), f.body+"\n", f.mode); err != nil {
 			return fmt.Errorf("ledger key: %w", err)
 		}
 	}
