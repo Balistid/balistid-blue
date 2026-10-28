@@ -48,6 +48,9 @@ WHOLE_MODULE = {"go.mod", "go.sum", "go.work", "go.work.sum", ".golangci.yml", C
 # because tests read deploy/, range/, acceptance/ and tools/ci/ files.
 NO_GO = ("*.md", "githooks/*", ".github/*", "LICENSE", ".gitignore", ".editorconfig",
          ".gitattributes", ".gitleaks.toml", "zizmor.yml")
+# What status.py reads; a change to one runs its test here, the one selftest module that needs no
+# tool missing from a sandbox. The rest of selftest stays CI-only.
+STATUS_INPUTS = ("STATUS.md", "adr/*", "acceptance/*", "tools/ci/status.py", "tools/ci/tests/test_status.py")
 # (label, text in ci.yml that shows CI runs it); check.py runs none of these. Covers every job.
 CI_ONLY = (
     ("toolchain", "go_gate.py toolchain"),
@@ -336,6 +339,9 @@ def checks(args: argparse.Namespace, state: dict) -> None:
         problems.append(f"no merge base with {args.base}: run git fetch origin")
         return
     changed = changed_paths(repo, base)
+    if any(fnmatch.fnmatchcase(path, pattern) for path in changed for pattern in STATUS_INPUTS):
+        step(problems, "status selftest", *run([sys.executable, "-m", "unittest", "discover", "-s", "tools/ci/tests",
+                                                "-p", "test_status.py"], repo, static_env, args.timeout))
     rc, listing = run([go, "list", "-e", "-json=ImportPath,Dir,Imports,TestImports,XTestImports",
                        "./..."], repo, static_env, args.timeout)
     packages: list[dict] = []
