@@ -103,7 +103,7 @@ func TestServeWithoutAKeyFails(t *testing.T) {
 }
 
 func TestAskRefusesItsFlags(t *testing.T) {
-	for _, c := range [][2]string{{"shutdown", "balistid.test/next"}, {"reboot", ""}} {
+	for _, c := range [][2]string{{"reboot", ""}, {"Shutdown", ""}} {
 		if err := ask(filepath.Join(t.TempDir(), "c"), c[0], c[1], t.TempDir(), "", anchor.Relay{}); err == nil {
 			t.Errorf("-announce %q -final %q asked", c[0], c[1])
 		}
@@ -175,5 +175,22 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 func TestCountSetCountsTheModesGiven(t *testing.T) {
 	if countSet("", "", "") != 0 || countSet("log.1", "", "next") != 2 || countSet("", "shutdown", "") != 1 {
 		t.Fatal("countSet")
+	}
+}
+
+func TestVerifiesFinalTakesOnlyTheKeyThatSignedIt(t *testing.T) {
+	f := cosigntest.New(t)
+	final := f.Cosigned(t, 4, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	if err := verifiesFinal([]byte(f.LogKey+"\n"), final, f.Keys.Witness); err != nil {
+		t.Fatal(err)
+	}
+	other := cosigntest.New(t) // the same origin name, another key
+	for name, key := range map[string]string{"another key": other.LogKey, "not a key": "the verifier key"} {
+		if err := verifiesFinal([]byte(key), final, f.Keys.Witness); err == nil {
+			t.Errorf("%s verified the final", name)
+		}
+	}
+	if err := verifiesFinal([]byte(f.LogKey), final, other.Keys.Witness); err == nil {
+		t.Error("another witness's key verified the final")
 	}
 }

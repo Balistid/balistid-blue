@@ -53,7 +53,7 @@ func TestWaitCosignedReturnsOnceTheEntryIsCosigned(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		defer cancel()
-		_, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond, time.Minute)
+		_, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond)
 		done <- err
 	}()
 	time.Sleep(100 * time.Millisecond)
@@ -84,47 +84,68 @@ func TestWaitCosignedProvesTheEntry(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			write(t, relay.Path, c.note)
-			if _, err := WaitCosigned(t.Context(), relay, Wait{Dir: dir, Size: 2, Entry: c.entry}, time.Millisecond, time.Minute); err == nil {
+			if _, err := WaitCosigned(t.Context(), relay, Wait{Dir: dir, Size: 2, Entry: c.entry}, time.Millisecond); err == nil {
 				t.Fatal("waited it out")
 			}
 		})
 	}
 }
 
-func TestWitnessAwayEndsTheWaitAtOnce(t *testing.T) {
+// The wait ends only with its context: a relay file however old is read until then.
+func TestWaitCosignedEndsWithItsContext(t *testing.T) {
 	f := cosigntest.New(t)
-	dir, first, second := announcedLog(t, f)
+	dir, first, _ := announcedLog(t, f)
 	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
-	old := time.Now().Add(-2 * time.Minute)
-	stale := func(note []byte) {
-		write(t, relay.Path, note)
-		if err := os.Chtimes(relay.Path, old, old); err != nil {
+	write(t, relay.Path, first)
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(relay.Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	w := shutdown
+	w.Dir = dir
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	if _, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a wait short of its entry: %v", err)
+	}
+	for _, bad := range []Wait{{Dir: dir, Size: 2}, {Size: 2, Entry: w.Entry}, {Dir: dir, Entry: w.Entry}} {
+		if _, err := WaitCosigned(t.Context(), relay, bad, time.Millisecond); err == nil {
+			t.Fatalf("waited for %+v", bad)
+		}
+	}
+	if _, err := WaitCosigned(t.Context(), relay, w, 0); err == nil {
+		t.Fatal("waited with no poll")
+	}
+}
+
+// A log that grew past a cosigned checkpoint may keep only its full bundle and tiles: an entry of the older
+// checkpoint is still proven from them. Here the log of 3 entries plays the full one: its partial files are
+// moved to the full paths and the older checkpoint's partial files removed, as Tessera's cleanup leaves them.
+func TestAnEntryIsProvenAfterItsPartialBundleIsGone(t *testing.T) {
+	f := cosigntest.New(t)
+	dir, _, second := announcedLog(t, f)
+	c := &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, Config{Dir: dir, Signer: f.Log, CapBytes: 1 << 30, CheckpointInterval: 100 * time.Millisecond, Now: c.now})
+	if _, err := l.Announce(t.Context(), entry.AnnounceSuspend); err != nil {
+		t.Fatal(err)
+	}
+	closeLog(t, l)
+	for _, path := range []func(uint8) string{
+		func(p uint8) string { return layout.EntriesPath(0, p) },
+		func(p uint8) string { return layout.TilePath(0, 0, p) },
+	} {
+		if err := os.Rename(filepath.Join(dir, path(3)), filepath.Join(dir, path(0))); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(dir, path(2))); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 	}
-	w := Wait{Dir: dir, Size: 3, Entry: shutdown.Entry} // an entry the witness never cosigned
-	// The ledger holds a checkpoint of 2, the relay one of 1, written two minutes ago: away.
-	stale(first)
-	start := time.Now()
-	if _, err := WaitCosigned(t.Context(), relay, w, time.Second, time.Minute); !errors.Is(err, ErrWitnessAway) {
-		t.Fatalf("a witness behind the log: %v", err)
+	cp, err := cosign.Open(second, f.Keys)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := WaitCosigned(t.Context(), Relay{Path: relay.Path + ".missing", Keys: f.Keys}, w, time.Second, time.Minute); !errors.Is(err, ErrWitnessAway) {
-		t.Fatalf("no relay file: %v", err)
-	}
-	if waited := time.Since(start); waited > 500*time.Millisecond {
-		t.Fatalf("waited %v for a witness that is away", waited)
-	}
-	// An idle log: the relay's file is as old, but it holds the ledger's own size. Not away: waited on.
-	stale(second)
-	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond, time.Minute); errors.Is(err, ErrWitnessAway) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("an idle log: %v", err)
-	}
-	for _, bad := range [][2]time.Duration{{0, time.Minute}, {time.Second, 0}} {
-		if _, err := WaitCosigned(t.Context(), relay, w, bad[0], bad[1]); err == nil {
-			t.Fatalf("waited with poll %v, gap %v", bad[0], bad[1])
-		}
+	if e, err := cosign.ProvenEntry(t.Context(), dir, cp, 1); err != nil || e.Body != shutdown.Entry {
+		t.Fatalf("entry 1 of the older checkpoint: %+v, %v", e.Body, err)
 	}
 }

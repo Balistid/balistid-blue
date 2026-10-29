@@ -37,13 +37,12 @@ const (
 	// closeTimeout leaves Tessera its 60 s to publish a checkpoint covering the last batch.
 	closeTimeout = 70 * time.Second
 	maxKeyBytes  = 4 << 10
-	// announceWait bounds how long a stop waits for its announcement's cosignature (ADR 0030, point 2):
-	// a checkpoint every 5 s and the relay's request each second cosign it in about 6 s.
-	announceWait = 20 * time.Second
+	// How long a stop waits for its announcement's cosignature (ADR 0030, point 2): a checkpoint every 5 s
+	// and the relay's request each second cosign it in about 6 s. A suspend waits less, being a lid closing.
+	shutdownWait = 20 * time.Second
+	suspendWait  = 10 * time.Second
 	// finalWait is the install step's: it may wait for the witness a while longer.
 	finalWait = time.Minute
-	// cosignGap is cosign_gap_s: a relay file older than this means the witness is away.
-	cosignGap = time.Minute
 	// logRetention is log_retention_days; old logs are checked at start and then hourly.
 	logRetention = 400 * 24 * time.Hour
 	retireEvery  = time.Hour
@@ -109,6 +108,19 @@ func run() int {
 	return 0
 }
 
+// verifiesFinal checks that key, saved beside the ended log, verifies its cosigned final with the
+// witness's key: a matching name and 32-bit key hash can collide, a signature cannot.
+func verifiesFinal(key, final []byte, witness note.Verifier) error {
+	v, err := note.NewVerifier(strings.TrimSpace(string(key)))
+	if err != nil {
+		return fmt.Errorf("not a verifier key: %w", err)
+	}
+	if _, err := cosign.Open(final, cosign.Keys{Origin: v.Name(), Log: v, Witness: witness}); err != nil {
+		return fmt.Errorf("does not verify the cosigned final: %w", err)
+	}
+	return nil
+}
+
 // countSet counts the non-empty values.
 func countSet(values ...string) int {
 	n := 0
@@ -125,12 +137,12 @@ func countSet(values ...string) int {
 // key that verifies it. Whatever the wait gives, the entry stays in the log.
 func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error {
 	var body entry.Body
-	wait := announceWait
+	var wait time.Duration
 	switch {
 	case announce == "shutdown":
-		body = entry.Announce{Kind: entry.AnnounceShutdown}
+		body, wait = entry.Announce{Kind: entry.AnnounceShutdown}, shutdownWait
 	case announce == "suspend":
-		body = entry.Announce{Kind: entry.AnnounceSuspend}
+		body, wait = entry.Announce{Kind: entry.AnnounceSuspend}, suspendWait
 	case announce != "":
 		return fmt.Errorf("-announce %q: shutdown or suspend", announce)
 	default:
@@ -142,7 +154,7 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
-	cp, err := anchor.WaitCosigned(ctx, relay, anchor.Wait{Dir: dir, Size: size, Entry: body}, time.Second, cosignGap)
+	cp, err := anchor.WaitCosigned(ctx, relay, anchor.Wait{Dir: dir, Size: size, Entry: body}, time.Second)
 	if err != nil || final == "" {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
@@ -150,10 +162,8 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	if err != nil {
 		return fmt.Errorf("verifier key: %w", err)
 	}
-	// The key saved beside the log must be the one the cosigned final just verified with.
-	v, err := note.NewVerifier(strings.TrimSpace(string(key)))
-	if err != nil || v.Name() != relay.Keys.Log.Name() || v.KeyHash() != relay.Keys.Log.KeyHash() {
-		return errors.Join(fmt.Errorf("verifier key %s is not the one the final verified with", logKey), err)
+	if err := verifiesFinal(key, cp.Note, relay.Keys.Witness); err != nil {
+		return fmt.Errorf("verifier key %s: %w", logKey, err)
 	}
 	if err := wholefile.Write(filepath.Join(dir, anchor.FinalKeyName), key, 0o640); err != nil {
 		return err //nolint:wrapcheck // wholefile errors carry their context

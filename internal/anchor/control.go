@@ -8,13 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/transparency-dev/formats/log"
-	"github.com/transparency-dev/tessera/api/layout"
-	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
@@ -107,17 +101,20 @@ func serveControl(ctx context.Context, ctl Control, l *Log, ref *refusals, log *
 			continue
 		}
 		body, size, err := answer(ctx, c, l)
-		if err != nil {
-			log.Warn("control request refused", "err", err, "request", fmt.Sprintf("%+v", body), "peer_uid", p.UID,
-				"peer_pid", p.PID, "rule_version", ControlRuleVersion)
-			continue
+		attrs := []any{"request", fmt.Sprintf("%+v", body), "peer_uid", p.UID, "peer_pid", p.PID, "rule_version", ControlRuleVersion}
+		switch {
+		case size != 0 && err != nil: // logged; only the answer did not reach the client
+			log.Warn("control request logged, answer not delivered", append(attrs, "size", size, "err", err)...)
+		case err != nil:
+			log.Warn("control request refused", append(attrs, "err", err)...)
+		default:
+			log.Info("control request logged", append(attrs, "size", size)...)
 		}
-		log.Info("control request logged", "request", fmt.Sprintf("%+v", body), "size", size, "peer_uid", p.UID,
-			"peer_pid", p.PID, "rule_version", ControlRuleVersion)
 	}
 }
 
-// answer reads one request off c, logs it and answers; it returns what was asked and the log's size.
+// answer reads one request off c, logs it and answers; it returns what was asked and, once logged, the
+// log's size, which stays set when only the answer fails.
 func answer(ctx context.Context, c *net.UnixConn, l *Log) (entry.Body, uint64, error) {
 	defer c.Close() //nolint:errcheck // one request per connection
 	if err := c.SetDeadline(time.Now().Add(controlTimeout)); err != nil {
@@ -172,11 +169,6 @@ func Ask(ctx context.Context, path string, body entry.Body) (uint64, error) {
 	return binary.BigEndian.Uint64(a[1:]), nil
 }
 
-// ErrWitnessAway is a log the witness has not kept up with: the ledger holds a checkpoint larger than the
-// relay's cosigned one, and the relay's file is older than the gap WaitCosigned was given, so waiting would
-// only delay the stop.
-var ErrWitnessAway = errors.New("anchor: the witness has not cosigned the log's growth lately")
-
 // Wait is what WaitCosigned waits for: the entry at Size-1 of the log in Dir, as a request asked for it.
 type Wait struct {
 	Dir   string // the ledger's log, whose checkpoint and tiles the client reads
@@ -185,12 +177,11 @@ type Wait struct {
 }
 
 // WaitCosigned reads the relay's cosigned checkpoint every poll until it covers w's entry, proven
-// included and equal to the one asked for (ADR 0030, point 2), and returns that checkpoint. It gives up
-// when ctx ends, and at once, on any poll, when the witness is away (ErrWitnessAway): an idle log, whose
-// checkpoint the relay has cosigned whatever its age, is waited on.
-func WaitCosigned(ctx context.Context, relay Relay, w Wait, poll, gap time.Duration) (cosign.Checkpoint, error) {
-	if relay.Path == "" || w.Dir == "" || w.Size == 0 || poll <= 0 || gap <= 0 {
-		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint, log, size, poll or gap to wait with")
+// included and equal to the one asked for (ADR 0030, point 2), and returns that checkpoint; it gives up
+// only when ctx ends, which bounds the wait.
+func WaitCosigned(ctx context.Context, relay Relay, w Wait, poll time.Duration) (cosign.Checkpoint, error) {
+	if relay.Path == "" || w.Dir == "" || w.Size == 0 || w.Entry == nil || poll <= 0 {
+		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint, log, size, entry or poll to wait with")
 	}
 	t := time.NewTicker(poll)
 	defer t.Stop()
@@ -206,47 +197,10 @@ func WaitCosigned(ctx context.Context, relay Relay, w Wait, poll, gap time.Durat
 			}
 			return cp, nil
 		}
-		if away := witnessAway(relay, w.Dir, cp, err, gap); away != nil {
-			return cosign.Checkpoint{}, away
-		}
 		select {
 		case <-ctx.Done():
 			return cosign.Checkpoint{}, fmt.Errorf("anchor: size %d not cosigned: %w", w.Size, errors.Join(ctx.Err(), err))
 		case <-t.C:
 		}
 	}
-}
-
-// witnessAway is ErrWitnessAway when the ledger's own checkpoint is larger than what the relay holds
-// cosigned (cp, or nothing when readErr) and the relay's file is older than gap by the host's clock.
-func witnessAway(relay Relay, dir string, cp cosign.Checkpoint, readErr error, gap time.Duration) error {
-	fi, err := os.Lstat(relay.Path)
-	if err != nil {
-		return errors.Join(ErrWitnessAway, err) // the relay never cosigned anything
-	}
-	if time.Since(fi.ModTime()) <= gap {
-		return nil
-	}
-	ledger, err := ledgerSize(filepath.Join(dir, layout.CheckpointPath), relay.Keys)
-	if err != nil || readErr != nil || ledger > cp.Size {
-		return errors.Join(ErrWitnessAway, err, readErr)
-	}
-	return nil
-}
-
-// ledgerSize is the size of the ledger's own signed checkpoint at path.
-func ledgerSize(path string, k cosign.Keys) (uint64, error) {
-	b, err := cosign.ReadFile(nil, path, cosign.MaxNote)
-	if err != nil {
-		return 0, fmt.Errorf("anchor: ledger checkpoint: %w", err)
-	}
-	n, err := note.Open(b, note.VerifierList(k.Log))
-	if err != nil {
-		return 0, fmt.Errorf("anchor: ledger checkpoint: %w", err)
-	}
-	var cp log.Checkpoint
-	if _, err := cp.Unmarshal([]byte(n.Text)); err != nil || cp.Origin != k.Origin {
-		return 0, errors.Join(fmt.Errorf("anchor: ledger checkpoint of origin %q", cp.Origin), err)
-	}
-	return cp.Size, nil
 }

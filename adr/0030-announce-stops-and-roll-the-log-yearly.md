@@ -17,11 +17,11 @@ restart. Tessera signs a checkpoint every 5 s; the relay asks the witness each s
 1. The ledger listens on a second socket, `control.sock` 0600 in its runtime directory, for its own uid only
    (`SO_PEERCRED`, refusals summed with the collector socket's, ADR 0007 point 2). One request per connection: one
    frame holding an `announce` or `final` body, decoded strictly; the answer is a status byte and the log's size
-   once the entry is in. The ledger flushes the waiting batch first, so the entry covers every record it holds.
+   once the entry is in. The waiting batch is logged first, so the entry covers every record held (at the cap: 5).
 2. The client is a mode of the same binary: `balistid-ledger -announce shutdown|suspend`, `-final <origin>`. It
    waits, not the ledger: each second it reads the relay's cosigned checkpoint until the entry is proven in its
-   root, for at most 20 s; it gives up at once when the ledger's checkpoint is larger and the relay's file older than
-   `cosign_gap_s` (the witness is away). An entry not cosigned in time stays; the Pi alarms (`silence_alarm_s`, R6).
+   root, for at most 20 s at a shutdown and 10 s at a suspend (a lid closing); no guess cuts the wait short. An
+   entry not cosigned in time stays in the log; the Pi then alarms after `silence_alarm_s` (R6).
 3. Two oneshot units run as the ledger's uid with its sandbox and group: `balistid-announce` sends shutdown from
    `ExecStop` and is ordered after the relay, so it stops before it; `balistid-announce-suspend` sends suspend,
    `Before=` and wanted by `sleep.target`. Restarting the unit announces too; later growth ends the quiet. The quiet

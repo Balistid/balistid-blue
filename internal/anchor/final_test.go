@@ -53,7 +53,11 @@ func TestFinalFitsAtCap(t *testing.T) {
 	if err := l.Record(t.Context(), link.Record{Seq: 3, Leaf: leaf(3)}); !errors.Is(err, ErrFull) {
 		t.Fatalf("a record at the cap: %v", err)
 	}
-	closeLog(t, l) // full is no error to close with
+	l.batch, l.batchFirst = entry.NewRoot(), 3 // a record waiting, which no longer fits
+	if err := l.batch.Add(leaf(3)); err != nil {
+		t.Fatal(err)
+	}
+	closeLog(t, l) // full is no error to close with: the waiting batch goes to the next log
 	l = openLog(t, cfg)
 	if !l.Full() || l.Broken() != nil {
 		t.Fatalf("after a restart: full %v, broken %v", l.Full(), l.Broken())
