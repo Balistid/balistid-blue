@@ -435,7 +435,8 @@ func (s *Store) scan() ([]string, error) {
 	if len(c.beside) > 0 {
 		return nil, fmt.Errorf("store: %s beside a sealed shard", c.beside[0])
 	}
-	// Expire retires one shard at a time, so a crash leaves one below the first line; more is no crash.
+	// Expire retires one shard at a time and finishes a failed one first, so a crash, or a failed removal
+	// before Close, leaves one below the first line; more is neither.
 	bases := map[string]bool{}
 	for _, name := range c.retired {
 		bases[sidecarOf(name)] = true
@@ -681,16 +682,22 @@ func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 // ErrNotIndexed marks a seal the index does not hold as named: the store never sealed that shard.
 var ErrNotIndexed = errors.New("store: no such seal in the index")
 
-// ClockSkew is how far the witness's clock may be behind the store's when a seal is cosigned: a replayed
-// checkpoint can date a shard at most this much before its seal.
+// ClockSkew is how far the witness's clock may be off the store's: a replayed checkpoint can date a shard
+// at most this much before its seal, and a witness time further ahead of the store's clock is not taken.
 const ClockSkew = time.Hour
+
+// ErrUndated marks a checkpoint that left the seal it names without a cosign time: older than a stored
+// time, or predating that seal or one before it by more than ClockSkew. Nothing changed; a later
+// checkpoint dates it. A replayed old note is one, and so is a witness clock that lags the store's.
+var ErrUndated = errors.New("store: the named seal stays without a cosign time")
 
 // MarkCosigned dates seals by a checkpoint the witness cosigned at at, which covers the seal of first..last
 // with hash sum and so every shard before it (ADR 0029, point 3). Each of them still without a cosign time
 // gets at, in seq order, up to the first that at predates by more than ClockSkew: that one and the rest
 // wait for a later checkpoint, as a replayed old one would. A time older than a stored one dates nothing,
-// so times never fall, and a stored time never changes. A store that is UNKNOWN is left as it is, and an
-// index that cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
+// so times never fall, and a stored time never changes. When the named seal stays undated it returns
+// ErrUndated, after dating what it could. A store that is UNKNOWN is left as it is, and an index that
+// cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
 	if s.unknown != "" {
 		return nil
@@ -703,8 +710,11 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 	if t <= 0 {
 		return fmt.Errorf("store: cosign time %d", t)
 	}
-	if t < newestCosigned(s.seals) {
-		return nil
+	if newest := newestCosigned(s.seals); t < newest {
+		if s.seals[i].Cosigned != 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: %d is older than the stored %d", ErrUndated, t, newest)
 	}
 	seals, dated := slices.Clone(s.seals), 0
 	for j := range seals[:i+1] {
@@ -716,15 +726,19 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 		}
 		seals[j].Cosigned, dated = t, dated+1
 	}
+	var undated error
+	if seals[i].Cosigned == 0 {
+		undated = fmt.Errorf("%w: %d predates a seal by more than %v", ErrUndated, t, ClockSkew)
+	}
 	if dated == 0 {
-		return nil
+		return undated
 	}
 	if err := s.writeIndex(seals); err != nil {
 		return err
 	}
 	s.seals = seals
 	s.crashAt("cosigned")
-	return nil
+	return undated
 }
 
 // Expire retires the oldest shard once both clocks put it minAge past its seal (ADR 0029, point 4): the

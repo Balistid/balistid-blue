@@ -26,15 +26,16 @@ collects partial bundles. The Pi has no RTC (T22): its clock can start behind or
 3. The collector takes the frame only after this connection's hello passed its check, only for a seal equal to a
    line of its own index that does not end past what it sent, with a note both installed keys verify. Its time dates
    the shards through that seal still without one, in seq order up to the first it predates by more than an hour
-   (clock skew), which waits for a later note; a time older than one stored or taken dates nothing, and a stored
-   time never changes. The latest verified time drives retirement whatever it dated.
+   (clock skew), which waits for a later note; a time older than one stored or taken dates nothing, one over an hour
+   ahead of the host's clock is not taken, and a stored time never changes. The latest time taken drives retirement
+   whatever it dated; what a note leaves undated is journaled, at most once a minute.
 4. The index becomes `balistid-seals 2`: a line adds the host's time at the seal and, once known, the cosign time;
    seqs run on from the first line, not from 1. The oldest shard is retired, one per writer tick, never the last
    sealed one, when the latest witness time is `raw_retention_days` past its cosign time and the host's clock as far
    past its seal: the index is rewritten without it, then the file unlinked and the directory synced; a failed
-   unlink is finished before another shard leaves. Open removes the one unindexed shard below the first line a crash
-   can leave; two, or no index with shards not starting at seq 1, fail Open. Marking and retiring skip a store that
-   is UNKNOWN or short of space and try again, never spend the reserve, and what retiring frees refills it first.
+   unlink is finished first. Open removes the one shard below the first line that a crash or a failed unlink leaves;
+   two, or no index with shards not from seq 1, fail Open. Marking and retiring skip a store that is UNKNOWN or short
+   of space and try again, never spend the reserve, and what retiring frees refills it first.
 5. A hello below the first kept seq stops the stream with reason 6 instead of retrying a read that cannot succeed.
 
 ## Alternatives considered
@@ -55,6 +56,5 @@ collects partial bundles. The Pi has no RTC (T22): its clock can start behind or
   indexed seal as covered or replay a note up to an hour before a seal. T18-T20: the relay's file, frame 5 and the
   index are untrusted input, capped, decoded strictly and fuzzed.
 - Range: the self-test restarts the collector, whose Close seals a shard; fact `shard_cosigned` finds its cosign time.
-- Tests: retirement needs both clocks; an ineligible shard, the last one and a stored time are kept; kill -9 at
-  each rewrite and the unlink; a frame with an unknown seal, one past what was sent, before the hello check or with
-  an older witness time is refused, as is a time before a seal.
+- Tests: both clocks; an ineligible shard, the last one and a stored time kept; kill -9 at each rewrite and the
+  unlink; frames with an unknown seal, past what was sent, before the hello check, old or ahead times dated nothing.

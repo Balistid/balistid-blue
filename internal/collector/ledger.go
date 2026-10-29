@@ -453,35 +453,40 @@ func (w *Writer) sealAtSent() bool {
 }
 
 // retire takes the newest cosigned frame of this connection, once its hello checked out, and has the store
-// date seals by it; on every tick after the first frame taken it lets the store retire one shard by the
-// latest witness time (ADR 0029, points 3 and 4). A refusal or failure changes nothing and reaches the
-// journal at most once a minute, whatever comes between: a ledger chooses what the errors say.
+// date seals by it; on every tick after a witness time was taken it lets the store retire one shard by the
+// latest (ADR 0029, points 3 and 4), whatever the frame of the tick did. What a frame could not date and
+// what failed reach the journal at most once a minute per step: a ledger chooses what a frame's errors say.
 func (w *Writer) retire() {
-	var err error
 	select {
 	case c := <-w.Ledger.cosigned:
 		if c.epoch == w.epoch {
-			err = w.takeCosigned(c.Cosigned)
+			w.journal(&w.frameLogAt, "cosigned checkpoint not used", w.takeCosigned(c.Cosigned))
 		}
 	default:
 	}
-	if err == nil && !w.cosignAt.IsZero() {
-		var l *store.Seal
-		l, err = w.st.Expire(w.cosignAt, w.Retention)
-		if l != nil { // retired even when the reserve's refill then failed
-			w.Log.Info("shard retired", "shard", l.Name, "first", l.First, "last", l.Last, "sealed", l.Sealed,
-				"cosigned", l.Cosigned, "witness_time", w.cosignAt.Unix())
-		}
+	if w.cosignAt.IsZero() {
+		return
 	}
-	if now := w.Now(); err != nil && (w.cosignLogAt.IsZero() || now.Sub(w.cosignLogAt) >= time.Minute) {
-		w.Log.Error("retention step failed", "err", err)
-		w.cosignLogAt = now
+	l, err := w.st.Expire(w.cosignAt, w.Retention)
+	if l != nil { // retired even when removing its file or refilling the reserve then failed
+		w.Log.Info("shard retired", "shard", l.Name, "first", l.First, "last", l.Last, "sealed", l.Sealed,
+			"cosigned", l.Cosigned, "witness_time", w.cosignAt.Unix())
+	}
+	w.journal(&w.expireLogAt, "retirement failed", err)
+}
+
+func (w *Writer) journal(at *time.Time, msg string, err error) {
+	if now := w.Now(); err != nil && (at.IsZero() || now.Sub(*at) >= time.Minute) {
+		w.Log.Error(msg, "err", err)
+		*at = now
 	}
 }
 
-// takeCosigned checks a frame against what this collector knows: its seal was sent and the note verifies
-// with both installed keys; the store then holds the seal to its index and the time to the seals and the
-// times it stored. A time older than the latest taken dates nothing: a replayed note.
+// takeCosigned checks a frame against what this collector knows: its seal was sent, the note verifies with
+// both installed keys, and its time is neither older than the latest taken, as a replayed note's is, nor
+// more than store.ClockSkew ahead of the host's clock, which would hold retention back until then. The
+// store then holds the seal to its index and the time to its seals; the time is taken even when the store
+// could not date the seal yet (store.ErrUndated, returned for the journal).
 func (w *Writer) takeCosigned(m link.Cosigned) error {
 	if w.Cosign == nil {
 		return errors.New("collector: no verifier keys, so no retirement")
@@ -494,12 +499,19 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 		return fmt.Errorf("collector: %w", err)
 	}
 	if cp.Time.Before(w.cosignAt) {
-		return nil
+		return fmt.Errorf("collector: %w: witness time %d before the latest taken, %d", store.ErrUndated, cp.Time.Unix(), w.cosignAt.Unix())
 	}
-	if err := w.st.MarkCosigned(m.Seal.First, m.Seal.Last, m.Seal.SHA256, cp.Time); err != nil {
+	if now := w.Now(); cp.Time.After(now.Add(store.ClockSkew)) {
+		return fmt.Errorf("collector: witness time %d is ahead of the host's clock, %d, by more than %v", cp.Time.Unix(), now.Unix(), store.ClockSkew)
+	}
+	err = w.st.MarkCosigned(m.Seal.First, m.Seal.Last, m.Seal.SHA256, cp.Time)
+	if err != nil && !errors.Is(err, store.ErrUndated) {
 		return fmt.Errorf("collector: %w", err)
 	}
 	w.cosignAt = cp.Time
+	if err != nil {
+		return fmt.Errorf("collector: %w", err)
+	}
 	return nil
 }
 

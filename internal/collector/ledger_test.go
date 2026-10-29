@@ -580,7 +580,7 @@ func (s *retireStore) Seals() []store.Seal {
 const month = 30 * 24 * time.Hour
 
 // witnessAt is after the test store's seals, which its real clock dates.
-var witnessAt = time.Now().Add(time.Hour).Truncate(time.Second).UTC()
+var witnessAt = time.Now().Add(time.Minute).Truncate(time.Second).UTC()
 
 // cosignWriter is a writer that streamed every committed record of a store with sealed shards to an
 // empty ledger, with the keys that verify f's notes.
@@ -748,7 +748,7 @@ func TestRetentionFailuresAreJournaledOnceAMinute(t *testing.T) {
 	now = now.Add(time.Minute)
 	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt)}
 	w.stream(t.Context())
-	if n := strings.Count(journal.String(), "retention step failed"); n != 2 {
+	if n := strings.Count(journal.String(), "cosigned checkpoint not used"); n != 2 {
 		t.Fatalf("%d journal lines for 6 refusals over a minute:\n%s", n, journal.String())
 	}
 }
@@ -779,5 +779,43 @@ func TestALaggingWitnessStillMovesTheLatestTime(t *testing.T) {
 	}
 	if len(st.expired) != 1 || !st.expired[0].Equal(behind) {
 		t.Fatalf("Expire called with %v, want the lagging time", st.expired)
+	}
+}
+
+// What a frame could not date reaches the journal, though its time still drives retirement; a witness
+// time ahead of the host's clock by more than store.ClockSkew is not taken at all.
+func TestUndatedAndFutureTimesReachTheJournal(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	var journal bytes.Buffer
+	w.Log = slog.New(slog.NewTextHandler(&journal, nil))
+	behind := time.Now().Add(-2 * store.ClockSkew).Truncate(time.Second).UTC()
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], behind)}
+	w.stream(t.Context())
+	if !strings.Contains(journal.String(), "stays without a cosign time") || !w.cosignAt.Equal(behind) {
+		t.Fatalf("latest %v, journal:\n%s", w.cosignAt, journal.String())
+	}
+	ahead := time.Now().Add(store.ClockSkew + time.Hour).Truncate(time.Second).UTC()
+	w.frameLogAt = time.Time{}
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], ahead)}
+	w.stream(t.Context())
+	if !strings.Contains(journal.String(), "ahead of the host's clock") || !w.cosignAt.Equal(behind) {
+		t.Fatalf("latest %v after a time ahead, journal:\n%s", w.cosignAt, journal.String())
+	}
+	if got := st.Seals(); got[1].Cosigned != 0 {
+		t.Fatalf("a time ahead dated %+v", got[1])
+	}
+}
+
+// A refused frame does not hold back that tick's retirement, nor a retry of an unfinished one.
+func TestARefusedFrameDoesNotSkipRetirement(t *testing.T) {
+	f, other := cosigntest.New(t), cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[0], witnessAt)}
+	w.stream(t.Context())
+	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt)}
+	w.stream(t.Context())
+	if len(st.expired) != 2 {
+		t.Fatalf("Expire called with %v", st.expired)
 	}
 }
