@@ -1,9 +1,9 @@
 # Threat model — floor 0 (recorder)
 
-Scope: one Arch Linux host recording through auditd and Laurel (ADR 0004), raw SQLite shards (0005),
+Scope: an Arch Linux host recording via auditd and Laurel (ADR 0004), raw SQLite shards (0005),
 a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007), and the attack
 range VM that tests them (0009) and its runner (0011). Detection and
-response start on floor 1. Each row names its control and its proof in `acceptance/0.toml` or a test.
+response start on floor 1. Each row names its control and proof in `acceptance/0.toml` or a test.
 Status: **designed** (control decided, test not yet passing), **partial** (control leaves a stated
 hole), **gap** (no control; the floor meant to close it, or "open"), **assumption**. No row is
 "covered" until its test passes in CI or the range.
@@ -41,10 +41,10 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated; entries decoded strictly (0026) | FuzzDecodeEntry | partial: Pi parsers are exposed to root; ntfy push needs the Pi's outbound internet (0026) |
 | T17 | A2 | Start a new log origin to reset history | Pi accepts a new origin only after the old log's final checkpoint | test rollover | designed |
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
-| T19 | A3 | Parser bug in the ledger misuses its signing key | Ledger has no network; key only signs checkpoints; only the collector's uid connects (0027) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger can sign |
+| T19 | A3 | Parser bug in the ledger misuses its signing key | No network; key only signs checkpoints; only the collector's uid connects (0027) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger signs, steers retention (0029) |
 | T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries, ledger link and log caps (0027) | record-max, refusal-flood (0023); rss_mib; cpu_cores on the reference host (0025) | designed |
 | T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006); relay unit: witness address only | test_relay_deploy; pi_reach | partial: no WireGuard, uid rule |
-| T22 | A4 | Shift the host clock so retention deletes early | Shard age from the cosigned seal time on the Pi | test clock_skew | partial: Pi has no RTC |
+| T22 | A4 | Shift the host clock so retention deletes early | Age by the witness's clock and the host's (0029) | TestRetention* | partial: root sets both |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
 | T24 | A6 | Crash or power loss loses committed records | WAL `FULL`, a commit at every Flush (250 ms) or 2 MiB, sealing barrier (0005, 0013); the ledger logs a prefix, a re-issued seq fails its handshake (0027) | crash_loss_ms: kill -9 and reset of the collector under load, every seq it journaled committed survives (0018, 0023) | designed; hole: a device's volatile write cache is not modelled |
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day | partial: unread bytes at a collector restart or of a dead Laurel stay uncounted (0016); the range reads only sealed shards up to a barrier and keeps an exec window whole only when every health record up to the stopped run's end is a known safe one and the kernel lost count and auditd's overflow flag did not move, its barrier 7 s after the job past Laurel's 5 s hold of events without an end, which a step back of the guest's clock (root or hypervisor only) could undo (0022); a health record the collector gave way under load is not seen |
