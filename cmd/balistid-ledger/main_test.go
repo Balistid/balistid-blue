@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
+	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/cosign/cosigntest"
 )
 
 func keyFile(t *testing.T, mode os.FileMode) string {
@@ -89,7 +97,62 @@ func TestNoticesNameTheMPLModuleAndItsSource(t *testing.T) {
 
 func TestServeWithoutAKeyFails(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
-	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), "", anchor.Relay{}, nil); err == nil {
+	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), filepath.Join(t.TempDir(), "c"), "", anchor.Relay{}, nil); err == nil {
 		t.Fatal("served without a key")
+	}
+}
+
+func TestAskRefusesItsFlags(t *testing.T) {
+	for _, c := range [][2]string{{"shutdown", "balistid.test/next"}, {"reboot", ""}} {
+		if err := ask(filepath.Join(t.TempDir(), "c"), c[0], c[1], t.TempDir(), "", anchor.Relay{}); err == nil {
+			t.Errorf("-announce %q -final %q asked", c[0], c[1])
+		}
+	}
+}
+
+// ask ends the log, waits for the witness and saves the cosigned final with the key beside the log.
+func TestAskSavesTheCosignedFinal(t *testing.T) {
+	f := cosigntest.New(t)
+	dir, run := t.TempDir(), t.TempDir()
+	l, err := anchor.Open(t.Context(), anchor.Config{Dir: dir, Signer: f.Log, CapBytes: 1 << 30,
+		CheckpointInterval: 100 * time.Millisecond, Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close(t.Context()) //nolint:errcheck // test end
+	ln, err := listen(filepath.Join(run, "ledger.sock"), 0o666)
+	if errors.Is(err, syscall.EPERM) && os.Getenv("CI") != "true" {
+		t.Skipf("unix sockets denied here: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	control := filepath.Join(run, "control.sock")
+	ctl, err := listen(control, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- anchor.Serve(ctx, ln, anchor.Control{Listener: ctl, UID: os.Getuid()}, l, -1, anchor.Relay{}, slog.New(slog.DiscardHandler))
+	}()
+	defer func() { cancel(); <-done }()
+	relay := anchor.Relay{Path: filepath.Join(run, cosign.Name), Keys: f.Keys}
+	note := f.Cosigned(t, 1, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)) // the final is the empty log's first entry
+	logKey := filepath.Join(run, "ledger-key.pub")
+	if err := errors.Join(os.WriteFile(relay.Path, note, 0o600), os.WriteFile(logKey, []byte("the verifier key\n"), 0o600)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ask(control, "", "balistid.test/next", dir, logKey, relay); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][]byte{finalCosignedName: note, finalKeyName: []byte("the verifier key\n")} {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || !bytes.Equal(got, want) { //nolint:gosec // the test's own directory
+			t.Errorf("%s: %q, %v", name, got, err)
+		}
+	}
+	if !l.Ended() {
+		t.Fatal("the log did not end")
 	}
 }

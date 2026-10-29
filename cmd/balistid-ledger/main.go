@@ -22,7 +22,9 @@ import (
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 const (
@@ -34,6 +36,16 @@ const (
 	// closeTimeout leaves Tessera its 60 s to publish a checkpoint covering the last batch.
 	closeTimeout = 70 * time.Second
 	maxKeyBytes  = 4 << 10
+	// announceWait bounds how long a stop waits for its announcement's cosignature (ADR 0030, point 2):
+	// a checkpoint every 5 s and the relay's request each second cosign it in about 6 s.
+	announceWait = 20 * time.Second
+	// finalWait is the install step's: it may wait for the witness a while longer.
+	finalWait = time.Minute
+	// cosignGap is cosign_gap_s: a relay file older than this means the witness is away.
+	cosignGap = time.Minute
+	// Beside the log, once its final entry is cosigned: the note, and the key it verifies with (ADR 0030, point 5).
+	finalCosignedName = "final.cosigned"
+	finalKeyName      = "ledger.vkey"
 )
 
 // notices names what the binary links under a licence other than Apache-2.0, MIT, BSD or ISC (ADR 0026,
@@ -51,6 +63,9 @@ func run() int {
 	relayFile := flag.String("relay", "/var/lib/balistid/relay/"+cosign.Name, "the checkpoint the witness cosigned, as the relay keeps it")
 	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
 	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
+	control := flag.String("control", "/run/balistid-ledger/control.sock", "the ledger's control socket (ADR 0030)")
+	announce := flag.String("announce", "", "announce shutdown or suspend to the running ledger, wait for the cosignature and exit")
+	final := flag.String("final", "", "end the running ledger's log naming this next origin, wait for the cosignature, save it beside the log and exit")
 	flag.Parse()
 	if *showNotices {
 		fmt.Println(notices)
@@ -67,14 +82,59 @@ func run() int {
 	} else {
 		relay = anchor.Relay{Path: *relayFile, Keys: keys}
 	}
-	if err := serve(*dir, *sock, *keyPath, relay, log); err != nil {
+	if *announce != "" || *final != "" {
+		if err := ask(*control, *announce, *final, *dir, *logKey, relay); err != nil {
+			log.Error("not cosigned", "err", err)
+			return 1
+		}
+		return 0
+	}
+	if err := serve(*dir, *sock, *control, *keyPath, relay, log); err != nil {
 		log.Error("ledger stopped", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(dir, sock, keyPath string, relay anchor.Relay, log *slog.Logger) error {
+// ask is the client of the control socket (ADR 0030, point 2): it sends one announcement or final entry,
+// then waits for a cosigned checkpoint covering it; a cosigned final is saved beside the log with the
+// key that verifies it. Whatever the wait gives, the entry stays in the log.
+func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error {
+	var body entry.Body
+	wait := announceWait
+	switch {
+	case announce != "" && final != "":
+		return errors.New("-announce and -final together")
+	case announce == "shutdown":
+		body = entry.Announce{Kind: entry.AnnounceShutdown}
+	case announce == "suspend":
+		body = entry.Announce{Kind: entry.AnnounceSuspend}
+	case announce != "":
+		return fmt.Errorf("-announce %q: shutdown or suspend", announce)
+	default:
+		body, wait = entry.Final{NextOrigin: final}, finalWait
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	size, err := anchor.Ask(ctx, control, body)
+	if err != nil {
+		return err //nolint:wrapcheck // anchor errors carry their context
+	}
+	cp, err := anchor.WaitCosigned(ctx, relay, size, time.Second, cosignGap)
+	if err != nil || final == "" {
+		return err //nolint:wrapcheck // anchor errors carry their context
+	}
+	key, err := os.ReadFile(logKey) //nolint:gosec // the key's path is configuration; ReadKeys verified it
+	if err != nil {
+		return fmt.Errorf("verifier key: %w", err)
+	}
+	if err := wholefile.Write(filepath.Join(dir, finalKeyName), key, 0o640); err != nil {
+		return err //nolint:wrapcheck // wholefile errors carry their context
+	}
+	return wholefile.Write(filepath.Join(dir, finalCosignedName), cp.Note, 0o640) //nolint:wrapcheck // as above
+}
+
+func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Logger) error {
 	creds := os.Getenv("CREDENTIALS_DIRECTORY")
 	if keyPath == "" {
 		if creds == "" {
@@ -97,12 +157,18 @@ func serve(dir, sock, keyPath string, relay anchor.Relay, log *slog.Logger) erro
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
-	ln, err := listen(sock)
+	ln, err := listen(sock, 0o666)
+	var ctl *net.UnixListener
+	if err == nil {
+		if ctl, err = listen(control, 0o600); err != nil {
+			err = errors.Join(err, ln.Close())
+		}
+	}
 	if err == nil {
 		if nerr := unixsock.Notify("READY=1"); nerr != nil {
 			log.Error("ready notify failed", "err", nerr)
 		}
-		err = anchor.Serve(ctx, ln, l, collectorUID, relay, log)
+		err = anchor.Serve(ctx, ln, anchor.Control{Listener: ctl, UID: os.Getuid()}, l, collectorUID, relay, log)
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}
@@ -143,14 +209,15 @@ func readSigner(path, creds string) (note.Signer, error) {
 	return s, nil
 }
 
-// listen binds the socket and lets any uid connect: SO_PEERCRED decides right after accept, before a
-// byte is read, and counts the refusals (ADR 0007, point 2); the collector's unit has no group to share.
-func listen(path string) (*net.UnixListener, error) {
+// listen binds a socket with mode: the collector's lets any uid connect, SO_PEERCRED decides right after
+// accept, before a byte is read, and counts the refusals (ADR 0007, point 2), since the collector's unit has
+// no group to share; the control socket is the ledger uid's alone (ADR 0030, point 1).
+func listen(path string, mode os.FileMode) (*net.UnixListener, error) {
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
-	if err := os.Chmod(path, 0o666); err != nil { //nolint:gosec // SO_PEERCRED admits only the collector's uid
+	if err := os.Chmod(path, mode); err != nil {
 		return nil, errors.Join(fmt.Errorf("listen: %w", err), ln.Close())
 	}
 	return ln, nil

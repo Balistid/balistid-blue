@@ -233,7 +233,9 @@ func TestServeTakesOnlyTheCollector(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			var journal bytes.Buffer // read only after Serve returned
-			go func() { done <- Serve(ctx, ln, l, uid, Relay{}, slog.New(slog.NewJSONHandler(&journal, nil))) }()
+			go func() {
+				done <- Serve(ctx, ln, Control{}, l, uid, Relay{}, slog.New(slog.NewJSONHandler(&journal, nil)))
+			}()
 			conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 			if err != nil {
 				t.Fatal(err)

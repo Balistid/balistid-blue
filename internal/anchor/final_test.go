@@ -51,7 +51,7 @@ func TestFinalFitsAtCap(t *testing.T) {
 	if err := l.Close(t.Context()); err == nil { // Close reports what broke the process
 		t.Fatal("closed without the cap's error")
 	}
-	l = openLog(t, cfg) // the cap broke that process, not the log
+	l = openLog(t, cfg)        // the cap broke that process, not the log
 	defer l.Close(t.Context()) //nolint:errcheck // test end
 	if size, err := l.Final(t.Context(), next); err != nil || size != 3 {
 		t.Fatalf("final at the cap: size %d, %v", size, err)
