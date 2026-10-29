@@ -493,7 +493,8 @@ func (w *Writer) journal(at *time.Time, msg string, err error) {
 // both installed keys, and its time is neither older than the latest taken, as a replayed note's is, nor
 // more than store.ClockSkew ahead of the host's clock, which would hold retention back until then. The
 // store then holds the seal to its index and the time to its seals; the time is taken even when the store
-// could not date the seal yet (store.ErrUndated, returned for the journal).
+// could not date the seal yet (store.ErrUndated, returned for the journal), never when it is older than a
+// time the store holds (store.ErrStale): after a restart the store remembers what this writer does not.
 func (w *Writer) takeCosigned(m link.Cosigned) error {
 	if w.Cosign == nil {
 		return errors.New("collector: no verifier keys, so no retirement")

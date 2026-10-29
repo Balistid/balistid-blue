@@ -107,7 +107,7 @@ func TestMarkCosignedNeverOverwritesOrFalls(t *testing.T) {
 	s := sealedFour(t, dir)
 	mark(t, s, 0, at(10))
 	l := s.Seals()[2]
-	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); !errors.Is(err, ErrUndated) { // a replayed older checkpoint
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); !errors.Is(err, ErrStale) { // a replayed older checkpoint
 		t.Fatalf("a time older than a stored one: %v", err)
 	}
 	mark(t, s, 1, at(20))
@@ -410,5 +410,15 @@ func TestParseSealRefusesSeqZero(t *testing.T) {
 	}
 	if _, err := parseSeal("00000000000000000001.db 1 1 " + sum + " 5"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A time older than a stored one is stale even for a seal it would not date anew.
+func TestAnOlderTimeIsStaleForADatedSealToo(t *testing.T) {
+	s := sealedFour(t, t.TempDir())
+	mark(t, s, 1, at(10))
+	l := s.Seals()[0]
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(9)); !errors.Is(err, ErrStale) {
+		t.Fatalf("an older time for a dated seal: %v", err)
 	}
 }
