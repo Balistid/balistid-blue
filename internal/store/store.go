@@ -703,9 +703,6 @@ var ErrStale = errors.New("store: cosign time older than a stored one")
 // returns ErrUndated, after dating what it could. A store that is UNKNOWN is left as it is, and an index that
 // cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
-	if s.unknown != "" {
-		return fmt.Errorf("%w: the store is UNKNOWN", ErrUndated)
-	}
 	i := slices.IndexFunc(s.seals, func(l Seal) bool { return l.First == first && l.Last == last && l.SHA256 == sum })
 	if i < 0 {
 		return fmt.Errorf("%w: %d-%d", ErrNotIndexed, first, last)
@@ -716,6 +713,12 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 	}
 	if newest := newestCosigned(s.seals); t < newest {
 		return fmt.Errorf("%w: %d before %d", ErrStale, t, newest)
+	}
+	if s.unknown != "" { // the seal and the time checked out; an UNKNOWN store writes nothing
+		if s.seals[i].Cosigned != 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: the store is UNKNOWN", ErrUndated)
 	}
 	seals, dated := slices.Clone(s.seals), 0
 	for j := range seals[:i+1] {
