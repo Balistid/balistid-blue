@@ -54,7 +54,7 @@ collects partial bundles. The Pi has no RTC (T22): its clock can start behind or
 - T22 designed; left open: root setting both clocks. T15 stays a gap. T19: a compromised ledger can name a later
   indexed seal as covered, so a shard not yet cosigned retires once both clocks pass its age. T18-T20: the relay's
   file and frame 5 are new input, capped, decoded strictly and fuzzed.
-- Range: a range-only `-shard-max` seals mid-run; fact `shard_cosigned` finds a cosign time in the sandboxed index.
+- Range: the self-test restarts the collector, whose Close seals a shard; fact `shard_cosigned` finds its cosign time.
 - Tests: retirement needs both clocks; an ineligible shard, the last one and a stored time are kept; kill -9
   between the index rewrite and the unlink; a frame with an unknown seal, one past what was sent, before the hello
   check or with an older witness time is refused.

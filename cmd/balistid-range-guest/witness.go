@@ -13,7 +13,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/store"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
@@ -39,6 +42,9 @@ const (
 	witnessSubmit   = "http://127.0.0.1:7380/add-checkpoint"
 	relayState      = "/var/lib/balistid/relay"
 	maxWitnessReply = 4 << 10
+	// cosignWait covers a seal's way to a cosign time: the next 5 s checkpoint, the relay's second, the
+	// witness, the ledger's second and the collector's tick, with room for a restart.
+	cosignWait = 60 * time.Second
 )
 
 // witnessKey writes the witness's key into dir after the ledger's (range unit balistid-range-witness-key):
@@ -267,4 +273,29 @@ func addCheckpoint(ctx context.Context, s note.Signer, old, size uint64, hash []
 		return 0, nil, fmt.Errorf("witness reply: %w", err)
 	}
 	return resp.StatusCode, body, nil
+}
+
+// shardCosigned is "yes" once a shard the collector sealed carries a witness time in its index: the relay's
+// cosigned checkpoint reached the ledger and, as frame 5, the collector, under the units' sandbox (ADR 0029).
+// A restart of the collector seals its shard (Close) without a range-only shard size, which would change the
+// trials; the seal then goes to the ledger as any resent one does.
+func shardCosigned(ctx context.Context) string {
+	if err := exec.CommandContext(ctx, "/usr/bin/systemctl", "restart", "balistid-collector.service").Run(); err != nil {
+		return "error: restart the collector: " + err.Error()
+	}
+	var last string
+	for deadline := time.Now().Add(cosignWait); ; time.Sleep(time.Second) {
+		seals, err := store.ReadSeals(ctx, storeDir)
+		switch {
+		case err != nil && !errors.Is(err, store.ErrUnindexed): // the open shard is not indexed yet
+			last = "error: " + err.Error()
+		case slices.ContainsFunc(seals, func(l store.Seal) bool { return l.Cosigned != 0 }):
+			return "yes"
+		default:
+			last = fmt.Sprintf("no: %d seals, none cosigned", len(seals))
+		}
+		if time.Now().After(deadline) {
+			return last
+		}
+	}
 }

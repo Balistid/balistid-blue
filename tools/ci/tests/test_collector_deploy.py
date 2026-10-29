@@ -178,8 +178,8 @@ class CollectorDeployTest(unittest.TestCase):
         want[want.index("-store") + 1] = store
         want += ["-headroom", "67108864", "-log-commits"]
         self.assertEqual(set(drop_in), {"Unit", "Service"})
-        self.assertEqual(drop_in["Unit"], {"Requires": ["balistid-range-store.service"],
-                                           "After": ["balistid-range-store.service"]})
+        keys = "balistid-range-store.service balistid-range-witness-key.service"
+        self.assertEqual(drop_in["Unit"], {"Requires": [keys], "After": [keys]})
         self.assertEqual(set(drop_in["Service"]), {"ExecStart", "ReadWritePaths", "NoExecPaths"})
         self.assertEqual(drop_in["Service"]["ExecStart"][0], "")
         self.assertEqual([shlex.split(v) for v in drop_in["Service"]["ExecStart"][1:]], [want])
