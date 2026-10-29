@@ -106,9 +106,13 @@ func TestMarkCosignedNeverOverwritesOrFalls(t *testing.T) {
 	dir := t.TempDir()
 	s := sealedFour(t, dir)
 	mark(t, s, 0, at(10))
-	mark(t, s, 2, at(5)) // an earlier time than one stored takes the stored one
+	l := s.Seals()[2]
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); !errors.Is(err, ErrStaleCosign) { // a replayed older checkpoint
+		t.Fatalf("a time older than a stored one: %v", err)
+	}
 	mark(t, s, 1, at(20))
-	want := []int64{at(10).Unix(), at(10).Unix(), at(10).Unix(), 0}
+	mark(t, s, 0, at(30)) // a stored time stays
+	want := []int64{at(10).Unix(), at(20).Unix(), 0, 0}
 	for i, l := range s.Seals() {
 		if l.Cosigned != want[i] {
 			t.Fatalf("shard %d: cosign time %d, want %d", i, l.Cosigned, want[i])
@@ -134,7 +138,7 @@ func TestRetiredShardLeavesTheIndexAndTheDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mark(t, s, 1, at(1))
+	mark(t, s, 1, at(2))
 	onDay(s, 40)
 	got, err := s.Expire(at(40), month)
 	if err != nil || got == nil {
@@ -188,7 +192,7 @@ func TestOpenFinishesARetirementACrashLeftHalfDone(t *testing.T) {
 func TestOpenRefusesShardsNotFromSeqOneWithoutAnIndex(t *testing.T) {
 	dir := t.TempDir()
 	s := sealedFour(t, dir)
-	mark(t, s, 1, at(1))
+	mark(t, s, 1, at(2))
 	onDay(s, 40)
 	if got, err := s.Expire(at(40), month); err != nil || got == nil {
 		t.Fatalf("retired %v, %v", got, err)
@@ -211,7 +215,7 @@ func TestRetiringRefillsTheReserve(t *testing.T) {
 	if s.given != LossChunk {
 		t.Fatalf("given %d", s.given)
 	}
-	mark(t, s, 1, at(1))
+	mark(t, s, 1, at(2))
 	onDay(s, 40)
 	if got, err := s.Expire(at(40), month); err != nil || got == nil {
 		t.Fatalf("retired %v, %v", got, err)
@@ -273,5 +277,74 @@ func TestIndexTimesAreRefusedWhenMalformed(t *testing.T) {
 				t.Fatalf("ReadSeals = %v", got)
 			}
 		})
+	}
+}
+
+// A replayed checkpoint cannot date a shard before its seal: at most ClockSkew for a witness behind.
+func TestMarkCosignedRefusesATimeBeforeTheSeal(t *testing.T) {
+	s := sealedFour(t, t.TempDir())
+	sealed := time.Unix(s.Seals()[2].Sealed, 0)
+	for _, c := range []struct {
+		at time.Time
+		ok bool
+	}{
+		{time.Unix(0, 0), false},
+		{sealed.Add(-ClockSkew - time.Second), false},
+		{sealed.Add(-ClockSkew), true},
+	} {
+		l := s.Seals()[2]
+		err := s.MarkCosigned(l.First, l.Last, l.SHA256, c.at)
+		if (err == nil) != c.ok || err != nil && !errors.Is(err, ErrStaleCosign) {
+			t.Fatalf("a time %v from the seal: %v", c.at.Sub(sealed), err)
+		}
+	}
+	for i, l := range s.Seals()[:3] {
+		if l.Cosigned != sealed.Add(-ClockSkew).Unix() {
+			t.Fatalf("shard %d: cosign time %d", i, l.Cosigned)
+		}
+	}
+}
+
+func FuzzParseSeal(f *testing.F) {
+	f.Add("00000000000000000001.db 1 3 " + strings.Repeat("ab", 32) + " 5 7")
+	f.Add("00000000000000000001.db 1 3 " + strings.Repeat("ab", 32) + " 0")
+	f.Fuzz(func(t *testing.T, line string) {
+		l, err := parseSeal(line)
+		if err == nil && (l.line() != line+"\n" || int64(len(l.line())) > maxLineBytes) {
+			t.Fatalf("accepted %q", line)
+		}
+	})
+}
+
+func FuzzReadSeals(f *testing.F) {
+	f.Add([]byte(indexHeader + "00000000000000000003.db 3 3 " + strings.Repeat("ab", 32) + " 5 7\n"))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, indexName), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		seals, _, err := readSeals(t.Context(), dir)
+		if err == nil && indexBytes(seals) > int64(len(b)) {
+			t.Fatalf("%d seals from %d bytes", len(seals), len(b))
+		}
+	})
+}
+
+// Expire retires one shard at a time: two files below the first line are no crash, and Open removes neither.
+func TestOpenRefusesTwoShardsBelowTheFirstLine(t *testing.T) {
+	dir := t.TempDir()
+	s := sealedFour(t, dir)
+	closeStore(t, s)
+	seals := s.Seals()
+	if err := s.writeIndex(seals[2:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(t.Context(), dir, small); err == nil || !strings.Contains(err.Error(), "below the index's first line") {
+		t.Fatalf("Open = %v", err)
+	}
+	for _, l := range seals[:2] {
+		if _, err := os.Stat(filepath.Join(dir, l.Name)); err != nil {
+			t.Fatalf("%s: %v", l.Name, err)
+		}
 	}
 }

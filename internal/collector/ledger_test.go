@@ -561,6 +561,8 @@ type retireStore struct {
 	*store.Store
 	expired []time.Time
 	from    uint64
+	retired *store.Seal // what Expire reports, with err
+	err     error
 }
 
 func (s *retireStore) Expire(latest time.Time, minAge time.Duration) (*store.Seal, error) {
@@ -568,7 +570,7 @@ func (s *retireStore) Expire(latest time.Time, minAge time.Duration) (*store.Sea
 		return nil, fmt.Errorf("retention %v", minAge)
 	}
 	s.expired = append(s.expired, latest)
-	return nil, nil
+	return s.retired, s.err
 }
 
 func (s *retireStore) Seals() []store.Seal {
@@ -708,5 +710,54 @@ func TestSessionHandsOnTheNewestCosignedFrame(t *testing.T) {
 	}
 	if got := <-l.cosigned; got.epoch != h.epoch || fmt.Sprint(got.Cosigned) != fmt.Sprint(second) {
 		t.Fatalf("the writer gets %+v", got)
+	}
+}
+
+func TestRetirementRunsOnEveryTickAfterAFrame(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	w.stream(t.Context())
+	if len(st.expired) != 0 {
+		t.Fatalf("retired before any cosigned frame: %v", st.expired)
+	}
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[0], witnessAt)}
+	for range 3 {
+		w.stream(t.Context())
+	}
+	if len(st.expired) != 3 || !st.expired[2].Equal(witnessAt) {
+		t.Fatalf("Expire called with %v", st.expired)
+	}
+}
+
+// A ledger chooses what a refusal says, so a flood of refused frames reaches the journal once a minute.
+func TestRetentionFailuresAreJournaledOnceAMinute(t *testing.T) {
+	f, other := cosigntest.New(t), cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	var journal bytes.Buffer
+	w.Log = slog.New(slog.NewTextHandler(&journal, nil))
+	now := time.Unix(2e9, 0)
+	w.Now = func() time.Time { return now }
+	for i := range 5 {
+		l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt.Add(time.Duration(i)*time.Second))}
+		w.stream(t.Context())
+	}
+	now = now.Add(time.Minute)
+	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt)}
+	w.stream(t.Context())
+	if n := strings.Count(journal.String(), "retention step failed"); n != 2 {
+		t.Fatalf("%d journal lines for 6 refusals over a minute:\n%s", n, journal.String())
+	}
+}
+
+func TestARetiredShardIsJournaledWhenTheRefillFails(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	var journal bytes.Buffer
+	w.Log = slog.New(slog.NewTextHandler(&journal, nil))
+	st.retired, st.err = &store.Seal{Name: "00000000000000000001.db", First: 1, Last: 2}, errors.New("reserve: a test")
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[0], witnessAt)}
+	w.stream(t.Context())
+	if !strings.Contains(journal.String(), "shard retired") || !strings.Contains(journal.String(), "reserve: a test") {
+		t.Fatalf("journal:\n%s", journal.String())
 	}
 }

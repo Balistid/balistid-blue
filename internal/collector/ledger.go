@@ -453,29 +453,40 @@ func (w *Writer) sealAtSent() bool {
 }
 
 // retire takes the newest cosigned frame of this connection, once its hello checked out, and has the store
-// mark and retire shards by it (ADR 0029, point 3). A refused frame changes nothing and is journaled once.
+// mark seals by it; on every tick after the first frame taken it lets the store retire one shard by the
+// latest witness time (ADR 0029, points 3 and 4). A refusal or failure changes nothing and is journaled at
+// most once a minute: a ledger chooses what the errors say.
 func (w *Writer) retire() {
-	var c cosignedOf
+	var err error
 	select {
-	case c = <-w.Ledger.cosigned:
+	case c := <-w.Ledger.cosigned:
+		if c.epoch == w.epoch {
+			err = w.takeCosigned(c.Cosigned)
+		}
 	default:
+	}
+	if err == nil && !w.cosignAt.IsZero() {
+		var l *store.Seal
+		l, err = w.st.Expire(w.cosignAt, w.Retention)
+		if l != nil { // retired even when the reserve's refill then failed
+			w.Log.Info("shard retired", "shard", l.Name, "first", l.First, "last", l.Last, "sealed", l.Sealed,
+				"cosigned", l.Cosigned, "witness_time", w.cosignAt.Unix())
+		}
+	}
+	if err == nil {
+		w.cosignErr = ""
 		return
 	}
-	if c.epoch != w.epoch {
-		return
+	if now := w.Now(); w.cosignErr == "" || now.Sub(w.cosignLogAt) >= time.Minute {
+		w.Log.Error("retention step failed", "err", err)
+		w.cosignLogAt = now
 	}
-	err := w.takeCosigned(c.Cosigned)
-	if err != nil && err.Error() != w.cosignErr {
-		w.Log.Error("cosigned checkpoint not taken", "err", err)
-	}
-	w.cosignErr = ""
-	if err != nil {
-		w.cosignErr = err.Error()
-	}
+	w.cosignErr = err.Error()
 }
 
 // takeCosigned checks a frame against what this collector knows: its seal was sent, the note verifies with
-// both installed keys and the witness's time does not go back; the store then holds the seal to its index.
+// both installed keys and the witness's time does not go back; the store then holds the seal to its index
+// and the time to the seals and the times it stored.
 func (w *Writer) takeCosigned(m link.Cosigned) error {
 	if w.Cosign == nil {
 		return errors.New("collector: no verifier keys, so no retirement")
@@ -494,14 +505,6 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 		return fmt.Errorf("collector: %w", err)
 	}
 	w.cosignAt = cp.Time
-	l, err := w.st.Expire(cp.Time, w.Retention)
-	if err != nil {
-		return fmt.Errorf("collector: %w", err)
-	}
-	if l != nil {
-		w.Log.Info("shard retired", "shard", l.Name, "first", l.First, "last", l.Last, "sealed", l.Sealed, "cosigned", l.Cosigned,
-			"witness_time", cp.Time.Unix())
-	}
 	return nil
 }
 
