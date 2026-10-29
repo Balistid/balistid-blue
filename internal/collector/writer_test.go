@@ -141,6 +141,10 @@ func (s *fakeStore) Leaves(context.Context, uint64, int, int64) ([]shard.Leaf, [
 
 func (s *fakeStore) Seals() []store.Seal { return nil }
 
+func (s *fakeStore) MarkCosigned(uint64, uint64, [32]byte, time.Time) error { return nil }
+
+func (s *fakeStore) Expire(time.Time, time.Duration) (*store.Seal, error) { return nil, nil }
+
 func (s *fakeStore) Committed() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()

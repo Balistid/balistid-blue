@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,6 +84,41 @@ func Open(b []byte, k Keys) (Checkpoint, error) {
 		return Checkpoint{}, fmt.Errorf("cosign: witness time %d out of bounds", t.Unix())
 	}
 	return Checkpoint{Size: cp.Size, Time: t.UTC(), Note: slices.Clone(b)}, nil
+}
+
+// maxKeyBytes bounds a verifier key file: a name and a base64 key.
+const maxKeyBytes = 4 << 10
+
+// ReadKeys reads the ledger's and the witness's verifier keys as the install writes them; the origin
+// is the ledger key's name.
+func ReadKeys(logKey, witnessKey string) (Keys, error) {
+	lv, err := readVerifier(logKey, note.NewVerifier)
+	if err != nil {
+		return Keys{}, err
+	}
+	wv, err := readVerifier(witnessKey, fnote.NewVerifierForCosignatureV1)
+	if err != nil {
+		return Keys{}, err
+	}
+	return Keys{Origin: lv.Name(), Log: lv, Witness: wv}, nil
+}
+
+// readVerifier reads a public verifier key: no secret, but a size cap and no symlink (ENGINEERING 7).
+func readVerifier(path string, parse func(string) (note.Verifier, error)) (note.Verifier, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the key's path is configuration
+	if err != nil {
+		return nil, fmt.Errorf("cosign: verifier key: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	b, err := io.ReadAll(io.LimitReader(f, maxKeyBytes+1))
+	if err != nil || len(b) > maxKeyBytes {
+		return nil, errors.Join(fmt.Errorf("cosign: verifier key %s: unreadable or too large", path), err)
+	}
+	v, err := parse(strings.TrimSpace(string(b)))
+	if err != nil {
+		return nil, fmt.Errorf("cosign: verifier key %s: %w", path, err)
+	}
+	return v, nil
 }
 
 // Read opens the cosigned checkpoint at path, which another uid writes: no symlink, no FIFO, never

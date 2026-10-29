@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/shard"
@@ -48,19 +49,25 @@ type helloOf struct {
 	hello link.Hello
 }
 
+type cosignedOf struct {
+	epoch uint64
+	link.Cosigned
+}
+
 // Ledger is the collector's end of the stream to the ledger (ADR 0027). Its goroutine owns the
 // connection; the writer hands it groups on its tick and never waits.
 type Ledger struct {
-	dial  func(ctx context.Context) (*net.UnixConn, error)
-	log   *slog.Logger
-	out   chan group
-	hello chan helloOf
-	epoch uint64 // numbers connections: a group queued for an earlier one is dropped; Run's alone
+	dial     func(ctx context.Context) (*net.UnixConn, error)
+	log      *slog.Logger
+	out      chan group
+	hello    chan helloOf
+	cosigned chan cosignedOf // the newest cosigned frame; one the writer has not taken yet gives way
+	epoch    uint64          // numbers connections: a group queued for an earlier one is dropped; Run's alone
 }
 
 // NewLedger returns the stream's end that dial connects.
 func NewLedger(dial func(ctx context.Context) (*net.UnixConn, error), log *slog.Logger) *Ledger {
-	return &Ledger{dial: dial, log: log, out: make(chan group, ledgerQueue), hello: make(chan helloOf, 1)}
+	return &Ledger{dial: dial, log: log, out: make(chan group, ledgerQueue), hello: make(chan helloOf, 1), cosigned: make(chan cosignedOf, 1)}
 }
 
 // DialLedger connects to the ledger's socket at path and refuses any peer but ledgerUID (ADR 0027).
@@ -130,9 +137,23 @@ func (l *Ledger) session(ctx context.Context) error {
 	}
 	closed := make(chan error, 1)
 	var wg sync.WaitGroup
-	wg.Go(func() { // the ledger sends nothing after its hello: a read ends only with the connection
-		_, err := c.Read(make([]byte, 1))
-		closed <- err
+	wg.Go(func() { // after its hello the ledger sends only cosigned frames (ADR 0029, point 2)
+		for {
+			m, err := link.Read(c)
+			if err == nil {
+				if cs, ok := m.(link.Cosigned); ok {
+					select { // this goroutine alone sends, so after the drain there is room
+					case <-l.cosigned:
+					default:
+					}
+					l.cosigned <- cosignedOf{epoch, cs}
+					continue
+				}
+				err = fmt.Errorf("collector: ledger sent %T after its hello", m)
+			}
+			closed <- err
+			return
+		}
 	})
 	defer wg.Wait()
 	defer c.Close() //nolint:errcheck // ends the read before wg.Wait
@@ -326,6 +347,9 @@ func (w *Writer) stream(ctx context.Context) {
 	if w.st != nil && w.hello != nil && w.stopped == "" {
 		w.check(ctx)
 	}
+	if w.st != nil && w.hello == nil && w.stopped == "" {
+		w.retire()
+	}
 	defer w.sendHealth() // also after the stream stopped: the ledger logs why (ADR 0027, point 3)
 	if w.st == nil || w.hello != nil || w.stopped != "" || !w.sealAtSent() {
 		return
@@ -357,8 +381,14 @@ func (w *Writer) stream(ctx context.Context) {
 // check holds the ledger's resume point against the store: the ledger may not be ahead of it, and its
 // last batch's root must be the store's own leaves; otherwise the stream stops (ADR 0027, point 3).
 func (w *Writer) check(ctx context.Context) {
-	h := *w.hello
+	h, kept := *w.hello, uint64(1)
+	if seals := w.st.Seals(); len(seals) > 0 {
+		kept = seals[0].First
+	}
 	switch {
+	case max(h.First, 1) < kept: // the ledger lost its log, or holds another: the records it wants are retired
+		w.stop(fmt.Errorf("ledger resumes before %d, the store keeps records from %d", max(h.First, 1), kept))
+		return
 	case h.Last > w.st.Committed():
 		w.stop(fmt.Errorf("ledger resumes after %d, the store committed %d", h.Last, w.st.Committed()))
 		return
@@ -420,6 +450,59 @@ func (w *Writer) sealAtSent() bool {
 	}
 	w.sealSent = w.sent
 	return true
+}
+
+// retire takes the newest cosigned frame of this connection, once its hello checked out, and has the store
+// mark and retire shards by it (ADR 0029, point 3). A refused frame changes nothing and is journaled once.
+func (w *Writer) retire() {
+	var c cosignedOf
+	select {
+	case c = <-w.Ledger.cosigned:
+	default:
+		return
+	}
+	if c.epoch != w.epoch {
+		return
+	}
+	err := w.takeCosigned(c.Cosigned)
+	if err != nil && err.Error() != w.cosignErr {
+		w.Log.Error("cosigned checkpoint not taken", "err", err)
+	}
+	w.cosignErr = ""
+	if err != nil {
+		w.cosignErr = err.Error()
+	}
+}
+
+// takeCosigned checks a frame against what this collector knows: its seal was sent, the note verifies with
+// both installed keys and the witness's time does not go back; the store then holds the seal to its index.
+func (w *Writer) takeCosigned(m link.Cosigned) error {
+	if w.Cosign == nil {
+		return errors.New("collector: no verifier keys, so no retirement")
+	}
+	if m.Seal.Last > w.sent {
+		return fmt.Errorf("collector: cosigned seal through %d, sent through %d", m.Seal.Last, w.sent)
+	}
+	cp, err := cosign.Open(m.Note, *w.Cosign)
+	if err != nil {
+		return fmt.Errorf("collector: %w", err)
+	}
+	if cp.Time.Before(w.cosignAt) {
+		return fmt.Errorf("collector: witness time %d before %d", cp.Time.Unix(), w.cosignAt.Unix())
+	}
+	if err := w.st.MarkCosigned(m.Seal.First, m.Seal.Last, m.Seal.SHA256, cp.Time); err != nil {
+		return fmt.Errorf("collector: %w", err)
+	}
+	w.cosignAt = cp.Time
+	l, err := w.st.Expire(cp.Time, w.Retention)
+	if err != nil {
+		return fmt.Errorf("collector: %w", err)
+	}
+	if l != nil {
+		w.Log.Info("shard retired", "shard", l.Name, "first", l.First, "last", l.Last, "sealed", l.Sealed, "cosigned", l.Cosigned,
+			"witness_time", cp.Time.Unix())
+	}
+	return nil
 }
 
 // sendHealth hands the ledger the writer's health on connect and on change; a changed unstored count

@@ -10,11 +10,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign/cosigntest"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -550,5 +552,161 @@ func TestAFailedLeafReadIsReasonStream(t *testing.T) {
 	w.stream(t.Context())
 	if _, others := taken(l); fmt.Sprint(healthOf(others)) != fmt.Sprint([]entry.Health{{State: entry.StateUnknown, Reason: entry.ReasonStream}}) {
 		t.Fatalf("a failed leaf read: %+v", others)
+	}
+}
+
+// retireStore is a real store whose Expire calls are recorded rather than run (the store tests retirement
+// on its own clock), and whose index can start later, as after a retirement.
+type retireStore struct {
+	*store.Store
+	expired []time.Time
+	from    uint64
+}
+
+func (s *retireStore) Expire(latest time.Time, minAge time.Duration) (*store.Seal, error) {
+	if minAge != month {
+		return nil, fmt.Errorf("retention %v", minAge)
+	}
+	s.expired = append(s.expired, latest)
+	return nil, nil
+}
+
+func (s *retireStore) Seals() []store.Seal {
+	return slices.DeleteFunc(s.Store.Seals(), func(l store.Seal) bool { return l.First < s.from })
+}
+
+const month = 30 * 24 * time.Hour
+
+var witnessAt = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+
+// cosignWriter is a writer that streamed every committed record of a store with sealed shards to an
+// empty ledger, with the keys that verify f's notes.
+func cosignWriter(t *testing.T, f *cosigntest.Fixture) (*Writer, *Ledger, *retireStore) {
+	t.Helper()
+	st := &retireStore{Store: openStore(t, 12)}
+	if len(st.Seals()) < 2 {
+		t.Fatalf("%d seals", len(st.Seals()))
+	}
+	w, l := streamWriter(st)
+	w.Cosign, w.Retention = &f.Keys, month
+	l.hello <- helloOf{1, link.Hello{}}
+	w.stream(t.Context())
+	taken(l)
+	if w.sent != st.Committed() {
+		t.Fatalf("sent %d of %d", w.sent, st.Committed())
+	}
+	return w, l, st
+}
+
+func frameOf(f *cosigntest.Fixture, t *testing.T, l store.Seal, at time.Time) link.Cosigned {
+	return link.Cosigned{Seal: sealEntry(l), Note: f.Cosigned(t, 100, at)}
+}
+
+func TestACosignedFrameMarksTheIndexAndAsksToRetire(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	seals := st.Seals()
+	l.cosigned <- cosignedOf{1, frameOf(f, t, seals[1], witnessAt)}
+	w.stream(t.Context())
+	got := st.Seals()
+	if got[0].Cosigned != witnessAt.Unix() || got[1].Cosigned != witnessAt.Unix() || len(got) > 2 && got[2].Cosigned != 0 {
+		t.Fatalf("cosign times %+v (%s)", got, w.cosignErr)
+	}
+	if len(st.expired) != 1 || !st.expired[0].Equal(witnessAt) {
+		t.Fatalf("Expire called with %v", st.expired)
+	}
+}
+
+func TestCosignedFramesTheCollectorRefuses(t *testing.T) {
+	f, other := cosigntest.New(t), cosigntest.New(t)
+	for name, c := range map[string]func(w *Writer, seals []store.Seal) cosignedOf{
+		"from another connection": func(_ *Writer, seals []store.Seal) cosignedOf {
+			return cosignedOf{2, frameOf(f, t, seals[0], witnessAt)}
+		},
+		"a seal past what was sent": func(w *Writer, seals []store.Seal) cosignedOf {
+			return cosignedOf{1, link.Cosigned{Seal: entry.Seal{First: 1, Last: w.sent + 1, SHA256: seals[0].SHA256}, Note: f.Cosigned(t, 100, witnessAt)}}
+		},
+		"a seal the index does not hold": func(_ *Writer, seals []store.Seal) cosignedOf {
+			m := frameOf(f, t, seals[0], witnessAt)
+			m.Seal.SHA256[0] ^= 1
+			return cosignedOf{1, m}
+		},
+		"another witness": func(_ *Writer, seals []store.Seal) cosignedOf {
+			return cosignedOf{1, frameOf(other, t, seals[0], witnessAt)}
+		},
+		"the ledger's signature only": func(_ *Writer, seals []store.Seal) cosignedOf {
+			return cosignedOf{1, link.Cosigned{Seal: sealEntry(seals[0]), Note: f.Signed(t, 100)}}
+		},
+		"a witness time older than one taken": func(w *Writer, seals []store.Seal) cosignedOf {
+			w.cosignAt = witnessAt.Add(time.Second)
+			return cosignedOf{1, frameOf(f, t, seals[0], witnessAt)}
+		},
+		"no keys": func(w *Writer, seals []store.Seal) cosignedOf {
+			w.Cosign = nil
+			return cosignedOf{1, frameOf(f, t, seals[0], witnessAt)}
+		},
+		"a stopped stream": func(w *Writer, seals []store.Seal) cosignedOf {
+			w.stopped = "a test"
+			return cosignedOf{1, frameOf(f, t, seals[0], witnessAt)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w, l, st := cosignWriter(t, f)
+			l.cosigned <- c(w, st.Seals())
+			w.stream(t.Context())
+			for _, s := range st.Seals() {
+				if s.Cosigned != 0 {
+					t.Fatalf("marked %+v", s)
+				}
+			}
+			if len(st.expired) != 0 {
+				t.Fatalf("Expire called with %v", st.expired)
+			}
+		})
+	}
+}
+
+func TestAHelloBeforeTheFirstKeptRecordStops(t *testing.T) {
+	for name, h := range map[string]func(st *retireStore) link.Hello{
+		"an empty ledger": func(*retireStore) link.Hello { return link.Hello{} },
+		"a batch from a retired shard": func(st *retireStore) link.Hello {
+			return link.Hello{Last: 2, First: 1, Root: rootOf(t, st.Store, 1, 2)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := &retireStore{Store: openStore(t, 12)}
+			st.from = st.Store.Seals()[1].First
+			w, l := streamWriter(st)
+			l.hello <- helloOf{1, h(st)}
+			w.stream(t.Context())
+			if seqs, _ := taken(l); seqs != nil || !strings.Contains(w.stopped, "keeps records from") {
+				t.Fatalf("sent %v, stopped %q", seqs, w.stopped)
+			}
+		})
+	}
+}
+
+// After its hello the session takes cosigned frames, the newest for the writer, and ends on anything else.
+func TestSessionHandsOnTheNewestCosignedFrame(t *testing.T) {
+	collector, ledger := socketPair(t)
+	l := NewLedger(func(context.Context) (*net.UnixConn, error) { return collector, nil }, slog.New(slog.DiscardHandler))
+	done := make(chan error, 1)
+	go func() { done <- l.session(t.Context()) }()
+	if err := link.Write(ledger, link.Hello{}); err != nil {
+		t.Fatal(err)
+	}
+	h := <-l.hello
+	first := link.Cosigned{Seal: entry.Seal{First: 1, Last: 2, SHA256: [32]byte{1}}, Note: []byte("one")}
+	second := link.Cosigned{Seal: entry.Seal{First: 1, Last: 3, SHA256: [32]byte{1}}, Note: []byte("two")}
+	for _, m := range []link.Message{first, second, link.Hello{}} {
+		if err := link.Write(ledger, m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "after its hello") {
+		t.Fatalf("session = %v", err)
+	}
+	if got := <-l.cosigned; got.epoch != h.epoch || fmt.Sprint(got.Cosigned) != fmt.Sprint(second) {
+		t.Fatalf("the writer gets %+v", got)
 	}
 }

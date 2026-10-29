@@ -117,3 +117,37 @@ func FuzzOpen(f *testing.F) {
 		}
 	})
 }
+
+func TestReadKeysTakesTheOriginFromTheLedgerKey(t *testing.T) {
+	dir := t.TempDir()
+	_, lvkey, err := note.GenerateKey(nil, cosigntest.Origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wvkey, err := note.GenerateKey(nil, "witness.test/w1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logKey, witnessKey, link := filepath.Join(dir, "ledger.pub"), filepath.Join(dir, "witness.vkey"), filepath.Join(dir, "link")
+	for p, body := range map[string]string{logKey: lvkey + "\n", witnessKey: wvkey + "\n"} {
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	k, err := cosign.ReadKeys(logKey, witnessKey)
+	if err != nil || k.Origin != cosigntest.Origin || k.Witness.Name() != "witness.test/w1" {
+		t.Fatalf("keys %+v, %v", k, err)
+	}
+	if err := os.Symlink(witnessKey, link); err != nil {
+		t.Fatal(err)
+	}
+	big := filepath.Join(dir, "big")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("k"), 5<<10), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range [][2]string{{logKey, link}, {link, witnessKey}, {logKey, big}, {logKey, filepath.Join(dir, "none")}, {witnessKey + "x", witnessKey}} {
+		if _, err := cosign.ReadKeys(p[0], p[1]); err == nil {
+			t.Errorf("%v accepted", p)
+		}
+	}
+}

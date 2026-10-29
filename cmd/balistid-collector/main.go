@@ -11,9 +11,11 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/collector"
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/store"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
@@ -27,6 +29,9 @@ const (
 	// ledgerSocket is where the ledger's unit listens (RuntimeDirectory); the collector always streams
 	// to it (ADR 0027) and redials while it is down.
 	ledgerSocket = "/run/balistid-ledger/ledger.sock"
+	// retention is raw_retention_days (acceptance/0.toml): both the witness's and the store's clock must
+	// be this far past a shard's seal before it is retired (ADR 0029).
+	retention = 30 * 24 * time.Hour
 )
 
 func main() { os.Exit(run()) }
@@ -38,6 +43,8 @@ func run() int {
 	// The range image alone sets these two (ADR 0022): its root has no room for the host's reserve.
 	headroomBytes := flag.Int64("headroom", headroom, "bytes the store reserves for its own records")
 	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
+	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
+	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if os.Getenv("GOMEMLIMIT") == "" {
@@ -52,11 +59,18 @@ func run() int {
 		return 1
 	}
 	ledger := collector.NewLedger(collector.DialLedger(ledgerSocket, uidOf("balistid-ledger", log)), log)
+	// Recording never waits for the witness's keys: without them nothing is retired, and the cap drops.
+	var keys *cosign.Keys
+	if k, err := cosign.ReadKeys(*logKey, *witnessKey); err != nil {
+		log.Error("verifier keys not read, no shard will be retired", "err", err)
+	} else {
+		keys = &k
+	}
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: uidOf("_laurel", log), CanaryDir: *canaryDir, Ledger: ledger,
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
-		LogCommits: *logCommits,
+		LogCommits: *logCommits, Cosign: keys, Retention: retention,
 	})
 	if err != nil {
 		log.Error("collector stopped", "err", err)
