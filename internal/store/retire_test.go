@@ -231,8 +231,8 @@ func TestMarkingAndRetiringLeaveAnUnknownStoreAlone(t *testing.T) {
 	s := sealedFour(t, dir)
 	l := s.Seals()[1]
 	s.unknown = "a test"
-	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(1)); err != nil {
-		t.Fatal(err)
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(1)); !errors.Is(err, ErrUndated) {
+		t.Fatalf("an UNKNOWN store: %v", err)
 	}
 	if s.Seals()[1].Cosigned != 0 {
 		t.Fatal("an UNKNOWN store took a cosign time")

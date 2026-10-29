@@ -687,8 +687,9 @@ var ErrNotIndexed = errors.New("store: no such seal in the index")
 const ClockSkew = time.Hour
 
 // ErrUndated marks a checkpoint that left the seal it names without a cosign time: older than a stored
-// time, or predating that seal or one before it by more than ClockSkew. Nothing changed; a later
-// checkpoint dates it. A replayed old note is one, and so is a witness clock that lags the store's.
+// time, predating that seal or one before it by more than ClockSkew, or met by an UNKNOWN store. Seals
+// before it may have been dated; a later checkpoint dates the rest. A replayed old note is one, and so is
+// a witness clock that lags the store's.
 var ErrUndated = errors.New("store: the named seal stays without a cosign time")
 
 // MarkCosigned dates seals by a checkpoint the witness cosigned at at, which covers the seal of first..last
@@ -700,7 +701,7 @@ var ErrUndated = errors.New("store: the named seal stays without a cosign time")
 // cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
 	if s.unknown != "" {
-		return nil
+		return fmt.Errorf("%w: the store is UNKNOWN", ErrUndated)
 	}
 	i := slices.IndexFunc(s.seals, func(l Seal) bool { return l.First == first && l.Last == last && l.SHA256 == sum })
 	if i < 0 {

@@ -748,7 +748,7 @@ func TestRetentionFailuresAreJournaledOnceAMinute(t *testing.T) {
 	now = now.Add(time.Minute)
 	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt)}
 	w.stream(t.Context())
-	if n := strings.Count(journal.String(), "cosigned checkpoint not used"); n != 2 {
+	if n := strings.Count(journal.String(), "cosigned checkpoint refused"); n != 2 {
 		t.Fatalf("%d journal lines for 6 refusals over a minute:\n%s", n, journal.String())
 	}
 }
@@ -792,14 +792,13 @@ func TestUndatedAndFutureTimesReachTheJournal(t *testing.T) {
 	behind := time.Now().Add(-2 * store.ClockSkew).Truncate(time.Second).UTC()
 	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], behind)}
 	w.stream(t.Context())
-	if !strings.Contains(journal.String(), "stays without a cosign time") || !w.cosignAt.Equal(behind) {
+	if !strings.Contains(journal.String(), "taken, its seal not yet dated") || !w.cosignAt.Equal(behind) {
 		t.Fatalf("latest %v, journal:\n%s", w.cosignAt, journal.String())
 	}
 	ahead := time.Now().Add(store.ClockSkew + time.Hour).Truncate(time.Second).UTC()
-	w.frameLogAt = time.Time{}
 	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], ahead)}
 	w.stream(t.Context())
-	if !strings.Contains(journal.String(), "ahead of the host's clock") || !w.cosignAt.Equal(behind) {
+	if !strings.Contains(journal.String(), "refused") || !strings.Contains(journal.String(), "ahead of the host's clock") || !w.cosignAt.Equal(behind) {
 		t.Fatalf("latest %v after a time ahead, journal:\n%s", w.cosignAt, journal.String())
 	}
 	if got := st.Seals(); got[1].Cosigned != 0 {
@@ -817,5 +816,24 @@ func TestARefusedFrameDoesNotSkipRetirement(t *testing.T) {
 	w.stream(t.Context())
 	if len(st.expired) != 2 {
 		t.Fatalf("Expire called with %v", st.expired)
+	}
+}
+
+// A frame whose time was taken with its seal undated does not hide a refusal right after it.
+func TestAnUndatedFrameDoesNotHideARefusal(t *testing.T) {
+	f, other := cosigntest.New(t), cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	var journal bytes.Buffer
+	w.Log = slog.New(slog.NewTextHandler(&journal, nil))
+	now := time.Now()
+	w.Now = func() time.Time { return now }
+	behind := now.Add(-2 * store.ClockSkew).Truncate(time.Second).UTC()
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], behind)}
+	w.stream(t.Context())
+	now = now.Add(30 * time.Second)
+	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[1], witnessAt)}
+	w.stream(t.Context())
+	if !strings.Contains(journal.String(), "not yet dated") || !strings.Contains(journal.String(), "cosigned checkpoint refused") {
+		t.Fatalf("journal:\n%s", journal.String())
 	}
 }
