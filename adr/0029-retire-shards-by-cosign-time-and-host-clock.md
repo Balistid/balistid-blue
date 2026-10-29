@@ -51,10 +51,10 @@ collects partial bundles. The Pi has no RTC (T22): its clock can start behind or
 
 - Amends ADR 0005 point 4 (the host clock is a second condition, never the only one, ENGINEERING §7 Time), ADR
   0013 points 2, 6 and 7, ADR 0027 point 3 and the method of `raw_retention_days`.
-- T22 designed; left open: root setting both clocks; either clock jumping forward stops retirement (fail-closed: the
-  cap drops with loss entries, the maintainer expires). T15 stays a gap. T19: a compromised ledger can name a later
-  indexed seal as covered or replay a note up to an hour before a seal. T18-T20: the relay's file, frame 5 and the
-  index are untrusted input, capped, decoded strictly and fuzzed.
+- T22 designed; open: root setting both clocks; a clock jumping forward stops retirement (fail-closed: the cap drops
+  with loss entries, the maintainer expires). T15 stays a gap. T19: a compromised ledger can name a later indexed
+  seal as covered, replay a note up to an hour before a seal, and delay retirement by withholding frames or, after
+  a restart, replaying older ones (fail-closed). T18-T20: relay file, frame 5 and index are capped, strict, fuzzed.
 - Range: the self-test restarts the collector, whose Close seals a shard; fact `shard_cosigned` finds its cosign time.
 - Tests: both clocks; an ineligible shard, the last one and a stored time kept; kill -9 at each rewrite and the
   unlink; frames with an unknown seal, past what was sent, before the hello check, old or ahead times dated nothing.

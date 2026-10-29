@@ -422,3 +422,22 @@ func TestAnOlderTimeIsStaleForADatedSealToo(t *testing.T) {
 		t.Fatalf("an older time for a dated seal: %v", err)
 	}
 }
+
+// An UNKNOWN store still tells an unknown seal and a dated one apart, so the collector neither takes the
+// time of a frame naming a seal it never made nor journals a dated seal as undated.
+func TestAnUnknownStoreStillChecksTheSeal(t *testing.T) {
+	s := sealedFour(t, t.TempDir())
+	mark(t, s, 1, at(5))
+	s.unknown = "a test"
+	l := s.Seals()[0]
+	if err := s.MarkCosigned(l.First, l.Last, [32]byte{1}, at(6)); !errors.Is(err, ErrNotIndexed) {
+		t.Fatalf("an unknown seal: %v", err)
+	}
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(6)); err != nil {
+		t.Fatalf("a dated seal: %v", err)
+	}
+	l = s.Seals()[2]
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(6)); !errors.Is(err, ErrUndated) {
+		t.Fatalf("an undated seal: %v", err)
+	}
+}
