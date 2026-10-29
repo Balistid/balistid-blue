@@ -130,3 +130,22 @@ func mv(t *testing.T, from, to string) {
 		t.Fatal(err)
 	}
 }
+
+// A zero retention would delete every old log with a final at once; no clock or a relative directory
+// cannot be measured against.
+func TestRetirementRefusesAnIncompleteConfig(t *testing.T) {
+	late := witnessAt.Add(2 * keep)
+	for name, change := range map[string]func(*Retirement){
+		"zero keep":    func(r *Retirement) { r.Keep = 0 },
+		"no clock":     func(r *Retirement) { r.Now = nil },
+		"relative dir": func(r *Retirement) { r.Dir = "log" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, state := retirement(t, late, late)
+			change(&r)
+			if got, err := r.Run(); err == nil || len(got) != 0 || !exists(t, filepath.Join(state, "log.1")) {
+				t.Fatalf("retired %v, %v", got, err)
+			}
+		})
+	}
+}

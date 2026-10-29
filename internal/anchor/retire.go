@@ -28,6 +28,9 @@ type Retirement struct {
 // time is Keep behind both the latest witness time and the host's clock. An old log without a final
 // that verifies is kept and named in the error; without a readable relay checkpoint nothing is deleted.
 func (r Retirement) Run() (retired []string, err error) {
+	if r.Keep <= 0 || r.Now == nil || !filepath.IsAbs(r.Dir) {
+		return nil, errors.New("anchor: retire: no retention, clock or absolute log directory") // a zero Keep would delete at once
+	}
 	parent, name := filepath.Dir(r.Dir), filepath.Base(r.Dir)
 	entries, err := os.ReadDir(parent)
 	if err != nil {
