@@ -390,7 +390,8 @@ func parseSeal(line string) (Seal, error) {
 			err5 = errors.New("a cosign time is after 1970; none is written as none")
 		}
 	}
-	if err := errors.Join(err1, err2, err3, err4, err5); err != nil || len(sum) != 32 || last < first {
+	if err := errors.Join(err1, err2, err3, err4, err5); err != nil || len(sum) != 32 || first == 0 || last < first ||
+		bytes.Equal(sum, make([]byte, 32)) { // seqs start at 1; no shard hashes to zero
 		return Seal{}, fmt.Errorf("malformed seal %q (%w)", line, err)
 	}
 	// One spelling per line: the name from its first seq, lower-case hex, no sign or leading zero.

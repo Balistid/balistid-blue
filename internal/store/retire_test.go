@@ -268,6 +268,7 @@ func TestIndexTimesAreRefusedWhenMalformed(t *testing.T) {
 		"a cosign time that falls":      with(2, func(f []string) []string { return append(f, "1") }),
 		"a cosign time after a gap":     with(3, func(f []string) []string { return append(f, f[4]) }),
 		"seven fields":                  with(1, func(f []string) []string { return append(f, "1") }),
+		"a zero hash":                   with(1, func(f []string) []string { f[3] = strings.Repeat("0", 64); return f }),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := os.WriteFile(index, []byte(body), 0o600); err != nil {
@@ -346,5 +347,17 @@ func TestOpenRefusesTwoShardsBelowTheFirstLine(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, l.Name)); err != nil {
 			t.Fatalf("%s: %v", l.Name, err)
 		}
+	}
+}
+
+func TestParseSealRefusesSeqZero(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	for _, line := range []string{"00000000000000000000.db 0 1 " + sum + " 5", "00000000000000000000.db 0 0 " + sum + " 5"} {
+		if l, err := parseSeal(line); err == nil {
+			t.Fatalf("accepted %+v", l)
+		}
+	}
+	if _, err := parseSeal("00000000000000000001.db 1 1 " + sum + " 5"); err != nil {
+		t.Fatal(err)
 	}
 }
