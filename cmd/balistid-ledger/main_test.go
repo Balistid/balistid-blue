@@ -97,7 +97,7 @@ func TestNoticesNameTheMPLModuleAndItsSource(t *testing.T) {
 
 func TestServeWithoutAKeyFails(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
-	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), filepath.Join(t.TempDir(), "c"), "", anchor.Relay{}, nil); err == nil {
+	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), filepath.Join(t.TempDir(), "c"), "", "", anchor.Relay{}, nil); err == nil {
 		t.Fatal("served without a key")
 	}
 }

@@ -24,6 +24,8 @@ const Origin = "balistid.test/log"
 type Fixture struct {
 	Keys    cosign.Keys
 	Log     note.Signer
+	LogKey  string // the ledger's verifier key, as the install writes it
+	Witness string // the witness's verifier key, as the install writes it
 	witness ed25519.PrivateKey
 	name    string
 	hash    uint32
@@ -57,7 +59,8 @@ func New(t testing.TB) *Fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Fixture{Keys: cosign.Keys{Origin: Origin, Log: lv, Witness: wv}, Log: ls, witness: priv, name: name, hash: wv.KeyHash()}
+	return &Fixture{Keys: cosign.Keys{Origin: Origin, Log: lv, Witness: wv}, Log: ls, LogKey: vkey, Witness: wkey,
+		witness: priv, name: name, hash: wv.KeyHash()}
 }
 
 // Signed is the ledger's checkpoint of size with a root derived from it.
