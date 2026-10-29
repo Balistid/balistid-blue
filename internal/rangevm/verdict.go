@@ -80,6 +80,8 @@ var expected = map[string]string{
 	"ledger_cosigned":        "yes",
 	"fork_refused":           "yes",
 	"shard_cosigned":         "yes",
+	"announce_cosigned":      "yes",
+	"suspend_announced":      "yes",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

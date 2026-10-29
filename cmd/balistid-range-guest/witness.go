@@ -21,12 +21,14 @@ import (
 	"time"
 
 	fnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/store"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
@@ -273,6 +275,74 @@ func addCheckpoint(ctx context.Context, s note.Signer, old, size uint64, hash []
 		return 0, nil, fmt.Errorf("witness reply: %w", err)
 	}
 	return resp.StatusCode, body, nil
+}
+
+// announced is "yes" once systemctl verb unit ran the ledger's client to success, under the unit's
+// sandbox, and a checkpoint the witness cosigned covers an announcement of kind in the ledger's log
+// (ADR 0030): the client waited for that cosignature itself, so the check finds it at once.
+func announced(ctx context.Context, verb, unit string, kind entry.Announcement) string {
+	if verb == "stop" && strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "is-active", unit)) != "active" {
+		return "error: " + unit + " was not active, so its stop announces nothing"
+	}
+	if err := exec.CommandContext(ctx, "/usr/bin/systemctl", verb, unit).Run(); err != nil { //nolint:gosec // two fixed verbs and units of the self-test
+		return "error: " + verb + " " + unit + ": " + err.Error()
+	}
+	if result := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "Result", unit)); result != "success" {
+		return "error: " + unit + " ended with " + result
+	}
+	keys, err := rangeKeys()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	var last string
+	for deadline := time.Now().Add(cosignWait); ; time.Sleep(time.Second) {
+		cp, err := cosign.Read(filepath.Join(relayState, cosign.Name), keys)
+		var at uint64
+		if err == nil {
+			at, err = lastAnnouncement(ctx, ledgerLog, keys.Log, kind)
+		}
+		switch {
+		case err != nil:
+			last = "error: " + err.Error()
+		case at < cp.Size:
+			return "yes"
+		default:
+			last = fmt.Sprintf("no: the announcement at %d, cosigned size %d", at, cp.Size)
+		}
+		if time.Now().After(deadline) {
+			return last
+		}
+	}
+}
+
+// lastAnnouncement is the index of the last announcement of kind in the log at root, under its signed
+// checkpoint.
+func lastAnnouncement(ctx context.Context, root string, v note.Verifier, kind entry.Announcement) (uint64, error) {
+	f := client.FileFetcher{Root: root}
+	cp, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, v, ledgerOrigin)
+	if err != nil {
+		return 0, fmt.Errorf("checkpoint: %w", err)
+	}
+	found, at := false, uint64(0)
+	for idx := uint64(0); idx*layout.EntryBundleWidth < cp.Size; idx++ {
+		b, err := client.GetEntryBundle(ctx, f.ReadEntryBundle, idx, cp.Size)
+		if err != nil {
+			return 0, fmt.Errorf("bundle %d: %w", idx, err)
+		}
+		for i, raw := range b.Entries {
+			e, err := entry.Decode(raw)
+			if err != nil {
+				return 0, fmt.Errorf("bundle %d: %w", idx, err)
+			}
+			if a, ok := e.Body.(entry.Announce); ok && a.Kind == kind {
+				found, at = true, idx*layout.EntryBundleWidth+uint64(i)
+			}
+		}
+	}
+	if !found {
+		return 0, fmt.Errorf("no announcement of kind %d in %d entries", kind, cp.Size)
+	}
+	return at, nil
 }
 
 // shardCosigned is "yes" once a shard the collector sealed carries a witness time in its index: the relay's

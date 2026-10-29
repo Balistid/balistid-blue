@@ -12,6 +12,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 )
 
@@ -54,9 +55,9 @@ func TestLedgerKeyWritesAPairOnce(t *testing.T) {
 	}
 }
 
-// writeLog writes a log of records 1..n in batches of three, signed by a key in dir, and returns its
-// root and verifier.
-func writeLog(t *testing.T, n uint64) (string, note.Verifier) {
+// writeLog writes a log of records 1..n in batches of three, signed by a key in dir, then calls each of
+// then on it, and returns its root and verifier.
+func writeLog(t *testing.T, n uint64, then ...func(*anchor.Log)) (string, note.Verifier) {
 	t.Helper()
 	keys := t.TempDir()
 	if err := ledgerKey(keys); err != nil {
@@ -93,6 +94,9 @@ func writeLog(t *testing.T, n uint64) (string, note.Verifier) {
 			}
 		}
 	}
+	for _, f := range then {
+		f(l)
+	}
 	if err := l.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +118,26 @@ func TestLedgerBatchesRefuseAnotherKeyAndNoLog(t *testing.T) {
 	}
 	if last, err := ledgerBatches(t.Context(), t.TempDir(), other); err == nil {
 		t.Fatalf("an empty directory read as a log through %d", last)
+	}
+}
+
+func TestLastAnnouncementIsTheNewestOfItsKind(t *testing.T) {
+	announce := func(k entry.Announcement) func(*anchor.Log) {
+		return func(l *anchor.Log) {
+			if _, err := l.Announce(t.Context(), k); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// batches 1-3 and 4-5 (entries 0, 1), then shutdown, suspend, shutdown (2, 3, 4)
+	root, v := writeLog(t, 5, announce(entry.AnnounceShutdown), announce(entry.AnnounceSuspend), announce(entry.AnnounceShutdown))
+	for kind, want := range map[entry.Announcement]uint64{entry.AnnounceShutdown: 4, entry.AnnounceSuspend: 3} {
+		if at, err := lastAnnouncement(t.Context(), root, v, kind); err != nil || at != want {
+			t.Errorf("announcement %d at %d, %v; want %d", kind, at, err, want)
+		}
+	}
+	plain, v := writeLog(t, 2)
+	if at, err := lastAnnouncement(t.Context(), plain, v, entry.AnnounceShutdown); err == nil {
+		t.Fatalf("an announcement found at %d in a log without one", at)
 	}
 }

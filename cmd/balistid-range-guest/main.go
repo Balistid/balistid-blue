@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
@@ -159,6 +160,24 @@ func run() error {
 		for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", "balistid-collector.service", "-u",
 			"balistid-ledger.service", "-o", "cat", "--no-pager", "-n", "40"), "\n") {
 			fmt.Printf("balistid-range-guest: retention: %.400q\n", line)
+		}
+	}
+	// A clean stop announced through the ledger's control socket and cosigned (ADR 0030): the self-test
+	// powers off by force, which runs no unit's stop, so the guest stops the unit itself.
+	for _, a := range []struct {
+		fact, verb, unit string
+		kind             entry.Announcement
+	}{
+		{"announce_cosigned", "stop", "balistid-announce.service", entry.AnnounceShutdown},
+		{"suspend_announced", "start", "balistid-announce-suspend.service", entry.AnnounceSuspend},
+	} {
+		got := announced(ctx, a.verb, a.unit, a.kind)
+		add(a.fact, got)
+		if got != "yes" {
+			for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", a.unit, "-u",
+				"balistid-ledger.service", "-o", "cat", "--no-pager", "-n", "40"), "\n") {
+				fmt.Printf("balistid-range-guest: announce: %.400q\n", line)
+			}
 		}
 	}
 
