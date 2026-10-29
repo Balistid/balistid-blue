@@ -53,7 +53,8 @@ func OpenProven(ctx context.Context, dir string, cp Checkpoint) (*Proven, error)
 // Close releases the log's directory.
 func (p *Proven) Close() error { return p.root.Close() } //nolint:wrapcheck // read-only
 
-// Bundle returns the entries of bundle idx under the checkpoint's size, not yet proven.
+// Bundle returns the entries of bundle idx under the checkpoint's size, not yet proven. A log that grew
+// past the checkpoint may hold only the full bundle (Tessera removes partial ones): its prefix is taken.
 func (p *Proven) Bundle(ctx context.Context, idx uint64) ([][]byte, error) {
 	b, err := client.GetEntryBundle(ctx, func(_ context.Context, i uint64, part uint8) ([]byte, error) {
 		return p.read(part, maxBundleBytes, func(part uint8) string { return layout.EntriesPath(i, part) })
@@ -61,10 +62,11 @@ func (p *Proven) Bundle(ctx context.Context, idx uint64) ([][]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bundle %d: %w", idx, err)
 	}
-	if want := min(p.cp.Size-idx*layout.EntryBundleWidth, layout.EntryBundleWidth); uint64(len(b.Entries)) != want {
+	want := min(p.cp.Size-idx*layout.EntryBundleWidth, layout.EntryBundleWidth)
+	if uint64(len(b.Entries)) < want {
 		return nil, fmt.Errorf("bundle %d holds %d entries, want %d", idx, len(b.Entries), want)
 	}
-	return b.Entries, nil
+	return b.Entries[:want], nil
 }
 
 // Prove checks that raw is the entry at index at of the cosigned log, and decodes it.

@@ -42,6 +42,11 @@ func (r Retirement) Run(ctx context.Context) (retired []string, err error) {
 	var errs []error
 	for _, e := range entries {
 		if n := e.Name(); strings.HasSuffix(n, retiringSuffix) && old.MatchString(strings.TrimSuffix(n, retiringSuffix)) {
+			// Only a durable rename is a marker: synced first, as the pass that made it would have.
+			if err := syncDir(parent); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 			errs = append(errs, removeAll(parent, n))
 		}
 	}
