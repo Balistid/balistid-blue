@@ -43,6 +43,7 @@ type Keys struct {
 // Checkpoint is a cosigned checkpoint whose two signatures verified.
 type Checkpoint struct {
 	Size uint64
+	Root []byte    // the log's root hash at Size
 	Time time.Time // the witness's, from its signed line, UTC
 	Note []byte    // the note as it verified
 }
@@ -83,7 +84,7 @@ func Open(b []byte, k Keys) (Checkpoint, error) {
 	if t.Before(minTime) || t.After(maxTime) {
 		return Checkpoint{}, fmt.Errorf("cosign: witness time %d out of bounds", t.Unix())
 	}
-	return Checkpoint{Size: cp.Size, Time: t.UTC(), Note: slices.Clone(b)}, nil
+	return Checkpoint{Size: cp.Size, Root: cp.Hash, Time: t.UTC(), Note: slices.Clone(b)}, nil
 }
 
 // maxKeyBytes bounds a verifier key file: a name and a base64 key.

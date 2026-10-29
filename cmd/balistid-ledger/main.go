@@ -43,9 +43,6 @@ const (
 	finalWait = time.Minute
 	// cosignGap is cosign_gap_s: a relay file older than this means the witness is away.
 	cosignGap = time.Minute
-	// Beside the log, once its final entry is cosigned: the note, and the key it verifies with (ADR 0030, point 5).
-	finalCosignedName = "final.cosigned"
-	finalKeyName      = "ledger.vkey"
 )
 
 // notices names what the binary links under a licence other than Apache-2.0, MIT, BSD or ISC (ADR 0026,
@@ -66,6 +63,7 @@ func run() int {
 	control := flag.String("control", "/run/balistid-ledger/control.sock", "the ledger's control socket (ADR 0030)")
 	announce := flag.String("announce", "", "announce shutdown or suspend to the running ledger, wait for the cosignature and exit")
 	final := flag.String("final", "", "end the running ledger's log naming this next origin, wait for the cosignature, save it beside the log and exit")
+	rollover := flag.String("rollover-from", "", "start the empty -log as the next yearly log after the old log in this directory, then exit")
 	flag.Parse()
 	if *showNotices {
 		fmt.Println(notices)
@@ -81,6 +79,13 @@ func run() int {
 		log.Error("verifier keys not read, no cosigned frames for the collector", "err", err)
 	} else {
 		relay = anchor.Relay{Path: *relayFile, Keys: keys}
+	}
+	if *rollover != "" {
+		if err := rolloverFrom(*dir, *rollover, *keyPath, *witnessKey); err != nil {
+			log.Error("rollover refused", "err", err)
+			return 1
+		}
+		return 0
 	}
 	if *announce != "" || *final != "" {
 		if err := ask(*control, *announce, *final, *dir, *logKey, relay); err != nil {
@@ -128,21 +133,41 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	if err != nil {
 		return fmt.Errorf("verifier key: %w", err)
 	}
-	if err := wholefile.Write(filepath.Join(dir, finalKeyName), key, 0o640); err != nil {
+	if err := wholefile.Write(filepath.Join(dir, anchor.FinalKeyName), key, 0o640); err != nil {
 		return err //nolint:wrapcheck // wholefile errors carry their context
 	}
-	return wholefile.Write(filepath.Join(dir, finalCosignedName), cp.Note, 0o640) //nolint:wrapcheck // as above
+	return wholefile.Write(filepath.Join(dir, anchor.FinalCosignedName), cp.Note, 0o640) //nolint:wrapcheck // as above
 }
 
-func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Logger) error {
+// rolloverFrom starts dir, empty, as the yearly log after the one in previous, whose saved verifier key
+// and the witness's verify its cosigned final entry (ADR 0030, point 6).
+func rolloverFrom(dir, previous, keyPath, witnessKey string) error {
+	signer, err := signerFrom(keyPath)
+	if err != nil {
+		return err
+	}
+	keys, err := cosign.ReadKeys(filepath.Join(previous, anchor.FinalKeyName), witnessKey)
+	if err != nil {
+		return err //nolint:wrapcheck // cosign errors carry their context
+	}
+	return anchor.Rollover(context.Background(), anchor.Config{Dir: dir, Signer: signer, CapBytes: capBytes, //nolint:wrapcheck // as above
+		CheckpointInterval: checkpointEvery, Now: time.Now}, previous, keys)
+}
+
+// signerFrom reads the signing key at keyPath, by default systemd's credential.
+func signerFrom(keyPath string) (note.Signer, error) {
 	creds := os.Getenv("CREDENTIALS_DIRECTORY")
 	if keyPath == "" {
 		if creds == "" {
-			return errors.New("no -key and no CREDENTIALS_DIRECTORY")
+			return nil, errors.New("no -key and no CREDENTIALS_DIRECTORY")
 		}
 		keyPath = filepath.Join(creds, "ledger-key")
 	}
-	signer, err := readSigner(keyPath, creds)
+	return readSigner(keyPath, creds)
+}
+
+func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Logger) error {
+	signer, err := signerFrom(keyPath)
 	if err != nil {
 		return err
 	}
