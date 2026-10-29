@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-29 by claude/opus-5.5 (L8)
+Updated: 2026-10-30 by claude/opus-5.5 (L8 merged)
 
 ## Where we are
 
@@ -13,16 +13,16 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027, 0030) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `feat/announce-final` (#148); Pi not started |
+| Ledger, relay, Pi witness (0006, 0026, 0027, 0030) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - L8 (#148, ADR 0030): a control socket of the ledger takes an announcement or the final entry; its client waits
   for the cosign (units `balistid-announce`, `-suspend`); `-rollover-from` starts the next yearly log from the
   old one's cosigned final with inclusion proofs; old logs go when both clocks pass 400 days. KVM PASS at ee18173
-  (`announce_cosigned`, `suspend_announced`). Review rounds 1-2 fixed (proofs, a full log; no witness-away guess, R7); awaits the approve.
+  (`announce_cosigned`, `suspend_announced`). Review rounds 1-2 fixed (proofs, a full log; no witness-away guess, R7); merged as b4d9ca3.
 ## Next step
-1. Review and merge #148; then the Pi (ledger-PLAN L9-L12): its verifier also reads announcements (ADR 0030, 4).
-   `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
+1. The Pi (ledger-PLAN L9-L12): its verifier also reads announcements (ADR 0030, 4). `range-kvm` is advisory until
+   a week of runs, then the maintainer decides on required (0028); no retry yet (b4d9ca3: archive.archlinux.org timeout).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
