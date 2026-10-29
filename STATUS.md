@@ -19,7 +19,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - L8 (#148, ADR 0030): a control socket of the ledger takes an announcement or the final entry; its client waits
   for the cosign (units `balistid-announce`, `-suspend`); `-rollover-from` starts the next yearly log from the
   old one's cosigned final with inclusion proofs; old logs go when both clocks pass 400 days. KVM PASS at ee18173
-  (`announce_cosigned`, `suspend_announced`). Awaits review (Opus critic, Codex security) and the approve.
+  (`announce_cosigned`, `suspend_announced`). Review round 1 fixed (proofs, a full log); round 2, then the approve.
 ## Next step
 1. Review and merge #148; then the Pi (ledger-PLAN L9-L12): its verifier also reads announcements (ADR 0030, 4).
    `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
