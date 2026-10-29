@@ -17,11 +17,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - #144 (R1): the relay and a pinned witness; #146 (ADR 0028): `range-kvm` self-tests each pull request on KVM.
-- L7 (ADR 0029, branch `feat/retention-cosign`): the ledger reads the relay's cosigned checkpoint and tells the
-  collector the covered seal (frame 5); the collector checks the note itself and retires a shard only when the
-  witness's and the host's clocks are both 30 days past it. Range fact `shard_cosigned`. Awaits KVM and review.
+- L7 (#147, ADR 0029): the ledger tells the collector the covered seal (frame 5); the collector checks the note
+  itself and retires a shard only when the witness's and the host's clocks are both 30 days past it. KVM PASS
+  (`shard_cosigned`); Opus critic rounds 1-4 fixed, Codex security GO at round 7. Awaits the maintainer's approve.
 ## Next step
-1. L7 through review and the maintainer's approve; then announce/final and the Pi (ledger-PLAN L8-L12).
+1. Merge #147 after the approve; then announce/final and the Pi (ledger-PLAN L8-L12).
    `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
