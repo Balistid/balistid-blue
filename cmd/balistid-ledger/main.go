@@ -127,8 +127,6 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	var body entry.Body
 	wait := announceWait
 	switch {
-	case announce != "" && final != "":
-		return errors.New("-announce and -final together")
 	case announce == "shutdown":
 		body = entry.Announce{Kind: entry.AnnounceShutdown}
 	case announce == "suspend":
@@ -144,13 +142,18 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
-	cp, err := anchor.WaitCosigned(ctx, relay, size, time.Second, cosignGap)
+	cp, err := anchor.WaitCosigned(ctx, relay, anchor.Wait{Dir: dir, Size: size, Entry: body}, time.Second, cosignGap)
 	if err != nil || final == "" {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
-	key, err := os.ReadFile(logKey) //nolint:gosec // the key's path is configuration; ReadKeys verified it
+	key, err := os.ReadFile(logKey) //nolint:gosec // the key's path is configuration
 	if err != nil {
 		return fmt.Errorf("verifier key: %w", err)
+	}
+	// The key saved beside the log must be the one the cosigned final just verified with.
+	v, err := note.NewVerifier(strings.TrimSpace(string(key)))
+	if err != nil || v.Name() != relay.Keys.Log.Name() || v.KeyHash() != relay.Keys.Log.KeyHash() {
+		return errors.Join(fmt.Errorf("verifier key %s is not the one the final verified with", logKey), err)
 	}
 	if err := wholefile.Write(filepath.Join(dir, anchor.FinalKeyName), key, 0o640); err != nil {
 		return err //nolint:wrapcheck // wholefile errors carry their context
@@ -161,6 +164,10 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 // rolloverFrom starts dir, empty, as the yearly log after the one in previous, whose saved verifier key
 // and the witness's verify its cosigned final entry (ADR 0030, point 6).
 func rolloverFrom(dir, previous, keyPath, witnessKey string) error {
+	// Root would own the new log, which the ledger's uid then cannot write (ADR 0030, point 5).
+	if os.Getuid() == 0 {
+		return errors.New("-rollover-from runs as the ledger's uid, not root")
+	}
 	signer, err := signerFrom(keyPath)
 	if err != nil {
 		return err
@@ -235,7 +242,7 @@ func retire(ctx context.Context, r anchor.Retirement, log *slog.Logger) {
 	t := time.NewTicker(retireEvery)
 	defer t.Stop()
 	for {
-		retired, err := r.Run()
+		retired, err := r.Run(ctx)
 		if len(retired) > 0 {
 			log.Info("old logs deleted", "logs", retired)
 		}

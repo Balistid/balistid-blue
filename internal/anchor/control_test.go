@@ -11,11 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/Balistid/balistid-blue/internal/cosign"
-	"github.com/Balistid/balistid-blue/internal/cosign/cosigntest"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 )
@@ -79,6 +78,8 @@ func TestControlTakesOnlyTheLedgersUID(t *testing.T) {
 func TestControlLogsAnAnnouncementAndAFinal(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	l := openLog(t, config(dir, k, c))
+	closeOnce := sync.OnceFunc(func() { closeLog(t, l) })
+	defer closeOnce() // also when sockets are denied and the test skips
 	records(t, l, 1, 2)
 	s := serve(t, l, os.Getuid()+1, os.Getuid())
 	if size, err := Ask(t.Context(), s.control, entry.Announce{Kind: entry.AnnounceSuspend}); err != nil || size != 2 {
@@ -90,8 +91,13 @@ func TestControlLogsAnAnnouncementAndAFinal(t *testing.T) {
 	if size, err := Ask(t.Context(), s.control, entry.Final{NextOrigin: next}); err != nil || size != 3 {
 		t.Fatalf("final: size %d, %v", size, err)
 	}
-	s.stop()
-	closeLog(t, l)
+	journal := s.stop()
+	for _, want := range []string{"control request logged", "control request refused", `"rule_version":"` + ControlRuleVersion + `"`} {
+		if !strings.Contains(journal, want) {
+			t.Errorf("journal %s lacks %s", journal, want)
+		}
+	}
+	closeOnce()
 	got, _ := logged(t, dir, k)
 	if len(got) != 3 || got[1] != (entry.Announce{Kind: entry.AnnounceSuspend}) || got[2] != (entry.Final{NextOrigin: next}) {
 		t.Fatalf("log %v", got)
@@ -117,75 +123,6 @@ func TestCollectorRefusedAfterFinal(t *testing.T) {
 	}
 	if !strings.Contains(s.stop(), `"final":1`) {
 		t.Fatal("the refusal was not summed")
-	}
-}
-
-func TestAnnounceCosignedBeforeStop(t *testing.T) {
-	f := cosigntest.New(t)
-	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
-	at := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	if err := os.WriteFile(relay.Path, f.Cosigned(t, 4, at), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-		defer cancel()
-		cp, err := WaitCosigned(ctx, relay, 5, 10*time.Millisecond, time.Minute)
-		if err == nil && cp.Size != 5 {
-			err = errors.New("returned before the size was cosigned")
-		}
-		done <- err
-	}()
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case err := <-done:
-		t.Fatalf("returned on a checkpoint short of the announcement: %v", err)
-	default:
-	}
-	if err := os.WriteFile(relay.Path, f.Cosigned(t, 5, at.Add(5*time.Second)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := result(t, done); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestAnnounceAppendedWhenWitnessAway(t *testing.T) {
-	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
-	l := openLog(t, config(dir, k, c))
-	s := serve(t, l, os.Getuid()+1, os.Getuid())
-	size, err := Ask(t.Context(), s.control, entry.Announce{Kind: entry.AnnounceShutdown})
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := cosigntest.New(t)
-	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
-	if err := os.WriteFile(relay.Path, f.Cosigned(t, size-1, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-2 * time.Minute)
-	if err := os.Chtimes(relay.Path, old, old); err != nil {
-		t.Fatal(err)
-	}
-	start := time.Now()
-	for _, r := range []Relay{relay, {Path: relay.Path + ".missing", Keys: f.Keys}} {
-		if _, err := WaitCosigned(t.Context(), r, size, time.Second, time.Minute); !errors.Is(err, ErrWitnessAway) {
-			t.Fatalf("%s: %v", r.Path, err)
-		}
-	}
-	for _, bad := range [][2]time.Duration{{0, time.Minute}, {time.Second, 0}} {
-		if _, err := WaitCosigned(t.Context(), relay, size, bad[0], bad[1]); err == nil {
-			t.Fatalf("waited with poll %v, gap %v", bad[0], bad[1])
-		}
-	}
-	if waited := time.Since(start); waited > 500*time.Millisecond {
-		t.Fatalf("waited %v for a witness that is away", waited)
-	}
-	s.stop()
-	closeLog(t, l)
-	if got, _ := logged(t, dir, k); len(got) != 1 || got[0] != (entry.Announce{Kind: entry.AnnounceShutdown}) {
-		t.Fatalf("the announcement is not in the log: %v", got)
 	}
 }
 

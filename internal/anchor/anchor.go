@@ -43,6 +43,10 @@ var ErrStream = errors.New("anchor: out of stream order")
 // nothing more; the collector's store keeps the records for the next yearly log.
 var ErrFinal = errors.New("anchor: the log ended with its final entry")
 
+// ErrFull marks an append at the cap (host_log_cap_gib): the log takes only its final entry now, in the
+// slot the cap keeps for it (ADR 0030, point 5); the collector's store keeps the records for the next log.
+var ErrFull = errors.New("anchor: the log is at its cap and takes only its final entry")
+
 // Config opens a log.
 type Config struct {
 	Dir                string // the service's own directory (ADR 0007)
@@ -215,6 +219,13 @@ func (l *Log) Broken() error {
 	return l.broken
 }
 
+// Full reports whether the log is at its cap without its final entry: only that still fits.
+func (l *Log) Full() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.final == nil && l.size >= l.maxSize-1
+}
+
 // Ended reports whether the log holds its final entry.
 func (l *Log) Ended() bool {
 	l.mu.Lock()
@@ -224,10 +235,15 @@ func (l *Log) Ended() bool {
 
 // stopped is why nothing more is appended: the log broke or ended.
 func (l *Log) stopped() error {
-	if l.broken == nil && l.final != nil {
+	switch {
+	case l.broken != nil:
+		return l.broken
+	case l.final != nil:
 		return ErrFinal
+	case l.size >= l.maxSize-1:
+		return ErrFull
 	}
-	return l.broken
+	return nil
 }
 
 func (l *Log) next() uint64 {
@@ -376,9 +392,12 @@ func (l *Log) Final(ctx context.Context, next string) (uint64, error) {
 	if _, err := (entry.Entry{Body: f}).Encode(); err != nil {
 		return 0, err //nolint:wrapcheck // entry errors carry their context
 	}
-	if err := l.flush(ctx); err != nil {
+	// At the cap the waiting batch no longer fits: it is left out, and its records, still in the
+	// collector's store, are resent to the next log from the last batch logged here.
+	if err := l.flush(ctx); err != nil && !errors.Is(err, ErrFull) {
 		return 0, err
 	}
+	l.batch = nil
 	if err := l.append(ctx, f); err != nil {
 		return 0, err
 	}
@@ -433,8 +452,7 @@ func (l *Log) append(ctx context.Context, body entry.Body) error {
 		limit = l.maxSize
 	}
 	if l.size >= limit {
-		l.broken = fmt.Errorf("anchor: log at its cap of %d entries (host_log_cap_gib)", l.maxSize)
-		return l.broken
+		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
 	}
 	b, err := entry.Entry{At: l.now().UnixNano(), Body: body}.Encode()
 	if err != nil {
@@ -462,6 +480,9 @@ func (l *Log) Close(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	err := l.flush(ctx)
+	if errors.Is(err, ErrFull) { // the waiting batch goes to the next log
+		err = nil
+	}
 	err = errors.Join(err, l.shutdown(ctx))
 	l.cancel()
 	return errors.Join(err, l.lock.Close())

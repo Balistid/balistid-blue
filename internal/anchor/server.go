@@ -43,8 +43,10 @@ const RuleVersion = "adr-0027-v1"
 const (
 	CauseUID       = "uid"
 	CausePeerError = "peer-error"
-	// CauseFinal is the collector refused once the log holds its final entry (ADR 0030, point 5).
+	// CauseFinal is the collector refused once the log holds its final entry, CauseCap while the log is
+	// at its cap and takes only that entry (ADR 0030, point 5).
 	CauseFinal = "final"
+	CauseCap   = "cap"
 )
 
 // admit names why a peer is refused, or "" for the collector.
@@ -127,8 +129,8 @@ func Serve(ctx context.Context, ln *net.UnixListener, ctl Control, l *Log, colle
 			_ = c.Close()
 			continue
 		}
-		if l.Ended() {
-			ref.add(CauseFinal, p.UID)
+		if cause := endedOrFull(l); cause != "" {
+			ref.add(cause, p.UID)
 			_ = c.Close()
 			continue
 		}
@@ -139,6 +141,16 @@ func Serve(ctx context.Context, ln *net.UnixListener, ctl Control, l *Log, colle
 		}
 		log.Info("collector disconnected", "err", err, "resume", l.Resume().Last)
 	}
+}
+
+func endedOrFull(l *Log) string {
+	switch {
+	case l.Ended():
+		return CauseFinal
+	case l.Full():
+		return CauseCap
+	}
+	return ""
 }
 
 // serveConn sends the resume point, then feeds the collector's messages into l, cutting batches on a
