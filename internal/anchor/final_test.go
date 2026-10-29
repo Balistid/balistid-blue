@@ -36,6 +36,8 @@ func TestAnnounceFollowsTheWaitingBatch(t *testing.T) {
 	}
 }
 
+// At the cap the log is full, not broken: an announcement is refused, the final entry takes the slot
+// kept for it even while records wait, and those records are left for the next log.
 func TestFinalFitsAtCap(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	cfg := config(dir, k, c)
@@ -45,16 +47,28 @@ func TestFinalFitsAtCap(t *testing.T) {
 	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); err != nil { // the batch, then this: 2 of 3
 		t.Fatal(err)
 	}
-	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); err == nil {
-		t.Fatal("an announcement took the final entry's slot")
+	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); !errors.Is(err, ErrFull) || l.Broken() != nil {
+		t.Fatalf("an announcement at the cap: %v, broken %v", err, l.Broken())
 	}
-	if err := l.Close(t.Context()); err == nil { // Close reports what broke the process
-		t.Fatal("closed without the cap's error")
+	if err := l.Record(t.Context(), link.Record{Seq: 3, Leaf: leaf(3)}); !errors.Is(err, ErrFull) {
+		t.Fatalf("a record at the cap: %v", err)
 	}
-	l = openLog(t, cfg)        // the cap broke that process, not the log
-	defer l.Close(t.Context()) //nolint:errcheck // test end
-	if size, err := l.Final(t.Context(), next); err != nil || size != 3 {
-		t.Fatalf("final at the cap: size %d, %v", size, err)
+	closeLog(t, l) // full is no error to close with
+	l = openLog(t, cfg)
+	if !l.Full() || l.Broken() != nil {
+		t.Fatalf("after a restart: full %v, broken %v", l.Full(), l.Broken())
+	}
+	l.batch, l.batchFirst = entry.NewRoot(), 3 // a record the stream gave before the cap refused it
+	if err := l.batch.Add(leaf(3)); err != nil {
+		t.Fatal(err)
+	}
+	if size, err := l.Final(t.Context(), next); err != nil || size != 3 || !l.Ended() || l.Full() {
+		t.Fatalf("final at the cap with a record waiting: size %d, %v", size, err)
+	}
+	closeLog(t, l)
+	got, _ := logged(t, dir, k)
+	if len(got) != 3 || got[2] != (entry.Final{NextOrigin: next}) {
+		t.Fatalf("log %v", got)
 	}
 }
 

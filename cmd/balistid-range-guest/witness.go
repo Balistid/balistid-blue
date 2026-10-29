@@ -278,8 +278,8 @@ func addCheckpoint(ctx context.Context, s note.Signer, old, size uint64, hash []
 }
 
 // announced is "yes" once systemctl verb unit ran the ledger's client to success, under the unit's
-// sandbox, and a checkpoint the witness cosigned covers an announcement of kind in the ledger's log
-// (ADR 0030): the client waited for that cosignature itself, so the check finds it at once.
+// sandbox, and an announcement of kind in the ledger's log is proven included in a checkpoint the witness
+// cosigned (ADR 0030): the client waited for that cosignature itself, so the check finds it at once.
 func announced(ctx context.Context, verb, unit string, kind entry.Announcement) string {
 	if verb == "stop" && strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "is-active", unit)) != "active" {
 		return "error: " + unit + " was not active, so its stop announces nothing"
@@ -300,6 +300,12 @@ func announced(ctx context.Context, verb, unit string, kind entry.Announcement) 
 		var at uint64
 		if err == nil {
 			at, err = lastAnnouncement(ctx, ledgerLog, keys.Log, kind)
+		}
+		if err == nil && at < cp.Size { // the bytes on disk count only as far as the cosigned root vouches for them
+			var e entry.Entry
+			if e, err = cosign.ProvenEntry(ctx, ledgerLog, cp, at); err == nil && e.Body != (entry.Announce{Kind: kind}) {
+				err = fmt.Errorf("entry %d is %+v", at, e.Body)
+			}
 		}
 		switch {
 		case err != nil:

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/transparency-dev/tessera/api/layout"
+
 	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/cosign/cosigntest"
 )
@@ -53,7 +55,7 @@ func TestRetiredLogKeptUntilBothClocks(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, state := retirement(t, c.latest, c.now)
-			got, err := r.Run()
+			got, err := r.Run(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -80,7 +82,7 @@ func TestARetiringLogIsFinished(t *testing.T) {
 		}
 	}
 	remove(t, r.Relay.Path)
-	if _, err := r.Run(); err == nil {
+	if _, err := r.Run(t.Context()); err == nil {
 		t.Fatal("ran without the relay's checkpoint")
 	}
 	if exists(t, filepath.Join(state, "log.1"+retiringSuffix)) {
@@ -109,7 +111,7 @@ func TestAnOldLogWithoutAVerifiedFinalIsKept(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, state := retirement(t, late, late)
 			change(t, state)
-			got, _ := r.Run()
+			got, _ := r.Run(t.Context())
 			if len(got) != 0 {
 				t.Fatalf("retired %v", got)
 			}
@@ -143,9 +145,64 @@ func TestRetirementRefusesAnIncompleteConfig(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, state := retirement(t, late, late)
 			change(&r)
-			if got, err := r.Run(); err == nil || len(got) != 0 || !exists(t, filepath.Join(state, "log.1")) {
+			if got, err := r.Run(t.Context()); err == nil || len(got) != 0 || !exists(t, filepath.Join(state, "log.1")) {
 				t.Fatalf("retired %v, %v", got, err)
 			}
 		})
 	}
+}
+
+// A note dates an old log only when its last entry is that log's own final entry: neither another log's
+// note copied beside an empty one, nor an older, genuine note of the same log replayed as its final.
+func TestOnlyTheLogsOwnFinalDatesIt(t *testing.T) {
+	late := witnessAt.Add(keep + time.Hour)
+	t.Run("another log's note", func(t *testing.T) {
+		r, state := retirement(t, late, late)
+		if err := os.Mkdir(filepath.Join(state, "log.2"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{FinalCosignedName, FinalKeyName} {
+			b, err := os.ReadFile(filepath.Join(state, "log.1", name)) //nolint:gosec // the test's own directory
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(state, "log.2", name), b)
+		}
+		if got, err := r.Run(t.Context()); err == nil || !slices.Equal(got, []string{"log.1"}) || !exists(t, filepath.Join(state, "log.2")) {
+			t.Fatalf("retired %v, %v", got, err)
+		}
+	})
+	t.Run("an older note replayed", func(t *testing.T) {
+		f := cosigntest.New(t)
+		state, c := t.TempDir(), &clock{t: time.Unix(1e9, 0)}
+		dir := filepath.Join(state, "log.1")
+		cfg := Config{Dir: dir, Signer: f.Log, CapBytes: 1 << 30, CheckpointInterval: 100 * time.Millisecond, Now: c.now}
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		l := openLog(t, cfg)
+		records(t, l, 1, 2)
+		closeLog(t, l)
+		early, err := os.ReadFile(filepath.Join(dir, layout.CheckpointPath)) //nolint:gosec // the test's own directory
+		if err != nil {
+			t.Fatal(err)
+		}
+		l = openLog(t, cfg)
+		if _, err := l.Final(t.Context(), next); err != nil {
+			t.Fatal(err)
+		}
+		closeLog(t, l)
+		// The final itself was cosigned at witnessAt; the replayed note of size 1 carries a time 300 days older.
+		write(t, filepath.Join(dir, FinalCosignedName), f.Cosign(t, early, witnessAt.Add(-300*24*time.Hour)))
+		write(t, filepath.Join(dir, FinalKeyName), []byte(f.LogKey+"\n"))
+		witnessKey := filepath.Join(state, "witness.vkey")
+		write(t, witnessKey, []byte(f.Witness+"\n"))
+		now := witnessAt.Add(150 * 24 * time.Hour)
+		relay := Relay{Path: filepath.Join(state, cosign.Name), Keys: f.Keys}
+		write(t, relay.Path, f.Cosigned(t, 9, now))
+		r := Retirement{Dir: filepath.Join(state, "log"), Relay: relay, WitnessKey: witnessKey, Keep: keep, Now: func() time.Time { return now }}
+		if got, err := r.Run(t.Context()); err == nil || len(got) != 0 || !exists(t, dir) {
+			t.Fatalf("retired %v, %v", got, err)
+		}
+	})
 }

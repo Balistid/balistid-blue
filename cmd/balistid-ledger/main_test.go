@@ -139,15 +139,30 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 	}()
 	defer func() { cancel(); <-done }()
 	relay := anchor.Relay{Path: filepath.Join(run, cosign.Name), Keys: f.Keys}
-	note := f.Cosigned(t, 1, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)) // the final is the empty log's first entry
 	logKey := filepath.Join(run, "ledger-key.pub")
-	if err := errors.Join(os.WriteFile(relay.Path, note, 0o600), os.WriteFile(logKey, []byte("the verifier key\n"), 0o600)); err != nil {
+	// A fresh relay file short of the final: the witness is there, the final not yet cosigned.
+	if err := errors.Join(os.WriteFile(relay.Path, f.Cosigned(t, 0, time.Now()), 0o600), os.WriteFile(logKey, []byte(f.LogKey+"\n"), 0o600)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ask(control, "", "balistid.test/next", dir, logKey, relay); err != nil {
+	asked := make(chan error, 1)
+	go func() { asked <- ask(control, "", "balistid.test/next", dir, logKey, relay) }()
+	var note []byte
+	for deadline := time.Now().Add(10 * time.Second); note == nil; time.Sleep(50 * time.Millisecond) {
+		signed, err := os.ReadFile(filepath.Join(dir, "checkpoint")) //nolint:gosec // the test's own directory
+		if err == nil && bytes.Contains(signed, []byte("\n1\n")) {   // the checkpoint over the final, the empty log's first entry
+			note = f.Cosign(t, signed, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+			if err := os.WriteFile(relay.Path, note, 0o600); err != nil { //nolint:gosec // the test's own directory
+				t.Fatal(err)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no checkpoint over the final")
+		}
+	}
+	if err := <-asked; err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string][]byte{anchor.FinalCosignedName: note, anchor.FinalKeyName: []byte("the verifier key\n")} {
+	for name, want := range map[string][]byte{anchor.FinalCosignedName: note, anchor.FinalKeyName: []byte(f.LogKey + "\n")} {
 		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || !bytes.Equal(got, want) { //nolint:gosec // the test's own directory
 			t.Errorf("%s: %q, %v", name, got, err)
 		}

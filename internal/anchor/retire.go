@@ -1,6 +1,7 @@
 package anchor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
 // retiringSuffix marks an old log being deleted: renamed first, so a crash leaves no half log under its name.
@@ -27,7 +29,7 @@ type Retirement struct {
 // Run finishes any deletion a crash interrupted, then deletes each old log whose final entry's cosign
 // time is Keep behind both the latest witness time and the host's clock. An old log without a final
 // that verifies is kept and named in the error; without a readable relay checkpoint nothing is deleted.
-func (r Retirement) Run() (retired []string, err error) {
+func (r Retirement) Run(ctx context.Context) (retired []string, err error) {
 	if r.Keep <= 0 || r.Now == nil || !filepath.IsAbs(r.Dir) {
 		return nil, errors.New("anchor: retire: no retention, clock or absolute log directory") // a zero Keep would delete at once
 	}
@@ -51,7 +53,7 @@ func (r Retirement) Run() (retired []string, err error) {
 		if !e.IsDir() || !old.MatchString(e.Name()) {
 			continue
 		}
-		at, err := r.finalTime(filepath.Join(parent, e.Name()))
+		at, err := r.finalTime(ctx, filepath.Join(parent, e.Name()))
 		switch {
 		case err != nil:
 			errs = append(errs, fmt.Errorf("anchor: old log %s kept: %w", e.Name(), err))
@@ -60,7 +62,12 @@ func (r Retirement) Run() (retired []string, err error) {
 				errs = append(errs, fmt.Errorf("anchor: retire: %w", err))
 				continue
 			}
-			if err := errors.Join(syncDir(parent), removeAll(parent, e.Name()+retiringSuffix)); err != nil {
+			// The rename must be durable first: a crash then leaves the .retiring marker, never a half log.
+			if err := syncDir(parent); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if err := removeAll(parent, e.Name()+retiringSuffix); err != nil {
 				errs = append(errs, err)
 				continue
 			}
@@ -70,8 +77,10 @@ func (r Retirement) Run() (retired []string, err error) {
 	return retired, errors.Join(errs...)
 }
 
-// finalTime is the witness's time on the old log's cosigned final, verified with the key saved beside it.
-func (r Retirement) finalTime(dir string) (time.Time, error) {
+// finalTime is the witness's time on the old log's cosigned final, verified with the key saved beside it,
+// once that checkpoint's last entry is proven to be a final entry of the log in dir: another log's note,
+// or an older note of this one, dates nothing.
+func (r Retirement) finalTime(ctx context.Context, dir string) (time.Time, error) {
 	keys, err := cosign.ReadKeys(filepath.Join(dir, FinalKeyName), r.WitnessKey)
 	if err != nil {
 		return time.Time{}, err //nolint:wrapcheck // cosign errors carry their context
@@ -79,6 +88,13 @@ func (r Retirement) finalTime(dir string) (time.Time, error) {
 	cp, err := cosign.Read(filepath.Join(dir, FinalCosignedName), keys)
 	if err != nil {
 		return time.Time{}, err //nolint:wrapcheck // as above
+	}
+	e, err := cosign.ProvenEntry(ctx, dir, cp, cp.Size-1)
+	if err != nil {
+		return time.Time{}, err //nolint:wrapcheck // cosign errors carry their context
+	}
+	if _, ok := e.Body.(entry.Final); !ok {
+		return time.Time{}, fmt.Errorf("the cosigned checkpoint of %d entries does not end with a final entry", cp.Size)
 	}
 	return cp.Time, nil
 }

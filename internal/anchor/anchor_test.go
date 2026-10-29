@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -313,9 +312,9 @@ func TestTheCapStopsAppending(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The third slot is the final entry's.
-	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err == nil || !strings.Contains(fmt.Sprint(l.Broken()), "cap") {
-		t.Fatalf("third entry under a cap of three: %v", err)
+	// The third slot is the final entry's: the log is full, not broken.
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); !errors.Is(err, ErrFull) || l.Broken() != nil || !l.Full() {
+		t.Fatalf("third entry under a cap of three: %v, broken %v", err, l.Broken())
 	}
 }
 
