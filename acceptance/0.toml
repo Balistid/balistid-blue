@@ -124,7 +124,7 @@ value = 30
 unit = "days before a sealed, cosigned shard is deleted"
 rows = ["T22"]
 adr = "0005"
-method = "Lifecycle test with a fake clock: age is the latest witness cosignature time minus the shard seal's cosignature time; the host clock is never used."
+method = "Lifecycle test with fake clocks: age is the latest witness cosignature time minus the shard seal's cosignature time, and the host's clock must also be as far past the seal; the host clock alone never retires a shard (ADR 0029)."
 
 [[metric]]
 id = "raw_cap_gib"
