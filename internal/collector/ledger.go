@@ -453,14 +453,21 @@ func (w *Writer) sealAtSent() bool {
 }
 
 // retire takes the newest cosigned frame of this connection, once its hello checked out, and has the store
-// date seals by it; on every tick after a witness time was taken it lets the store retire one shard by the
-// latest (ADR 0029, points 3 and 4), whatever the frame of the tick did. What a frame could not date and
-// what failed reach the journal at most once a minute per step: a ledger chooses what a frame's errors say.
+// date seals by it; on every tick the stream runs after a witness time was taken, it lets the store retire
+// one shard by the latest (ADR 0029, points 3 and 4), whatever the frame of the tick did. A refused frame,
+// a seal a taken time left undated and a failed retirement each reach the journal at most once a minute:
+// a ledger chooses what a frame's errors say. A frame of an earlier connection is dropped: the next one
+// sends again.
 func (w *Writer) retire() {
 	select {
 	case c := <-w.Ledger.cosigned:
 		if c.epoch == w.epoch {
-			w.journal(&w.frameLogAt, "cosigned checkpoint not used", w.takeCosigned(c.Cosigned))
+			switch err := w.takeCosigned(c.Cosigned); {
+			case errors.Is(err, store.ErrUndated):
+				w.journal(&w.undatedLogAt, "cosigned checkpoint taken, its seal not yet dated", err)
+			default:
+				w.journal(&w.frameLogAt, "cosigned checkpoint refused", err)
+			}
 		}
 	default:
 	}
@@ -499,7 +506,7 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 		return fmt.Errorf("collector: %w", err)
 	}
 	if cp.Time.Before(w.cosignAt) {
-		return fmt.Errorf("collector: %w: witness time %d before the latest taken, %d", store.ErrUndated, cp.Time.Unix(), w.cosignAt.Unix())
+		return fmt.Errorf("collector: witness time %d before the latest taken, %d", cp.Time.Unix(), w.cosignAt.Unix())
 	}
 	if now := w.Now(); cp.Time.After(now.Add(store.ClockSkew)) {
 		return fmt.Errorf("collector: witness time %d is ahead of the host's clock, %d, by more than %v", cp.Time.Unix(), now.Unix(), store.ClockSkew)

@@ -244,7 +244,8 @@ type ledgerState struct {
 	checkRoot    *entry.Root // the root of the ledger's last batch while it is read back, over ticks
 	checkAt      uint64      // the last seq added to checkRoot
 	cosignAt     time.Time   // the witness's time of the last cosigned frame taken
-	frameLogAt   time.Time   // when a cosigned frame that dated nothing was last journaled
+	frameLogAt   time.Time   // when a refused cosigned frame was last journaled
+	undatedLogAt time.Time   // when a taken frame that left its seal undated was last journaled
 	expireLogAt  time.Time   // when a failed retirement was last journaled
 }
 
