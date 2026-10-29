@@ -78,7 +78,7 @@ type Log struct {
 	tailLoss   map[lossKey]entry.Loss // loss entries logged after the last batch
 	tailSeal   *entry.Seal            // the seal logged after the last batch
 	pending    *sealAt                // the last seal this process logged or saw resent, not yet known cosigned
-	covered    *entry.Seal            // the newest seal a cosigned checkpoint covers, as far as this process knows
+	covered    *sealAt                // the newest seal a cosigned checkpoint covers, as far as this process knows
 	health     entry.Health           // the last health logged by this process
 	batch      *entry.Root
 	batchFirst uint64
@@ -264,19 +264,19 @@ func (l *Log) Seal(ctx context.Context, s entry.Seal) error {
 // Cosigned is the frame a checkpoint the witness cosigned gives the collector (ADR 0029, point 2): the
 // newest seal it covers, with the note. A seal counts once the checkpoint's size reaches the log's size
 // after it; only seals this process logged or saw resent count, so after a restart none does until the
-// next one. ok is false while none does. A cosigned size past the log means the log lost cosigned
-// history (T12).
+// next one. ok is false while none does, and for a checkpoint older than the covered seal, which a
+// replayed note would be. A cosigned size past the log means the log lost cosigned history (T12).
 func (l *Log) Cosigned(cp cosign.Checkpoint) (m link.Cosigned, ok bool, err error) {
 	if cp.Size > l.size {
 		return link.Cosigned{}, false, fmt.Errorf("anchor: the witness cosigned %d entries, the log holds %d", cp.Size, l.size)
 	}
 	if l.pending != nil && cp.Size >= l.pending.size {
-		l.covered, l.pending = &l.pending.seal, nil
+		l.covered, l.pending = l.pending, nil
 	}
-	if l.covered == nil {
+	if l.covered == nil || cp.Size < l.covered.size {
 		return link.Cosigned{}, false, nil
 	}
-	return link.Cosigned{Seal: *l.covered, Note: cp.Note}, true, nil
+	return link.Cosigned{Seal: l.covered.seal, Note: cp.Note}, true, nil
 }
 
 // Health logs the collector's health when it differs from the last one this process logged.

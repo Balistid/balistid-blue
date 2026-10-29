@@ -582,6 +582,9 @@ func TestASealCountsOnceACosignedCheckpointReachesIt(t *testing.T) {
 	if m, ok, _ := l.Cosigned(cosign.Checkpoint{Size: 4}); !ok || m.Seal != second {
 		t.Fatalf("the newer seal: %+v", m)
 	}
+	if m, ok, err := l.Cosigned(cosign.Checkpoint{Size: 2, Note: []byte("old")}); ok || err != nil { // replayed
+		t.Fatalf("a checkpoint older than the covered seal went with it: %+v, %v", m, err)
+	}
 	if _, ok, err := l.Cosigned(cosign.Checkpoint{Size: 5}); ok || err == nil {
 		t.Fatal("a cosigned size past the log was taken")
 	}
