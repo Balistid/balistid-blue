@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/shard"
@@ -42,6 +44,11 @@ func TestCrashChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	retire := parts[0] == "retired"
+	if retire { // a store clock a second on at every reading, so shards come of age within one day
+		var tick int64
+		s.now = func() time.Time { tick++; return time.Unix(0, noon+tick*int64(time.Second)) }
+	}
 	drops, stored := 0, []int{}
 	for i := 1; i <= 2000; i++ {
 		ok, _, err := s.Append(t.Context(), rawrecord.New(0, "laurel", uint64(i), noon+int64(i/200)*day, []byte(fmt.Sprintf("rec-%d-%s", i, strings.Repeat("x", 900)))))
@@ -62,6 +69,15 @@ func TestCrashChild(t *testing.T) {
 			}
 			stored = stored[:0]
 			fmt.Printf("flushed %d\n", drops)
+			if seals := s.Seals(); retire && len(seals) > 1 {
+				l, now := seals[len(seals)-1], s.now()
+				if err := s.MarkCosigned(l.First, l.Last, l.SHA256, now); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Expire(now.Add(time.Hour), time.Second); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 	}
 	t.Fatal("the crash point was never reached")
@@ -124,6 +140,40 @@ func TestEveryAcknowledgedRecordSurvivesAKill(t *testing.T) {
 			}
 			if counted < flushed {
 				t.Fatalf("loss records count %d drops; %d were flushed before the crash", counted, flushed)
+			}
+		})
+	}
+}
+
+// A kill between a retirement's index rewrite and its unlink leaves a file below the first line; Open
+// removes it and the kept shards read gap-free from the first line.
+func TestARetirementSurvivesAKill(t *testing.T) {
+	for _, at := range []int{1, 3} {
+		t.Run(fmt.Sprint("retired#", at), func(t *testing.T) {
+			dir, _, _ := crash(t, "retired", at)
+			before, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			seals, err := ReadSeals(t.Context(), dir)
+			if err != nil && !errors.Is(err, ErrUnindexed) {
+				t.Fatal(err)
+			}
+			if len(seals) == 0 || seals[0].First == 1 || !slices.ContainsFunc(before, func(e os.DirEntry) bool { return e.Name() < seals[0].Name }) {
+				t.Fatalf("no half-done retirement: index from %v, files %v", seals, before)
+			}
+			got := readAll(t, dir)
+			if len(got) == 0 || got[0].Seq != seals[0].First {
+				t.Fatalf("records from %v, index from %d", got, seals[0].First)
+			}
+			after, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range after {
+				if shardName.MatchString(e.Name()) && e.Name() < seals[0].Name {
+					t.Fatalf("Open left %s below the first line", e.Name())
+				}
 			}
 		})
 	}
