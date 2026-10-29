@@ -75,7 +75,12 @@ func (f *Fixture) Signed(t testing.TB, size uint64) []byte {
 // Cosigned is the ledger's checkpoint of size cosigned by the witness at at.
 func (f *Fixture) Cosigned(t testing.TB, size uint64, at time.Time) []byte {
 	t.Helper()
-	signed := f.Signed(t, size)
+	return f.Cosign(t, f.Signed(t, size), at)
+}
+
+// Cosign is a checkpoint the fixture's ledger key signed, cosigned by the witness at at.
+func (f *Fixture) Cosign(t testing.TB, signed []byte, at time.Time) []byte {
+	t.Helper()
 	n, err := note.Open(signed, note.VerifierList(f.Keys.Log))
 	if err != nil {
 		t.Fatal(err)

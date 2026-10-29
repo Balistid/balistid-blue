@@ -147,7 +147,7 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 	if err := ask(control, "", "balistid.test/next", dir, logKey, relay); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string][]byte{finalCosignedName: note, finalKeyName: []byte("the verifier key\n")} {
+	for name, want := range map[string][]byte{anchor.FinalCosignedName: note, anchor.FinalKeyName: []byte("the verifier key\n")} {
 		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || !bytes.Equal(got, want) { //nolint:gosec // the test's own directory
 			t.Errorf("%s: %q, %v", name, got, err)
 		}
