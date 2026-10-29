@@ -18,14 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/transparency-dev/formats/log"
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/mod/sumdb/note"
 
-	"github.com/Balistid/balistid-blue/internal/relay"
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
@@ -148,17 +147,17 @@ func witnessAgentMain(args []string) error {
 // ledgerCosigned is "yes" once the relay holds a checkpoint the witness cosigned that covers the
 // ledger's checkpoint as this fact starts: both keys verify it and its size is at least that one's.
 func ledgerCosigned(ctx context.Context) string {
-	lv, wv, err := rangeVerifiers()
+	keys, err := rangeKeys()
 	if err != nil {
 		return "error: " + err.Error()
 	}
 	f := client.FileFetcher{Root: ledgerLog}
-	want, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, lv, ledgerOrigin)
+	want, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, keys.Log, ledgerOrigin)
 	if err != nil {
 		return "error: ledger checkpoint: " + err.Error()
 	}
 	for deadline := time.Now().Add(waitLimit); ; time.Sleep(time.Second) {
-		got, err := cosigned(lv, wv)
+		got, err := cosign.Read(filepath.Join(relayState, cosign.Name), keys)
 		if err == nil && got.Size >= want.Size {
 			return "yes"
 		}
@@ -171,33 +170,16 @@ func ledgerCosigned(ctx context.Context) string {
 	}
 }
 
-func rangeVerifiers() (note.Verifier, note.Verifier, error) {
+func rangeKeys() (cosign.Keys, error) {
 	lv, err := note.NewVerifier(readTrim(filepath.Join(ledgerKeyDir, "ledger-key.pub")))
 	if err != nil {
-		return nil, nil, fmt.Errorf("ledger verifier key: %w", err)
+		return cosign.Keys{}, fmt.Errorf("ledger verifier key: %w", err)
 	}
 	wv, err := fnote.NewVerifierForCosignatureV1(readTrim(filepath.Join(ledgerKeyDir, "witness.vkey")))
 	if err != nil {
-		return nil, nil, fmt.Errorf("witness verifier key: %w", err)
+		return cosign.Keys{}, fmt.Errorf("witness verifier key: %w", err)
 	}
-	return lv, wv, nil
-}
-
-// cosigned reads the relay's checkpoint; both the ledger's signature and the witness's must verify.
-func cosigned(lv, wv note.Verifier) (log.Checkpoint, error) {
-	var cp log.Checkpoint
-	b, err := os.ReadFile(filepath.Join(relayState, relay.CosignedName))
-	if err != nil {
-		return cp, fmt.Errorf("cosigned checkpoint: %w", err)
-	}
-	n, err := note.Open(b, note.VerifierList(lv, wv))
-	if err != nil || len(n.Sigs) != 2 {
-		return cp, errors.Join(errors.New("cosigned checkpoint does not verify with both keys"), err)
-	}
-	if _, err := cp.Unmarshal([]byte(n.Text)); err != nil || cp.Origin != ledgerOrigin {
-		return cp, errors.Join(errors.New("cosigned checkpoint: other origin or malformed"), err)
-	}
-	return cp, nil
+	return cosign.Keys{Origin: ledgerOrigin, Log: lv, Witness: wv}, nil
 }
 
 // forkRefused is "yes" when the witness refuses, under the ledger's own key, a checkpoint of its
