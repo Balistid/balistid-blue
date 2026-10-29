@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-29 by claude/opus-5.5
+Updated: 2026-10-29 by claude/opus-5.5 (L7)
 
 ## Where we are
 
@@ -11,23 +11,23 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
 | Range, runner (0009-0011, 0018-0021, 0028) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; CI job `range-kvm` self-tests every pull request on GitHub's KVM (#146, advisory); on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022) |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
-| Store (0005, 0013) | cap, reserve, loss records, seal index | on `main`, code-owned; `Committed` (last durable seq, #128) |
+| Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `feat/retention-cosign` (L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
 | Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- R1 merged as #144 (2e2f7de): the relay carries checkpoints to a pinned witness and keeps the cosigned one.
-- #146 (ADR 0028): `range-kvm` builds and self-tests each pull request on GitHub's KVM (PASS at a875251 and 90460fd,
-  a wrong guest fact FAILed at eb0272e), instead of the maintainer's manual KVM run; no artifact upload.
+- #144 (R1): the relay and a pinned witness; #146 (ADR 0028): `range-kvm` self-tests each pull request on KVM.
+- L7 (ADR 0029, branch `feat/retention-cosign`): the ledger reads the relay's cosigned checkpoint and tells the
+  collector the covered seal (frame 5); the collector checks the note itself and retires a shard only when the
+  witness's and the host's clocks are both 30 days past it. Range fact `shard_cosigned`. Awaits KVM and review.
 ## Next step
-1. Retention from cosign times, announce/final and the Pi (ledger-PLAN L7-L12), checked in KVM by `range-kvm`.
+1. L7 through review and the maintainer's approve; then announce/final and the Pi (ledger-PLAN L8-L12).
    `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
 3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
-4. 2026-11-10 C3 = B4.9: runner reinstall (maintainer), the suite, metric verdicts in status.py; the Pi, the relay.
-   2026-11-15 checkpoint: how far the witness is end to end, and the prerequisites of 9.5.
+4. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
 5. Host install (9.5) only when every metric the range decides passes, with balistid-install, R2 keys, an own
    filesystem for the store, x32 and io_uring, alarms and a build unit with a syscall filter. Floor 2 after acceptance/2.toml.
 ## Open decisions (maintainer)
