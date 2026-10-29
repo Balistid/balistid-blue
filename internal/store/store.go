@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -340,7 +341,7 @@ func readSeals(ctx context.Context, dir string) ([]Seal, bool, error) {
 		return nil, false, fmt.Errorf("store: index over %d bytes", maxIndexBytes)
 	}
 	if !bytes.HasPrefix(data, []byte(indexHeader)) {
-		return nil, false, errors.New("store: index: not a balistid-seals 1 file")
+		return nil, false, errors.New("store: index: not a balistid-seals 2 file")
 	}
 	lines := strings.Split(string(data[len(indexHeader):]), "\n")
 	var seals []Seal
@@ -431,6 +432,14 @@ func (s *Store) scan() ([]string, error) {
 	}
 	if len(c.beside) > 0 {
 		return nil, fmt.Errorf("store: %s beside a sealed shard", c.beside[0])
+	}
+	// Expire retires one shard at a time, so a crash leaves one below the first line; more is no crash.
+	bases := map[string]bool{}
+	for _, name := range c.retired {
+		bases[sidecarOf(name)] = true
+	}
+	if len(bases) > 1 {
+		return nil, fmt.Errorf("store: %d shards below the index's first line: %v", len(bases), slices.Sorted(maps.Keys(bases)))
 	}
 	for _, name := range c.retired { // the index left it before the crash that kept its file
 		if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
@@ -670,11 +679,20 @@ func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 // ErrNotIndexed marks a seal the index does not hold as named: the store never sealed that shard.
 var ErrNotIndexed = errors.New("store: no such seal in the index")
 
+// ErrStaleCosign marks a witness time that cannot date the seal it names: older than a time already
+// stored, or older than the seal itself by more than ClockSkew. A replayed old checkpoint is one.
+var ErrStaleCosign = errors.New("store: cosign time older than the seal or a stored one")
+
+// ClockSkew is how far the witness's clock may be behind the store's when a seal is cosigned: a replayed
+// checkpoint can date a shard at most this much before its seal.
+const ClockSkew = time.Hour
+
 // MarkCosigned records that a checkpoint the witness cosigned at at covers the seal of first..last with
-// hash sum, and so every shard before it (ADR 0029, point 3). Each of them without a cosign time gets
-// the larger of at and the newest stored one, so times never fall; a stored time never changes. A
-// store that is UNKNOWN is left as it is, and an index that cannot be rewritten stays as it was: the
-// next call tries again, and neither spends the reserve.
+// hash sum, and so every shard before it (ADR 0029, point 3): each of them without a cosign time gets at.
+// A time older than a stored one, or than any of those seals by more than ClockSkew, is refused, so times
+// never fall and never predate what they date; a stored time never changes. A store that is UNKNOWN is
+// left as it is, and an index that cannot be rewritten stays as it was: the next call tries again, and
+// neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
 	if s.unknown != "" {
 		return nil
@@ -686,16 +704,25 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 	if s.seals[i].Cosigned != 0 {
 		return nil
 	}
-	seals, t := slices.Clone(s.seals), max(at.Unix(), newestCosigned(s.seals))
+	t, skew := at.Unix(), int64(ClockSkew/time.Second)
+	if t <= 0 || t < newestCosigned(s.seals) {
+		return fmt.Errorf("%w: %d", ErrStaleCosign, t)
+	}
+	seals := slices.Clone(s.seals)
 	for j := range seals[:i+1] {
-		if seals[j].Cosigned == 0 {
-			seals[j].Cosigned = t
+		if seals[j].Cosigned != 0 {
+			continue
 		}
+		if t < seals[j].Sealed-skew {
+			return fmt.Errorf("%w: %d for %s sealed at %d", ErrStaleCosign, t, seals[j].Name, seals[j].Sealed)
+		}
+		seals[j].Cosigned = t
 	}
 	if err := s.writeIndex(seals); err != nil {
 		return err
 	}
 	s.seals = seals
+	s.crashAt("cosigned")
 	return nil
 }
 
@@ -730,6 +757,7 @@ func (s *Store) Expire(latest time.Time, minAge time.Duration) (*Seal, error) {
 	if err := s.remove(path); err != nil {
 		return nil, err
 	}
+	s.crashAt("unlinked")
 	s.sealedBytes -= n
 	return &o, s.refill()
 }
@@ -745,10 +773,15 @@ func (s *Store) refill() error {
 		return fmt.Errorf("store: reserve: %w", err)
 	}
 	err = errors.Join(syscall.Fallocate(int(f.Fd()), 0, 0, s.lim.Headroom), f.Sync(), f.Close())
-	switch {
-	case errors.Is(err, syscall.ENOSPC):
+	if errors.Is(err, syscall.ENOSPC) { // a filesystem may have extended it in part: count what it holds
+		st, serr := os.Lstat(filepath.Join(s.dir, reserveName)) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+		if serr != nil {
+			return fmt.Errorf("store: reserve: %w", serr)
+		}
+		s.given = s.lim.Headroom - st.Size()
 		return nil
-	case err != nil:
+	}
+	if err != nil {
 		return fmt.Errorf("store: reserve: %w", err)
 	}
 	s.given = 0

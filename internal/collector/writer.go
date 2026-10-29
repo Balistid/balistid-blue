@@ -244,7 +244,8 @@ type ledgerState struct {
 	checkRoot    *entry.Root // the root of the ledger's last batch while it is read back, over ticks
 	checkAt      uint64      // the last seq added to checkRoot
 	cosignAt     time.Time   // the witness's time of the last cosigned frame taken
-	cosignErr    string      // why the last cosigned frame was not taken, journaled once
+	cosignErr    string      // why the last retention step failed, or ""
+	cosignLogAt  time.Time   // when a failed retention step was last journaled
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what

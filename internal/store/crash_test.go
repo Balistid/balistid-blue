@@ -44,7 +44,7 @@ func TestCrashChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retire := parts[0] == "retired"
+	retire := parts[0] == "retired" || parts[0] == "cosigned" || parts[0] == "unlinked"
 	if retire { // a store clock a second on at every reading, so shards come of age within one day
 		var tick int64
 		s.now = func() time.Time { tick++; return time.Unix(0, noon+tick*int64(time.Second)) }
@@ -146,8 +146,20 @@ func TestEveryAcknowledgedRecordSurvivesAKill(t *testing.T) {
 }
 
 // A kill between a retirement's index rewrite and its unlink leaves a file below the first line; Open
-// removes it and the kept shards read gap-free from the first line.
+// removes it and the kept shards read gap-free from the first line. A kill after marking or after the
+// unlink leaves a store that opens as well.
 func TestARetirementSurvivesAKill(t *testing.T) {
+	for _, c := range []struct {
+		point string
+		at    int
+	}{{"cosigned", 2}, {"unlinked", 1}, {"unlinked", 3}} {
+		t.Run(fmt.Sprintf("%s#%d", c.point, c.at), func(t *testing.T) {
+			dir, _, _ := crash(t, c.point, c.at)
+			if got := readAll(t, dir); len(got) == 0 {
+				t.Fatal("no records after the crash")
+			}
+		})
+	}
 	for _, at := range []int{1, 3} {
 		t.Run(fmt.Sprint("retired#", at), func(t *testing.T) {
 			dir, _, _ := crash(t, "retired", at)
