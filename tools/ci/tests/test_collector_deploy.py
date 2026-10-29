@@ -151,10 +151,15 @@ class CollectorDeployTest(unittest.TestCase):
         [exec_start] = deployed_service()["ExecStart"]
         argv = shlex.split(exec_start)
         self.assertEqual(argv[0], BINARY)
-        self.assertEqual(argv[1::2], [f"-{f}" for f in defaults])
+        keys = ("log-key", "witness-key")  # the install's paths, as the relay and the ledger take them (ADR 0029)
+        self.assertEqual(argv[1::2], [f"-{f}" for f in defaults if f not in keys])
         given = dict(zip((a[1:] for a in argv[1::2]), argv[2::2]))
         for flag in ("store", "canary"):
             self.assertEqual(given[flag], defaults[flag], flag)
+        for name in ("relay", "ledger"):
+            source = (REPO / "cmd" / f"balistid-{name}" / "main.go").read_text()
+            other = dict(re.findall(r'flag\.String\("([a-z-]+)", "([^"]*)"', source))
+            self.assertEqual({k: other[k] for k in keys}, {k: defaults[k] for k in keys}, name)
 
     def test_range_only_flags_keep_the_host_defaults(self):
         # ADR 0022: only the image sets -headroom and -log-commits; their defaults are the host's.

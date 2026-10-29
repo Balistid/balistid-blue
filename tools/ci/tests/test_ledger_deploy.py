@@ -11,7 +11,7 @@ import shlex
 import unittest
 from pathlib import Path
 
-from test_collector_deploy import FORBIDDEN, lines as collector_lines
+from test_collector_deploy import FORBIDDEN as COLLECTOR_FORBIDDEN, lines as collector_lines
 from test_runner_deploy import parse_unit
 
 REPO = Path(__file__).resolve().parents[3]
@@ -20,6 +20,8 @@ BINARY = "/usr/local/lib/balistid/balistid-ledger"
 STATE = "/var/lib/balistid/ledger"
 SOCKET = "/run/balistid-ledger/ledger.sock"
 FILES = {"sysusers.conf", "tmpfiles.conf", "balistid-ledger.service"}
+# The one directive allowed beyond the collector's: the relay's group, to read its cosigned checkpoint (0029).
+FORBIDDEN = COLLECTOR_FORBIDDEN - {"SupplementaryGroups"}
 
 SERVICE_UNIT = {
     "Description": ["Balistid Blue ledger: the collector's stream into the signed log"],
@@ -36,6 +38,7 @@ SERVICE = {
     "RestartSec": "1s",
     "User": "balistid-ledger",
     "Group": "balistid-ledger",
+    "SupplementaryGroups": "balistid-relay",
     "ExecStart": f"{BINARY} -log {STATE}/log -socket {SOCKET}",
     "LoadCredential": "ledger-key:/etc/balistid/ledger-key",
     "StateDirectory": "balistid/ledger",
@@ -81,7 +84,7 @@ TMPFILES = [
     ("d", STATE, "0750", "balistid-ledger", "balistid-ledger", "-"),
     ("d", f"{STATE}/log", "0750", "balistid-ledger", "balistid-ledger", "-"),
 ]
-SYSUSERS = [("u", "balistid-ledger", "-", "Balistid Blue ledger")]
+SYSUSERS = [("u", "balistid-ledger", "-", "Balistid Blue ledger"), ("g", "balistid-relay", "-")]
 
 
 def unit_problems(text: str) -> list[str]:
@@ -128,6 +131,11 @@ class LedgerDeployTest(unittest.TestCase):
         self.assertEqual(service["LoadCredential"][0].split(":")[0], "ledger-key")
         collector = (REPO / "cmd" / "balistid-collector" / "main.go").read_text()
         self.assertIn(f'ledgerSocket = "{SOCKET}"', collector)
+        # The relay's cosigned checkpoint, in the relay's state directory (ADR 0029, point 1).
+        main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
+        relay = parse_unit((REPO / "deploy" / "relay" / "balistid-relay.service").read_text())["Service"]
+        self.assertIn(f'flag.String("relay", "/var/lib/{relay["StateDirectory"][0]}/"+cosign.Name,', main)
+        self.assertEqual(relay["Group"], service["SupplementaryGroups"])
 
     def test_tmpfiles(self):
         self.assertEqual(lines("tmpfiles.conf"), TMPFILES)
@@ -148,7 +156,8 @@ class LedgerDeployTest(unittest.TestCase):
             ("ExecPaths=/usr/local/lib/balistid/balistid-ledger", "ExecPaths=/usr"),
             ("MemoryMax=128M", "MemoryMax=infinity"),
             ("TimeoutStopSec=90s", "TimeoutStopSec=10s"),
-            ("Restart=always", "Restart=always\nSupplementaryGroups=balistid-collector"),
+            ("SupplementaryGroups=balistid-relay", "SupplementaryGroups=balistid-relay balistid-collector"),
+            ("SupplementaryGroups=balistid-relay", "SupplementaryGroups=balistid-collector"),
             ("Restart=always", "Restart=always\nReadWritePaths=/var/lib"),
             ("[Service]", "OnFailure=x.service\n[Service]"),
         ):

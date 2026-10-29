@@ -16,6 +16,9 @@ Restart=always
 RestartSec=1s
 User=balistid-ledger
 Group=balistid-ledger
+# The relay's cosigned checkpoint is 0640 of its group: read, never write, to tell the collector which
+# seal is cosigned (ADR 0029, point 1).
+SupplementaryGroups=balistid-relay
 ExecStart=/usr/local/lib/balistid/balistid-ledger -log /var/lib/balistid/ledger/log -socket /run/balistid-ledger/ledger.sock
 # The signing key, root's 0600 file, reaches the ledger alone in $CREDENTIALS_DIRECTORY (ADR 0006, point 1).
 LoadCredential=ledger-key:/etc/balistid/ledger-key
