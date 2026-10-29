@@ -74,15 +74,22 @@ func ReadRequest(r io.Reader) (entry.Body, error) {
 }
 
 // serveControl takes the ledger's own control requests one at a time until ctx ends; any other peer is
-// refused and summed with the collector socket's refusals.
+// refused and summed with the collector socket's refusals. A failed accept (out of descriptors) is
+// journaled and retried each second, so a passing error does not end announcements until a restart.
 func serveControl(ctx context.Context, ctl Control, l *Log, ref *refusals, log *slog.Logger) {
 	for {
 		c, err := ctl.Listener.AcceptUnix()
 		if err != nil {
-			if ctx.Err() == nil {
-				log.Error("control socket stopped", "err", err)
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return
 			}
-			return
+			log.Error("control socket accept failed", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			continue
 		}
 		p, err := unixsock.PeerCred(c)
 		if cause := admit(p, err, ctl.UID); cause != "" {
@@ -158,8 +165,8 @@ var ErrWitnessAway = errors.New("anchor: the witness cosigned nothing lately")
 // it (ADR 0030, point 2). It gives up when ctx ends, and at once when the relay's file is older than gap
 // by the host's clock: the relay rewrites it with every cosignature, at least every canary record.
 func WaitCosigned(ctx context.Context, relay Relay, size uint64, poll, gap time.Duration) (cosign.Checkpoint, error) {
-	if relay.Path == "" {
-		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint to wait for")
+	if relay.Path == "" || poll <= 0 || gap <= 0 {
+		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint, poll or gap to wait with")
 	}
 	if fi, err := os.Lstat(relay.Path); err != nil || time.Since(fi.ModTime()) > gap {
 		return cosign.Checkpoint{}, errors.Join(ErrWitnessAway, err)

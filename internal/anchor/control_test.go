@@ -174,6 +174,11 @@ func TestAnnounceAppendedWhenWitnessAway(t *testing.T) {
 			t.Fatalf("%s: %v", r.Path, err)
 		}
 	}
+	for _, bad := range [][2]time.Duration{{0, time.Minute}, {time.Second, 0}} {
+		if _, err := WaitCosigned(t.Context(), relay, size, bad[0], bad[1]); err == nil {
+			t.Fatalf("waited with poll %v, gap %v", bad[0], bad[1])
+		}
+	}
 	if waited := time.Since(start); waited > 500*time.Millisecond {
 		t.Fatalf("waited %v for a witness that is away", waited)
 	}

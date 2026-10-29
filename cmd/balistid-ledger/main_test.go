@@ -156,3 +156,9 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 		t.Fatal("the log did not end")
 	}
 }
+
+func TestCountSetCountsTheModesGiven(t *testing.T) {
+	if countSet("", "", "") != 0 || countSet("log.1", "", "next") != 2 || countSet("", "shutdown", "") != 1 {
+		t.Fatal("countSet")
+	}
+}

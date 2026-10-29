@@ -84,6 +84,10 @@ func run() int {
 	} else {
 		relay = anchor.Relay{Path: *relayFile, Keys: keys}
 	}
+	if modes := countSet(*rollover, *announce, *final); modes > 1 {
+		log.Error("-rollover-from, -announce and -final exclude each other")
+		return 2
+	}
 	if *rollover != "" {
 		if err := rolloverFrom(*dir, *rollover, *keyPath, *witnessKey); err != nil {
 			log.Error("rollover refused", "err", err)
@@ -103,6 +107,17 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// countSet counts the non-empty values.
+func countSet(values ...string) int {
+	n := 0
+	for _, v := range values {
+		if v != "" {
+			n++
+		}
+	}
+	return n
 }
 
 // ask is the client of the control socket (ADR 0030, point 2): it sends one announcement or final entry,
