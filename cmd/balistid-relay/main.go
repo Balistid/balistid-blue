@@ -5,22 +5,16 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"strings"
 	"syscall"
 	"time"
 
-	fnote "github.com/transparency-dev/formats/note"
-	"golang.org/x/mod/sumdb/note"
-
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/relay"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
@@ -30,7 +24,6 @@ const (
 	memLimit    = 24 << 20
 	every       = time.Second // a new checkpoint every 5 s; cosign_gap_s is 60 s
 	httpTimeout = 10 * time.Second
-	maxKeyBytes = 4 << 10
 )
 
 func main() { os.Exit(run()) }
@@ -55,15 +48,11 @@ func run() int {
 }
 
 func serve(logDir, state, logKeyPath, witnessKeyPath, submit string) error {
-	lv, err := readVerifier(logKeyPath, note.NewVerifier)
+	keys, err := cosign.ReadKeys(logKeyPath, witnessKeyPath)
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck // cosign errors carry their context
 	}
-	wv, err := readVerifier(witnessKeyPath, fnote.NewVerifierForCosignatureV1)
-	if err != nil {
-		return err
-	}
-	r, err := relay.New(relay.Config{Log: logDir, State: state, Origin: lv.Name(), LogKey: lv, Witness: wv,
+	r, err := relay.New(relay.Config{Log: logDir, State: state, Origin: keys.Origin, LogKey: keys.Log, Witness: keys.Witness,
 		Submit: submit, HTTP: newClient()})
 	if err != nil {
 		return err //nolint:wrapcheck // relay errors carry their context
@@ -87,21 +76,3 @@ func newClient() *http.Client {
 // noRedirect keeps the relay on the one witness URL it was given: a redirect would send the checkpoint
 // to a host the unit's address allowlist then has to catch.
 func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-
-// readVerifier reads a public verifier key: no secret, but a size cap and no symlink (ENGINEERING 7).
-func readVerifier(path string, parse func(string) (note.Verifier, error)) (note.Verifier, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the key's path is configuration
-	if err != nil {
-		return nil, fmt.Errorf("verifier key: %w", err)
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	b, err := io.ReadAll(io.LimitReader(f, maxKeyBytes+1))
-	if err != nil || len(b) > maxKeyBytes {
-		return nil, errors.Join(fmt.Errorf("verifier key %s: unreadable or too large", path), err)
-	}
-	v, err := parse(strings.TrimSpace(string(b)))
-	if err != nil {
-		return nil, fmt.Errorf("verifier key %s: %w", path, err)
-	}
-	return v, nil
-}

@@ -1,6 +1,7 @@
 package anchor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
@@ -22,7 +24,17 @@ const (
 	// live collector is never idle this long, and it reconnects at once.
 	idleTimeout  = 5 * time.Minute
 	writeTimeout = 5 * time.Second
+	// cosignEvery is how often a connection reads the relay's cosigned checkpoint: the relay asks the
+	// witness every second, and a log checkpoint comes every 5 s.
+	cosignEvery = time.Second
 )
+
+// Relay names the checkpoint the witness cosigned, as the relay keeps it, and the keys that verify it
+// (ADR 0029, point 1). A zero Relay sends no cosigned frames: the collector then retires nothing.
+type Relay struct {
+	Path string
+	Keys cosign.Keys
+}
 
 // RuleVersion names the socket's admission rule in every decision the journal records (ENGINEERING 3).
 const RuleVersion = "adr-0027-v1"
@@ -69,7 +81,7 @@ func (r *refusals) report(log *slog.Logger) {
 
 // Serve takes the collector's connections on ln, one at a time, and feeds each stream into l until ctx
 // ends or l breaks (ADR 0027, points 2 to 4). Any other peer is refused and summed in the journal.
-func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, log *slog.Logger) error {
+func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, relay Relay, log *slog.Logger) error {
 	ref := &refusals{causes: map[string]uint64{}}
 	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
 	defer stop()
@@ -103,7 +115,7 @@ func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, 
 			continue
 		}
 		log.Info("ledger socket admitted the collector", "peer_uid", p.UID, "peer_pid", p.PID, "rule_version", RuleVersion)
-		err = serveConn(ctx, c, l)
+		err = serveConn(ctx, c, l, &cosignFeed{relay: relay, log: log})
 		if l.Broken() != nil {
 			return l.Broken()
 		}
@@ -112,8 +124,8 @@ func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, 
 }
 
 // serveConn sends the resume point, then feeds the collector's messages into l, cutting batches on a
-// tick, until the connection ends; the waiting batch is then logged.
-func serveConn(ctx context.Context, c *net.UnixConn, l *Log) error {
+// tick and sending cosigned frames, until the connection ends; the waiting batch is then logged.
+func serveConn(ctx context.Context, c *net.UnixConn, l *Log, f *cosignFeed) error {
 	defer c.Close() //nolint:errcheck // the stream ends here either way
 	r := l.Resume()
 	if err := c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
@@ -121,6 +133,9 @@ func serveConn(ctx context.Context, c *net.UnixConn, l *Log) error {
 	}
 	if err := link.Write(c, link.Hello{Last: r.Last, First: r.First, Root: r.Root}); err != nil {
 		return fmt.Errorf("anchor: hello: %w", err)
+	}
+	if err := f.step(c, l); err != nil {
+		return err
 	}
 	msgs, errs, done := make(chan link.Message), make(chan error, 1), make(chan struct{})
 	var wg sync.WaitGroup
@@ -154,7 +169,9 @@ func serveConn(ctx context.Context, c *net.UnixConn, l *Log) error {
 			err = ctx.Err()
 		case <-tick.C:
 			if err = l.Tick(ctx); err == nil {
-				continue
+				if err = f.due(c, l); err == nil {
+					continue
+				}
 			}
 		case err = <-errs:
 			if errors.Is(err, io.EOF) {
@@ -167,6 +184,56 @@ func serveConn(ctx context.Context, c *net.UnixConn, l *Log) error {
 		}
 		return errors.Join(err, l.Flush(ctx))
 	}
+}
+
+// cosignFeed sends the collector the covered seal of the relay's cosigned checkpoint whenever it or the note
+// changed since the last frame of the connection. A checkpoint it cannot read or verify sends nothing and
+// is journaled once: the relay may not have one yet, and the collector then retires nothing.
+type cosignFeed struct {
+	relay  Relay
+	log    *slog.Logger
+	sent   link.Cosigned
+	readAt time.Time
+	err    string
+}
+
+func (f *cosignFeed) due(c *net.UnixConn, l *Log) error {
+	if time.Since(f.readAt) < cosignEvery {
+		return nil
+	}
+	return f.step(c, l)
+}
+
+func (f *cosignFeed) step(c *net.UnixConn, l *Log) error {
+	if f.relay.Path == "" {
+		return nil
+	}
+	f.readAt = time.Now()
+	cp, err := cosign.Read(f.relay.Path, f.relay.Keys)
+	var m link.Cosigned
+	ok := false
+	if err == nil {
+		m, ok, err = l.Cosigned(cp)
+	}
+	if err != nil && err.Error() != f.err {
+		f.log.Warn("no cosigned frame for the collector", "err", err)
+	}
+	f.err = ""
+	if err != nil {
+		f.err = err.Error()
+		return nil
+	}
+	if !ok || m.Seal == f.sent.Seal && bytes.Equal(m.Note, f.sent.Note) {
+		return nil
+	}
+	if err := c.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return fmt.Errorf("anchor: %w", err)
+	}
+	if err := link.Write(c, m); err != nil {
+		return fmt.Errorf("anchor: cosigned: %w", err)
+	}
+	f.sent = m
+	return nil
 }
 
 func feed(ctx context.Context, l *Log, m link.Message) error {

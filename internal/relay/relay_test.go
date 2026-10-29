@@ -228,6 +228,10 @@ func TestRelayGetsEachNewCheckpointCosigned(t *testing.T) {
 	if second := f.cosigned(t); first == 0 || second <= first || second != f.wit.size {
 		t.Fatalf("cosigned %d then %d, witness at %d", first, second, f.wit.size)
 	}
+	// The ledger reads it through the relay's group (ADR 0029, point 1); nobody else does.
+	if st, err := os.Stat(filepath.Join(f.state, cosign.Name)); err != nil || st.Mode().Perm() != 0o640 {
+		t.Fatalf("stored checkpoint mode %v, %v", st.Mode(), err)
+	}
 	last := f.wit.requests[len(f.wit.requests)-1]
 	if !strings.HasPrefix(last, fmt.Sprintf("old %d\n", first)) || strings.Count(strings.SplitN(last, "\n\n", 2)[0], "\n") < 1 {
 		t.Fatalf("second request did not prove consistency from %d: %q", first, last[:min(len(last), 80)])

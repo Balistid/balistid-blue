@@ -21,6 +21,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
@@ -47,6 +48,9 @@ func run() int {
 	sock := flag.String("socket", "/run/balistid-ledger/ledger.sock", "the socket the collector connects to")
 	keyPath := flag.String("key", "", "the checkpoint signing key; default $CREDENTIALS_DIRECTORY/ledger-key")
 	showNotices := flag.Bool("notices", false, "print the third-party licence notices and exit")
+	relayFile := flag.String("relay", "/var/lib/balistid/relay/"+cosign.Name, "the checkpoint the witness cosigned, as the relay keeps it")
+	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
+	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
 	flag.Parse()
 	if *showNotices {
 		fmt.Println(notices)
@@ -56,14 +60,21 @@ func run() int {
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(memLimit)
 	}
-	if err := serve(*dir, *sock, *keyPath, log); err != nil {
+	// Anchoring never waits for the witness's keys: without them the collector only retires nothing.
+	var relay anchor.Relay
+	if keys, err := cosign.ReadKeys(*logKey, *witnessKey); err != nil {
+		log.Error("verifier keys not read, no cosigned frames for the collector", "err", err)
+	} else {
+		relay = anchor.Relay{Path: *relayFile, Keys: keys}
+	}
+	if err := serve(*dir, *sock, *keyPath, relay, log); err != nil {
 		log.Error("ledger stopped", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(dir, sock, keyPath string, log *slog.Logger) error {
+func serve(dir, sock, keyPath string, relay anchor.Relay, log *slog.Logger) error {
 	creds := os.Getenv("CREDENTIALS_DIRECTORY")
 	if keyPath == "" {
 		if creds == "" {
@@ -91,7 +102,7 @@ func serve(dir, sock, keyPath string, log *slog.Logger) error {
 		if nerr := unixsock.Notify("READY=1"); nerr != nil {
 			log.Error("ready notify failed", "err", nerr)
 		}
-		err = anchor.Serve(ctx, ln, l, collectorUID, log)
+		err = anchor.Serve(ctx, ln, l, collectorUID, relay, log)
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}

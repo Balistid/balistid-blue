@@ -128,7 +128,8 @@ func (r *Relay) Step(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := wholefile.Write(filepath.Join(r.cfg.State, cosign.Name), append(signed, sigs...), 0o600); err != nil {
+		// The ledger reads it to tell the collector which seal is cosigned (ADR 0029, point 1).
+		if err := wholefile.Write(filepath.Join(r.cfg.State, cosign.Name), append(signed, sigs...), 0o640); err != nil {
 			return fmt.Errorf("relay: %w", err)
 		}
 		r.cosigned, r.size = n.Text, cp.Size
