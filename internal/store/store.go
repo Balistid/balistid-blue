@@ -1,7 +1,8 @@
 // Package store keeps the raw shards of one collector within a cap (ADR 0005, point 4; ADR 0013): it
 // rotates shards, drops new records at the cap without evicting stored ones, counts the drops in loss
 // records in the same gap-free seq (paid for past the cap out of a reserve allocated up front), and
-// records every seal in a fsynced index, the only thing Open trusts.
+// records every seal in a fsynced index, the only thing Open trusts. It retires the oldest shard once
+// the witness's and its own clock both put it past the retention age (ADR 0029).
 package store
 
 import (
@@ -41,7 +42,7 @@ const (
 	day         = int64(86400e9)
 	reserveName = "reserve"
 	indexName   = "seals"
-	indexHeader = "balistid-seals 1\n"
+	indexHeader = "balistid-seals 2\n"
 )
 
 var shardName = regexp.MustCompile(`^[0-9]{20}\.db$`)
@@ -66,15 +67,22 @@ const (
 type Limits struct{ Cap, ShardMax, Headroom int64 }
 
 // Seal is one line of the index: a sealed shard, its seq range and hash. The collector hands every one
-// to the ledger, again after a restart (ADR 0013, point 3).
+// to the ledger, again after a restart (ADR 0013, point 3). Its times, Unix seconds, decide retirement
+// together, never one alone (ADR 0029).
 type Seal struct {
 	Name        string
 	First, Last uint64
 	SHA256      [32]byte
+	Sealed      int64 // the store's clock at the seal
+	Cosigned    int64 // the witness's time when a cosigned checkpoint was first known to cover it; 0 until then
 }
 
 func (l Seal) line() string {
-	return fmt.Sprintf("%s %d %d %s\n", l.Name, l.First, l.Last, hex.EncodeToString(l.SHA256[:]))
+	s := fmt.Sprintf("%s %d %d %s %d", l.Name, l.First, l.Last, hex.EncodeToString(l.SHA256[:]), l.Sealed)
+	if l.Cosigned != 0 {
+		s += " " + strconv.FormatInt(l.Cosigned, 10)
+	}
+	return s + "\n"
 }
 
 // Store appends records with gap-free seq to the current shard of dir. Not safe for concurrent use:
@@ -203,7 +211,8 @@ const maxIndexBytes = 16 << 20
 var indexCap int64 = maxIndexBytes
 
 // maxLineBytes is the longest index line: the widest name and seq numbers.
-var maxLineBytes = int64(len(Seal{Name: fmt.Sprintf("%020d.db", 0), First: math.MaxUint64, Last: math.MaxUint64}.line()))
+var maxLineBytes = int64(len(Seal{Name: fmt.Sprintf("%020d.db", 0), First: math.MaxUint64, Last: math.MaxUint64,
+	Sealed: math.MaxInt64, Cosigned: math.MaxInt64}.line()))
 
 // indexCheckEvery is how many index lines are parsed between checks of ctx.
 const indexCheckEvery = 4096
@@ -242,7 +251,7 @@ func ReadSeals(ctx context.Context, dir string) ([]Seal, error) {
 	if torn || len(c.pending)+len(c.sidecars)+len(c.beside) > 0 {
 		return seals, &UnindexedError{Pending: c.pending, Sidecars: c.sidecars, Beside: c.beside, Torn: torn}
 	}
-	return seals, nil
+	return seals, nil // a retired shard's file is not evidence the index keeps: it is left out
 }
 
 // layout is a store directory sorted by what Open must do with each entry.
@@ -250,6 +259,7 @@ type layout struct {
 	pending  []string // shards the index does not list, in seq order: Open recovers them
 	sidecars []string // sidecars of shards the index does not list
 	beside   []string // sidecars of indexed shards, which a sealed shard never has
+	retired  []string // a shard below the index's first line, and its sidecars: Open finishes its retirement
 }
 
 // classify checks every entry of a store directory against its index: the index and reserve are regular
@@ -278,6 +288,8 @@ func classify(list []os.DirEntry, seals []Seal) (layout, error) {
 			c.beside = append(c.beside, name)
 		case indexed[base]:
 			present[name] = true
+		case len(seals) > 0 && base < seals[0].Name: // zero-padded names sort as their seqs
+			c.retired = append(c.retired, name)
 		case base == name:
 			c.pending = append(c.pending, name)
 		default:
@@ -342,8 +354,13 @@ func readSeals(ctx context.Context, dir string) ([]Seal, bool, error) {
 		if err != nil {
 			return nil, false, fmt.Errorf("store: index line %d: %w", i+2, err)
 		}
-		if want := nextAfter(seals); l.First != want {
+		// Seqs run on from the first line, which retirement moves (ADR 0029, point 4).
+		if want := nextAfter(seals); len(seals) > 0 && l.First != want {
 			return nil, false, fmt.Errorf("store: index line %d: seq %d, want %d", i+2, l.First, want)
+		}
+		// Cosign times cover a prefix and never fall: MarkCosigned writes them so.
+		if prev := newestCosigned(seals); l.Cosigned != 0 && (l.Cosigned < prev || len(seals) > 0 && seals[len(seals)-1].Cosigned == 0) {
+			return nil, false, fmt.Errorf("store: index line %d: cosign time %d after %d", i+2, l.Cosigned, prev)
 		}
 		seals = append(seals, l)
 	}
@@ -355,17 +372,32 @@ func readSeals(ctx context.Context, dir string) ([]Seal, bool, error) {
 
 func parseSeal(line string) (Seal, error) {
 	f := strings.Split(line, " ")
-	if len(f) != 4 {
-		return Seal{}, errors.New("not 'name first last sha256'")
+	if len(f) != 5 && len(f) != 6 {
+		return Seal{}, errors.New("not 'name first last sha256 sealed [cosigned]'")
 	}
 	first, err1 := strconv.ParseUint(f[1], 10, 63)
 	last, err2 := strconv.ParseUint(f[2], 10, 63)
 	sum, err3 := hex.DecodeString(f[3])
-	if err := errors.Join(err1, err2, err3); err != nil || len(sum) != 32 || last < first ||
-		f[0] != fmt.Sprintf("%020d.db", first) || f[3] != strings.ToLower(f[3]) {
+	sealed, err4 := strconv.ParseInt(f[4], 10, 64)
+	if err4 == nil && sealed < 0 {
+		err4 = errors.New("a seal time before 1970")
+	}
+	var cosigned int64
+	var err5 error
+	if len(f) == 6 {
+		if cosigned, err5 = strconv.ParseInt(f[5], 10, 64); err5 == nil && cosigned <= 0 {
+			err5 = errors.New("a cosign time is after 1970; none is written as none")
+		}
+	}
+	if err := errors.Join(err1, err2, err3, err4, err5); err != nil || len(sum) != 32 || last < first {
 		return Seal{}, fmt.Errorf("malformed seal %q (%w)", line, err)
 	}
-	return Seal{Name: f[0], First: first, Last: last, SHA256: [32]byte(sum)}, nil
+	// One spelling per line: the name from its first seq, lower-case hex, no sign or leading zero.
+	l := Seal{Name: f[0], First: first, Last: last, SHA256: [32]byte(sum), Sealed: sealed, Cosigned: cosigned}
+	if f[0] != fmt.Sprintf("%020d.db", first) || l.line() != line+"\n" {
+		return Seal{}, fmt.Errorf("malformed seal %q", line)
+	}
+	return l, nil
 }
 
 // nextAfter is the first seq after seals.
@@ -374,6 +406,16 @@ func nextAfter(seals []Seal) uint64 {
 		return 1
 	}
 	return seals[len(seals)-1].Last + 1
+}
+
+// newestCosigned is the latest cosign time in seals, or 0: times cover a prefix and never fall.
+func newestCosigned(seals []Seal) int64 {
+	for i := len(seals) - 1; i >= 0; i-- {
+		if seals[i].Cosigned != 0 {
+			return seals[i].Cosigned
+		}
+	}
+	return 0
 }
 
 // scan checks every entry of dir (classify): indexed shards exist without sidecars, and other shards are
@@ -389,6 +431,16 @@ func (s *Store) scan() ([]string, error) {
 	}
 	if len(c.beside) > 0 {
 		return nil, fmt.Errorf("store: %s beside a sealed shard", c.beside[0])
+	}
+	for _, name := range c.retired { // the index left it before the crash that kept its file
+		if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
+			return nil, fmt.Errorf("store: %w", err)
+		}
+	}
+	if len(c.retired) > 0 {
+		if err := syncDir(s.dir); err != nil {
+			return nil, err
+		}
 	}
 	pending := c.pending
 	for _, name := range c.sidecars { // a WAL without its shard may hold committed records
@@ -440,7 +492,7 @@ func (s *Store) recover(ctx context.Context, pending []string) error {
 		if r.First != s.next {
 			return fmt.Errorf("store: recovered shard %s holds seq %d..%d, want %d first", name, r.First, r.Last, s.next)
 		}
-		s.seals = append(s.seals, Seal{Name: name, First: r.First, Last: r.Last, SHA256: r.SHA256})
+		s.seals = append(s.seals, Seal{Name: name, First: r.First, Last: r.Last, SHA256: r.SHA256, Sealed: max(s.now().Unix(), 0)})
 		s.next = r.Last + 1
 		n, err := allocated(path)
 		if err != nil {
@@ -472,7 +524,7 @@ func (s *Store) recover(ctx context.Context, pending []string) error {
 
 func (s *Store) remove(path string) error {
 	for _, p := range []string{path, path + "-wal", path + "-shm", path + "-journal"} {
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // a shard name parseSeal or scan checked, in the collector's own directory
 			return fmt.Errorf("store: %w", err)
 		}
 	}
@@ -614,6 +666,94 @@ func (s *Store) NoteHealth(data []byte) error {
 // Seals returns the index, oldest first. The seals Append, Flush and Close return are only the new
 // ones; the collector can always catch up from here, after the last seal the ledger reports.
 func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
+
+// ErrNotIndexed marks a seal the index does not hold as named: the store never sealed that shard.
+var ErrNotIndexed = errors.New("store: no such seal in the index")
+
+// MarkCosigned records that a checkpoint the witness cosigned at at covers the seal of first..last with
+// hash sum, and so every shard before it (ADR 0029, point 3). Each of them without a cosign time gets
+// the larger of at and the newest stored one, so times never fall; a stored time never changes. A
+// store that is UNKNOWN is left as it is, and an index that cannot be rewritten stays as it was: the
+// next call tries again, and neither spends the reserve.
+func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
+	if s.unknown != "" {
+		return nil
+	}
+	i := slices.IndexFunc(s.seals, func(l Seal) bool { return l.First == first && l.Last == last && l.SHA256 == sum })
+	if i < 0 {
+		return fmt.Errorf("%w: %d-%d", ErrNotIndexed, first, last)
+	}
+	if s.seals[i].Cosigned != 0 {
+		return nil
+	}
+	seals, t := slices.Clone(s.seals), max(at.Unix(), newestCosigned(s.seals))
+	for j := range seals[:i+1] {
+		if seals[j].Cosigned == 0 {
+			seals[j].Cosigned = t
+		}
+	}
+	if err := s.writeIndex(seals); err != nil {
+		return err
+	}
+	s.seals = seals
+	return nil
+}
+
+// Expire retires the oldest shard once both clocks put it minAge past its seal (ADR 0029, point 4): the
+// witness's latest time past the shard's cosign time, and the store's clock past its seal time. It never
+// retires the last sealed shard, nor any while latest is older than a stored cosign time (a replayed or
+// stale checkpoint). The index loses the shard before its file goes, so a crash in between leaves a file
+// below the first line, which Open removes. It returns the shard it retired, if any; the space freed
+// first refills the reserve. Like MarkCosigned it leaves an UNKNOWN store alone and spends no reserve.
+func (s *Store) Expire(latest time.Time, minAge time.Duration) (*Seal, error) {
+	if minAge <= 0 {
+		return nil, fmt.Errorf("store: retention age %v", minAge)
+	}
+	if s.unknown != "" || len(s.seals) < 2 {
+		return nil, nil
+	}
+	o, secs := s.seals[0], int64((minAge+time.Second-1)/time.Second)
+	old := func(from, to int64) bool { return to >= from && to-from >= secs } // both at least 0: no overflow
+	if o.Cosigned == 0 || latest.Unix() < newestCosigned(s.seals) || !old(o.Cosigned, latest.Unix()) || !old(o.Sealed, s.now().Unix()) {
+		return nil, nil
+	}
+	path := filepath.Join(s.dir, o.Name)
+	n, err := allocated(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.writeIndex(s.seals[1:]); err != nil {
+		return nil, err
+	}
+	s.seals = slices.Clone(s.seals[1:])
+	s.crashAt("retired")
+	if err := s.remove(path); err != nil {
+		return nil, err
+	}
+	s.sealedBytes -= n
+	return &o, s.refill()
+}
+
+// refill gives the reserve back what it gave the store's own records, once retiring freed space; a
+// filesystem still short leaves it as it is until the next retirement.
+func (s *Store) refill() error {
+	if s.given <= 0 {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, reserveName), os.O_WRONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // the reserve, a fixed name in the collector's own directory
+	if err != nil {
+		return fmt.Errorf("store: reserve: %w", err)
+	}
+	err = errors.Join(syscall.Fallocate(int(f.Fd()), 0, 0, s.lim.Headroom), f.Sync(), f.Close())
+	switch {
+	case errors.Is(err, syscall.ENOSPC):
+		return nil
+	case err != nil:
+		return fmt.Errorf("store: reserve: %w", err)
+	}
+	s.given = 0
+	return nil
+}
 
 // Leaves returns up to max committed records after seq after, in seq order, fewer once their stored data
 // reaches budget bytes (reading a leaf walks past its record's data), with the seal of each shard whose
@@ -933,7 +1073,7 @@ func (s *Store) seal(ctx context.Context) (Seal, error) {
 	}
 	s.committed = s.next - 1 // a sealed shard outlives a lost index line (Open recovers it)
 	s.crashAt("sealed")
-	l := Seal{Name: s.curName, First: s.curFirst, Last: s.next - 1, SHA256: sum}
+	l := Seal{Name: s.curName, First: s.curFirst, Last: s.next - 1, SHA256: sum, Sealed: max(s.now().Unix(), 0)}
 	if err := s.appendIndex(l); err != nil {
 		return Seal{}, s.fail(err)
 	}

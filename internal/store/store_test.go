@@ -62,15 +62,17 @@ func closeStore(t *testing.T, s *Store) {
 	}
 }
 
-// readAll reads every indexed shard of dir through a fresh Open and checks seq runs gap-free from 1.
+// readAll reads every indexed shard of dir through a fresh Open and checks seq runs gap-free from the
+// index's first line: 1 unless shards were retired.
 func readAll(t *testing.T, dir string) []rawrecord.Record {
 	t.Helper()
 	s := open(t, dir, small)
 	closeStore(t, s) // writes what Open left waiting, such as a recovery health record
 	var got []rawrecord.Record
-	for _, l := range s.Seals() {
+	seals := s.Seals()
+	for _, l := range seals {
 		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
-			if r.Seq != uint64(len(got))+1 {
+			if r.Seq != seals[0].First+uint64(len(got)) {
 				return fmt.Errorf("seq %d after %d records", r.Seq, len(got))
 			}
 			got = append(got, r)
@@ -453,7 +455,7 @@ func TestOpenFailsOnWhatItCannotAccountFor(t *testing.T) {
 	lines := strings.SplitAfter(string(sealed), "\n")
 	cases := map[string]func(dir string) error{
 		"index header": func(dir string) error {
-			return os.WriteFile(filepath.Join(dir, indexName), []byte("balistid-seals 2\n"+strings.Join(lines[1:], "")), 0o600) //nolint:gosec // test temp dir
+			return os.WriteFile(filepath.Join(dir, indexName), []byte("balistid-seals 1\n"+strings.Join(lines[1:], "")), 0o600) //nolint:gosec // test temp dir
 		},
 		"index line": func(dir string) error {
 			return os.WriteFile(filepath.Join(dir, indexName), []byte(lines[0]+"x y z\n"+strings.Join(lines[2:], "")), 0o600) //nolint:gosec // test temp dir
@@ -467,7 +469,7 @@ func TestOpenFailsOnWhatItCannotAccountFor(t *testing.T) {
 		},
 		"index hash in upper case": func(dir string) error {
 			f := strings.Fields(lines[1])
-			return os.WriteFile(filepath.Join(dir, indexName), []byte(lines[0]+strings.Join(f[:3], " ")+" "+strings.ToUpper(f[3])+"\n"+strings.Join(lines[2:], "")), 0o600) //nolint:gosec // test temp dir
+			return os.WriteFile(filepath.Join(dir, indexName), []byte(lines[0]+strings.Join(f[:3], " ")+" "+strings.ToUpper(f[3])+" "+strings.Join(f[4:], " ")+"\n"+strings.Join(lines[2:], "")), 0o600) //nolint:gosec // test temp dir
 		},
 		"index name other than its first seq": func(dir string) error {
 			name := "00000000000000000005.db"
@@ -1371,7 +1373,7 @@ func TestReadSealsRefusesMalformedLine(t *testing.T) {
 	}
 	lines := strings.SplitAfter(string(data), "\n")
 	for name, body := range map[string]string{
-		"header":  "balistid-seals 2\n" + strings.Join(lines[1:], ""),
+		"header":  "balistid-seals 1\n" + strings.Join(lines[1:], ""),
 		"line":    lines[0] + "x y z\n" + strings.Join(lines[2:], ""),
 		"seq gap": lines[0] + lines[1] + lines[3],
 	} {
@@ -1682,7 +1684,7 @@ func TestReadSealsChecksCancellationWhileParsing(t *testing.T) {
 	b.WriteString(indexHeader)
 	sum := strings.Repeat("a", 64)
 	for seq := 1; seq <= indexCheckEvery+1; seq++ {
-		fmt.Fprintf(&b, "%020d.db %d %d %s\n", seq, seq, seq, sum)
+		fmt.Fprintf(&b, "%020d.db %d %d %s 1\n", seq, seq, seq, sum)
 	}
 	b.WriteString("not a seal\n")
 	if err := os.WriteFile(filepath.Join(dir, indexName), []byte(b.String()), 0o600); err != nil {
