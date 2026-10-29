@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -56,6 +57,8 @@ type Store interface {
 	Committed() uint64
 	Leaves(ctx context.Context, after uint64, max int, budget int64) ([]shard.Leaf, []store.Seal, error)
 	Seals() []store.Seal
+	MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error
+	Expire(latest time.Time, minAge time.Duration) (*store.Seal, error)
 }
 
 // maxLinkPIDs bounds the distinct pids kept per cause until a summary record takes the counts; the
@@ -190,6 +193,10 @@ type Writer struct {
 	LogCommits bool
 	// Ledger takes the stream of committed records and health (ADR 0027); nil without a ledger.
 	Ledger *Ledger
+	// Cosign verifies the ledger's cosigned frames; nil retires nothing (ADR 0029).
+	Cosign *cosign.Keys
+	// Retention is raw_retention_days: how far both clocks must be past a shard's seal.
+	Retention time.Duration
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -236,6 +243,8 @@ type ledgerState struct {
 	leavesErr    string      // the last error reading leaves, journaled once
 	checkRoot    *entry.Root // the root of the ledger's last batch while it is read back, over ticks
 	checkAt      uint64      // the last seq added to checkRoot
+	cosignAt     time.Time   // the witness's time of the last cosigned frame taken
+	cosignErr    string      // why the last cosigned frame was not taken, journaled once
 }
 
 // note is an encoded health record. Loss and summary records never give way in the queue; n is what

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -39,6 +40,9 @@ type Config struct {
 	LogCommits bool
 	// Ledger streams to the ledger (ADR 0027); nil runs without one.
 	Ledger *Ledger
+	// Cosign and Retention retire shards by the ledger's cosigned frames (Writer.Cosign, ADR 0029).
+	Cosign    *cosign.Keys
+	Retention time.Duration
 }
 
 // Run collects until ctx is done: the acceptor and reader start before the store opens, READY=1 goes
@@ -57,7 +61,7 @@ func Run(ctx context.Context, cfg Config) error {
 	w := &Writer{
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started,
-		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger,
+		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger, Cosign: cfg.Cosign, Retention: cfg.Retention,
 	}
 
 	var wg sync.WaitGroup
