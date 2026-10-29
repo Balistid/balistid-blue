@@ -43,6 +43,8 @@ const RuleVersion = "adr-0027-v1"
 const (
 	CauseUID       = "uid"
 	CausePeerError = "peer-error"
+	// CauseFinal is the collector refused once the log holds its final entry (ADR 0030, point 5).
+	CauseFinal = "final"
 )
 
 // admit names why a peer is refused, or "" for the collector.
@@ -80,12 +82,24 @@ func (r *refusals) report(log *slog.Logger) {
 }
 
 // Serve takes the collector's connections on ln, one at a time, and feeds each stream into l until ctx
-// ends or l breaks (ADR 0027, points 2 to 4). Any other peer is refused and summed in the journal.
-func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, relay Relay, log *slog.Logger) error {
+// ends or l breaks (ADR 0027, points 2 to 4); alongside, it answers the control socket if ctl has one
+// (ADR 0030). Any other peer is refused and summed in the journal; so is the collector once l ended.
+func Serve(ctx context.Context, ln *net.UnixListener, ctl Control, l *Log, collectorUID int, relay Relay, log *slog.Logger) error {
 	ref := &refusals{causes: map[string]uint64{}}
-	stop := context.AfterFunc(ctx, func() { _ = ln.Close() })
-	defer stop()
 	var wg sync.WaitGroup
+	defer wg.Wait()
+	// Returning cancels ctx, which closes both listeners, so the goroutines end before wg.Wait.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	context.AfterFunc(ctx, func() {
+		_ = ln.Close()
+		if ctl.Listener != nil {
+			_ = ctl.Listener.Close()
+		}
+	})
+	if ctl.Listener != nil {
+		wg.Go(func() { serveControl(ctx, ctl, l, ref, log) })
+	}
 	wg.Go(func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
@@ -99,7 +113,6 @@ func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, 
 			}
 		}
 	})
-	defer wg.Wait()
 	for {
 		c, err := ln.AcceptUnix()
 		if err != nil {
@@ -111,6 +124,11 @@ func Serve(ctx context.Context, ln *net.UnixListener, l *Log, collectorUID int, 
 		p, err := unixsock.PeerCred(c)
 		if cause := admit(p, err, collectorUID); cause != "" {
 			ref.add(cause, p.UID)
+			_ = c.Close()
+			continue
+		}
+		if l.Ended() {
+			ref.add(CauseFinal, p.UID)
 			_ = c.Close()
 			continue
 		}
