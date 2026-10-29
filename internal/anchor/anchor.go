@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +39,10 @@ const (
 // ErrStream marks a message the collector should not have sent; the log is unharmed.
 var ErrStream = errors.New("anchor: out of stream order")
 
+// ErrFinal marks an append after the log's final entry (ADR 0030, point 5): the log is whole and takes
+// nothing more; the collector's store keeps the records for the next yearly log.
+var ErrFinal = errors.New("anchor: the log ended with its final entry")
+
 // Config opens a log.
 type Config struct {
 	Dir                string // the service's own directory (ADR 0007)
@@ -65,8 +70,11 @@ type lossKey struct {
 	stage entry.Stage
 }
 
-// Log appends the stream. Its methods are called from one goroutine.
+// Log appends the stream, and the announcements and final entry of the control socket. Its exported
+// methods hold mu, so the stream's and the control socket's goroutines append in turn.
 type Log struct {
+	mu         sync.Mutex
+	origin     string
 	add        tessera.AddFn
 	shutdown   func(context.Context) error
 	cancel     context.CancelFunc
@@ -84,12 +92,14 @@ type Log struct {
 	batchFirst uint64
 	lastCut    time.Time
 	broken     error
+	final      *entry.Final // the log's last entry, once logged
 }
 
 // Open locks dir for the process's lifetime, opens its log and reads back where the stream resumes.
 // Close it before cancelling ctx's parent: Tessera finishes its work only on Close.
 func Open(ctx context.Context, cfg Config) (*Log, error) {
-	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
+	// The cap keeps its last slot for the final entry, so at least one other must fit.
+	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < 2*entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
 		return nil, errors.New("anchor: incomplete config")
 	}
 	lock, err := lockDir(cfg.Dir)
@@ -97,7 +107,7 @@ func Open(ctx context.Context, cfg Config) (*Log, error) {
 		return nil, err
 	}
 	bg, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	l := &Log{cancel: cancel, lock: lock, now: cfg.Now, maxSize: cfg.CapBytes / entryBytes,
+	l := &Log{origin: cfg.Signer.Name(), cancel: cancel, lock: lock, now: cfg.Now, maxSize: cfg.CapBytes / entryBytes,
 		tailLoss: map[lossKey]entry.Loss{}, lastCut: cfg.Now()}
 	fail := func(err error) (*Log, error) {
 		cancel()
@@ -166,10 +176,16 @@ func (l *Log) recover(ctx context.Context, r tessera.LogReader) error {
 	return l.tail(after)
 }
 
-// tail takes the entries after the last batch: losses of later records, the seal that ended at it.
+// tail takes the entries after the last batch, newest first: losses of later records, the seal that
+// ended at it, and the final entry, which only the newest may be.
 func (l *Log) tail(after []entry.Entry) error {
-	for _, e := range after {
+	for i, e := range after {
 		switch body := e.Body.(type) {
+		case entry.Final:
+			if i != 0 {
+				return fmt.Errorf("%d entries after the final one", i)
+			}
+			l.final = &body
 		case entry.Loss:
 			if body.Seq <= l.resume.Last {
 				return fmt.Errorf("loss of record %d after the batch through %d", body.Seq, l.resume.Last)
@@ -186,10 +202,33 @@ func (l *Log) tail(after []entry.Entry) error {
 }
 
 // Resume is where the stream continues.
-func (l *Log) Resume() Resume { return l.resume }
+func (l *Log) Resume() Resume {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.resume
+}
 
 // Broken is why the log stopped appending, or nil. Once broken it stays so until the process restarts.
-func (l *Log) Broken() error { return l.broken }
+func (l *Log) Broken() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.broken
+}
+
+// Ended reports whether the log holds its final entry.
+func (l *Log) Ended() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.final != nil
+}
+
+// stopped is why nothing more is appended: the log broke or ended.
+func (l *Log) stopped() error {
+	if l.broken == nil && l.final != nil {
+		return ErrFinal
+	}
+	return l.broken
+}
 
 func (l *Log) next() uint64 {
 	if l.batch != nil {
@@ -200,8 +239,10 @@ func (l *Log) next() uint64 {
 
 // Record adds the next record: first the loss entry it carries, which precedes the batch covering it.
 func (l *Log) Record(ctx context.Context, r link.Record) error {
-	if l.broken != nil {
-		return l.broken
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.stopped(); err != nil {
+		return err
 	}
 	if want := l.next(); r.Seq != want || r.Seq > entry.MaxSeq {
 		return fmt.Errorf("%w: record %d, want %d", ErrStream, r.Seq, want)
@@ -234,17 +275,17 @@ func (l *Log) Record(ctx context.Context, r link.Record) error {
 // Seal logs a sealed shard right after the batch ending at its last record. A seal anywhere else, or
 // another one at the same place, breaks the log (ADR 0027, point 4); the same one again is a resend.
 func (l *Log) Seal(ctx context.Context, s entry.Seal) error {
-	if l.broken != nil {
-		return l.broken
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.stopped(); err != nil {
+		return err
 	}
 	if pos := l.next() - 1; s.Last != pos {
 		l.broken = fmt.Errorf("anchor: seal %d-%d at stream position %d", s.First, s.Last, pos)
 		return l.broken
 	}
-	if l.batch != nil {
-		if err := l.cut(ctx); err != nil {
-			return err
-		}
+	if err := l.flush(ctx); err != nil {
+		return err
 	}
 	if l.tailSeal != nil {
 		if *l.tailSeal == s { // logged before: within the log as it is now
@@ -267,6 +308,8 @@ func (l *Log) Seal(ctx context.Context, s entry.Seal) error {
 // next one. ok is false while none does, and for a checkpoint older than the covered seal, which a
 // replayed note would be. A cosigned size past the log means the log lost cosigned history (T12).
 func (l *Log) Cosigned(cp cosign.Checkpoint) (m link.Cosigned, ok bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if cp.Size > l.size {
 		return link.Cosigned{}, false, fmt.Errorf("anchor: the witness cosigned %d entries, the log holds %d", cp.Size, l.size)
 	}
@@ -281,8 +324,10 @@ func (l *Log) Cosigned(cp cosign.Checkpoint) (m link.Cosigned, ok bool, err erro
 
 // Health logs the collector's health when it differs from the last one this process logged.
 func (l *Log) Health(ctx context.Context, h entry.Health) error {
-	if l.broken != nil {
-		return l.broken
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.stopped(); err != nil {
+		return err
 	}
 	if h == l.health {
 		return nil
@@ -294,8 +339,57 @@ func (l *Log) Health(ctx context.Context, h entry.Health) error {
 	return nil
 }
 
+// Announce logs a clean shutdown or suspend after the waiting batch (ADR 0030, point 1) and returns the
+// log's size with it: a checkpoint of that size or more covers the announcement and every record before it.
+func (l *Log) Announce(ctx context.Context, kind entry.Announcement) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.stopped(); err != nil {
+		return 0, err
+	}
+	if err := l.flush(ctx); err != nil {
+		return 0, err
+	}
+	if err := l.append(ctx, entry.Announce{Kind: kind}); err != nil {
+		return 0, err
+	}
+	return l.size, nil
+}
+
+// Final ends the log after the waiting batch with an entry naming the next yearly log, in the slot the
+// cap keeps for it (ADR 0030, point 5), and returns the log's size with it. The same final again
+// returns that size; another one, or one naming this log, is refused and leaves the log as it is.
+func (l *Log) Final(ctx context.Context, next string) (uint64, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case l.broken != nil:
+		return 0, l.broken
+	case l.final != nil && l.final.NextOrigin == next:
+		return l.size, nil
+	case l.final != nil:
+		return 0, ErrFinal
+	case next == l.origin:
+		return 0, fmt.Errorf("anchor: a final entry naming this log, %q", next)
+	}
+	f := entry.Final{NextOrigin: next}
+	if _, err := (entry.Entry{Body: f}).Encode(); err != nil {
+		return 0, err //nolint:wrapcheck // entry errors carry their context
+	}
+	if err := l.flush(ctx); err != nil {
+		return 0, err
+	}
+	if err := l.append(ctx, f); err != nil {
+		return 0, err
+	}
+	l.final = &f
+	return l.size, nil
+}
+
 // Tick logs the waiting batch once CutEvery has passed since the last one.
 func (l *Log) Tick(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.broken != nil || l.batch == nil || l.now().Sub(l.lastCut) < CutEvery {
 		return l.broken
 	}
@@ -304,6 +398,12 @@ func (l *Log) Tick(ctx context.Context) error {
 
 // Flush logs the waiting batch now: when the collector disconnects, and before Close.
 func (l *Log) Flush(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.flush(ctx)
+}
+
+func (l *Log) flush(ctx context.Context) error {
 	if l.broken != nil || l.batch == nil {
 		return l.broken
 	}
@@ -326,9 +426,13 @@ func (l *Log) cut(ctx context.Context) error {
 }
 
 // append logs one entry and waits until Tessera has integrated it, so entries land in call order and a
-// failure is never followed by a later entry (R6).
+// failure is never followed by a later entry (R6). Only the final entry takes the cap's last slot.
 func (l *Log) append(ctx context.Context, body entry.Body) error {
-	if l.size >= l.maxSize {
+	limit := l.maxSize - 1
+	if _, final := body.(entry.Final); final {
+		limit = l.maxSize
+	}
+	if l.size >= limit {
 		l.broken = fmt.Errorf("anchor: log at its cap of %d entries (host_log_cap_gib)", l.maxSize)
 		return l.broken
 	}
@@ -337,6 +441,10 @@ func (l *Log) append(ctx context.Context, body entry.Body) error {
 		l.broken = fmt.Errorf("anchor: %w", err)
 		return l.broken
 	}
+	return l.appendEncoded(ctx, b)
+}
+
+func (l *Log) appendEncoded(ctx context.Context, b []byte) error {
 	idx, err := l.add(context.WithoutCancel(ctx), tessera.NewEntry(b))()
 	if err == nil && idx.Index != l.size {
 		err = fmt.Errorf("entry landed at %d, want %d", idx.Index, l.size)
@@ -351,7 +459,9 @@ func (l *Log) append(ctx context.Context, body entry.Body) error {
 
 // Close logs the waiting batch, lets Tessera publish a checkpoint that covers it, and unlocks.
 func (l *Log) Close(ctx context.Context) error {
-	err := l.Flush(ctx)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	err := l.flush(ctx)
 	err = errors.Join(err, l.shutdown(ctx))
 	l.cancel()
 	return errors.Join(err, l.lock.Close())
