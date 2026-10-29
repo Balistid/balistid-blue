@@ -1,14 +1,16 @@
-// Package link is the wire between the collector and the ledger (ADR 0027, points 2 and 3): typed,
-// length-prefixed frames of at most MaxFrame bytes, decoded strictly. Both ends treat the other as
-// untrusted input (T19), so Read accepts exactly what Write produces.
+// Package link is the wire between the collector and the ledger (ADR 0027, points 2 and 3; ADR 0029,
+// point 2): typed, length-prefixed frames of at most MaxFrame bytes, decoded strictly. Both ends treat
+// the other as untrusted input (T19), so Read accepts exactly what Write produces.
 package link
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
@@ -19,12 +21,13 @@ const (
 	MaxRecords = 1024
 )
 
-// The frame types. Hello goes from the ledger; the others from the collector.
+// The frame types. Hello and Cosigned go from the ledger; the others from the collector.
 const (
-	typeHello   = 1
-	typeRecords = 2
-	typeSeal    = 3
-	typeHealth  = 4
+	typeHello    = 1
+	typeRecords  = 2
+	typeSeal     = 3
+	typeHealth   = 4
+	typeCosigned = 5
 )
 
 // Hello is where the ledger's log resumes: after Last, the last seq of its last batch, whose First and
@@ -44,7 +47,14 @@ type Record struct {
 // Records are consecutive records, at least one, at most MaxRecords.
 type Records []Record
 
-// Message is what a frame carries: Hello, Records, entry.Seal or entry.Health.
+// Cosigned is the newest seal a checkpoint the witness cosigned covers, with that checkpoint's note as
+// the relay keeps it (ADR 0029, point 2). The collector verifies the note itself.
+type Cosigned struct {
+	Seal entry.Seal
+	Note []byte // 1 to cosign.MaxNote bytes
+}
+
+// Message is what a frame carries: Hello, Records, entry.Seal, entry.Health or Cosigned.
 type Message any
 
 // Write sends m as one frame.
@@ -103,6 +113,9 @@ func encode(m Message) ([]byte, error) {
 		return append(b, m.SHA256[:]...), nil
 	case entry.Health:
 		return binary.BigEndian.AppendUint64([]byte{typeHealth, byte(m.State), byte(m.Reason)}, m.Unstored), nil
+	case Cosigned:
+		b := binary.BigEndian.AppendUint64(binary.BigEndian.AppendUint64([]byte{typeCosigned}, m.Seal.First), m.Seal.Last)
+		return append(append(b, m.Seal.SHA256[:]...), m.Note...), nil
 	}
 	return nil, errors.New("link: not a message")
 }
@@ -138,6 +151,11 @@ func check(m Message) error {
 		}
 	case entry.Seal, entry.Health:
 		bodies = append(bodies, m.(entry.Body))
+	case Cosigned:
+		if len(m.Note) == 0 || len(m.Note) > cosign.MaxNote {
+			return fmt.Errorf("link: a cosigned note of %d bytes", len(m.Note))
+		}
+		bodies = append(bodies, m.Seal)
 	default:
 		return errors.New("link: not a message")
 	}
@@ -149,8 +167,9 @@ func check(m Message) error {
 	return nil
 }
 
-// Frame sizes: hello and seal are a type, two seqs and a hash; health a type, two bytes and a count; a
-// record a seq, a leaf and a flag, and a loss's stage and count when the flag is set.
+// Frame sizes: hello and seal are a type, two seqs and a hash, which cosigned follows with its note;
+// health a type, two bytes and a count; a record a seq, a leaf and a flag, and a loss's stage and count
+// when the flag is set.
 const (
 	rangeFrame  = 1 + 8 + 8 + 32
 	healthFrame = 1 + 1 + 1 + 8
@@ -172,6 +191,8 @@ func Decode(b []byte) (Message, error) {
 		} else {
 			m = entry.Seal{First: u64(1), Last: u64(9), SHA256: [32]byte(b[17:49])}
 		}
+	case t == typeCosigned && len(b) > rangeFrame:
+		m = Cosigned{Seal: entry.Seal{First: u64(1), Last: u64(9), SHA256: [32]byte(b[17:49])}, Note: bytes.Clone(b[rangeFrame:])}
 	case t == typeHealth && len(b) == healthFrame:
 		m = entry.Health{State: entry.State(b[1]), Reason: entry.Reason(b[2]), Unstored: u64(3)}
 	case t == typeRecords && len(b) >= 3:

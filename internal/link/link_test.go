@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
@@ -21,6 +22,8 @@ func messages() []Message {
 		Records{{Seq: 7, Leaf: hash, Loss: &entry.Loss{Seq: 7, Stage: entry.StageTruncated, Records: 1}}, {Seq: 8, Leaf: hash}},
 		entry.Seal{First: 1, Last: 3, SHA256: hash},
 		entry.Health{State: entry.StateUnknown, Reason: entry.ReasonCanaryMissed, Unstored: 12},
+		Cosigned{Seal: entry.Seal{First: 1, Last: 3, SHA256: hash}, Note: []byte("a note\n")},
+		Cosigned{Seal: entry.Seal{First: 4, Last: 9, SHA256: hash}, Note: bytes.Repeat([]byte("n"), cosign.MaxNote)},
 	}
 }
 
@@ -62,6 +65,7 @@ func encoded(t *testing.T, m Message) []byte {
 func TestReadRefusesWhatWriteCannotProduce(t *testing.T) {
 	hello, recs := encoded(t, Hello{Last: 9, First: 4, Root: hash}), encoded(t, Records{{Seq: 1, Leaf: hash}, {Seq: 2, Leaf: hash}})
 	health, seal := encoded(t, entry.Health{State: entry.StateOK}), encoded(t, entry.Seal{First: 1, Last: 3, SHA256: hash})
+	cos := encoded(t, Cosigned{Seal: entry.Seal{First: 1, Last: 3, SHA256: hash}, Note: []byte("n")})
 	set := func(b []byte, i int, v ...byte) []byte { out := bytes.Clone(b); copy(out[i:], v); return out }
 	for name, b := range map[string][]byte{
 		"empty frame":         {},
@@ -82,6 +86,10 @@ func TestReadRefusesWhatWriteCannotProduce(t *testing.T) {
 		"loss cut short":      set(recs[:len(recs)-recordBytes], 3+40, 1),
 		"records trailing":    append(bytes.Clone(recs), 0),
 		"records header only": {typeRecords, 0},
+		"cosigned no note":    cos[:rangeFrame],
+		"cosigned note > max": append(bytes.Clone(cos), bytes.Repeat([]byte("n"), cosign.MaxNote)...),
+		"cosigned bad seal":   set(cos, 1, 0, 0, 0, 0, 0, 0, 0, 9),
+		"cosigned zero hash":  set(cos, 17, make([]byte, 32)...),
 	} {
 		if m, err := Read(bytes.NewReader(frame(b))); err == nil {
 			t.Errorf("%s: read %+v", name, m)
@@ -108,6 +116,8 @@ func TestWriteRefusesWhatTheLedgerCouldNotLog(t *testing.T) {
 		Records{{Seq: 1, Leaf: hash, Loss: &entry.Loss{Seq: 1, Stage: 9, Records: 1}}},
 		Records{{Seq: entry.MaxSeq + 1, Leaf: hash}},
 		Hello{Last: 3}, entry.Seal{First: 2, Last: 1, SHA256: hash}, entry.Health{}, entry.Batch{First: 1, Last: 1, Root: hash},
+		Cosigned{Seal: entry.Seal{First: 1, Last: 3, SHA256: hash}}, &Cosigned{Seal: entry.Seal{First: 1, Last: 3, SHA256: hash}, Note: []byte("n")},
+		Cosigned{Seal: entry.Seal{First: 3, Last: 1, SHA256: hash}, Note: []byte("n")},
 	} {
 		if err := Write(&bytes.Buffer{}, m); err == nil {
 			t.Errorf("%T %+v written", m, m)
