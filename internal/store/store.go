@@ -110,6 +110,7 @@ type Store struct {
 	avail       func() (int64, error) // what the filesystem lets the collector allocate (a test seam)
 	given       int64                 // what the reserve gave back: Headroom less its size, kept for own records
 	crashAt     func(string)          // a test seam: crash tests kill the process at these named points
+	retiring    *retiring             // a retired shard whose unlink failed: Expire finishes it first
 }
 
 // Open uses dir, owned by the collector. It trusts a shard only through its index line, recovers any
@@ -680,20 +681,16 @@ func (s *Store) Seals() []Seal { return append([]Seal(nil), s.seals...) }
 // ErrNotIndexed marks a seal the index does not hold as named: the store never sealed that shard.
 var ErrNotIndexed = errors.New("store: no such seal in the index")
 
-// ErrStaleCosign marks a witness time that cannot date the seal it names: older than a time already
-// stored, or older than the seal itself by more than ClockSkew. A replayed old checkpoint is one.
-var ErrStaleCosign = errors.New("store: cosign time older than the seal or a stored one")
-
 // ClockSkew is how far the witness's clock may be behind the store's when a seal is cosigned: a replayed
 // checkpoint can date a shard at most this much before its seal.
 const ClockSkew = time.Hour
 
-// MarkCosigned records that a checkpoint the witness cosigned at at covers the seal of first..last with
-// hash sum, and so every shard before it (ADR 0029, point 3): each of them without a cosign time gets at.
-// A time older than a stored one, or than any of those seals by more than ClockSkew, is refused, so times
-// never fall and never predate what they date; a stored time never changes. A store that is UNKNOWN is
-// left as it is, and an index that cannot be rewritten stays as it was: the next call tries again, and
-// neither spends the reserve.
+// MarkCosigned dates seals by a checkpoint the witness cosigned at at, which covers the seal of first..last
+// with hash sum and so every shard before it (ADR 0029, point 3). Each of them still without a cosign time
+// gets at, in seq order, up to the first that at predates by more than ClockSkew: that one and the rest
+// wait for a later checkpoint, as a replayed old one would. A time older than a stored one dates nothing,
+// so times never fall, and a stored time never changes. A store that is UNKNOWN is left as it is, and an
+// index that cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
 	if s.unknown != "" {
 		return nil
@@ -702,22 +699,25 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 	if i < 0 {
 		return fmt.Errorf("%w: %d-%d", ErrNotIndexed, first, last)
 	}
-	if s.seals[i].Cosigned != 0 {
+	t, skew := at.Unix(), int64(ClockSkew/time.Second)
+	if t <= 0 {
+		return fmt.Errorf("store: cosign time %d", t)
+	}
+	if t < newestCosigned(s.seals) {
 		return nil
 	}
-	t, skew := at.Unix(), int64(ClockSkew/time.Second)
-	if t <= 0 || t < newestCosigned(s.seals) {
-		return fmt.Errorf("%w: %d", ErrStaleCosign, t)
-	}
-	seals := slices.Clone(s.seals)
+	seals, dated := slices.Clone(s.seals), 0
 	for j := range seals[:i+1] {
 		if seals[j].Cosigned != 0 {
 			continue
 		}
 		if t < seals[j].Sealed-skew {
-			return fmt.Errorf("%w: %d for %s sealed at %d", ErrStaleCosign, t, seals[j].Name, seals[j].Sealed)
+			break
 		}
-		seals[j].Cosigned = t
+		seals[j].Cosigned, dated = t, dated+1
+	}
+	if dated == 0 {
+		return nil
 	}
 	if err := s.writeIndex(seals); err != nil {
 		return err
@@ -729,15 +729,22 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 
 // Expire retires the oldest shard once both clocks put it minAge past its seal (ADR 0029, point 4): the
 // witness's latest time past the shard's cosign time, and the store's clock past its seal time. It never
-// retires the last sealed shard, nor any while latest is older than a stored cosign time (a replayed or
-// stale checkpoint). The index loses the shard before its file goes, so a crash in between leaves a file
-// below the first line, which Open removes. It returns the shard it retired, if any; the space freed
-// first refills the reserve. Like MarkCosigned it leaves an UNKNOWN store alone and spends no reserve.
+// retires the last sealed shard, nor any while latest is older than a stored cosign time. The index loses
+// the shard before its file goes, so a crash in between leaves a file below the first line, which Open
+// removes; an unlink that fails is retried on the next call before another shard leaves the index, so
+// there is never more than one. It returns the shard it retired, if any, with the unlink's error; the
+// space freed first refills the reserve. Like MarkCosigned it leaves an UNKNOWN store alone.
 func (s *Store) Expire(latest time.Time, minAge time.Duration) (*Seal, error) {
 	if minAge <= 0 {
 		return nil, fmt.Errorf("store: retention age %v", minAge)
 	}
-	if s.unknown != "" || len(s.seals) < 2 {
+	if s.unknown != "" {
+		return nil, nil
+	}
+	if s.retiring != nil {
+		return nil, s.unlinkRetired()
+	}
+	if len(s.seals) < 2 {
 		return nil, nil
 	}
 	o, secs := s.seals[0], int64((minAge+time.Second-1)/time.Second)
@@ -745,22 +752,33 @@ func (s *Store) Expire(latest time.Time, minAge time.Duration) (*Seal, error) {
 	if o.Cosigned == 0 || latest.Unix() < newestCosigned(s.seals) || !old(o.Cosigned, latest.Unix()) || !old(o.Sealed, s.now().Unix()) {
 		return nil, nil
 	}
-	path := filepath.Join(s.dir, o.Name)
-	n, err := allocated(path)
+	n, err := allocated(filepath.Join(s.dir, o.Name))
 	if err != nil {
 		return nil, err
 	}
 	if err := s.writeIndex(s.seals[1:]); err != nil {
 		return nil, err
 	}
-	s.seals = slices.Clone(s.seals[1:])
+	s.seals, s.retiring = slices.Clone(s.seals[1:]), &retiring{name: o.Name, bytes: n}
 	s.crashAt("retired")
-	if err := s.remove(path); err != nil {
-		return nil, err
+	return &o, s.unlinkRetired()
+}
+
+// retiring is a shard the index no longer holds whose file is not yet gone.
+type retiring struct {
+	name  string
+	bytes int64
+}
+
+// unlinkRetired removes the retiring shard's file and gives its space back, first to the reserve.
+func (s *Store) unlinkRetired() error {
+	if err := s.remove(filepath.Join(s.dir, s.retiring.name)); err != nil {
+		return err
 	}
 	s.crashAt("unlinked")
-	s.sealedBytes -= n
-	return &o, s.refill()
+	s.sealedBytes -= s.retiring.bytes
+	s.retiring = nil
+	return s.refill()
 }
 
 // refill gives the reserve back what it gave the store's own records, once retiring freed space; a
