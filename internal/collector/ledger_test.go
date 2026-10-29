@@ -837,3 +837,25 @@ func TestAnUndatedFrameDoesNotHideARefusal(t *testing.T) {
 		t.Fatalf("journal:\n%s", journal.String())
 	}
 }
+
+// After a restart the writer has taken no time yet; a note older than one the store holds is refused, not
+// taken, though the seal it names is dated already.
+func TestAReplayAfterARestartIsRefused(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], witnessAt)}
+	w.stream(t.Context())
+	w2, l2 := streamWriter(st) // the same store, a new writer
+	w2.Cosign, w2.Retention, w2.sent = &f.Keys, month, w.sent
+	var journal bytes.Buffer
+	w2.Log = slog.New(slog.NewTextHandler(&journal, nil))
+	l2.hello <- helloOf{1, link.Hello{}}
+	w2.stream(t.Context())
+	taken(l2)
+	st.expired = nil
+	l2.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[0], witnessAt.Add(-time.Minute))}
+	w2.stream(t.Context())
+	if !w2.cosignAt.IsZero() || len(st.expired) != 0 || !strings.Contains(journal.String(), "cosigned checkpoint refused") {
+		t.Fatalf("latest %v, Expire %v, journal:\n%s", w2.cosignAt, st.expired, journal.String())
+	}
+}

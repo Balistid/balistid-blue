@@ -686,18 +686,21 @@ var ErrNotIndexed = errors.New("store: no such seal in the index")
 // at most this much before its seal, and a witness time further ahead of the store's clock is not taken.
 const ClockSkew = time.Hour
 
-// ErrUndated marks a checkpoint that left the seal it names without a cosign time: older than a stored
-// time, predating that seal or one before it by more than ClockSkew, or met by an UNKNOWN store. Seals
-// before it may have been dated; a later checkpoint dates the rest. A replayed old note is one, and so is
-// a witness clock that lags the store's.
+// ErrUndated marks a checkpoint that left the seal it names without a cosign time: predating that seal or
+// one before it by more than ClockSkew, as a witness clock that lags the store's does, or met by an UNKNOWN
+// store. Seals before it may have been dated; a later checkpoint dates the rest.
 var ErrUndated = errors.New("store: the named seal stays without a cosign time")
+
+// ErrStale marks a checkpoint older than a cosign time already stored: a replayed or delayed note. It dates
+// nothing, and its time is no witness's latest.
+var ErrStale = errors.New("store: cosign time older than a stored one")
 
 // MarkCosigned dates seals by a checkpoint the witness cosigned at at, which covers the seal of first..last
 // with hash sum and so every shard before it (ADR 0029, point 3). Each of them still without a cosign time
 // gets at, in seq order, up to the first that at predates by more than ClockSkew: that one and the rest
-// wait for a later checkpoint, as a replayed old one would. A time older than a stored one dates nothing,
-// so times never fall, and a stored time never changes. When the named seal stays undated it returns
-// ErrUndated, after dating what it could. A store that is UNKNOWN is left as it is, and an index that
+// wait for a later checkpoint, as a replayed old one would. A time older than a stored one dates nothing
+// (ErrStale), so times never fall, and a stored time never changes. When the named seal stays undated it
+// returns ErrUndated, after dating what it could. A store that is UNKNOWN is left as it is, and an index that
 // cannot be rewritten stays as it was: the next call tries again, and neither spends the reserve.
 func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) error {
 	if s.unknown != "" {
@@ -712,10 +715,7 @@ func (s *Store) MarkCosigned(first, last uint64, sum [32]byte, at time.Time) err
 		return fmt.Errorf("store: cosign time %d", t)
 	}
 	if newest := newestCosigned(s.seals); t < newest {
-		if s.seals[i].Cosigned != 0 {
-			return nil
-		}
-		return fmt.Errorf("%w: %d is older than the stored %d", ErrUndated, t, newest)
+		return fmt.Errorf("%w: %d before %d", ErrStale, t, newest)
 	}
 	seals, dated := slices.Clone(s.seals), 0
 	for j := range seals[:i+1] {
