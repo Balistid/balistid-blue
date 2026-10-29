@@ -37,6 +37,7 @@
 /internal/collector/ @Jvc0n
 /internal/unixsock/ @Jvc0n
 /internal/relay/ @Jvc0n
+/internal/cosign/ @Jvc0n
 /internal/wholefile/ @Jvc0n
 /cmd/balistid-collector/ @Jvc0n
 /cmd/balistid-ledger/ @Jvc0n

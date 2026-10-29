@@ -28,12 +28,9 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
-
-// CosignedName is the file, in the relay's directory, that holds the last checkpoint the witness
-// cosigned: the ledger's checkpoint note with the witness's verified cosignature lines appended.
-const CosignedName = "checkpoint.cosigned"
 
 const (
 	maxProof = 63 // tlog-witness: the client must not send more lines
@@ -131,7 +128,7 @@ func (r *Relay) Step(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := wholefile.Write(filepath.Join(r.cfg.State, CosignedName), append(signed, sigs...), 0o600); err != nil {
+		if err := wholefile.Write(filepath.Join(r.cfg.State, cosign.Name), append(signed, sigs...), 0o600); err != nil {
 			return fmt.Errorf("relay: %w", err)
 		}
 		r.cosigned, r.size = n.Text, cp.Size

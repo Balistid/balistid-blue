@@ -29,6 +29,7 @@ import (
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/link"
 )
 
@@ -194,7 +195,7 @@ func (f *fixture) relay(t *testing.T) *Relay {
 // cosigned opens the stored file with both keys and returns the size it covers; 0 when absent.
 func (f *fixture) cosigned(t *testing.T) uint64 {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(f.state, CosignedName))
+	b, err := os.ReadFile(filepath.Join(f.state, cosign.Name))
 	if errors.Is(err, fs.ErrNotExist) {
 		return 0
 	}
@@ -270,13 +271,13 @@ func TestRelayStopsWhenTheWitnessIsAheadOfTheLog(t *testing.T) {
 	if err := r.Step(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	stored, _ := os.ReadFile(filepath.Join(f.state, CosignedName))
+	stored, _ := os.ReadFile(filepath.Join(f.state, cosign.Name))
 	f.wit.size += 10 // the witness cosigned more than the log now holds: history behind it is gone
 	err := f.relay(t).Step(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "cosigned history is gone") {
 		t.Fatalf("got %v", err)
 	}
-	if now, _ := os.ReadFile(filepath.Join(f.state, CosignedName)); !bytes.Equal(now, stored) {
+	if now, _ := os.ReadFile(filepath.Join(f.state, cosign.Name)); !bytes.Equal(now, stored) {
 		t.Fatal("the stored cosigned checkpoint changed")
 	}
 }
