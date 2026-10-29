@@ -1,0 +1,49 @@
+# Announces a suspend through the witness before the system sleeps (ADR 0006, point 3; ADR 0030).
+[Unit]
+Description=Balistid Blue: announce a suspend to the witness
+Before=sleep.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/balistid/balistid-ledger -announce suspend
+# The client gives up after 20 s (ADR 0030, point 2).
+TimeoutStartSec=30s
+User=balistid-ledger
+Group=balistid-ledger
+# The relay's cosigned checkpoint is 0640 of its group: the client waits on it (ADR 0030, point 2).
+SupplementaryGroups=balistid-relay
+UMask=0077
+MemoryMax=64M
+MemorySwapMax=0
+NoExecPaths=/ /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-ledger
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=sleep.target
