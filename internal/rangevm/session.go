@@ -65,6 +65,8 @@ var imageFiles = []struct {
 	{"deploy/relay/balistid-relay.service", "usr/lib/systemd/system/balistid-relay.service", 0o644},
 	{"deploy/relay/sysusers.conf", "usr/lib/sysusers.d/balistid-relay.conf", 0o644},
 	{"range/balistid-relay-range.conf", "usr/lib/systemd/system/balistid-relay.service.d/range.conf", 0o644},
+	{"deploy/announce/balistid-announce.service", "usr/lib/systemd/system/balistid-announce.service", 0o644},
+	{"deploy/announce/balistid-announce-suspend.service", "usr/lib/systemd/system/balistid-announce-suspend.service", 0o644},
 	{"range/balistid-range-witness-key.service", "usr/lib/systemd/system/balistid-range-witness-key.service", 0o644},
 	{"range/balistid-range-witness-agent.service", "usr/lib/systemd/system/balistid-range-witness-agent.service", 0o644},
 	{"range/balistid-range-witness.service", "usr/lib/systemd/system/balistid-range-witness.service", 0o644},
