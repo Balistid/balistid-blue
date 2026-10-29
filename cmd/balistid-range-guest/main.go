@@ -153,6 +153,14 @@ func run() error {
 		fork = forkRefused(ctx)
 	}
 	add("fork_refused", fork)
+	sc := shardCosigned(ctx)
+	add("shard_cosigned", sc)
+	if sc != "yes" {
+		for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", "balistid-collector.service", "-u",
+			"balistid-ledger.service", "-o", "cat", "--no-pager", "-n", "40"), "\n") {
+			fmt.Printf("balistid-range-guest: retention: %.400q\n", line)
+		}
+	}
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)
