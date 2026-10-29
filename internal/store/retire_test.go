@@ -107,7 +107,7 @@ func TestMarkCosignedNeverOverwritesOrFalls(t *testing.T) {
 	s := sealedFour(t, dir)
 	mark(t, s, 0, at(10))
 	l := s.Seals()[2]
-	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); !errors.Is(err, ErrStaleCosign) { // a replayed older checkpoint
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); err != nil { // a replayed older checkpoint dates nothing
 		t.Fatalf("a time older than a stored one: %v", err)
 	}
 	mark(t, s, 1, at(20))
@@ -281,29 +281,63 @@ func TestIndexTimesAreRefusedWhenMalformed(t *testing.T) {
 	}
 }
 
-// A replayed checkpoint cannot date a shard before its seal: at most ClockSkew for a witness behind.
-func TestMarkCosignedRefusesATimeBeforeTheSeal(t *testing.T) {
+// A checkpoint dates only the seals it does not predate by more than ClockSkew; the later ones wait.
+func TestACosignTimeDatesOnlySealsItDoesNotPredate(t *testing.T) {
 	s := sealedFour(t, t.TempDir())
-	sealed := time.Unix(s.Seals()[2].Sealed, 0)
-	for _, c := range []struct {
-		at time.Time
-		ok bool
-	}{
-		{time.Unix(0, 0), false},
-		{sealed.Add(-ClockSkew - time.Second), false},
-		{sealed.Add(-ClockSkew), true},
-	} {
-		l := s.Seals()[2]
-		err := s.MarkCosigned(l.First, l.Last, l.SHA256, c.at)
-		if (err == nil) != c.ok || err != nil && !errors.Is(err, ErrStaleCosign) {
-			t.Fatalf("a time %v from the seal: %v", c.at.Sub(sealed), err)
+	seals := s.Seals()
+	sealed := time.Unix(seals[2].Sealed, 0)
+	if err := s.MarkCosigned(seals[2].First, seals[2].Last, seals[2].SHA256, time.Unix(0, 0)); err == nil {
+		t.Fatal("a cosign time of 1970 was taken")
+	}
+	early := sealed.Add(-ClockSkew - time.Second) // after the first two seals, an hour and a second before the third
+	if err := s.MarkCosigned(seals[2].First, seals[2].Last, seals[2].SHA256, early); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Seals(); got[0].Cosigned != early.Unix() || got[1].Cosigned != early.Unix() || got[2].Cosigned != 0 {
+		t.Fatalf("cosign times %d %d %d", got[0].Cosigned, got[1].Cosigned, got[2].Cosigned)
+	}
+	if err := s.MarkCosigned(seals[2].First, seals[2].Last, seals[2].SHA256, sealed.Add(-ClockSkew)); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Seals(); got[1].Cosigned != early.Unix() || got[2].Cosigned != sealed.Add(-ClockSkew).Unix() {
+		t.Fatalf("cosign times %d %d", got[1].Cosigned, got[2].Cosigned)
+	}
+}
+
+// An unlink that fails leaves the shard out of the index; the next Expire finishes it before another
+// shard leaves, so there is never more than one file below the first line and Open still opens.
+func TestAFailedUnlinkIsFinishedBeforeAnotherRetirement(t *testing.T) {
+	dir := t.TempDir()
+	s := sealedFour(t, dir)
+	mark(t, s, 2, at(3))
+	onDay(s, 100)
+	s.crashAt = func(point string) {
+		if point == "retired" {
+			_ = os.Chmod(dir, 0o500) //nolint:gosec // the unlink fails, as on a filesystem error
 		}
 	}
-	for i, l := range s.Seals()[:3] {
-		if l.Cosigned != sealed.Add(-ClockSkew).Unix() {
-			t.Fatalf("shard %d: cosign time %d", i, l.Cosigned)
-		}
+	got, err := s.Expire(at(100), month)
+	if got == nil || err == nil {
+		t.Fatalf("retired %v, %v", got, err)
 	}
+	s.crashAt = func(string) {}
+	if again, err := s.Expire(at(100), month); again != nil || err == nil { // still failing: nothing else leaves
+		t.Fatalf("a second retirement while the first is unfinished: %v, %v", again, err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // a test temp dir back to its owner
+		t.Fatal(err)
+	}
+	if again, err := s.Expire(at(100), month); again != nil || err != nil {
+		t.Fatalf("finishing the first: %v, %v", again, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, got.Name)); !os.IsNotExist(err) {
+		t.Fatalf("the retired shard's file: %v", err)
+	}
+	if next, err := s.Expire(at(100), month); next == nil || err != nil || next.First != got.Last+1 {
+		t.Fatalf("the next retirement: %v, %v", next, err)
+	}
+	closeStore(t, s)
+	closeStore(t, open(t, dir, small))
 }
 
 func FuzzParseSeal(f *testing.F) {
@@ -317,16 +351,32 @@ func FuzzParseSeal(f *testing.F) {
 	})
 }
 
+// Whatever readSeals accepts is the index writeIndex would write, up to a torn last line, with seqs that
+// run on and cosign times that cover a prefix and never fall.
 func FuzzReadSeals(f *testing.F) {
-	f.Add([]byte(indexHeader + "00000000000000000003.db 3 3 " + strings.Repeat("ab", 32) + " 5 7\n"))
+	sum := strings.Repeat("ab", 32)
+	f.Add([]byte(indexHeader + "00000000000000000003.db 3 3 " + sum + " 5 7\n"))
+	f.Add([]byte(indexHeader + "00000000000000000003.db 3 4 " + sum + " 5 7\n00000000000000000005.db 5 9 " + sum + " 6\n"))
+	f.Add([]byte(indexHeader + "00000000000000000001.db 1 1 " + sum + " 5\n0000000000000000000"))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, indexName), b, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		seals, _, err := readSeals(t.Context(), dir)
-		if err == nil && indexBytes(seals) > int64(len(b)) {
-			t.Fatalf("%d seals from %d bytes", len(seals), len(b))
+		seals, torn, err := readSeals(t.Context(), dir)
+		if err != nil {
+			return
+		}
+		var w strings.Builder
+		w.WriteString(indexHeader)
+		for i, l := range seals {
+			w.WriteString(l.line())
+			if i > 0 && (l.First != seals[i-1].Last+1 || l.Cosigned != 0 && (seals[i-1].Cosigned == 0 || l.Cosigned < seals[i-1].Cosigned)) {
+				t.Fatalf("accepted %+v after %+v", l, seals[i-1])
+			}
+		}
+		if !strings.HasPrefix(string(b), w.String()) || !torn && len(b) != w.Len() {
+			t.Fatalf("accepted %q as %q (torn %v)", b, w.String(), torn)
 		}
 	})
 }

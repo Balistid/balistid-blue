@@ -579,7 +579,8 @@ func (s *retireStore) Seals() []store.Seal {
 
 const month = 30 * 24 * time.Hour
 
-var witnessAt = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+// witnessAt is after the test store's seals, which its real clock dates.
+var witnessAt = time.Now().Add(time.Hour).Truncate(time.Second).UTC()
 
 // cosignWriter is a writer that streamed every committed record of a store with sealed shards to an
 // empty ledger, with the keys that verify f's notes.
@@ -612,7 +613,7 @@ func TestACosignedFrameMarksTheIndexAndAsksToRetire(t *testing.T) {
 	w.stream(t.Context())
 	got := st.Seals()
 	if got[0].Cosigned != witnessAt.Unix() || got[1].Cosigned != witnessAt.Unix() || len(got) > 2 && got[2].Cosigned != 0 {
-		t.Fatalf("cosign times %+v (%s)", got, w.cosignErr)
+		t.Fatalf("cosign times %+v", got)
 	}
 	if len(st.expired) != 1 || !st.expired[0].Equal(witnessAt) {
 		t.Fatalf("Expire called with %v", st.expired)
@@ -661,8 +662,10 @@ func TestCosignedFramesTheCollectorRefuses(t *testing.T) {
 					t.Fatalf("marked %+v", s)
 				}
 			}
-			if len(st.expired) != 0 {
-				t.Fatalf("Expire called with %v", st.expired)
+			for _, e := range st.expired { // only by a time taken before this frame
+				if e.Equal(witnessAt) {
+					t.Fatalf("Expire called with the refused frame's time: %v", st.expired)
+				}
 			}
 		})
 	}
@@ -740,6 +743,7 @@ func TestRetentionFailuresAreJournaledOnceAMinute(t *testing.T) {
 	for i := range 5 {
 		l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt.Add(time.Duration(i)*time.Second))}
 		w.stream(t.Context())
+		w.stream(t.Context()) // an idle tick between refusals
 	}
 	now = now.Add(time.Minute)
 	l.cosigned <- cosignedOf{1, frameOf(other, t, st.Seals()[0], witnessAt)}
@@ -759,5 +763,21 @@ func TestARetiredShardIsJournaledWhenTheRefillFails(t *testing.T) {
 	w.stream(t.Context())
 	if !strings.Contains(journal.String(), "shard retired") || !strings.Contains(journal.String(), "reserve: a test") {
 		t.Fatalf("journal:\n%s", journal.String())
+	}
+}
+
+// A witness behind the store's clock by more than store.ClockSkew dates none of the newer seals, yet its
+// time still moves the retirement of shards it dated before.
+func TestALaggingWitnessStillMovesTheLatestTime(t *testing.T) {
+	f := cosigntest.New(t)
+	w, l, st := cosignWriter(t, f)
+	behind := time.Now().Add(-2 * store.ClockSkew).Truncate(time.Second).UTC()
+	l.cosigned <- cosignedOf{1, frameOf(f, t, st.Seals()[1], behind)}
+	w.stream(t.Context())
+	if got := st.Seals(); got[0].Cosigned != 0 || got[1].Cosigned != 0 {
+		t.Fatalf("a lagging witness dated %+v", got[:2])
+	}
+	if len(st.expired) != 1 || !st.expired[0].Equal(behind) {
+		t.Fatalf("Expire called with %v, want the lagging time", st.expired)
 	}
 }

@@ -453,9 +453,9 @@ func (w *Writer) sealAtSent() bool {
 }
 
 // retire takes the newest cosigned frame of this connection, once its hello checked out, and has the store
-// mark seals by it; on every tick after the first frame taken it lets the store retire one shard by the
-// latest witness time (ADR 0029, points 3 and 4). A refusal or failure changes nothing and is journaled at
-// most once a minute: a ledger chooses what the errors say.
+// date seals by it; on every tick after the first frame taken it lets the store retire one shard by the
+// latest witness time (ADR 0029, points 3 and 4). A refusal or failure changes nothing and reaches the
+// journal at most once a minute, whatever comes between: a ledger chooses what the errors say.
 func (w *Writer) retire() {
 	var err error
 	select {
@@ -473,20 +473,15 @@ func (w *Writer) retire() {
 				"cosigned", l.Cosigned, "witness_time", w.cosignAt.Unix())
 		}
 	}
-	if err == nil {
-		w.cosignErr = ""
-		return
-	}
-	if now := w.Now(); w.cosignErr == "" || now.Sub(w.cosignLogAt) >= time.Minute {
+	if now := w.Now(); err != nil && (w.cosignLogAt.IsZero() || now.Sub(w.cosignLogAt) >= time.Minute) {
 		w.Log.Error("retention step failed", "err", err)
 		w.cosignLogAt = now
 	}
-	w.cosignErr = err.Error()
 }
 
-// takeCosigned checks a frame against what this collector knows: its seal was sent, the note verifies with
-// both installed keys and the witness's time does not go back; the store then holds the seal to its index
-// and the time to the seals and the times it stored.
+// takeCosigned checks a frame against what this collector knows: its seal was sent and the note verifies
+// with both installed keys; the store then holds the seal to its index and the time to the seals and the
+// times it stored. A time older than the latest taken dates nothing: a replayed note.
 func (w *Writer) takeCosigned(m link.Cosigned) error {
 	if w.Cosign == nil {
 		return errors.New("collector: no verifier keys, so no retirement")
@@ -499,7 +494,7 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 		return fmt.Errorf("collector: %w", err)
 	}
 	if cp.Time.Before(w.cosignAt) {
-		return fmt.Errorf("collector: witness time %d before %d", cp.Time.Unix(), w.cosignAt.Unix())
+		return nil
 	}
 	if err := w.st.MarkCosigned(m.Seal.First, m.Seal.Last, m.Seal.SHA256, cp.Time); err != nil {
 		return fmt.Errorf("collector: %w", err)

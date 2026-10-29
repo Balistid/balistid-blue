@@ -24,17 +24,17 @@ collects partial bundles. The Pi has no RTC (T22): its clock can start behind or
    `cosigned` (the covered seal and the note, at most 16 KiB) follows the hello and every change of either. This
    amends ADR 0027 point 3: the ledger sends after its hello, still no acknowledgement.
 3. The collector takes the frame only after this connection's hello passed its check, only for a seal equal to a
-   line of its own index that does not end past what it sent, with a note both installed keys verify and a witness
-   time not older than the last one taken. Indexed shards through that seal without a cosign time get that time,
-   refused if older than a stored one or than any of those seals by more than an hour (clock skew); a stored time
-   never changes.
+   line of its own index that does not end past what it sent, with a note both installed keys verify. Its time dates
+   the shards through that seal still without one, in seq order up to the first it predates by more than an hour
+   (clock skew), which waits for a later note; a time older than one stored or taken dates nothing, and a stored
+   time never changes. The latest verified time drives retirement whatever it dated.
 4. The index becomes `balistid-seals 2`: a line adds the host's time at the seal and, once known, the cosign time;
    seqs run on from the first line, not from 1. The oldest shard is retired, one per writer tick, never the last
    sealed one, when the latest witness time is `raw_retention_days` past its cosign time and the host's clock as far
-   past its seal: the index is rewritten without it, then the file unlinked and the directory synced. Open removes
-   one unindexed shard below the first line, what a crash in between leaves; two, or no index with shards not
-   starting at seq 1, fail Open. Marking and retiring skip a store that is UNKNOWN or short of space and try again;
-   they never spend the reserve, and the space retiring frees refills it first.
+   past its seal: the index is rewritten without it, then the file unlinked and the directory synced; a failed
+   unlink is finished before another shard leaves. Open removes the one unindexed shard below the first line a crash
+   can leave; two, or no index with shards not starting at seq 1, fail Open. Marking and retiring skip a store that
+   is UNKNOWN or short of space and try again, never spend the reserve, and what retiring frees refills it first.
 5. A hello below the first kept seq stops the stream with reason 6 instead of retrying a read that cannot succeed.
 
 ## Alternatives considered
