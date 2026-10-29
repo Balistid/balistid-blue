@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,9 @@ const (
 	finalWait = time.Minute
 	// cosignGap is cosign_gap_s: a relay file older than this means the witness is away.
 	cosignGap = time.Minute
+	// logRetention is log_retention_days; old logs are checked at start and then hourly.
+	logRetention = 400 * 24 * time.Hour
+	retireEvery  = time.Hour
 )
 
 // notices names what the binary links under a licence other than Apache-2.0, MIT, BSD or ISC (ADR 0026,
@@ -94,7 +98,7 @@ func run() int {
 		}
 		return 0
 	}
-	if err := serve(*dir, *sock, *control, *keyPath, relay, log); err != nil {
+	if err := serve(*dir, *sock, *control, *keyPath, *witnessKey, relay, log); err != nil {
 		log.Error("ledger stopped", "err", err)
 		return 1
 	}
@@ -166,7 +170,7 @@ func signerFrom(keyPath string) (note.Signer, error) {
 	return readSigner(keyPath, creds)
 }
 
-func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Logger) error {
+func serve(dir, sock, control, keyPath, witnessKey string, relay anchor.Relay, log *slog.Logger) error {
 	signer, err := signerFrom(keyPath)
 	if err != nil {
 		return err
@@ -182,6 +186,13 @@ func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Log
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	retireCtx, stopRetire := context.WithCancel(ctx)
+	defer stopRetire() // before wg.Wait, also when serve returns without a signal
+	wg.Go(func() {
+		retire(retireCtx, anchor.Retirement{Dir: dir, Relay: relay, WitnessKey: witnessKey, Keep: logRetention, Now: time.Now}, log)
+	})
 	ln, err := listen(sock, 0o666)
 	var ctl *net.UnixListener
 	if err == nil {
@@ -201,6 +212,27 @@ func serve(dir, sock, control, keyPath string, relay anchor.Relay, log *slog.Log
 	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 	defer cancel()
 	return errors.Join(err, l.Close(closeCtx))
+}
+
+// retire deletes old yearly logs past their retention at start and every hour until ctx ends (ADR 0030,
+// point 7); what it keeps for want of a verified final, or deletes, is journaled.
+func retire(ctx context.Context, r anchor.Retirement, log *slog.Logger) {
+	t := time.NewTicker(retireEvery)
+	defer t.Stop()
+	for {
+		retired, err := r.Run()
+		if len(retired) > 0 {
+			log.Info("old logs deleted", "logs", retired)
+		}
+		if err != nil {
+			log.Warn("old logs", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // readSigner reads the note signing key from path, a regular file only its owner may read and write
