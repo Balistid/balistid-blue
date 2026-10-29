@@ -22,6 +22,7 @@ import (
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 )
@@ -549,5 +550,54 @@ func TestALossResentWithAnotherCountBreaksTheLog(t *testing.T) {
 	defer func() { _ = l.Close(t.Context()) }()
 	if err := l.Record(t.Context(), link.Record{Seq: 1, Leaf: leaf(1), Loss: &entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 4}}); err == nil || l.Broken() == nil {
 		t.Fatalf("a resent loss with another count: %v", err)
+	}
+}
+
+func TestASealCountsOnceACosignedCheckpointReachesIt(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, config(dir, k, c))
+	first := entry.Seal{First: 1, Last: 3, SHA256: sha256.Sum256([]byte("one"))}
+	for _, r := range recs(1, 3) {
+		if err := l.Record(t.Context(), r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Seal(t.Context(), first); err != nil { // the batch, then the seal: 2 entries
+		t.Fatal(err)
+	}
+	note := []byte("note")
+	if _, ok, err := l.Cosigned(cosign.Checkpoint{Size: 1, Note: note}); ok || err != nil {
+		t.Fatalf("a checkpoint before the seal: %v, %v", ok, err)
+	}
+	if m, ok, err := l.Cosigned(cosign.Checkpoint{Size: 2, Note: note}); !ok || err != nil || m.Seal != first || string(m.Note) != "note" {
+		t.Fatalf("a checkpoint over the seal: %+v, %v, %v", m, ok, err)
+	}
+	second := entry.Seal{First: 4, Last: 4, SHA256: sha256.Sum256([]byte("two"))}
+	if err := errors.Join(l.Record(t.Context(), recs(4, 4)[0]), l.Seal(t.Context(), second)); err != nil {
+		t.Fatal(err)
+	}
+	if m, ok, _ := l.Cosigned(cosign.Checkpoint{Size: 3}); !ok || m.Seal != first { // the batch of 4 only
+		t.Fatalf("the older covered seal stays until the newer one is reached: %+v", m)
+	}
+	if m, ok, _ := l.Cosigned(cosign.Checkpoint{Size: 4}); !ok || m.Seal != second {
+		t.Fatalf("the newer seal: %+v", m)
+	}
+	if _, ok, err := l.Cosigned(cosign.Checkpoint{Size: 5}); ok || err == nil {
+		t.Fatal("a cosigned size past the log was taken")
+	}
+	if err := l.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	// After a restart no seal counts until one is logged or resent: where earlier ones are is unknown.
+	l = openLog(t, config(dir, k, c))
+	defer l.Close(t.Context()) //nolint:errcheck // test end
+	if _, ok, err := l.Cosigned(cosign.Checkpoint{Size: 4}); ok || err != nil {
+		t.Fatalf("after a restart: %v, %v", ok, err)
+	}
+	if err := l.Seal(t.Context(), second); err != nil { // the collector resends the seal at its resume point
+		t.Fatal(err)
+	}
+	if m, ok, _ := l.Cosigned(cosign.Checkpoint{Size: 4}); !ok || m.Seal != second {
+		t.Fatalf("a resent seal: %+v", m)
 	}
 }

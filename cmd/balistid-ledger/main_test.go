@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"golang.org/x/mod/sumdb/note"
+
+	"github.com/Balistid/balistid-blue/internal/anchor"
 )
 
 func keyFile(t *testing.T, mode os.FileMode) string {
@@ -87,7 +89,7 @@ func TestNoticesNameTheMPLModuleAndItsSource(t *testing.T) {
 
 func TestServeWithoutAKeyFails(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
-	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), "", nil); err == nil {
+	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), "", anchor.Relay{}, nil); err == nil {
 		t.Fatal("served without a key")
 	}
 }

@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/cosign/cosigntest"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
@@ -57,10 +59,14 @@ func socketPair(t *testing.T) (*net.UnixConn, *net.UnixConn) {
 // session runs serveConn on one end of a pair and returns the collector's end, the hello it read and
 // a channel with serveConn's result.
 func session(t *testing.T, l *Log) (*net.UnixConn, link.Hello, <-chan error) {
+	return sessionWith(t, l, &cosignFeed{log: slog.New(slog.DiscardHandler)})
+}
+
+func sessionWith(t *testing.T, l *Log, f *cosignFeed) (*net.UnixConn, link.Hello, <-chan error) {
 	t.Helper()
 	server, collector := socketPair(t)
 	done := make(chan error, 1)
-	go func() { done <- serveConn(t.Context(), server, l) }()
+	go func() { done <- serveConn(t.Context(), server, l, f) }()
 	m, err := link.Read(collector)
 	hello, ok := m.(link.Hello)
 	if err != nil || !ok {
@@ -227,7 +233,7 @@ func TestServeTakesOnlyTheCollector(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			done := make(chan error, 1)
 			var journal bytes.Buffer // read only after Serve returned
-			go func() { done <- Serve(ctx, ln, l, uid, slog.New(slog.NewJSONHandler(&journal, nil))) }()
+			go func() { done <- Serve(ctx, ln, l, uid, Relay{}, slog.New(slog.NewJSONHandler(&journal, nil))) }()
 			conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 			if err != nil {
 				t.Fatal(err)
@@ -272,5 +278,34 @@ func TestRefusalSummaryNamesItsRule(t *testing.T) {
 	ref.report(slog.New(slog.NewJSONHandler(&buf, nil)))
 	if buf.Len() != 0 {
 		t.Errorf("a minute without refusals logged %s", buf.String())
+	}
+}
+
+func TestAConnectionSendsTheCoveredSealOnce(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, config(dir, k, c))
+	defer l.Close(t.Context()) //nolint:errcheck // test end
+	f := cosigntest.New(t)
+	path := filepath.Join(t.TempDir(), cosign.Name)
+	feed := &cosignFeed{relay: Relay{Path: path, Keys: f.Keys}, log: slog.New(slog.DiscardHandler)}
+	conn, _, done := sessionWith(t, l, feed)
+	seal := entry.Seal{First: 1, Last: 3, SHA256: sha256.Sum256([]byte("shard"))}
+	send(t, conn, recs(1, 3), seal) // a batch and the seal: the log holds 2 entries
+	note := f.Cosigned(t, 2, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
+	if err := os.WriteFile(path, note, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	m, err := link.Read(conn)
+	if got, ok := m.(link.Cosigned); err != nil || !ok || got.Seal != seal || !bytes.Equal(got.Note, note) {
+		t.Fatalf("read %+v, %v", m, err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond)) // a second read of the same file sends nothing
+	if m, err := link.Read(conn); err == nil {
+		t.Fatalf("sent again: %+v", m)
+	}
+	_ = conn.Close()
+	if err := result(t, done); err != nil {
+		t.Fatal(err)
 	}
 }
