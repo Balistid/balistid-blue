@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-29 by claude/opus-5.5 (L7)
+Updated: 2026-10-29 by claude/opus-5.5 (L7 merged)
 
 ## Where we are
 
@@ -11,7 +11,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
 | Range, runner (0009-0011, 0018-0021, 0028) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; CI job `range-kvm` self-tests every pull request on GitHub's KVM (#146, advisory); on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022) |
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
-| Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `feat/retention-cosign` (L7) |
+| Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
 | Ledger, relay, Pi witness (0006, 0026, 0027) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); Pi not started |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
@@ -19,9 +19,9 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #144 (R1): the relay and a pinned witness; #146 (ADR 0028): `range-kvm` self-tests each pull request on KVM.
 - L7 (#147, ADR 0029): the ledger tells the collector the covered seal (frame 5); the collector checks the note
   itself and retires a shard only when the witness's and the host's clocks are both 30 days past it. KVM PASS
-  (`shard_cosigned`); Opus critic rounds 1-4 fixed, Codex security GO at round 7. Awaits the maintainer's approve.
+  (`shard_cosigned`); Opus critic rounds 1-4 fixed, Codex security GO at round 7. Merged as 5884484.
 ## Next step
-1. Merge #147 after the approve; then announce/final and the Pi (ledger-PLAN L8-L12).
+1. L8 announce/final and the yearly rollover (ADR 0030), then the Pi (ledger-PLAN L9-L12).
    `range-kvm` is advisory until a week of runs; then the maintainer decides whether it becomes required (0028).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
