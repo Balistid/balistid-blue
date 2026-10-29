@@ -107,7 +107,7 @@ func TestMarkCosignedNeverOverwritesOrFalls(t *testing.T) {
 	s := sealedFour(t, dir)
 	mark(t, s, 0, at(10))
 	l := s.Seals()[2]
-	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); err != nil { // a replayed older checkpoint dates nothing
+	if err := s.MarkCosigned(l.First, l.Last, l.SHA256, at(5)); !errors.Is(err, ErrUndated) { // a replayed older checkpoint
 		t.Fatalf("a time older than a stored one: %v", err)
 	}
 	mark(t, s, 1, at(20))
@@ -290,8 +290,8 @@ func TestACosignTimeDatesOnlySealsItDoesNotPredate(t *testing.T) {
 		t.Fatal("a cosign time of 1970 was taken")
 	}
 	early := sealed.Add(-ClockSkew - time.Second) // after the first two seals, an hour and a second before the third
-	if err := s.MarkCosigned(seals[2].First, seals[2].Last, seals[2].SHA256, early); err != nil {
-		t.Fatal(err)
+	if err := s.MarkCosigned(seals[2].First, seals[2].Last, seals[2].SHA256, early); !errors.Is(err, ErrUndated) {
+		t.Fatalf("the named seal left undated: %v", err)
 	}
 	if got := s.Seals(); got[0].Cosigned != early.Unix() || got[1].Cosigned != early.Unix() || got[2].Cosigned != 0 {
 		t.Fatalf("cosign times %d %d %d", got[0].Cosigned, got[1].Cosigned, got[2].Cosigned)
@@ -308,6 +308,7 @@ func TestACosignTimeDatesOnlySealsItDoesNotPredate(t *testing.T) {
 // shard leaves, so there is never more than one file below the first line and Open still opens.
 func TestAFailedUnlinkIsFinishedBeforeAnotherRetirement(t *testing.T) {
 	dir := t.TempDir()
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // a test temp dir back to its owner
 	s := sealedFour(t, dir)
 	mark(t, s, 2, at(3))
 	onDay(s, 100)
