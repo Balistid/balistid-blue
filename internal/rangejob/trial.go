@@ -34,6 +34,20 @@ const (
 	MetricReady     = "ready_s"
 	MetricExposure  = "systemd_exposure"
 	MetricCPU       = "cpu_cores"
+	MetricSilence   = "silence_alarm_s"
+	MetricQuiet     = "announced_quiet_max_h"
+)
+
+// Injections of an alarm trial (ADR 0036): the host side of the tunnel down, the ledger killed and kept
+// stopped, or a hard stop of the host's units and links, each without an announcement; or an announcement
+// and then the host off, the ledger masked while the rest returns, or a brief return and a second one.
+const (
+	InjectWireGuard   = "wireguard"
+	InjectLedger      = "ledger"
+	InjectHardStop    = "hard-stop"
+	InjectQuietOff    = "quiet-off"
+	InjectQuietMasked = "quiet-masked"
+	InjectQuietAgain  = "quiet-again"
 )
 
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
@@ -41,7 +55,8 @@ const (
 // collector failure kills or resets the collector under load; a record trial stores oversized and
 // malformed records, a refusal trial floods the socket from refused peers, a ready trial times a boot to
 // health OK, an exposure trial scores the recorder's units and a CPU trial times the collector's processes under
-// exec load (ADR 0023).
+// exec load (ADR 0023), an alarm trial times the Pi's alert at the range's ntfy sink after an injection
+// (ADR 0036).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -51,12 +66,15 @@ const (
 	MethodReady            = "ready"
 	MethodExposure         = "exposure"
 	MethodCPU              = "cpu"
+	MethodAlarm            = "alarm"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
 // judges the run INVALID.
 func (tr Trial) Method() string {
 	switch {
+	case tr.Inject != "":
+		return alarmMethod(tr)
 	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
 		return ""
 	case tr.Failure != "" && tr.Load.Kind == LoadWrite:
@@ -79,6 +97,16 @@ func (tr Trial) Method() string {
 		return MethodExposure
 	case tr.Metric == MetricCPU && tr.Load.Kind == LoadExec && !tr.Load.Drop:
 		return MethodCPU
+	}
+	return ""
+}
+
+// alarmMethod is MethodAlarm for an injection of tr's metric and nothing else, else "".
+func alarmMethod(tr Trial) string {
+	silence := tr.Inject == InjectWireGuard || tr.Inject == InjectLedger || tr.Inject == InjectHardStop
+	quiet := tr.Inject == InjectQuietOff || tr.Inject == InjectQuietMasked || tr.Inject == InjectQuietAgain
+	if tr.Load == (Load{}) && tr.Failure == "" && (tr.Metric == MetricSilence && silence || tr.Metric == MetricQuiet && quiet) {
+		return MethodAlarm
 	}
 	return ""
 }
@@ -111,7 +139,8 @@ type WriterPolicy struct {
 // Trial is one entry of the closed table of acceptance trials (ADR 0018, point 1). Metric is the
 // acceptance metric it measures; a control instead checks the measurement of that metric and must
 // give Expect, never counting for the metric. Wall bounds all its boots, Serial each boot's output;
-// Count trials of it fit one batch. Failure is FailReset or FailKill for a failure trial. A Trend
+// Count trials of it fit one batch. Failure is FailReset or FailKill for a failure trial, Inject what an
+// alarm trial does to the host. A Trend
 // trial measures its metric for comparison between commits and never decides it: that metric is
 // decided outside the range (ADR 0025).
 type Trial struct {
@@ -125,6 +154,7 @@ type Trial struct {
 	Count   int
 	Failure string
 	Load    Load
+	Inject  string
 	Trend   bool
 }
 
@@ -174,6 +204,22 @@ var trials = slices.Concat([]Trial{
 		{Name: "exposure", Metric: MetricExposure, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
+	},
+	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
+	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).
+	[]Trial{
+		{Name: "silence-wireguard", Metric: MetricSilence, Wall: 20 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+			Count: 1, Inject: InjectWireGuard},
+		{Name: "silence-ledger", Metric: MetricSilence, Wall: 20 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+			Count: 1, Inject: InjectLedger},
+		{Name: "silence-hard-stop", Metric: MetricSilence, Wall: 20 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+			Count: 1, Inject: InjectHardStop},
+		{Name: "quiet-off", Metric: MetricQuiet, Wall: 26 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Inject: InjectQuietOff, Trend: true},
+		{Name: "quiet-masked", Metric: MetricQuiet, Wall: 26 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Inject: InjectQuietMasked, Trend: true},
+		{Name: "quiet-again", Metric: MetricQuiet, Wall: 26 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Inject: InjectQuietAgain, Trend: true},
 	},
 )
 
