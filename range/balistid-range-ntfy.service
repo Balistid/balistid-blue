@@ -1,0 +1,32 @@
+# Range image only (ADR 0036): stands in for ntfy behind the Pi's watcher, in the Pi's namespace, and keeps
+# the time and tag of each push for the alarm trials. It starts before the watcher, whose failed pushes back off.
+[Unit]
+Description=Balistid Blue range: ntfy sink for the Pi's alerts
+Requires=balistid-range-pi-net.service
+After=balistid-range-pi-net.service
+Before=balistid-pi.service
+
+[Service]
+Type=notify
+DynamicUser=yes
+User=balistid-range-ntfy
+RuntimeDirectory=balistid-range-ntfy
+RuntimeDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/lib/balistid-range/guest ntfy-sink
+NetworkNamespacePath=/run/netns/balistid-pi
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET
+MemoryMax=64M
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
