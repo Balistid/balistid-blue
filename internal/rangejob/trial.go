@@ -40,7 +40,7 @@ const (
 // numbered events in the store; a writer failure kills or resets the measured writer of a control; a
 // collector failure kills or resets the collector under load; a record trial stores oversized and
 // malformed records, a refusal trial floods the socket from refused peers, a ready trial times a boot to
-// health OK, an exposure trial scores the collector's unit and a CPU trial times its processes under
+// health OK, an exposure trial scores the recorder's units and a CPU trial times the collector's processes under
 // exec load (ADR 0023).
 const (
 	MethodRate             = "rate"

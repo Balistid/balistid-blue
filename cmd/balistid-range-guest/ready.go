@@ -82,15 +82,9 @@ func parseUptime(s string) (time.Duration, error) {
 	return time.Duration(sec * float64(time.Second)), nil
 }
 
-// rangeOnlyUnits are the image's own units, never installed on a host; balistid-auditstat has its own
-// metric (systemd_exposure_auditstat).
-var rangeOnlyUnits = map[string]bool{
-	"balistid-range-guest.service": true, "balistid-range-store.service": true, "balistid-auditstat.service": true,
-}
-
 // runExposure reports systemd-analyze's overall exposure of every Balistid Blue service the image has
-// but its own and auditstat, as the range runs them with their drop-ins (systemd_exposure, ADR 0023
-// point 5), as "unit=value,..."; the host judges each value's form and size.
+// but rangevm.UnscoredUnits, as the range runs them with their drop-ins (systemd_exposure, ADR 0023
+// point 5), as "unit=value,..."; the host judges each value's form and size and the set of units.
 func runExposure(ctx context.Context, r *report) error {
 	list, err := exec.CommandContext(ctx, "/usr/bin/systemctl", "list-unit-files", "--type=service", "--no-legend", "--plain",
 		"balistid-*.service").Output()
@@ -113,11 +107,12 @@ func runExposure(ctx context.Context, r *report) error {
 	return r.send(r.facts)
 }
 
-// productUnits are the services of list-unit-files output that are not range-only.
+// productUnits are the services of list-unit-files output that are not in rangevm.UnscoredUnits.
 func productUnits(list string) []string {
+	unscored := rangevm.UnscoredUnits()
 	var units []string
 	for _, line := range strings.Split(list, "\n") {
-		if f := strings.Fields(line); len(f) > 0 && !rangeOnlyUnits[f[0]] {
+		if f := strings.Fields(line); len(f) > 0 && !unscored[f[0]] {
 			units = append(units, f[0])
 		}
 	}

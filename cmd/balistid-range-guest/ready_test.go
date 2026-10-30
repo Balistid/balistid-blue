@@ -64,11 +64,13 @@ func TestExposureOf(t *testing.T) {
 	}
 }
 
-// Every Balistid Blue service is scored but the range's own and auditstat.
+// Every Balistid Blue service is scored but the range's own and the Pi's; an unknown one is reported, so
+// the host's judge refuses the set.
 func TestProductUnits(t *testing.T) {
 	list := "balistid-collector.service enabled disabled\nbalistid-range-guest.service static -\n" +
-		"balistid-range-store.service static -\nbalistid-auditstat.service disabled disabled\nbalistid-normalizer.service disabled disabled\n"
-	if got := strings.Join(productUnits(list), " "); got != "balistid-collector.service balistid-normalizer.service" {
+		"balistid-range-store.service static -\nbalistid-ledger.service disabled disabled\n" +
+		"balistid-pi.service disabled disabled\nbalistid-range-witness.service static -\nbalistid-normalizer.service disabled disabled\n"
+	if got := strings.Join(productUnits(list), " "); got != "balistid-collector.service balistid-ledger.service balistid-normalizer.service" {
 		t.Errorf("units %q", got)
 	}
 }

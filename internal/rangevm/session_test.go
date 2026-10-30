@@ -1454,6 +1454,27 @@ func TestBuildBuildsTheCollector(t *testing.T) {
 	}
 }
 
+// Every service the image installs is either scored for systemd_exposure or not the host's, never both
+// and never neither, so a unit added to the image is placed before an exposure trial turns INVALID.
+func TestImageServicesAreScoredOrUnscored(t *testing.T) {
+	image := map[string]bool{}
+	for _, f := range imageFiles {
+		if dir, unit := filepath.Split(f.dst); dir == "usr/lib/systemd/system/" && strings.HasSuffix(unit, ".service") {
+			image[unit] = true
+		}
+	}
+	placed := ExposureUnits()
+	for unit := range UnscoredUnits() {
+		if placed[unit] {
+			t.Errorf("%s is scored and unscored", unit)
+		}
+		placed[unit] = true
+	}
+	if !maps.Equal(placed, image) {
+		t.Errorf("placed %v, image has %v", slices.Sorted(maps.Keys(placed)), slices.Sorted(maps.Keys(image)))
+	}
+}
+
 // The image's programs and every directory of its tree are 0755 whatever the builder's umask: the
 // collector runs as its own uid, not root, and must reach and exec its binary in the range.
 func TestImageTreeIsOpenToOtherUsers(t *testing.T) {
