@@ -307,14 +307,40 @@ func TestTheCapStopsAppending(t *testing.T) {
 	cfg.CapBytes = 3 * entryBytes
 	l := openLog(t, cfg)
 	defer func() { _ = l.Close(t.Context()) }()
-	for _, h := range []entry.Health{{State: entry.StateOK}, {State: entry.StateUnknown, Reason: entry.ReasonStarting}} {
-		if err := l.Health(t.Context(), h); err != nil {
-			t.Fatal(err)
-		}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err != nil {
+		t.Fatal(err)
 	}
-	// The third slot is the final entry's: the log is full, not broken.
-	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); !errors.Is(err, ErrFull) || l.Broken() != nil || !l.Full() {
-		t.Fatalf("third entry under a cap of three: %v, broken %v", err, l.Broken())
+	// The second slot takes the cap's UNKNOWN instead of the entry, the third is the final entry's: the log is
+	// full, not broken (ADR 0036, point 5).
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStarting}); !errors.Is(err, ErrFull) ||
+		l.Broken() != nil || !l.Full() {
+		t.Fatalf("second entry under a cap of three: %v, broken %v", err, l.Broken())
+	}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); !errors.Is(err, ErrFull) {
+		t.Fatalf("an entry after the cap's UNKNOWN: %v", err)
+	}
+	closeLog(t, l)
+	l = openLog(t, cfg) // a restart at the cap logs nothing more
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}); !errors.Is(err, ErrFull) {
+		t.Fatalf("an entry after a restart at the cap: %v", err)
+	}
+	closeLog(t, l)
+	got, _ := logged(t, dir, k)
+	if len(got) != 2 || got[1] != entry.Body(capHealth) {
+		t.Fatalf("log %v; want an OK, then the cap's UNKNOWN once", got)
+	}
+}
+
+// Only the ledger logs the cap's UNKNOWN: a collector claiming it is out of stream, and nothing is logged.
+func TestCollectorCannotClaimTheCap(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, config(dir, k, c))
+	if err := l.Health(t.Context(), capHealth); !errors.Is(err, ErrStream) || l.Broken() != nil {
+		t.Fatalf("the collector's cap health: %v, broken %v", err, l.Broken())
+	}
+	closeLog(t, l)
+	if got, _ := logged(t, dir, k); len(got) != 0 {
+		t.Fatalf("logged %v", got)
 	}
 }
 
@@ -322,7 +348,7 @@ func TestIncompleteConfigIsRefused(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	for _, change := range []func(*Config){
 		func(cfg *Config) { cfg.Signer = nil },
-		func(cfg *Config) { cfg.CapBytes = 2*entryBytes - 1 }, // no slot besides the final entry's
+		func(cfg *Config) { cfg.CapBytes = 3*entryBytes - 1 }, // no slot besides the cap's UNKNOWN and the final entry
 		func(cfg *Config) { cfg.CheckpointInterval = 0 },
 		func(cfg *Config) { cfg.Now = nil },
 		func(cfg *Config) { cfg.Dir = "" },

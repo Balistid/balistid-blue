@@ -43,8 +43,9 @@ var ErrStream = errors.New("anchor: out of stream order")
 // nothing more; the collector's store keeps the records for the next yearly log.
 var ErrFinal = errors.New("anchor: the log ended with its final entry")
 
-// ErrFull marks an append at the cap (host_log_cap_gib): the log takes only its final entry now, in the
-// slot the cap keeps for it (ADR 0030, point 5); the collector's store keeps the records for the next log.
+// ErrFull marks an append at the cap (host_log_cap_gib): the log took its UNKNOWN for the cap and takes only its
+// final entry now, in the slots the cap keeps for them (ADR 0036, point 5); the collector's store keeps the records
+// for the next log.
 var ErrFull = errors.New("anchor: the log is at its cap and takes only its final entry")
 
 // Config opens a log.
@@ -102,8 +103,8 @@ type Log struct {
 // Open locks dir for the process's lifetime, opens its log and reads back where the stream resumes.
 // Close it before cancelling ctx's parent: Tessera finishes its work only on Close.
 func Open(ctx context.Context, cfg Config) (*Log, error) {
-	// The cap keeps its last slot for the final entry, so at least one other must fit.
-	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < 2*entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
+	// The cap keeps its last two slots, for its UNKNOWN and the final entry, so at least one other must fit.
+	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < 3*entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
 		return nil, errors.New("anchor: incomplete config")
 	}
 	lock, err := lockDir(cfg.Dir)
@@ -348,6 +349,9 @@ func (l *Log) Health(ctx context.Context, h entry.Health) error {
 	if h == l.health {
 		return nil
 	}
+	if h.Reason == entry.ReasonLogCap { // the ledger's own, at its cap: a collector claiming it lies
+		return fmt.Errorf("%w: the collector's health claims the log's cap", ErrStream)
+	}
 	if err := l.append(ctx, h); err != nil {
 		return err
 	}
@@ -444,14 +448,21 @@ func (l *Log) cut(ctx context.Context) error {
 	return nil
 }
 
+// capHealth is what the log logs in the first of the two slots its cap keeps: the Pi alarms on it at once.
+var capHealth = entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap}
+
 // append logs one entry and waits until Tessera has integrated it, so entries land in call order and a
-// failure is never followed by a later entry (R6). Only the final entry takes the cap's last slot.
+// failure is never followed by a later entry (R6). The cap keeps its last two slots (ADR 0036, point 5): an
+// entry that reaches the first is refused and capHealth takes it instead, once; the last is the final entry's.
 func (l *Log) append(ctx context.Context, body entry.Body) error {
-	limit := l.maxSize - 1
-	if _, final := body.(entry.Final); final {
-		limit = l.maxSize
-	}
-	if l.size >= limit {
+	_, final := body.(entry.Final)
+	switch {
+	case final && l.size >= l.maxSize, !final && body != entry.Body(capHealth) && l.size > l.maxSize-2:
+		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
+	case !final && body != entry.Body(capHealth) && l.size == l.maxSize-2:
+		if err := l.append(ctx, capHealth); err != nil {
+			return err
+		}
 		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
 	}
 	b, err := entry.Entry{At: l.now().UnixNano(), Body: body}.Encode()
