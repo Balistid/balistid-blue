@@ -38,6 +38,8 @@ const (
 	// floodMax bounds the overflow experiment: each exec makes several records, so this is far
 	// beyond the 16384-entry plugin queue of deploy/auditd/auditd.conf.
 	floodMax = 30000
+	// overflowLogWait bounds how long the overflow line may take to reach the journal.
+	overflowLogWait = 10 * time.Second
 )
 
 type fact struct{ name, value string }
@@ -602,8 +604,23 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 		after = "error: " + err.Error()
 	}
 	lost = valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
-	journal = yesNo(strings.Contains(output(ctx, "/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "cat"), "queue to plugins is full"))
+	journal = journalNames(ctx, func() string {
+		return output(ctx, "/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "cat")
+	}, overflowLogWait, time.Second)
 	return before, after, lost, journal
+}
+
+// journalNames reports whether the journal names the plugin queue's overflow within wait. auditd logs
+// it through syslog, so the line can reach the journal after the flood that caused it has ended.
+func journalNames(ctx context.Context, read func() string, wait, every time.Duration) string {
+	for deadline := time.Now().Add(wait); ; {
+		if strings.Contains(read(), "queue to plugins is full") {
+			return "yes"
+		}
+		if time.Now().After(deadline) || !pause(ctx, every) {
+			return "no"
+		}
+	}
 }
 
 // diagnose prints how the sensor came up to the console, which the host keeps as serial.log, so a

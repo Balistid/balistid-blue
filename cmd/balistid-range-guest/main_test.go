@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -458,5 +459,32 @@ func TestJobEvidenceWaitsThenComparesSamples(t *testing.T) {
 	}
 	if got := kernelLoss("5", "0", "no", "no"); !strings.Contains(got, "went back from 5 to 0") {
 		t.Errorf("a counter going back reads %q", got)
+	}
+}
+
+// The overflow line may reach the journal after the flood: a later read within the wait finds it, a
+// line that never comes or a context that ends gives "no".
+func TestJournalNamesALateOverflowLine(t *testing.T) {
+	late := func(after int) func() string {
+		n := 0
+		return func() string {
+			n++
+			if n > after {
+				return "auditd[1]: queue to plugins is full - dropping event"
+			}
+			return "auditd[1]: started"
+		}
+	}
+	ctx := context.Background()
+	if got := journalNames(ctx, late(2), time.Second, time.Millisecond); got != "yes" {
+		t.Errorf("a line on the third read: %q, want yes", got)
+	}
+	if got := journalNames(ctx, late(1<<30), 20*time.Millisecond, time.Millisecond); got != "no" {
+		t.Errorf("no line within the wait: %q, want no", got)
+	}
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if got := journalNames(ended, late(2), time.Hour, time.Millisecond); got != "no" {
+		t.Errorf("an ended context: %q, want no", got)
 	}
 }
