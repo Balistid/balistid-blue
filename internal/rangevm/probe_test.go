@@ -103,16 +103,19 @@ func TestJudgeReady(t *testing.T) {
 func TestJudgeExposure(t *testing.T) {
 	const c = "balistid-collector.service="
 	const rest = ",balistid-ledger.service=0.8,balistid-relay.service=1.3,balistid-announce.service=0.8," +
-		"balistid-announce-suspend.service=0.8"
+		"balistid-announce-suspend.service=0.8,balistid-pi.service=1.5,balistid-pi-failed.service=1.5"
 	run := func(change ...string) Outcome {
 		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: c + "0.8" + rest}, change...)
 	}
 	tr := trial(t, "exposure")
 	for want, reports := range map[string][]string{
-		Miss: {c + "2.6" + rest, c + "10.0" + rest, c + "0.8" + strings.Replace(rest, "relay.service=1.3", "relay.service=2.6", 1)},
+		Miss: {c + "2.6" + rest, c + "10.0" + rest, c + "0.8" + strings.Replace(rest, "relay.service=1.3", "relay.service=2.6", 1),
+			c + "0.8" + strings.Replace(rest, "pi.service=1.5", "pi.service=9.4", 1),
+			c + "0.8" + strings.Replace(rest, "pi-failed.service=1.5", "pi-failed.service=9.4", 1)},
 		Invalid: {c + "2.55" + rest, c + "2" + rest, "0.8", "laurel.service=0.8", "balistid-normalizer.service=0.8", c + "0.8,", c + "100.0" + rest,
 			c + "0.8,x", c + "0.8" + rest + ",balistid-normalizer.service=2.5", c + "0.8" + rest + ",balistid-runner-build.service=4.6",
 			c + "0.8" + rest + "," + c + "0.8", c + "0.8", c + "0.8" + strings.Replace(rest, ",balistid-ledger.service=0.8", "", 1),
+			c + "0.8" + strings.Replace(rest, ",balistid-pi-failed.service=1.5", "", 1),
 			c + "0.8" + rest + ",balistid-pi.service=0.8", c + "0.8" + rest + ",balistid-range-witness.service=0.8"},
 		Pass: {c + "2.5" + rest, c + "0.0" + rest, strings.TrimPrefix(rest, ",") + "," + c + "0.8"},
 	} {

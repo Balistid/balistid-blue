@@ -1454,13 +1454,30 @@ func TestBuildBuildsTheCollector(t *testing.T) {
 	}
 }
 
-// Every service the image installs is either scored for systemd_exposure or not the host's, never both
-// and never neither, so a unit added to the image is placed before an exposure trial turns INVALID.
+// Every service the image installs is either scored for systemd_exposure or the range's own, never both and
+// never neither, so a unit added to the image is placed before an exposure trial turns INVALID; and every
+// service of deploy/ but the range runner's, which runs on the host outside floor 0 (ADR 0023), is in the
+// image and scored, so none escapes the trial by never being installed in it.
 func TestImageServicesAreScoredOrUnscored(t *testing.T) {
-	image := map[string]bool{}
+	image, sources := map[string]bool{}, map[string]bool{}
 	for _, f := range imageFiles {
-		if dir, unit := filepath.Split(f.dst); dir == "usr/lib/systemd/system/" && strings.HasSuffix(unit, ".service") {
+		sources[f.src] = true
+		dir, unit := filepath.Split(f.dst)
+		if strings.Contains("/"+dir, "/systemd/system/") && !strings.HasSuffix(dir, ".d/") && strings.HasSuffix(unit, ".service") {
 			image[unit] = true
+		}
+	}
+	deployed, err := filepath.Glob("../../deploy/*/*.service")
+	if err != nil || len(deployed) == 0 {
+		t.Fatalf("deploy services: %v, %v", deployed, err)
+	}
+	for _, path := range deployed {
+		src := strings.TrimPrefix(path, "../../")
+		if strings.HasPrefix(src, "deploy/runner/") {
+			continue
+		}
+		if !sources[src] || !ExposureUnits()[filepath.Base(src)] {
+			t.Errorf("%s: in the image %v, scored %v", src, sources[src], ExposureUnits()[filepath.Base(src)])
 		}
 	}
 	placed := ExposureUnits()
