@@ -69,6 +69,7 @@ var imageFiles = []struct {
 	{"deploy/pi/balistid-pi-failed.service", "usr/lib/systemd/system/balistid-pi-failed.service", 0o644},
 	{"deploy/pi/sysusers.conf", "usr/lib/sysusers.d/balistid-pi.conf", 0o644},
 	{"range/balistid-pi-range.conf", "usr/lib/systemd/system/balistid-pi.service.d/range.conf", 0o644},
+	{"range/balistid-range-ntfy.service", "usr/lib/systemd/system/balistid-range-ntfy.service", 0o644},
 	{"deploy/announce/balistid-announce.service", "usr/lib/systemd/system/balistid-announce.service", 0o644},
 	{"deploy/announce/balistid-announce-suspend.service", "usr/lib/systemd/system/balistid-announce-suspend.service", 0o644},
 	{"range/balistid-range-witness-key.service", "usr/lib/systemd/system/balistid-range-witness-key.service", 0o644},
