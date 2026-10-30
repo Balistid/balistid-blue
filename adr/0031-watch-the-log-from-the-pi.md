@@ -32,14 +32,14 @@ any body whole; Prometheus with Alertmanager is a service stack for a few checks
    while the witness does not grow past the Pi; it closes after an hour of growth without one, a later
    announcement does not restart it, and at `announced_quiet_max_h` from its first announcement the silence
    alarm runs again. Freshness: no step caught up with the witness for `verify_freshness_s`.
-5. Verified complete bundles are kept in the Pi's state directory, written before the state file that alone says
-   how far they count. At the store cap (part of `pi_store_cap_gib`) it alerts once, stops keeping bundles and
-   goes on verifying. Nothing is deleted automatically: without an RTC a wrong clock would delete evidence; an
-   old origin's directory is removed by hand after `log_retention_days` (R5 exit, by hand).
-6. Alerts go to ntfy by HTTP POST with a token from a systemd credential, never argv, environment or logs, and
-   texts built from typed values only. An alert is sent when its condition starts, again every 6 h while it
-   holds, and retried with backoff; a start message and a daily status message show the Pi alive. A failed
-   unit sends one alert from `OnFailure`.
+5. Complete bundles are staged and kept in the Pi's state directory only once their step's root matched; the
+   state file is read back only when its range gives its root. At the store cap (part of `pi_store_cap_gib`) it
+   alerts, stops keeping bundles and goes on verifying. Nothing is deleted automatically: without an RTC a wrong
+   clock would delete evidence; an old origin's directory is removed by hand after `log_retention_days` (R5).
+6. Alerts go to ntfy over HTTPS by POST with a token from a systemd credential, never argv, environment or logs,
+   texts built from typed values only. An alert goes out when its condition starts, every 6 h while it holds,
+   a key at most once a minute with what was held back sent after, retried with backoff; a daily message shows
+   the Pi alive, a failed unit alerts from `OnFailure`. Triggers fire a minute before their acceptance limit.
 7. `cmd/balistid-pi` and `internal/watch` are code-owned and built for arm64 reproducibly in CI, installed by
    hash. The relay's server and ADR 0030 point 4's served wait follow with a stand-in of this daemon in the range.
 
