@@ -256,6 +256,24 @@ rows = ["T16"]
 adr = "0006"
 method = "Fill test on the Pi image; reaching the cap alerts."
 
+# --- Install (ADR 0034) ---
+
+[[metric]]
+id = "install_minutes"
+max = 10
+unit = "minutes from starting balistid-install on the host to the first test alarm on the phone, with a Pi site"
+rows = ["T27"]
+adr = "0034"
+method = "The maintainer installs a host and a Pi site from released artifacts by the install guide (9.5), timed by the clock; the test alarm comes through the dead-man service's channel and through ntfy. A VPS site is timed as advice."
+
+[[metric]]
+id = "install_manual_steps"
+max = 5
+unit = "steps the maintainer does by hand in the same install, each a command typed or a value copied"
+rows = ["T27"]
+adr = "0034"
+method = "Counted in the same run as install_minutes, from the install guide and every step the guide missed."
+
 # --- Process isolation (ADR 0007) ---
 
 [[metric]]
