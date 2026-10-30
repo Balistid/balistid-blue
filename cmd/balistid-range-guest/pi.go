@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
@@ -35,7 +36,7 @@ func piVerified(ctx context.Context) string {
 			break
 		}
 		if time.Now().After(deadline) {
-			return fmt.Sprintf("error: the relay served %d of %d entries (%v)", n, cp.Size, err)
+			return fmt.Sprintf("error: the relay served %d of %d entries (%v); %s", n, cp.Size, err, piDiag(ctx))
 		}
 	}
 	store, err := watch.OpenStore(piState, keys.Origin)
@@ -61,5 +62,14 @@ func piVerified(ctx context.Context) string {
 			return "error: start " + piUnit + ": " + err.Error()
 		}
 	}
-	return fmt.Sprintf("error: the Pi verified %d of %d entries", l.Size, cp.Size)
+	return fmt.Sprintf("error: the Pi verified %d of %d entries; %s", l.Size, cp.Size, piDiag(ctx))
+}
+
+// piDiag is the watcher's unit state and its last journal lines, bounded, for a fact that failed: the
+// range keeps no guest journal.
+func piDiag(ctx context.Context) string {
+	state := output(ctx, "/usr/bin/systemctl", "show", "--value", "-p", "ActiveState,SubState,Result,NRestarts", piUnit)
+	journal := output(ctx, "/usr/bin/journalctl", "-u", piUnit, "-o", "cat", "--no-pager", "-n", "6")
+	d := strings.Join(strings.Fields(state+" | "+journal), " ")
+	return d[:min(len(d), 1500)]
 }
