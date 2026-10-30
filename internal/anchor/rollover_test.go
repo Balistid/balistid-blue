@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -90,6 +91,48 @@ func TestRolloverCopiesTheTail(t *testing.T) {
 		t.Fatalf("resent seal: %v, size %d", err, l.size)
 	}
 	records(t, l, 4, 4)
+}
+
+// A log that reached its cap keeps its UNKNOWN for the cap: copied, it would alarm on the next log at once.
+func TestRolloverLeavesTheCapEntry(t *testing.T) {
+	f := cosigntest.New(t)
+	old, c := t.TempDir(), &clock{t: time.Unix(1e9, 0)}
+	l := openLog(t, Config{Dir: old, Signer: f.Log, CapBytes: 5 * entryBytes, CheckpointInterval: 100 * time.Millisecond, Now: c.now})
+	records(t, l, 1, 3)
+	if err := l.Seal(t.Context(), entry.Seal{First: 1, Last: 3, SHA256: sha256.Sum256([]byte("shard"))}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}); !errors.Is(err, ErrFull) {
+		t.Fatalf("at the cap: %v", err)
+	}
+	if _, err := l.Final(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	closeLog(t, l)
+	signed, err := os.ReadFile(filepath.Join(old, layout.CheckpointPath)) //nolint:gosec // the test's own directory
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(old, FinalCosignedName), f.Cosign(t, signed, witnessAt))
+	raw := rawEntries(t, old, 5)
+	if e, err := entry.Decode(raw[3]); err != nil || e.Body != entry.Body(capHealth) {
+		t.Fatalf("old log entry 3: %+v, %v", e, err)
+	}
+	cfg := nextConfig(t, next)
+	if err := Rollover(t.Context(), cfg, old, f.Keys); err != nil {
+		t.Fatal(err)
+	}
+	n := openLog(t, cfg)
+	defer closeLog(t, n)
+	if n.size != 3 { // batch, seal and the OK health, without the cap's UNKNOWN
+		t.Fatalf("the new log starts with %d entries", n.size)
+	}
+	if got := rawEntries(t, cfg.Dir, 3); !bytes.Equal(got[2], raw[2]) {
+		t.Fatal("the new log's third entry is not the old log's OK health")
+	}
 }
 
 func TestRolloverRefuses(t *testing.T) {
