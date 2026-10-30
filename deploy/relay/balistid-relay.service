@@ -14,9 +14,10 @@ User=balistid-relay
 Group=balistid-relay
 # The log's tiles are 0640/0750 of the ledger's group: read, never write (ProtectSystem=strict).
 SupplementaryGroups=balistid-ledger
-# balistid-install writes BALISTID_WITNESS_URL and the address it names into IPAddressAllow (drop-in).
+# balistid-install writes BALISTID_WITNESS_URL and the address it names into IPAddressAllow (drop-in), and
+# BALISTID_RELAY_LISTEN, the host's WireGuard address where the Pi, the same address, reads bundles (ADR 0031).
 EnvironmentFile=/etc/balistid/relay.env
-ExecStart=/usr/local/lib/balistid/balistid-relay -submit ${BALISTID_WITNESS_URL}
+ExecStart=/usr/local/lib/balistid/balistid-relay -submit ${BALISTID_WITNESS_URL} -listen ${BALISTID_RELAY_LISTEN}
 StateDirectory=balistid/relay
 StateDirectoryMode=0750
 UMask=0077

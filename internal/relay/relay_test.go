@@ -26,6 +26,7 @@ import (
 	fnote "github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
+	"github.com/transparency-dev/tessera/api/layout"
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
@@ -330,6 +331,16 @@ func TestRelayOnlyReadsTheLog(t *testing.T) {
 	})
 	if err := r.Step(t.Context()); err != nil {
 		t.Fatalf("relay needs to write the log: %v", err)
+	}
+	// serving reads the log only as well (ADR 0031)
+	srv, err := NewServer(f.dir, t.TempDir(), origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close() //nolint:errcheck // read-only
+	size := f.cosigned(t)
+	if w := get(srv, http.MethodGet, "/"+layout.EntriesPath(0, uint8(size%layout.EntryBundleWidth))); w.Code != http.StatusOK {
+		t.Fatalf("a read-only log was not served: %d", w.Code)
 	}
 	if after := snapshot(t, f.dir); !reflect.DeepEqual(before, after) {
 		t.Fatal("the log changed")
