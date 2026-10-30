@@ -9,11 +9,10 @@ import (
 )
 
 const (
-	stepLimit   = 5 * time.Minute // one step's fetches, a day's log at worst
-	saveEvery   = time.Minute
-	daily       = 24 * time.Hour
-	eventEvery  = 10 * time.Minute // the same kind of event alerts again after this
-	remindEvery = 6 * time.Hour    // a condition that holds alerts again after this
+	saveEvery = time.Minute
+	daily     = 24 * time.Hour
+	// RuleVersion names the rules a verification decision follows, in its log line (ENGINEERING.md 3).
+	RuleVersion = "balistid/watch v1"
 )
 
 // Config is one Pi watching one origin.
@@ -39,8 +38,8 @@ func Run(ctx context.Context, c Config) error {
 		return err
 	}
 	now := c.Now()
-	x := &watcher{c: c, log: l, dog: NewWatchdog(c.Limits, now, quiet), saved: now, daily: now}
-	c.Push.Raise(KeyStart, fmt.Sprintf("watching the log from %d verified entries", l.Size), 0)
+	x := &watcher{c: c, log: l, dog: NewWatchdog(c.Limits, now, quiet, l.Rules.Pending), saved: now, daily: now}
+	c.Push.Event(KeyStart, fmt.Sprintf("watching the log from %d verified entries", l.Size))
 	t := time.NewTicker(c.Poll)
 	defer t.Stop()
 	for {
@@ -75,20 +74,35 @@ type watcher struct {
 	dog          *Watchdog
 	fork         string // the last step's fork or mismatch, until a step verifies
 	dirty        bool
+	grown        uint64 // entries verified since the last accept line
 	saved, daily time.Time
 }
 
 func (x *watcher) step(ctx context.Context) {
-	now := x.c.Now()
-	behind := false
+	// unread, the witness may have grown: only a read that shows it has not lets an announcement quiet
+	behind := true
 	h, err := x.c.Source.Head(ctx, x.c.Origin)
 	if err != nil {
 		slog.WarnContext(ctx, "watch: witness unreadable", "err", err)
 	} else {
+		x.advance(ctx, h)
 		behind = h.Size > x.log.Size
-		x.advance(ctx, now, h)
-		behind = behind && h.Size > x.log.Size
 	}
+	now := x.c.Now()
+	conds := x.alarm(ctx, now, behind)
+	if x.dirty || now.Sub(x.saved) >= saveEvery {
+		x.save(ctx, now)
+	}
+	if now.Sub(x.daily) >= daily {
+		x.daily = now
+		x.c.Push.Event(KeyDaily, fmt.Sprintf("%d entries verified, %d alerts holding", x.log.Size, conds))
+	}
+}
+
+// alarm raises the conditions that hold at now and clears the others, sends what was held back and
+// tells systemd the watcher lives. It runs after each step and after each bundle of a long one, so a
+// relay that serves slowly delays no alarm.
+func (x *watcher) alarm(ctx context.Context, now time.Time, behind bool) int {
 	conds := x.dog.Conditions(now, behind)
 	if x.fork != "" {
 		conds[KeyFork] = x.fork
@@ -98,53 +112,80 @@ func (x *watcher) step(ctx context.Context) {
 	}
 	for _, k := range conditions {
 		if text, ok := conds[k]; ok {
-			x.c.Push.Raise(k, text, remindEvery)
+			x.c.Push.Hold(k, text)
 		} else {
 			x.c.Push.Clear(k)
 		}
 	}
-	if x.dirty || now.Sub(x.saved) >= saveEvery {
-		x.save(ctx, now)
-	}
-	if now.Sub(x.daily) >= daily {
-		x.daily = now
-		x.c.Push.Raise(KeyDaily, fmt.Sprintf("%d entries verified, %d alerts holding", x.log.Size, len(conds)), 0)
-	}
+	x.c.Push.Flush()
 	if err := x.c.Notify("WATCHDOG=1"); err != nil {
 		slog.WarnContext(ctx, "watch: watchdog notify failed", "err", err)
 	}
+	return len(conds)
 }
 
-// advance verifies up to the witness's head. A fetch that fails is logged and left to the silence and
-// freshness alarms: the host withholding bundles looks exactly like that.
-func (x *watcher) advance(ctx context.Context, now time.Time, h Head) {
-	sctx, cancel := context.WithTimeout(ctx, stepLimit)
-	next, f, err := Advance(sctx, x.log, h, x.c.Source.Bundle, x.c.Store.Keep)
-	cancel()
-	switch {
-	case errors.Is(err, ErrFork) || errors.Is(err, ErrMismatch):
-		x.fork = err.Error()
-		return
-	case err != nil:
+// advance verifies up to the witness's head, however long the backlog: each request has its timeout, and
+// the alarms run between bundles. A fetch that fails is logged and left to the silence and freshness
+// alarms: the host withholding bundles looks exactly like that.
+func (x *watcher) advance(ctx context.Context, h Head) {
+	fetch := func(ctx context.Context, idx, w uint64) ([][]byte, error) {
+		b, err := x.c.Source.Bundle(ctx, idx, w)
+		x.alarm(ctx, x.c.Now(), true)
+		return b, err
+	}
+	next, f, err := Advance(ctx, x.log, h, fetch, x.c.Store.Stage)
+	now := x.c.Now()
+	if err != nil {
+		if derr := x.c.Store.Discard(); derr != nil {
+			slog.ErrorContext(ctx, "watch: staged bundles not dropped", "err", derr)
+		}
+		if errors.Is(err, ErrFork) || errors.Is(err, ErrMismatch) {
+			if x.fork != err.Error() {
+				slog.WarnContext(ctx, "watch: log refused", "decision", "refuse", "reason", reason(err), "rule", RuleVersion,
+					"size", x.log.Size, "witness_size", h.Size, "err", err)
+			}
+			x.fork = err.Error()
+			return
+		}
 		slog.WarnContext(ctx, "watch: log not verified", "err", err)
 		return
 	}
+	if err := x.c.Store.Keep(); err != nil {
+		slog.ErrorContext(ctx, "watch: verified bundles not kept", "err", err)
+		x.c.Push.Event(KeySave, "the Pi could not keep verified bundles")
+	}
 	x.fork = ""
 	x.log = next
-	x.dirty = x.dirty || f.Complete
+	x.dirty = x.dirty || len(f.Staged) > 0
 	if f.Entries > 0 {
+		x.grown += f.Entries
 		for _, e := range x.dog.Grew(now, f, next.Rules) {
-			x.c.Push.Raise(e.Key, e.Text, eventEvery)
+			slog.WarnContext(ctx, "watch: log alarm", "decision", "alarm", "reason", string(e.Key), "rule", RuleVersion,
+				"size", next.Size, "text", e.Text)
+			x.c.Push.Event(e.Key, e.Text)
 		}
 	}
 	x.dog.Caught(now)
 }
 
+func reason(err error) string {
+	if errors.Is(err, ErrFork) {
+		return "fork"
+	}
+	return "mismatch"
+}
+
 func (x *watcher) save(ctx context.Context, now time.Time) {
 	if err := x.c.Store.Save(x.log, x.dog.Quiet(now)); err != nil {
 		slog.ErrorContext(ctx, "watch: state not saved", "err", err)
-		x.c.Push.Raise(KeySave, "the Pi could not save its state", eventEvery)
+		x.c.Push.Event(KeySave, "the Pi could not save its state")
 		return
+	}
+	x.c.Push.Clear(KeySave)
+	if x.grown > 0 {
+		slog.InfoContext(ctx, "watch: log verified", "decision", "accept", "reason", "root", "rule", RuleVersion,
+			"size", x.log.Size, "entries", x.grown)
+		x.grown = 0
 	}
 	x.saved, x.dirty = now, false
 }

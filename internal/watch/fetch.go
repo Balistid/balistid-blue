@@ -120,7 +120,7 @@ func (s Source) get(ctx context.Context, u string, limit int) ([]byte, error) {
 	case http.StatusNotFound:
 		return nil, errMissing
 	default:
-		return nil, fmt.Errorf("get: %s", resp.Status)
+		return nil, fmt.Errorf("get: status %d", resp.StatusCode) // the reason phrase is the server's text
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {

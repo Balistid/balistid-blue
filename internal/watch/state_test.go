@@ -3,6 +3,7 @@ package watch
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/transparency-dev/tessera/api/layout"
+
+	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
 func TestStoreRoundTrip(t *testing.T) {
@@ -91,7 +94,10 @@ func TestPiStoreCapAlerts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log), s.Keep)
+	l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log), s.Stage)
+	if err == nil {
+		err = s.Keep()
+	}
 	if err != nil || l.Size != uint64(len(log)) || !s.Full() {
 		t.Fatalf("size %d, full %v, err %v: verification must go on at the cap", l.Size, s.Full(), err)
 	}
@@ -104,31 +110,97 @@ func TestPiStoreCapAlerts(t *testing.T) {
 	}
 }
 
-// Bundles kept during a step whose root fails count for nothing: the state is not saved, and the next
-// verified step writes the genuine bundle over them.
-func TestMirrorHoldsOnlyVerified(t *testing.T) {
+func TestStoreFullAtExactCap(t *testing.T) {
 	log := enc(t, batches(width)...)
+	s, err := OpenStore(t.TempDir(), "balistid/log", int64(len(appendBundle(nil, log))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(s.Stage(0, log), s.Keep()); err != nil || !s.Full() {
+		t.Fatalf("full %v, %v", s.Full(), err)
+	}
+}
+
+// A step whose root fails keeps nothing: what it staged is dropped, at the cap too, where a forged bundle
+// would otherwise stay in place of the genuine one (the host failing the step on a later bundle, or forging).
+func TestMirrorHoldsOnlyVerified(t *testing.T) {
+	log := enc(t, batches(width+5)...)
+	forged := append([][]byte(nil), log...)
+	forged[7] = enc(t, batches(9)[8])[0]
+	withheld := func(ctx context.Context, idx, w uint64) ([][]byte, error) {
+		if idx == 1 {
+			return nil, errMissing
+		}
+		return fetchFrom(forged)(ctx, idx, w)
+	}
+	for name, fetch := range map[string]Fetch{"a forged root": fetchFrom(forged), "a later bundle withheld": withheld} {
+		s, err := OpenStore(t.TempDir(), "balistid/log", int64(len(appendBundle(nil, log[:width]))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := Advance(context.Background(), Log{}, headOf(log), fetch, s.Stage); err == nil {
+			t.Fatalf("%s: verified", name)
+		}
+		if err := s.Discard(); err != nil {
+			t.Fatal(err)
+		}
+		l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log), s.Stage)
+		if err == nil {
+			err = errors.Join(s.Keep(), s.Save(l, nil))
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		b, err := os.ReadFile(filepath.Join(s.dir, layout.EntriesPath(0, 0)))
+		if err != nil || !bytes.Equal(b, appendBundle(nil, log[:width])) {
+			t.Fatalf("%s: kept bundle is not the verified one: %v", name, err)
+		}
+		if names, _ := os.ReadDir(s.staging()); len(names) != 0 {
+			t.Fatalf("%s: %d files left staged", name, len(names))
+		}
+	}
+}
+
+// A state file whose range does not give its root is refused: a step from it would never verify, or
+// verify a log the Pi never saw.
+func TestStoreRefusesInconsistentRange(t *testing.T) {
 	s, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	forged := append([][]byte(nil), log...)
-	forged[7] = enc(t, batches(9)[8])[0]
-	if _, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(forged), s.Keep); !errors.Is(err, ErrMismatch) {
-		t.Fatal(err)
+	l := verified(t, enc(t, batches(300)...))
+	bad := l
+	bad.Hashes = [][]byte{bytes.Repeat([]byte{7}, 32)}
+	other := l
+	other.Partial = append([][]byte(nil), l.Partial...)
+	other.Partial[0] = enc(t, entry.Announce{Kind: entry.AnnounceSuspend})[0]
+	for name, v := range map[string]Log{"a changed range": bad, "a changed partial entry": other} {
+		if err := s.Save(v, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := s.Load(); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
 	}
-	if l, _, err := s.Load(); err != nil || l.Size != 0 {
-		t.Fatalf("after a failed step: size %d, %v", l.Size, err)
-	}
-	l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log), s.Keep)
+}
+
+func FuzzStateParse(f *testing.F) {
+	l := verified(f, enc(f, batches(3)...))
+	q := 5 * time.Hour
+	b, err := json.Marshal(saved{Schema: stateSchema, Origin: "o/log", Size: l.Size, Root: l.Root[:], Hashes: l.Hashes,
+		Partial: l.Partial, Rules: l.Rules, QuietS: new(int64(q.Seconds()))})
 	if err != nil {
-		t.Fatal(err)
+		f.Fatal(err)
 	}
-	if err := s.Save(l, nil); err != nil {
-		t.Fatal(err)
-	}
-	b, err := os.ReadFile(filepath.Join(s.dir, layout.EntriesPath(0, 0)))
-	if err != nil || !bytes.Equal(b, appendBundle(nil, log)) {
-		t.Fatalf("kept bundle is not the verified one: %v", err)
-	}
+	f.Add(b)
+	f.Add([]byte(`{"schema_version":1}`))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		l, q, err := parseState(b, "o/log")
+		if err != nil {
+			return
+		}
+		if l.check() != nil || (q != nil && *q < 0) {
+			t.Fatalf("parsed a state that does not hold: %+v", l)
+		}
+	})
 }
