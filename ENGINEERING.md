@@ -32,7 +32,7 @@ A change is done when all of these hold, verified now and not from memory:
 | R10 | Every detection and boundary names its `THREAT_MODEL.md` row and ships an attack scenario that triggers it and a legitimate one that does not. |
 | R11 | Every commit carries exactly one `Agent:` trailer (`alex`, `claude/<model>`, `codex/<model>`). No advertising trailers. |
 | R12 | Running floor first, document second. Only the files in the docs allowlist exist (`tools/ci/docs_budget.py`). |
-| R13 | Minimal root surface: only the installer runs as root; the one long-running privileged process is `balistid-auditstat` (`CAP_AUDIT_CONTROL`), every other runs as its own uid without privilege (ADR 0007). UI and CLI are unprivileged, talk to the daemon over a Unix socket checked with `SO_PEERCRED`, and never call `sudo`. |
+| R13 | Minimal root surface: only the installer runs as root; the one long-running privileged process is `balistid-auditstat` (`CAP_AUDIT_CONTROL`), and `balistid-net` holds `CAP_NET_ADMIN` only for its start at boot (ADR 0032); every other runs as its own uid without privilege (ADR 0007). UI and CLI are unprivileged, talk to the daemon over a Unix socket checked with `SO_PEERCRED`, and never call `sudo`. |
 | R14 | Dependencies and CI actions are pinned by hash; builds use the lock only. A dependency update is its own commit. |
 
 ## 3. Code
