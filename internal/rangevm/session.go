@@ -65,6 +65,10 @@ var imageFiles = []struct {
 	{"deploy/relay/balistid-relay.service", "usr/lib/systemd/system/balistid-relay.service", 0o644},
 	{"deploy/relay/sysusers.conf", "usr/lib/sysusers.d/balistid-relay.conf", 0o644},
 	{"range/balistid-relay-range.conf", "usr/lib/systemd/system/balistid-relay.service.d/range.conf", 0o644},
+	{"deploy/pi/balistid-pi.service", "usr/lib/systemd/system/balistid-pi.service", 0o644},
+	{"deploy/pi/balistid-pi-failed.service", "usr/lib/systemd/system/balistid-pi-failed.service", 0o644},
+	{"deploy/pi/sysusers.conf", "usr/lib/sysusers.d/balistid-pi.conf", 0o644},
+	{"range/balistid-pi-range.conf", "usr/lib/systemd/system/balistid-pi.service.d/range.conf", 0o644},
 	{"deploy/announce/balistid-announce.service", "usr/lib/systemd/system/balistid-announce.service", 0o644},
 	{"deploy/announce/balistid-announce-suspend.service", "usr/lib/systemd/system/balistid-announce-suspend.service", 0o644},
 	{"range/balistid-range-witness-key.service", "usr/lib/systemd/system/balistid-range-witness-key.service", 0o644},
@@ -88,6 +92,7 @@ var guestPrograms = []imageProgram{
 	{"collector program", ".", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
 	{"ledger program", ".", "./cmd/balistid-ledger", "usr/local/lib/balistid/balistid-ledger"},
 	{"relay program", ".", "./cmd/balistid-relay", "usr/local/lib/balistid/balistid-relay"},
+	{"Pi watcher program", ".", "./cmd/balistid-pi", "usr/local/lib/balistid/balistid-pi"},
 }
 
 // witnessPrograms are the pinned litewitness and its control tool, from range/witness.

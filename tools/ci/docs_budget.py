@@ -111,6 +111,8 @@ LAYOUT: tuple[str, ...] = (
     "deploy/pi/balistid-pi-failed.service",
     # The relay and a pinned litewitness in the range image, its own module (ADR 0026, point 5).
     "range/balistid-relay-range.conf",
+    # The Pi's watcher standing in for the Pi in the range image (ADR 0031).
+    "range/balistid-pi-range.conf",
     "range/balistid-range-witness-key.service",
     "range/balistid-range-witness-agent.service",
     "range/balistid-range-witness.service",
