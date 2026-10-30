@@ -82,6 +82,7 @@ var expected = map[string]string{
 	"shard_cosigned":         "yes",
 	"announce_cosigned":      "yes",
 	"suspend_announced":      "yes",
+	"pi_verified":            "yes",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

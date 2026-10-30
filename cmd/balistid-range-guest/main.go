@@ -181,6 +181,16 @@ func run() error {
 		}
 	}
 
+	// The Pi's watcher verified what the relay served it, up to the witness's checkpoint (ADR 0031).
+	pv := piVerified(ctx)
+	add("pi_verified", pv)
+	if pv != "yes" {
+		for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", "balistid-pi.service", "-u",
+			"balistid-relay.service", "-o", "cat", "--no-pager", "-n", "40"), "\n") {
+			fmt.Printf("balistid-range-guest: pi: %.400q\n", line)
+		}
+	}
+
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)
 	add("overflow_before", before)
