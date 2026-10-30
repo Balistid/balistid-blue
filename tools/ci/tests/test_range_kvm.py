@@ -135,6 +135,35 @@ class FailsClosed(unittest.TestCase):
             self.assertIsNotNone(stop, lines)
             self.assertEqual(lines[at + 1], f"::{stop[1]}::")
 
+    def result(self, body: str, run_id: str = "20261030T054612Z-2d22e141") -> Path:
+        state = self.work / "w" / "state"
+        out = state / "balistid-range" / "results" / run_id
+        out.mkdir(parents=True)
+        (out / "result.json").write_text(body, encoding="utf-8")
+        return state
+
+    def test_a_failed_verdict_becomes_one_escaped_annotation(self) -> None:
+        state = self.result('{"verdict": "FAIL", "reason": "pi_reach=\\"x\\"\\n::set-output name=a::b\\r 100%"}')
+        line = range_kvm.verdict_annotation(state)
+        self.assertEqual(line, "::error title=range-kvm self-test::FAIL: pi_reach=\"x\"%0A::set-output name=a::b%0D 100%25")
+        self.assertNotRegex(line, "[\r\n]")
+
+    def test_a_passing_run_or_none_gives_no_annotation_and_garbage_one(self) -> None:
+        self.assertIsNone(range_kvm.verdict_annotation(self.work / "w" / "state"))
+        state = self.result('{"verdict": "PASS", "reason": "all facts"}')
+        self.assertIsNone(range_kvm.verdict_annotation(state))
+        self.result("[1, 2]", run_id="20261030T060000Z-ffffffff")
+        self.assertIn("could not be read", range_kvm.verdict_annotation(state))
+
+    def test_the_annotation_comes_after_workflow_commands_are_back(self) -> None:
+        out = io.StringIO()
+        with mock.patch.object(range_kvm, "verdict_annotation", return_value="::error::FAIL"), \
+                contextlib.redirect_stdout(out):
+            self.main(run=Recorder(exit=1), kvm=Path("/dev/null"))
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[-1], "::error::FAIL")
+        self.assertRegex(lines[-2], r"::[0-9a-f]{32}::")
+
 
 class Workflow(unittest.TestCase):
     def test_job_runs_the_script_with_no_secret_or_write_permission(self) -> None:
