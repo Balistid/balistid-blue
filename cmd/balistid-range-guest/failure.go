@@ -74,6 +74,8 @@ type failEnv struct {
 	writer    func(ctx context.Context, args ...string) *exec.Cmd
 	numbers   string
 	failAfter func(span time.Duration) (time.Duration, error)
+	// freezeWait bounds how long the writer may take to answer Freeze; zero answers never in time.
+	freezeWait time.Duration
 }
 
 var guestEnv = failEnv{
@@ -92,10 +94,8 @@ var guestEnv = failEnv{
 		}
 		return span/2 + time.Duration(extra.Int64()), nil
 	},
+	freezeWait: time.Second,
 }
-
-// freezeWait bounds how long the writer may take to answer Freeze.
-const freezeWait = time.Second
 
 // loadAndFail hands numbers to the writer until the failure moment, freezes the writer so its synced
 // state is final, takes H, writes the fail mark with H and S, and fails: a reset, or SIGKILL of the
@@ -184,7 +184,7 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report, env failEnv)
 	case <-frozen:
 	case <-waited:
 		return fail("the writer ended before it froze")
-	case <-time.After(freezeWait):
+	case <-time.After(env.freezeWait):
 		return fail("the writer did not freeze")
 	}
 	taken := time.Now()

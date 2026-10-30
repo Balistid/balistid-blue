@@ -43,7 +43,14 @@ type flowResult struct {
 	numbersBytes []byte
 }
 
+const freezeWaitInTests = 10 * time.Second
+
 func flow(t *testing.T, name string, drain func(*os.File, *exec.Cmd) error) flowResult {
+	t.Helper()
+	return flowWaiting(t, name, drain, freezeWaitInTests)
+}
+
+func flowWaiting(t *testing.T, name string, drain func(*os.File, *exec.Cmd) error, freezeWait time.Duration) flowResult {
 	t.Helper()
 	tr, ok := rangejob.Lookup(name)
 	if !ok {
@@ -87,6 +94,8 @@ func flow(t *testing.T, name string, drain func(*os.File, *exec.Cmd) error) flow
 		},
 		numbers:   numbers,
 		failAfter: func(time.Duration) (time.Duration, error) { return 1500 * time.Millisecond, nil },
+		// The writer syncs every 250 ms; on a loaded CI disk one fsync can outlast the guest's 1 s.
+		freezeWait: freezeWait,
 	}
 	r := &report{send: func(f []fact) error { res.facts = f; return nil }}
 	_ = loadAndFail(t.Context(), tr, r, env)
@@ -134,6 +143,17 @@ func TestResetMeetsAFrozenWriter(t *testing.T) {
 	}
 	if v, ok := factValueOf(res.facts, rangevm.FactTrialError); !ok || v != "sysrq b did not reset the guest" {
 		t.Errorf("after a reset that returned: %v", res.facts)
+	}
+}
+
+// A writer that does not answer Freeze within the environment's bound is a trial error, never a failure.
+func TestWriterNotFrozenInTimeIsATrialError(t *testing.T) {
+	res := flowWaiting(t, "reset-control-sync250", func(*os.File, *exec.Cmd) error { return nil }, time.Nanosecond)
+	if res.resetAsked || failMarkRE.MatchString(res.console) {
+		t.Errorf("reset asked %v, console %q: no mark and no reset without a frozen writer", res.resetAsked, res.console)
+	}
+	if v, ok := factValueOf(res.facts, rangevm.FactTrialError); !ok || v != "the writer did not freeze" {
+		t.Errorf("facts %v", res.facts)
 	}
 }
 
