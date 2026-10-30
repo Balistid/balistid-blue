@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,13 +43,20 @@ func announcedLog(t *testing.T, f *cosigntest.Fixture) (dir string, first, secon
 
 var shutdown = Wait{Size: 2, Entry: entry.Announce{Kind: entry.AnnounceShutdown}}
 
+// writeServed writes the relay's served record of origin at path.
+func writeServed(t *testing.T, path, origin string, entries uint64) {
+	t.Helper()
+	write(t, path, cosign.AppendServed(nil, origin, entries))
+}
+
 func TestWaitCosignedReturnsOnceTheEntryIsCosigned(t *testing.T) {
 	f := cosigntest.New(t)
 	dir, first, second := announcedLog(t, f)
 	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
 	write(t, relay.Path, first)
 	w := shutdown
-	w.Dir = dir
+	w.Dir, w.Served = dir, filepath.Join(filepath.Dir(relay.Path), cosign.ServedName)
+	writeServed(t, w.Served, f.Keys.Origin, 2)
 	done := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -84,7 +92,9 @@ func TestWaitCosignedProvesTheEntry(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			write(t, relay.Path, c.note)
-			if _, err := WaitCosigned(t.Context(), relay, Wait{Dir: dir, Size: 2, Entry: c.entry}, time.Millisecond); err == nil {
+			w := Wait{Dir: dir, Size: 2, Entry: c.entry, Served: filepath.Join(t.TempDir(), cosign.ServedName)}
+			writeServed(t, w.Served, f.Keys.Origin, 3)
+			if _, err := WaitCosigned(t.Context(), relay, w, time.Millisecond); err == nil {
 				t.Fatal("waited it out")
 			}
 		})
@@ -102,13 +112,15 @@ func TestWaitCosignedEndsWithItsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := shutdown
-	w.Dir = dir
+	w.Dir, w.Served = dir, filepath.Join(t.TempDir(), cosign.ServedName)
+	writeServed(t, w.Served, f.Keys.Origin, 2)
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	if _, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a wait short of its entry: %v", err)
 	}
-	for _, bad := range []Wait{{Dir: dir, Size: 2}, {Size: 2, Entry: w.Entry}, {Dir: dir, Entry: w.Entry}} {
+	for _, bad := range []Wait{{Dir: dir, Size: 2, Served: w.Served}, {Size: 2, Entry: w.Entry, Served: w.Served},
+		{Dir: dir, Entry: w.Entry, Served: w.Served}, {Dir: dir, Size: 2, Entry: w.Entry}} {
 		if _, err := WaitCosigned(t.Context(), relay, bad, time.Millisecond); err == nil {
 			t.Fatalf("waited for %+v", bad)
 		}
@@ -147,5 +159,52 @@ func TestAnEntryIsProvenAfterItsPartialBundleIsGone(t *testing.T) {
 	}
 	if e, err := cosign.ProvenEntry(t.Context(), dir, cp, 1); err != nil || e.Body != shutdown.Entry {
 		t.Fatalf("entry 1 of the older checkpoint: %+v, %v", e.Body, err)
+	}
+}
+
+// Cosigned is not enough: the announcement is waited on until the relay served its bundle to the Pi
+// (ADR 0030, point 4), and a record of another origin, as before a rollover, serves nothing.
+func TestWaitCosignedWaitsForServed(t *testing.T) {
+	f := cosigntest.New(t)
+	dir, _, second := announcedLog(t, f)
+	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
+	write(t, relay.Path, second)
+	w := shutdown
+	w.Dir, w.Served = dir, filepath.Join(filepath.Dir(relay.Path), cosign.ServedName)
+	writeServed(t, w.Served, f.Keys.Origin, 1)
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		_, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond)
+		done <- err
+	}()
+	for _, step := range []func(){func() { writeServed(t, w.Served, "other/log", 9) }, func() {}} {
+		step()
+		time.Sleep(100 * time.Millisecond)
+		select {
+		case err := <-done:
+			t.Fatalf("returned before the bundle was served: %v", err)
+		default:
+		}
+	}
+	writeServed(t, w.Served, f.Keys.Origin, 2)
+	if err := result(t, done); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWaitUnservedTimesOut(t *testing.T) {
+	f := cosigntest.New(t)
+	dir, _, second := announcedLog(t, f)
+	relay := Relay{Path: filepath.Join(t.TempDir(), cosign.Name), Keys: f.Keys}
+	write(t, relay.Path, second)
+	w := shutdown
+	w.Dir, w.Served = dir, filepath.Join(filepath.Dir(relay.Path), cosign.ServedName)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+	_, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "size 2 not served to the Pi") {
+		t.Fatalf("an unserved wait: %v", err)
 	}
 }

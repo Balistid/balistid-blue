@@ -43,6 +43,8 @@ const (
 	suspendWait  = 10 * time.Second
 	// finalWait is the install step's: it may wait for the witness a while longer.
 	finalWait = time.Minute
+	// waitPoll reads two small files: the cosigned checkpoint and the relay's served record.
+	waitPoll = 250 * time.Millisecond
 	// logRetention is log_retention_days; old logs are checked at start and then hourly.
 	logRetention = 400 * 24 * time.Hour
 	retireEvery  = time.Hour
@@ -154,7 +156,8 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}
-	cp, err := anchor.WaitCosigned(ctx, relay, anchor.Wait{Dir: dir, Size: size, Entry: body}, time.Second)
+	served := filepath.Join(filepath.Dir(relay.Path), cosign.ServedName)
+	cp, err := anchor.WaitCosigned(ctx, relay, anchor.Wait{Dir: dir, Size: size, Entry: body, Served: served}, waitPoll)
 	if err != nil || final == "" {
 		return err //nolint:wrapcheck // anchor errors carry their context
 	}

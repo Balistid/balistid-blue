@@ -171,36 +171,64 @@ func Ask(ctx context.Context, path string, body entry.Body) (uint64, error) {
 
 // Wait is what WaitCosigned waits for: the entry at Size-1 of the log in Dir, as a request asked for it.
 type Wait struct {
-	Dir   string // the ledger's log, whose checkpoint and tiles the client reads
-	Size  uint64 // the log's size once the entry was in, as the ledger answered
-	Entry entry.Body
+	Dir    string // the ledger's log, whose checkpoint and tiles the client reads
+	Size   uint64 // the log's size once the entry was in, as the ledger answered
+	Entry  entry.Body
+	Served string // the relay's served record (cosign.ServedName)
 }
 
-// WaitCosigned reads the relay's cosigned checkpoint every poll until it covers w's entry, proven
-// included and equal to the one asked for (ADR 0030, point 2), and returns that checkpoint; it gives up
-// only when ctx ends, which bounds the wait.
+// WaitCosigned reads the relay's cosigned checkpoint and served record every poll until the checkpoint
+// covers w's entry, proven included and equal to the one asked for (ADR 0030, point 2), and the relay
+// served the bundle holding it to the Pi (point 4), and returns that checkpoint. It gives up only when
+// ctx ends, which bounds the wait.
 func WaitCosigned(ctx context.Context, relay Relay, w Wait, poll time.Duration) (cosign.Checkpoint, error) {
-	if relay.Path == "" || w.Dir == "" || w.Size == 0 || w.Entry == nil || poll <= 0 {
-		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint, log, size, entry or poll to wait with")
+	if relay.Path == "" || w.Dir == "" || w.Size == 0 || w.Entry == nil || w.Served == "" || poll <= 0 {
+		return cosign.Checkpoint{}, errors.New("anchor: no relay checkpoint, served record, log, size, entry or poll to wait with")
 	}
 	t := time.NewTicker(poll)
 	defer t.Stop()
+	var proven *cosign.Checkpoint
 	for {
-		cp, err := cosign.Read(relay.Path, relay.Keys)
-		if err == nil && cp.Size >= w.Size {
-			var e entry.Entry
-			if e, err = cosign.ProvenEntry(ctx, w.Dir, cp, w.Size-1); err == nil && e.Body != w.Entry {
-				err = fmt.Errorf("anchor: entry %d is %+v, not the %+v asked for", w.Size-1, e.Body, w.Entry)
-			}
-			if err != nil {
+		var err error
+		if proven == nil {
+			proven, err = provenCosigned(ctx, relay, w)
+			if proven == nil && err != nil && !errors.Is(err, errNotYet) {
 				return cosign.Checkpoint{}, err
 			}
-			return cp, nil
+		}
+		if proven != nil {
+			var served uint64
+			if served, err = cosign.ReadServed(w.Served, relay.Keys.Origin); err == nil && served >= w.Size {
+				return *proven, nil
+			}
 		}
 		select {
 		case <-ctx.Done():
-			return cosign.Checkpoint{}, fmt.Errorf("anchor: size %d not cosigned: %w", w.Size, errors.Join(ctx.Err(), err))
+			what := "cosigned"
+			if proven != nil {
+				what = "served to the Pi"
+			}
+			return cosign.Checkpoint{}, fmt.Errorf("anchor: size %d not %s: %w", w.Size, what, errors.Join(ctx.Err(), err))
 		case <-t.C:
 		}
 	}
+}
+
+var errNotYet = errors.New("anchor: not cosigned yet")
+
+// provenCosigned is the relay's cosigned checkpoint once it covers w's entry, proven equal to the one asked
+// for; errNotYet before. A proof that fails, or another entry, is an error at once.
+func provenCosigned(ctx context.Context, relay Relay, w Wait) (*cosign.Checkpoint, error) {
+	cp, err := cosign.Read(relay.Path, relay.Keys)
+	if err != nil || cp.Size < w.Size {
+		return nil, errors.Join(errNotYet, err)
+	}
+	e, err := cosign.ProvenEntry(ctx, w.Dir, cp, w.Size-1)
+	if err == nil && e.Body != w.Entry {
+		err = fmt.Errorf("anchor: entry %d is %+v, not the %+v asked for", w.Size-1, e.Body, w.Entry)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cp, nil
 }
