@@ -70,6 +70,7 @@ func piVerified(ctx context.Context) string {
 func piDiag(ctx context.Context) string {
 	state := output(ctx, "/usr/bin/systemctl", "show", "--value", "-p", "ActiveState,SubState,Result,NRestarts", piUnit)
 	journal := output(ctx, "/usr/bin/journalctl", "-u", piUnit, "-o", "cat", "--no-pager", "-n", "6")
-	d := strings.Join(strings.Fields(state+" | "+journal), " ")
+	jobs := output(ctx, "/usr/bin/systemctl", "list-jobs", "--no-legend", "--no-pager")
+	d := strings.Join(strings.Fields(state+" | "+journal+" | jobs: "+jobs), " ")
 	return d[:min(len(d), 1500)]
 }
