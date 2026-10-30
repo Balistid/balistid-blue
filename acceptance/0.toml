@@ -256,31 +256,15 @@ rows = ["T16"]
 adr = "0006"
 method = "Fill test on the Pi image; reaching the cap alerts."
 
-# --- Dead Pi and install (ADR 0034) ---
+# --- Dead Pi (ADR 0034) ---
 
 [[metric]]
 id = "dead_site_alarm_s"
 max = 900
-unit = "s from the Pi dying or losing its push path to the dead-man service's alert on the phone"
+unit = "s from the Pi dying or failing to push to the dead-man service's alert on the phone"
 rows = ["T27"]
 adr = "0034"
-method = "On the Pi (L12), 10 trials each: power it off, cut its uplink, stop balistid-pi, make the ntfy server unreachable; each alerts through the service's non-ntfy channel within the limit. A single ping dropped alerts nothing."
-
-[[metric]]
-id = "install_minutes"
-max = 10
-unit = "minutes to install a host and a Pi from released artifacts until both test alarms are on the phone"
-rows = ["T27"]
-adr = "0034"
-method = "The maintainer installs by the install guide (9.5); the clock starts before the dead-man check, the ntfy topic and their phone channels are set up (accounts exist) and stops when the ntfy and the dead-man test alarms have both arrived."
-
-[[metric]]
-id = "install_manual_steps"
-max = 5
-unit = "hands-on steps in the same install: a command typed, a value copied, a click on a service's page, a device plugged"
-rows = ["T27"]
-adr = "0034"
-method = "Counted in the same run as install_minutes, every step the maintainer takes whether the guide lists it or not; a Pi secret (ntfy token, ping URL) that passes through the host fails the install."
+method = "On the Pi (L12), 10 trials each, the worst phase (right after a ping): power it off, cut its uplink, stop balistid-pi, make ntfy unreachable, revoke the token's write access; each alerts through the service's non-ntfy channel within the limit. One dropped ping, or a push accepted on retry within 3 minutes, alerts nothing."
 
 # --- Process isolation (ADR 0007) ---
 

@@ -22,7 +22,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #155 (a5a8502): the flow writer's freeze bound by its environment, on tmpfs; range-kvm annotates a verdict other
   than PASS. #156 (6f7b345, ADR 0033): review findings carry class and fix risk; CRIT/HIGH fixes get one reply round.
 ## Next step
-1. ADR 0034 (#158): a dead-man ping reports a dead Pi or one whose pushes fail; L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
+1. ADR 0034 (#158): a dead-man ping reports a dead or mute Pi (A6); install numbers with 9.5; L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
    a week of runs, then the maintainer decides on required (0028); no retry yet (b4d9ca3: archive.archlinux.org timeout).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go1.27.3 pinned; GOTOOLCHAIN=local until Arch ships it. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
