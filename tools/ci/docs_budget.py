@@ -105,6 +105,10 @@ LAYOUT: tuple[str, ...] = (
     # Announcements of a clean stop, by exact name (ADR 0030).
     "deploy/announce/balistid-announce.service",
     "deploy/announce/balistid-announce-suspend.service",
+    # The Pi's watcher, installed on the Pi by hand, by exact name (ADR 0031).
+    "deploy/pi/sysusers.conf",
+    "deploy/pi/balistid-pi.service",
+    "deploy/pi/balistid-pi-failed.service",
     # The relay and a pinned litewitness in the range image, its own module (ADR 0026, point 5).
     "range/balistid-relay-range.conf",
     "range/balistid-range-witness-key.service",

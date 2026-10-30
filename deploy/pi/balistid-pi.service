@@ -1,0 +1,63 @@
+# Watches the host's log from the Pi (ADR 0031): reads what the Pi's own litewitness cosigned, verifies the
+# relay's bundles against it and alerts the phone through ntfy. Installed on the Pi by hand, by hash.
+[Unit]
+Description=Balistid Blue Pi: verify the host's log and alert the phone
+After=network-online.target
+Wants=network-online.target
+# A failure alerts each time: with systemd 254 or later a restart passes through the failed state.
+OnFailure=balistid-pi-failed.service
+StartLimitIntervalSec=0
+
+[Service]
+# READY=1 once the token is read; WATCHDOG=1 after each step, a day of log far within the limit.
+Type=notify
+WatchdogSec=10min
+Restart=always
+RestartSec=30s
+RestartSteps=5
+RestartMaxDelaySec=10min
+User=balistid-pi
+Group=balistid-pi
+# BALISTID_PI_ORIGIN, _WITNESS, _RELAY and _NTFY, written on the Pi by its maintainer.
+EnvironmentFile=/etc/balistid-pi/pi.env
+# 0600 root: the service sees the token only in its credential directory, never in argv or environment.
+LoadCredential=ntfy-token:/etc/balistid-pi/ntfy-token
+ExecStart=/usr/local/lib/balistid/balistid-pi -origin ${BALISTID_PI_ORIGIN} -witness ${BALISTID_PI_WITNESS} -relay ${BALISTID_PI_RELAY} -ntfy ${BALISTID_PI_NTFY}
+StateDirectory=balistid-pi
+StateDirectoryMode=0750
+UMask=0077
+MemoryMax=128M
+MemorySwapMax=0
+NoExecPaths=/ /var/lib/balistid-pi /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-pi
+# ntfy is on the internet, so no address allowlist here: the Pi's firewall comes with the Pi (L12, T16).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
