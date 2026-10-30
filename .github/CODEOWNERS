@@ -42,5 +42,7 @@
 /cmd/balistid-collector/ @Jvc0n
 /cmd/balistid-ledger/ @Jvc0n
 /cmd/balistid-relay/ @Jvc0n
+/cmd/balistid-pi/ @Jvc0n
+/internal/watch/ @Jvc0n
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n

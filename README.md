@@ -71,6 +71,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `cmd/balistid-collector/` | Collector daemon: the socket systemd passes, Laurel's lines into the raw store (ADR 0016, 0017) |
 | `cmd/balistid-ledger/` | Ledger daemon: the collector's stream into the signed log, over its own socket (ADR 0027) |
 | `cmd/balistid-relay/` | Relay daemon: the ledger's checkpoints to the witness, the cosigned one kept (ADR 0006, 0026) |
+| `cmd/balistid-pi/` | The Pi's watcher daemon: verifies the log against the Pi's witness, alerts the phone through ntfy (ADR 0031) |
 | `internal/buildinfo/` | Version string stamped at release build |
 | `internal/rangevm/` | Range sandbox, QEMU argv, results parser, verdict, build and retention |
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
@@ -80,6 +81,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/entry/` | The ledger's log entries: typed events of hashes and ranges, their byte encoding and strict decoding (ADR 0026) |
 | `internal/relay/` | The ledger's checkpoints to the witness (c2sp.org/tlog-witness) and back its verified cosignature; holds no signing key (ADR 0006, 0026) |
 | `internal/cosign/` | The checkpoint the witness cosigned, verified with both keys; the witness's time from its signed line (ADR 0029) |
+| `internal/watch/` | The Pi's side of the log: root recomputed from the relay's bundles, the log's rules, alarms, push (ADR 0031) |
 | `internal/link/` | The wire between collector and ledger: typed, length-prefixed frames, decoded strictly (ADR 0027) |
 | `internal/rawrecord/` | The stored evidence record: its byte encoding, leaf hash and truncation (ADR 0005) |
 | `internal/shard/` | Raw records in one SQLite file per shard: append with gap-free seq, seal, verified read (ADR 0005) |
