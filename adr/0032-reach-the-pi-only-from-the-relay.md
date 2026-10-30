@@ -21,12 +21,13 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
    line runs only after the one before it succeeded, so the tunnel never exists without the table. Stopping
    deletes the link and keeps the table. It starts after `nftables.service` and `firewalld.service`, and
    nothing its programs print reaches the journal: the unit's failed state is the signal.
-2. The table `inet balistid` replaces itself whole. Output: to the Pi's tunnel address only TCP of the relay's
-   uid; to its LAN endpoint only WireGuard's port to its port with WireGuard's fwmark, which no unprivileged
-   socket can set. Input: from the tunnel only replies and the Pi to the relay's port; the Pi's or the host's
-   tunnel address arriving elsewhere is dropped. Forward: nothing to or from the tunnel, nothing to either Pi
-   address (routed containers and VMs bypass the output hook). Each refusal is logged with the table's version
-   and its reason, and on output the sender's uid, at most 10 a minute per reason; its counter keeps every one.
+2. The table `inet balistid` replaces itself whole. Output: to the Pi's tunnel address only TCP of the relay's uid,
+   and the last packets of its connections by their conntrack mark; to its LAN endpoint only WireGuard's port to
+   its port with WireGuard's fwmark, which no unprivileged socket can set. Input: from the tunnel only replies and
+   the Pi to the relay's port; the Pi's or the host's tunnel address arriving elsewhere is dropped. Forward:
+   nothing to or from the tunnel, nothing to either Pi address (routed containers and VMs bypass the output hook).
+   Each refusal is logged with the table's version and its reason, and on output the sender's uid, at most 10 a
+   minute per reason; its counter keeps every one.
 3. The tunnel is fixed in the repository: host 10.207.57.1, Pi 10.207.57.2, UDP 51820. The relay requires
    `balistid-net`, submits to the Pi's witness on 7380, serves bundles at the host's end on 7381 and allows only
    the Pi's /32. The install writes `/etc/balistid/net.env` (the Pi's public key and LAN address, refused unless
@@ -51,10 +52,9 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
 
 - Amends ENGINEERING.md R13 and ADR 0007 points 4 and Consequences: besides `balistid-auditstat`, only
   `balistid-net` holds a capability, `CAP_NET_ADMIN`, for its start at boot; `systemd_exposure` scores it (1.5).
-- Residuals: root can flush the table (A2 is root; T21 is A4); an orphaned socket's late retransmits to the Pi
-  are dropped (a cut bundle alarms, fail safe); IPv6, broadcast and multicast reach the Pi's LAN from the host
-  until the Pi's own firewall (L12); while the relay is down another uid can take port 7381 (the Pi then
-  alarms); the subnet can collide with a network the host joins, and changing it is a commit.
+- Residuals: root can flush the table (A2 is root; T21 is A4); IPv6, broadcast and multicast reach the Pi's
+  LAN from the host until the Pi's own firewall (L12); while the relay is down another uid can take port 7381
+  (the Pi then alarms); the subnet can collide with a network the host joins, and changing it is a commit.
 - 9.5 host preconditions: NetworkManager leaves `balistid0` unmanaged; nothing flushes the ruleset after boot;
   no guest bridged, macvlan or ipvlan onto the LAN; the Pi has a fixed LAN address and serves the host no DNS
   or NTP, which the endpoint rule would cut for every uid.
