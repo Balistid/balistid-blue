@@ -626,10 +626,12 @@ func journalCursor(out string) string {
 	return ""
 }
 
-// overflowJournalArgs reads only what root's auditd logged after cursor, taken before the flood: an
-// earlier line, or one an unprivileged process writes under auditd's name, cannot count.
+// overflowJournalArgs reads only what auditd logged after cursor, taken before the flood, matched by the
+// fields journald sets itself (unit, executable, uid), never by a name the sender chooses: an earlier
+// line, or one another process writes in auditd's name, cannot count.
 func overflowJournalArgs(cursor string) []string {
-	return []string{"-q", "--no-pager", "-o", "cat", "--after-cursor=" + cursor, "_UID=0", "SYSLOG_IDENTIFIER=auditd"}
+	return []string{"-q", "--no-pager", "-o", "cat", "--after-cursor=" + cursor,
+		"_SYSTEMD_UNIT=auditd.service", "_EXE=/usr/bin/auditd", "_UID=0"}
 }
 
 // journalNames reports whether read finds the plugin queue's overflow before ctx ends. auditd logs it
