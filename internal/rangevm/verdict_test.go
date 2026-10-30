@@ -51,6 +51,8 @@ func TestSelftest(t *testing.T) {
 		{"the tunnel's input rule refused nothing", reach("tunnel_refused=counted", "tunnel_refused=none"), Fail},
 		{"no input rule for the host's address", reach("host_refused=counted", "host_refused=error: no rule"), Fail},
 		{"a probe left out", reach(",pi_host_port=timeout", ""), Fail},
+		{"a refusal not logged", reach("logged=yes", "logged=missing to-pi-not-relay"), Fail},
+		{"an unmarked datagram from WireGuard's port", reach("job_squat=EPERM", "job_squat=sent"), Fail},
 		{"the ledger sees the tunnel", passing(map[string]string{"ledger_net": "balistid0,lo"}), Fail},
 		{"other kernel", passing(map[string]string{FactKernel: "7.2.8-hardened1-2-hardened"}), Unknown},
 		{"sensor wrong on another kernel", passing(map[string]string{FactKernel: "6.1.0", "canary": "missing"}), Fail},

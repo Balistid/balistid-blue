@@ -31,7 +31,7 @@ const (
 	closedPort  = "7399"
 	piNS        = "the Pi's namespace"
 	piLAN       = "192.0.2.2"
-	wgPort      = "51820"
+	wgPort      = 51820
 	netEnv      = "/etc/balistid/net.env"
 	piNetEnv    = "/etc/balistid-range/pi-net.env"
 	reachWait   = 2 * time.Second
@@ -93,7 +93,7 @@ func piReach(ctx context.Context) string {
 		{"relay_tcp", relayUser, "tcp", net.JoinHostPort(piTunnel, witnessPort)},
 		{"job_tcp", jobUser, "tcp", net.JoinHostPort(piTunnel, witnessPort)},
 		{"job_udp", jobUser, "udp", net.JoinHostPort(piTunnel, witnessPort)},
-		{"job_endpoint", jobUser, "udp", net.JoinHostPort(piLAN, wgPort)},
+		{"job_endpoint", jobUser, "udp", net.JoinHostPort(piLAN, strconv.Itoa(wgPort))},
 		{"root_tcp", "root", "tcp", net.JoinHostPort(piTunnel, witnessPort)},
 		{"job_bundles", jobUser, "tcp", net.JoinHostPort(hostTunnel, relayPort)},
 		{"pi_host_port", piNS, "tcp", net.JoinHostPort(hostTunnel, closedPort)},
@@ -102,8 +102,58 @@ func piReach(ctx context.Context) string {
 	}
 	// The output rule drops the host's answers to the Pi too, so the input rules show only in their counters.
 	parts = append(parts, "tunnel_refused="+refusals(ctx, `iifname "balistid0" counter`),
-		"host_refused="+refusals(ctx, `ip daddr 10.207.57.1 counter`))
+		"host_refused="+refusals(ctx, `ip daddr 10.207.57.1 counter`), "logged="+refusalsLogged(ctx),
+		"job_squat="+squat(ctx))
 	return strings.Join(parts, ",")
+}
+
+// loggedReasons are the refusals the probes above make; each must reach the kernel's log with the table's
+// version, and the one a local socket sent with the job's uid.
+var loggedReasons = []string{"to-pi-not-relay", "to-endpoint-not-wireguard", "host-address-off-tunnel",
+	"from-tunnel-not-relay-port"}
+
+func refusalsLogged(ctx context.Context) string {
+	cred, err := credential(jobUser)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	uid := fmt.Sprintf(" UID=%d ", cred.Uid)
+	var missing []string
+	for range 5 {
+		log := output(ctx, "/usr/bin/journalctl", "-k", "-o", "cat", "--no-pager")
+		missing = missing[:0]
+		for _, reason := range loggedReasons {
+			ok := false
+			for _, line := range strings.Split(log, "\n") {
+				if strings.Contains(line, "balistid-net 1 "+reason+": ") && (reason != "to-pi-not-relay" || strings.Contains(line, uid)) {
+					ok = true
+				}
+			}
+			if !ok {
+				missing = append(missing, reason)
+			}
+		}
+		if len(missing) == 0 {
+			return "yes"
+		}
+		if !pause(ctx, time.Second) {
+			break
+		}
+	}
+	return "missing " + strings.Join(missing, "+")
+}
+
+// squat stops the tunnel, which frees WireGuard's port, and sends from that port as the job's uid to the
+// endpoint's: the table, kept after the stop, refuses it for lack of WireGuard's mark. Last, as the relay and
+// the Pi's watcher stop with the tunnel.
+func squat(ctx context.Context) string {
+	if err := exec.CommandContext(ctx, "/usr/bin/systemctl", "stop", "balistid-net.service").Run(); err != nil {
+		return "error: stop balistid-net: " + err.Error()
+	}
+	if _, err := os.Stat("/sys/class/net/balistid0"); !errors.Is(err, os.ErrNotExist) {
+		return fmt.Sprintf("error: the tunnel outlived its unit (%v)", err)
+	}
+	return reachAs(ctx, jobUser, "udp-from-wireguard", net.JoinHostPort(piLAN, strconv.Itoa(wgPort)))
 }
 
 // refusals is "counted" when the input chain's rule starting with rule has refused a packet, "none" when not.
@@ -169,8 +219,8 @@ func credential(account string) (*syscall.Credential, error) {
 // reachMain is a reach child: one TCP connect or one UDP datagram to addr, printed as open, sent, timeout,
 // EPERM or refused; anything else is an error the self-test fails on.
 func reachMain(args []string) error {
-	if len(args) != 2 || (args[0] != "tcp" && args[0] != "udp") {
-		return errors.New("usage: " + reachArg + " tcp|udp addr:port")
+	if len(args) != 2 || (args[0] != "tcp" && args[0] != "udp" && args[0] != "udp-from-wireguard") {
+		return errors.New("usage: " + reachArg + " tcp|udp|udp-from-wireguard addr:port")
 	}
 	verdict, err := reach(context.Background(), args[0], args[1])
 	if err != nil {
@@ -184,7 +234,11 @@ func reach(ctx context.Context, proto, addr string) (string, error) {
 	verdict := "open"
 	ctx, cancel := context.WithTimeout(ctx, reachWait)
 	defer cancel()
-	c, err := (&net.Dialer{}).DialContext(ctx, proto, addr)
+	d := net.Dialer{}
+	if proto == "udp-from-wireguard" {
+		proto, d.LocalAddr = "udp", &net.UDPAddr{Port: wgPort}
+	}
+	c, err := d.DialContext(ctx, proto, addr)
 	if err == nil && proto == "udp" {
 		verdict = "sent"
 		_, err = c.Write([]byte("balistid-range reach\n"))

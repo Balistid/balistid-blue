@@ -87,7 +87,7 @@ var expected = map[string]string{
 	// Only the relay's uid reaches the Pi (T21): a dropped SYN times out, a dropped datagram is refused.
 	// The input rules show in their counters: the host's answers to the Pi are dropped on output anyway.
 	"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout," +
-		"job_bundles=timeout,pi_host_port=timeout,tunnel_refused=counted,host_refused=counted",
+		"job_bundles=timeout,pi_host_port=timeout,tunnel_refused=counted,host_refused=counted,logged=yes,job_squat=EPERM",
 	"ledger_net":             "lo",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
