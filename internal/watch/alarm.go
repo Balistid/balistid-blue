@@ -44,6 +44,16 @@ type Limits struct {
 var DefaultLimits = Limits{Silence: 840 * time.Second, Quiet: 24*time.Hour - time.Minute, Fresh: time.Hour - time.Minute,
 	Truncated: 10, Grace: time.Minute, Settle: time.Hour, Gap: 2 * time.Minute}
 
+// WithQuiet returns l with a shorter quiet cap, which only the range sets (ADR 0036): a longer one would hold
+// off the silence alarm longer, and one not over Silence would let the silence alarm hide the cap.
+func (l Limits) WithQuiet(d time.Duration) (Limits, error) {
+	if d <= l.Silence || d > l.Quiet {
+		return Limits{}, fmt.Errorf("watch: quiet cap %s must be over the silence limit %s and at most %s", d, l.Silence, l.Quiet)
+	}
+	l.Quiet = d
+	return l, nil
+}
+
 // Event is one alert to send.
 type Event struct {
 	Key  Key
