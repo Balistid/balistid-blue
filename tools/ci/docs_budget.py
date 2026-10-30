@@ -117,6 +117,8 @@ LAYOUT: tuple[str, ...] = (
     "range/balistid-relay-range.conf",
     # The Pi's watcher standing in for the Pi in the range image (ADR 0031).
     "range/balistid-pi-range.conf",
+    # Its ntfy stand-in for the alarm trials (ADR 0036).
+    "range/balistid-range-ntfy.service",
     "range/balistid-range-witness-key.service",
     "range/balistid-range-witness-agent.service",
     "range/balistid-range-witness.service",
