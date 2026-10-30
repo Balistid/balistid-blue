@@ -112,6 +112,19 @@ class PiDeployTest(unittest.TestCase):
             self.assertEqual(defaults[name], "")  # nothing to watch or alert unless the Pi's config names it
         self.assertIn(f'tokenName   = "{CREDENTIAL.split(":")[0]}"', main)
 
+    def test_range_drop_in_adds_only_the_quiet_cap(self):
+        # ADR 0036: only the image shortens the quiet cap; its argv is the installed one plus -quiet, whose
+        # default keeps announced_quiet_max_h on a real Pi.
+        main = (REPO / "cmd" / "balistid-pi" / "main.go").read_text()
+        self.assertRegex(main, r'flag\.Duration\("quiet", 0, "range only \(ADR 0036\)')
+        drop_in = parse_unit((REPO / "range" / "balistid-pi-range.conf").read_text())["Service"]
+        installed = shlex.split(parse_unit(text("balistid-pi.service"))["Service"]["ExecStart"][0])
+        self.assertNotIn("-quiet", installed)
+        self.assertEqual(set(drop_in), {"NetworkNamespacePath", "EnvironmentFile", "Environment", "SetCredential",
+                                        "ExecStart"})
+        self.assertEqual(drop_in["ExecStart"][0], "")
+        self.assertEqual([shlex.split(v) for v in drop_in["ExecStart"][1:]], [installed + ["-quiet", "20m"]])
+
     def test_sysusers(self):
         self.assertEqual(collector_lines("sysusers.conf", text("sysusers.conf")), SYSUSERS)
 
