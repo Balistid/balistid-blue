@@ -23,8 +23,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   push_refused_alarm_s 2700. #161 ADR 0035: review threat scoped to the change, maintainer decides before round 3.
 - cpu-1000 trend 0.70 on 4 vCPU; write_logs=no saves only 0.04; log_format=RAW breaks the store barrier (ENRICHED).
 ## Next step
-1. L11 range e2e (ledger plan): decide first 24 h trials vs the 30 min trial wall, power-off without the Pi in the
-   VM, an ntfy sink in the Pi namespace, loss injection with locked rules; then L12 the Pi (balistid-pi by its CI hash).
+1. L11 range e2e (ledger plan) as ADR 0036 decides (#163): L11a sink, Pi flag, silence and quiet trials; L11c the
+   cap entry; L11b loss trials; then balistid-auditstat, then L12 the Pi (balistid-pi by its CI hash).
 2. `range-kvm` advisory until a week of runs, then the maintainer decides on required (0028). /security-audit of floor
    0 as a whole before 9.5. Fuzz: only a fuzzed commit is installed (9.5); seeds in testdata/fuzz, not .jsonl.
 3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
