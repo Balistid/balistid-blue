@@ -22,9 +22,14 @@ import (
 // The range's stand-in for the Pi (ADR 0032, point 4): a network namespace behind a veth, its LAN address in
 // TEST-NET-1, reached through the product's tunnel, whose addresses and port deploy/net fixes.
 const (
-	netKeyArg   = "net-key"
-	reachArg    = "reach"
-	piTunnel    = "10.207.57.2"
+	netKeyArg  = "net-key"
+	reachArg   = "reach"
+	piTunnel   = "10.207.57.2"
+	hostTunnel = "10.207.57.1"
+	relayPort  = "7381"
+	// closedPort is a host port nothing listens on; piNS runs a reach child in the Pi's namespace.
+	closedPort  = "7399"
+	piNS        = "the Pi's namespace"
 	piLAN       = "192.0.2.2"
 	wgPort      = "51820"
 	netEnv      = "/etc/balistid/net.env"
@@ -77,9 +82,11 @@ func netKeyMain(args []string) error {
 	return netKey(filepath.Dir(netEnv), filepath.Dir(piNetEnv))
 }
 
-// piReach is what each uid's packets to the Pi met (T21, ADR 0032): the relay's TCP reaches its witness, while
-// TCP from root and the job's uid is dropped (a dropped SYN waits out the timeout) and their UDP, to the
-// Pi's tunnel and to its LAN endpoint from a port other than WireGuard's, is refused at once.
+// piReach is what each uid's packets to the Pi met, and the Pi's to the host (T21, ADR 0032): the relay's TCP
+// reaches its witness, while TCP from root and the job's uid is dropped (a dropped SYN waits out the timeout)
+// and their UDP, to the Pi's tunnel and to its LAN endpoint without WireGuard's mark, is refused at once. The
+// job's uid cannot fetch the relay's bundles, and the Pi reaches no host port but the relay's: without the
+// input rule a closed port would answer refused.
 func piReach(ctx context.Context) string {
 	var parts []string
 	for _, p := range []struct{ name, account, proto, addr string }{
@@ -88,24 +95,55 @@ func piReach(ctx context.Context) string {
 		{"job_udp", jobUser, "udp", net.JoinHostPort(piTunnel, witnessPort)},
 		{"job_endpoint", jobUser, "udp", net.JoinHostPort(piLAN, wgPort)},
 		{"root_tcp", "root", "tcp", net.JoinHostPort(piTunnel, witnessPort)},
+		{"job_bundles", jobUser, "tcp", net.JoinHostPort(hostTunnel, relayPort)},
+		{"pi_host_port", piNS, "tcp", net.JoinHostPort(hostTunnel, closedPort)},
 	} {
 		parts = append(parts, p.name+"="+reachAs(ctx, p.account, p.proto, p.addr))
 	}
+	// The output rule drops the host's answers to the Pi too, so the input rules show only in their counters.
+	parts = append(parts, "tunnel_refused="+refusals(ctx, `iifname "balistid0" counter`),
+		"host_refused="+refusals(ctx, `ip daddr 10.207.57.1 counter`))
 	return strings.Join(parts, ",")
 }
 
-// reachAs runs a reach child as account's uid and gid, with no supplementary group, and returns its verdict.
-func reachAs(ctx context.Context, account, proto, addr string) string {
-	cred, err := credential(account)
-	if err != nil {
-		return "error: " + err.Error()
+// refusals is "counted" when the input chain's rule starting with rule has refused a packet, "none" when not.
+func refusals(ctx context.Context, rule string) string {
+	chain := output(ctx, "/usr/bin/nft", "list", "chain", "inet", "balistid", "input")
+	for _, line := range strings.Split(chain, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), rule+" packets "); ok {
+			n, _, _ := strings.Cut(rest, " ")
+			switch v, err := strconv.ParseUint(n, 10, 64); {
+			case err != nil:
+				return "error: counter not a number"
+			case v == 0:
+				return "none"
+			}
+			return "counted"
+		}
 	}
+	return "error: no rule " + rule
+}
+
+// reachAs runs a reach child as account's uid and gid, with no supplementary group, or as root in the Pi's
+// namespace for piNS, and returns its verdict.
+func reachAs(ctx context.Context, account, proto, addr string) string {
 	self, err := os.Executable()
 	if err != nil {
 		return "error: " + err.Error()
 	}
 	ctx, cancel := context.WithTimeout(ctx, reachWait+5*time.Second)
 	defer cancel()
+	if account == piNS {
+		out, err := exec.CommandContext(ctx, "/usr/bin/nsenter", "--net=/run/netns/balistid-pi", self, reachArg, proto, addr).Output() //nolint:gosec // our own binary, fixed argv
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return strings.TrimSpace(string(out))
+	}
+	cred, err := credential(account)
+	if err != nil {
+		return "error: " + err.Error()
+	}
 	child := exec.CommandContext(ctx, self, reachArg, proto, addr) //nolint:gosec // our own binary, fixed argv
 	child.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	out, err := child.Output()
@@ -134,7 +172,7 @@ func reachMain(args []string) error {
 	if len(args) != 2 || (args[0] != "tcp" && args[0] != "udp") {
 		return errors.New("usage: " + reachArg + " tcp|udp addr:port")
 	}
-	verdict, err := reach(args[0], args[1])
+	verdict, err := reach(context.Background(), args[0], args[1])
 	if err != nil {
 		return err
 	}
@@ -142,9 +180,9 @@ func reachMain(args []string) error {
 	return err //nolint:wrapcheck // the child's last word
 }
 
-func reach(proto, addr string) (string, error) {
+func reach(ctx context.Context, proto, addr string) (string, error) {
 	verdict := "open"
-	ctx, cancel := context.WithTimeout(context.Background(), reachWait)
+	ctx, cancel := context.WithTimeout(ctx, reachWait)
 	defer cancel()
 	c, err := (&net.Dialer{}).DialContext(ctx, proto, addr)
 	if err == nil && proto == "udp" {

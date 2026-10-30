@@ -20,7 +20,7 @@ func TestReach(t *testing.T) {
 	if err := l.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := reach("tcp", open); err != nil || v != "refused" {
+	if v, err := reach(t.Context(), "tcp", open); err != nil || v != "refused" {
 		t.Errorf("closed port: %q, %v", v, err)
 	}
 	l, err = (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -28,13 +28,13 @@ func TestReach(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close() //nolint:errcheck // test listener
-	if v, err := reach("tcp", l.Addr().String()); err != nil || v != "open" {
+	if v, err := reach(t.Context(), "tcp", l.Addr().String()); err != nil || v != "open" {
 		t.Errorf("open port: %q, %v", v, err)
 	}
-	if v, err := reach("udp", "127.0.0.1:9"); err != nil || v != "sent" {
+	if v, err := reach(t.Context(), "udp", "127.0.0.1:9"); err != nil || v != "sent" {
 		t.Errorf("datagram: %q, %v", v, err)
 	}
-	if v, err := reach("tcp", "not an address"); err == nil {
+	if v, err := reach(t.Context(), "tcp", "not an address"); err == nil {
 		t.Errorf("bad address: %q", v)
 	}
 	if err := reachMain([]string{"icmp", "127.0.0.1:9"}); err == nil {

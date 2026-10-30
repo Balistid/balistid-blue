@@ -25,6 +25,11 @@ func passing(overrides map[string]string) []Record {
 	return facts
 }
 
+// reach is a passing report with one change to pi_reach's value.
+func reach(old, replacement string) []Record {
+	return passing(map[string]string{"pi_reach": strings.Replace(expected["pi_reach"], old, replacement, 1)})
+}
+
 func TestSelftest(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -38,15 +43,14 @@ func TestSelftest(t *testing.T) {
 		{"guest sees nothing at all", passing(map[string]string{FactNet: ""}), Fail},
 		{"loopback only, no tunnel", passing(map[string]string{FactNet: "lo"}), Fail},
 		{"a NIC beside the range's links", passing(map[string]string{FactNet: "balistid-lan,balistid0,eth0,lo"}), Fail},
-		{"a uid besides the relay reaches the Pi", passing(map[string]string{
-			"pi_reach": "relay_tcp=open,job_tcp=open,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout"}), Fail},
-		{"the relay does not reach the Pi", passing(map[string]string{
-			"pi_reach": "relay_tcp=timeout,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout"}), Fail},
-		{"root reaches the Pi", passing(map[string]string{
-			"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=open"}), Fail},
-		{"the endpoint takes any port", passing(map[string]string{
-			"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=sent,root_tcp=timeout"}), Fail},
-		{"a probe left out", passing(map[string]string{"pi_reach": "relay_tcp=open,job_tcp=timeout"}), Fail},
+		{"a uid besides the relay reaches the Pi", reach("job_tcp=timeout", "job_tcp=open"), Fail},
+		{"the relay does not reach the Pi", reach("relay_tcp=open", "relay_tcp=timeout"), Fail},
+		{"root reaches the Pi", reach("root_tcp=timeout", "root_tcp=open"), Fail},
+		{"the endpoint takes an unmarked datagram", reach("job_endpoint=EPERM", "job_endpoint=sent"), Fail},
+		{"the job fetches bundles", reach("job_bundles=timeout", "job_bundles=open"), Fail},
+		{"the tunnel's input rule refused nothing", reach("tunnel_refused=counted", "tunnel_refused=none"), Fail},
+		{"no input rule for the host's address", reach("host_refused=counted", "host_refused=error: no rule"), Fail},
+		{"a probe left out", reach(",pi_host_port=timeout", ""), Fail},
 		{"the ledger sees the tunnel", passing(map[string]string{"ledger_net": "balistid0,lo"}), Fail},
 		{"other kernel", passing(map[string]string{FactKernel: "7.2.8-hardened1-2-hardened"}), Unknown},
 		{"sensor wrong on another kernel", passing(map[string]string{FactKernel: "6.1.0", "canary": "missing"}), Fail},

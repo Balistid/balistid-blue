@@ -19,13 +19,13 @@ REPO = Path(__file__).resolve().parents[3]
 NET = REPO / "deploy" / "net"
 FILES = {"balistid-net.service", "nftables.conf", "sysusers.conf"}
 FORBIDDEN = COLLECTOR_FORBIDDEN - {"AmbientCapabilities"}
-PI, HOST, PORT, RELAY_PORT = "10.207.57.2", "10.207.57.1", "51820", "7381"
+PI, HOST, PORT, MARK, RELAY_PORT = "10.207.57.2", "10.207.57.1", "51820", "0x4a1d", "7381"
 TABLE = "/usr/local/lib/balistid/nftables.conf"
 
 SERVICE_UNIT = {
     "Description": ["Balistid Blue net: the relay-only firewall and the tunnel to the Pi"],
     "DefaultDependencies": ["no"],
-    "After": ["local-fs.target systemd-sysusers.service"],
+    "After": ["local-fs.target systemd-sysusers.service nftables.service firewalld.service"],
     "Before": ["network-pre.target shutdown.target"],
     "Wants": ["network-pre.target"],
     "Conflicts": ["shutdown.target"],
@@ -34,7 +34,7 @@ SERVICE_UNIT = {
 EXEC_START = [
     f"/usr/bin/nft -D PI_ENDPOINT=${{BALISTID_PI_ENDPOINT}} -f {TABLE}",
     "/usr/bin/ip link add balistid0 type wireguard",
-    f"/usr/bin/wg set balistid0 listen-port {PORT} private-key %d/wg-key peer ${{BALISTID_PI_KEY}} "
+    f"/usr/bin/wg set balistid0 listen-port {PORT} fwmark {MARK} private-key %d/wg-key peer ${{BALISTID_PI_KEY}} "
     f"allowed-ips {PI}/32 endpoint ${{BALISTID_PI_ENDPOINT}}:{PORT}",
     f"/usr/bin/ip address add {HOST} peer {PI} dev balistid0",
     "/usr/bin/ip link set balistid0 up",
@@ -50,6 +50,8 @@ SERVICE = {
     "LoadCredential": "wg-key:/etc/balistid/wg-key",
     "ExecStart": EXEC_START,
     "ExecStopPost": "-/usr/bin/ip link delete balistid0",
+    "StandardOutput": "null",
+    "StandardError": "null",
     "UMask": "0077",
     "NoExecPaths": "/ /tmp -/dev/shm",
     "ExecPaths": "/usr/bin/nft /usr/bin/ip /usr/bin/wg /usr/lib",
@@ -63,35 +65,41 @@ SERVICE = {
 }
 SYSUSERS = [("u", "balistid-net", "-", "Balistid Blue net")]
 # Only the relay's uid reaches the Pi's tunnel address; WireGuard's own UDP, a kernel socket no uid matches,
-# reaches its LAN address from its port only; the Pi reaches only the relay; nothing is forwarded to either.
+# reaches its LAN address only with the mark no unprivileged socket can set; the Pi reaches only the relay;
+# nothing is forwarded to either address or the tunnel. Each refusal is logged, bounded, with the version.
 TABLE_LINES = [
     f"define PI = {PI}",
     f"define HOST = {HOST}",
     f"define WG_PORT = {PORT}",
+    f"define WG_MARK = {MARK}",
     f"define RELAY_PORT = {RELAY_PORT}",
     "table inet balistid",
     "delete table inet balistid",
     "table inet balistid {",
+    "chain refused {",
+    'limit rate 10/minute burst 5 packets log prefix "balistid-net 1 refused: " level warn flags skuid',
+    "drop",
+    "}",
     "chain output {",
     "type filter hook output priority filter; policy accept;",
     'ip daddr $PI meta l4proto tcp meta skuid "balistid-relay" accept',
-    "ip daddr $PI counter drop",
-    "ip daddr $PI_ENDPOINT udp sport $WG_PORT udp dport $WG_PORT accept",
-    "ip daddr $PI_ENDPOINT counter drop",
+    "ip daddr $PI counter goto refused",
+    "ip daddr $PI_ENDPOINT meta mark $WG_MARK udp sport $WG_PORT udp dport $WG_PORT accept",
+    "ip daddr $PI_ENDPOINT counter goto refused",
     "}",
     "chain input {",
     "type filter hook input priority filter; policy accept;",
     'iifname "balistid0" ct state established accept',
     'iifname "balistid0" ip saddr $PI ip daddr $HOST tcp dport $RELAY_PORT accept',
-    'iifname "balistid0" counter drop',
-    "ip saddr $PI counter drop",
-    "ip daddr $HOST counter drop",
+    'iifname "balistid0" counter goto refused',
+    "ip saddr $PI counter goto refused",
+    "ip daddr $HOST counter goto refused",
     "}",
     "chain forward {",
     "type filter hook forward priority filter; policy accept;",
-    'iifname "balistid0" counter drop',
-    'oifname "balistid0" counter drop',
-    "ip daddr $PI_ENDPOINT counter drop",
+    'iifname "balistid0" counter goto refused',
+    'oifname "balistid0" counter goto refused',
+    "ip daddr { $PI, $PI_ENDPOINT } counter goto refused",
     "}",
     "}",
 ]
@@ -131,8 +139,13 @@ class NetDeployTest(unittest.TestCase):
     def test_relay_and_tunnel_agree(self):
         argv = shlex.split(parse_unit(relay.service_text())["Service"]["ExecStart"][0])
         self.assertEqual(argv[1:], ["-submit", f"http://{PI}:7380/add-checkpoint", "-listen", f"{HOST}:{RELAY_PORT}"])
-        self.assertEqual(relay.SERVICE["IPAddressAllow"], f"{PI}/32")
-        self.assertNotIn(HOST, relay.SERVICE["IPAddressAllow"])
+        self.assertEqual(parse_unit(relay.service_text())["Service"]["IPAddressAllow"], [f"{PI}/32"])
+
+    def test_range_drop_ins_change_only_ordering(self):
+        # The range runs the installed argv and sandbox of the unit and the relay (ADR 0032, point 4).
+        for name in ("balistid-net-range.conf", "balistid-relay-range.conf"):
+            with self.subTest(name=name):
+                self.assertEqual(set(parse_unit((REPO / "range" / name).read_text())), {"Unit"})
 
     def test_sysusers(self):
         self.assertEqual(collector_lines("sysusers.conf", (NET / "sysusers.conf").read_text()), SYSUSERS)
@@ -144,6 +157,7 @@ class NetDeployTest(unittest.TestCase):
             ("CapabilityBoundingSet=CAP_NET_ADMIN", "CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW"),
             ("AmbientCapabilities=CAP_NET_ADMIN", "AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN"),
             ("NoNewPrivileges=yes", "NoNewPrivileges=no"),
+            ("StandardError=null", "StandardError=journal"),
             ("ExecStart=/usr/bin/nft", "ExecStart=-/usr/bin/nft"),
             ("RestrictAddressFamilies=AF_NETLINK AF_UNIX", "RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET"),
             ("ExecPaths=/usr/bin/nft /usr/bin/ip /usr/bin/wg /usr/lib", "ExecPaths=/usr"),
