@@ -36,15 +36,15 @@ func TestAnnounceFollowsTheWaitingBatch(t *testing.T) {
 	}
 }
 
-// At the cap the log is full, not broken: an announcement is refused, the final entry takes the slot
-// kept for it even while records wait, and those records are left for the next log.
+// At the cap the log is full, not broken: an announcement is refused and the cap's UNKNOWN takes its slot,
+// the final entry takes the slot kept for it even while records wait, and those records are left for the next log.
 func TestFinalFitsAtCap(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	cfg := config(dir, k, c)
-	cfg.CapBytes = 3 * entryBytes
+	cfg.CapBytes = 4 * entryBytes
 	l := openLog(t, cfg)
 	records(t, l, 1, 2)
-	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); err != nil { // the batch, then this: 2 of 3
+	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); err != nil { // the batch, then this: 2 of 4
 		t.Fatal(err)
 	}
 	if _, err := l.Announce(t.Context(), entry.AnnounceShutdown); !errors.Is(err, ErrFull) || l.Broken() != nil {
@@ -66,12 +66,12 @@ func TestFinalFitsAtCap(t *testing.T) {
 	if err := l.batch.Add(leaf(3)); err != nil {
 		t.Fatal(err)
 	}
-	if size, err := l.Final(t.Context(), next); err != nil || size != 3 || !l.Ended() || l.Full() {
+	if size, err := l.Final(t.Context(), next); err != nil || size != 4 || !l.Ended() || l.Full() {
 		t.Fatalf("final at the cap with a record waiting: size %d, %v", size, err)
 	}
 	closeLog(t, l)
 	got, _ := logged(t, dir, k)
-	if len(got) != 3 || got[2] != (entry.Final{NextOrigin: next}) {
+	if len(got) != 4 || got[2] != entry.Body(capHealth) || got[3] != (entry.Final{NextOrigin: next}) {
 		t.Fatalf("log %v", got)
 	}
 }
