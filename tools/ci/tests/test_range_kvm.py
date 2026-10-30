@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import re
 import subprocess
 import sys
@@ -133,7 +134,7 @@ class FailsClosed(unittest.TestCase):
             at = lines.index("docker ran")
             stop = re.fullmatch(r"::stop-commands::([0-9a-f]{32})", lines[at - 1])
             self.assertIsNotNone(stop, lines)
-            self.assertEqual(lines[at + 1], f"::{stop[1]}::")
+            self.assertEqual(lines[at + 1:at + 3], ["", f"::{stop[1]}::"])
 
     def result(self, body: str, run_id: str = "20261030T054612Z-2d22e141") -> Path:
         state = self.work / "w" / "state"
@@ -154,6 +155,26 @@ class FailsClosed(unittest.TestCase):
         self.assertIsNone(range_kvm.verdict_annotation(state))
         self.result("[1, 2]", run_id="20261030T060000Z-ffffffff")
         self.assertIn("could not be read", range_kvm.verdict_annotation(state))
+        self.result('{"verdict": "PASS"}', run_id="zzz-not-a-run")  # sorts last, never chosen
+        self.assertIn("could not be read", range_kvm.verdict_annotation(state))
+
+    def test_a_planted_link_or_fifo_is_not_read(self) -> None:
+        state = self.result('{"verdict": "FAIL", "reason": "r"}')
+        target = state / "balistid-range" / "results" / "20261030T070000Z-00000000"
+        target.mkdir()
+        (target / "result.json").symlink_to(state / "balistid-range" / "results" / "20261030T054612Z-2d22e141" / "result.json")
+        self.assertIn("could not be read", range_kvm.verdict_annotation(state))
+        fifo = state / "balistid-range" / "results" / "20261030T080000Z-11111111"
+        fifo.mkdir()
+        os.mkfifo(fifo / "result.json")
+        self.assertIn("could not be read", range_kvm.verdict_annotation(state))
+
+    def test_a_failed_run_without_result_is_annotated(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.main(run=Recorder(exit=1), kvm=Path("/dev/null"))
+        self.assertEqual(out.getvalue().splitlines()[-1],
+                         "::error title=range-kvm self-test::no result: the build or self-test failed (exit 1)")
 
     def test_the_annotation_comes_after_workflow_commands_are_back(self) -> None:
         out = io.StringIO()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -57,16 +58,22 @@ echo "image: $image"
 # where the job's log host may be out of reach. Workflow commands are on again by then, so the guest's
 # text is escaped as command data and capped.
 ANNOTATION_MAX = 4000
+RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 
 
 def verdict_annotation(state: Path) -> str | None:
     """The newest run's verdict and reason as an ::error:: command, or None when it passed or left none."""
-    results = sorted((state / "balistid-range" / "results").glob("*/result.json"))
+    results = sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json")
+                     if RESULT_ID.fullmatch(p.parent.name))
     if not results:
         return None
     unreadable = "::error title=range-kvm self-test::the result could not be read"
+    # Container root can write the state directory: no symlink, no FIFO, a regular file only.
     try:
-        with results[-1].open("rb") as f:
+        fd = os.open(results[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return unreadable
             data = json.loads(f.read(1 << 20))
     except (OSError, ValueError):
         return unreadable
@@ -167,8 +174,12 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     try:
         done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid()), check=False)
     finally:
-        print(f"::{token}::", flush=True)
-    if annotation := verdict_annotation(state):
+        # On a line of its own: the runner resumes commands only on a line that starts with "::".
+        print(f"\n::{token}::", flush=True)
+    annotation = verdict_annotation(state)
+    if annotation is None and done.returncode != 0:
+        annotation = f"::error title=range-kvm self-test::no result: the build or self-test failed (exit {done.returncode})"
+    if annotation:
         print(annotation, flush=True)
     if done.returncode != 0:
         print(f"range-kvm: the build or self-test failed (exit {done.returncode})", file=sys.stderr)
