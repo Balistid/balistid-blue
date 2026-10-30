@@ -231,7 +231,7 @@ func (p *Pusher) Send(ctx context.Context, key Key, text string) error {
 	req.Header.Set("Tags", string(key))
 	resp, err := p.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("watch: push: %w", err)
+		return fmt.Errorf("watch: push: %w", localError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxPushResp))

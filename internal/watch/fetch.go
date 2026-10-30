@@ -112,7 +112,7 @@ func (s Source) get(ctx context.Context, u string, limit int) ([]byte, error) {
 	}
 	resp, err := s.HTTP.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("get: %w", err)
+		return nil, fmt.Errorf("get: %w", localError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch resp.StatusCode {
@@ -131,6 +131,25 @@ func (s Source) get(ctx context.Context, u string, limit int) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// localError keeps of a failed request only what this side knows: the context's end, or a socket
+// error. Anything else came from the peer's bytes (a malformed status line, a bad header), whose text
+// would reach the journal; it becomes one fixed error.
+func localError(err error) error {
+	var op *net.OpError
+	var nerr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &nerr) && nerr.Timeout()):
+		return context.DeadlineExceeded
+	case errors.As(err, &op) && op.Op == "dial":
+		return fmt.Errorf("dial: %w", op.Err)
+	}
+	return errInvalid
+}
+
+var errInvalid = errors.New("no valid HTTP response")
 
 // ParseBundle splits a tlog-tiles entry bundle: each entry a big-endian 2-byte length and its bytes. At
 // most 256 entries of 1 to entry.MaxBytes bytes each, and nothing after the last one.
