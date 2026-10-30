@@ -25,8 +25,8 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
    uid; to its LAN endpoint only WireGuard's port to its port with WireGuard's fwmark, which no unprivileged
    socket can set. Input: from the tunnel only replies and the Pi to the relay's port; the Pi's or the host's
    tunnel address arriving elsewhere is dropped. Forward: nothing to or from the tunnel, nothing to either Pi
-   address (routed containers and VMs bypass the output hook). Each refusal is counted and logged with the
-   table's version and the sender's uid, at most 10 a minute.
+   address (routed containers and VMs bypass the output hook). Each refusal is logged with the table's version
+   and its reason, and on output the sender's uid, at most 10 a minute per reason; its counter keeps every one.
 3. The tunnel is fixed in the repository: host 10.207.57.1, Pi 10.207.57.2, UDP 51820. The relay requires
    `balistid-net`, submits to the Pi's witness on 7380, serves bundles at the host's end on 7381 and allows only
    the Pi's /32. The install writes `/etc/balistid/net.env` (the Pi's public key and LAN address, refused unless
@@ -35,7 +35,8 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
    stands in for the Pi (endpoint 192.0.2.2), keys made at boot. litewitness and `balistid-pi` run in that
    namespace. The guest's interfaces are then exactly `balistid-lan`, `balistid0` and `lo`; `pci_net` still
    proves the VM has no NIC (amends ADR 0009). Self-test facts: `pi_reach`, other uids refused and the relay
-   through, the input rules seen in their counters, and `ledger_net`, the ledger's process seeing only
+   through, the input rules seen in their counters, the refusals in the kernel's log, an unmarked datagram
+   from WireGuard's port refused once the tunnel is stopped; `ledger_net`, the ledger's process seeing only
    loopback. The guest posts to the witness as the relay's uid. The forward chain is pinned only by its text.
 
 ## Alternatives considered
@@ -44,8 +45,7 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
   host's routes. NetworkManager's WireGuard profile: host state outside the repository (R1).
 - nftables.service with our include: the host's ruleset decides whether the table survives its load.
 - Plain veth in the range: tests the relay's allowlist but not this unit, the table or the tunnel before L12.
-- Matching the relay's cgroup instead of its uid: the path changes on restart; systemd's `NFTSet=` keeps it but
-  binds the table to unit start order.
+- The relay's cgroup instead of its uid: its path changes on restart; `NFTSet=` binds the table to start order.
 
 ## Consequences
 
