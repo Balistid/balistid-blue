@@ -170,19 +170,28 @@ func rawServer(t *testing.T, resp string) string {
 	return "http://" + ln.Addr().String() + "/"
 }
 
+// Nothing of a peer's bytes reaches an error, and so the journal: not a reason phrase, not a malformed
+// status line or header.
 func TestHostileStatusTextIsNotRepeated(t *testing.T) {
 	evil := strings.Repeat("EVIL", 1000)
-	u := rawServer(t, "HTTP/1.1 500 "+evil+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-	_, err := (Source{Relay: u, HTTP: testClient()}).Bundle(context.Background(), 0, 1)
-	if err == nil || strings.Contains(err.Error(), "EVIL") {
-		t.Fatalf("relay error %v", err)
-	}
-	p, perr := NewPusher(u, testToken, testClient(), time.Now)
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	if err := p.Send(context.Background(), KeyLoss, "x"); err == nil || strings.Contains(err.Error(), "EVIL") {
-		t.Fatalf("push error %v", err)
+	for name, resp := range map[string]string{
+		"a reason phrase":    "HTTP/1.1 500 " + evil + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+		"a malformed status": "HTTP/1.1 " + evil + "\r\n\r\n",
+		"a malformed header": "HTTP/1.1 200 OK\r\n" + evil + "\r\n\r\n",
+		"no HTTP at all":     evil + "\r\n\r\n",
+	} {
+		u := rawServer(t, resp)
+		_, err := (Source{Relay: u, HTTP: testClient()}).Bundle(context.Background(), 0, 1)
+		if err == nil || strings.Contains(err.Error(), "EVIL") || len(err.Error()) > 200 {
+			t.Errorf("%s: relay error %.300q", name, err)
+		}
+		p, perr := NewPusher(u, testToken, testClient(), time.Now)
+		if perr != nil {
+			t.Fatal(perr)
+		}
+		if err := p.Send(context.Background(), KeyLoss, "x"); err == nil || strings.Contains(err.Error(), "EVIL") || len(err.Error()) > 200 {
+			t.Errorf("%s: push error %.300q", name, err)
+		}
 	}
 }
 

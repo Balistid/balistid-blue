@@ -14,7 +14,7 @@ func TestClientCapsResponseHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close() //nolint:errcheck // test listener
-	header := "HTTP/1.1 200 OK\r\nX-Pad: " + strings.Repeat("a", 2*maxHeader) + "\r\nContent-Length: 0\r\n\r\n"
+	header := "HTTP/1.1 200 OK\r\nX-Pad: " + strings.Repeat("a", 32<<10) + "\r\nContent-Length: 0\r\n\r\n"
 	go func() {
 		c, err := ln.Accept()
 		if err != nil {
