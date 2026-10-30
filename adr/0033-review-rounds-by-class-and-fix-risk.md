@@ -30,13 +30,14 @@ two ways out: another full round or the maintainer.
    (allowlist, mode, uid, capability, sandbox, firewall verdict), where secrets go, a test assertion, or makes
    a check fire less often (§3), and any fix that differs from the finding's stated fix; otherwise plain. The
    stricter call of the two wins.
-4. One full round per checkpoint (§5 table). The author answers each finding FIXED (commit and a test failing
-   on the parent, R4), DISPUTE (evidence by pointer: test and CI run, file:line, range fact and run), RESIDUAL
+4. One full round per checkpoint (§5 table). The author answers each finding FIXED (commit and a test failing on
+   the parent, R4), DISPUTE (evidence by pointer: test and CI run, file:line, range fact and run), RESIDUAL
    (where it is recorded; never for an open CRIT or HIGH); a DESIGN finding is redesigned or disputed. A plain
-   BUG fix is verified by its test. Decision fixes and disputes go back to the reviewer in a reply round on the
-   fix range: per finding confirmed, not fixed, conceded or maintained, plus new defects the fix range causes.
-   One reply round per full review; one that does not close leads to a full round, or to the maintainer on a
-   disagreement. A redesign, or a fix range over about 150 lines outside tests, gets a full round.
+   MED or LOW fix is verified by its test. CRIT and HIGH fixes, decision fixes and disputes go back to the
+   reviewer in a reply round on the fix range, a normal review request whose criteria copy the findings verbatim
+   and the answers: per finding confirmed, not fixed, conceded or maintained, plus new defects the fix range
+   causes. One reply round per full review; one that does not close leads to a full round, or to the maintainer
+   on a disagreement. A redesign, or a fix range over about 150 lines outside tests, gets a full round.
 5. The author decides a redesign, with one sentence why. The maintainer decides when it changes an ADR, an
    acceptance number or a threat claim, when author and reviewer still disagree after the reply round, or when
    an invariant fails again after a redesign.
@@ -47,14 +48,13 @@ two ways out: another full round or the maintainer.
 
 - Redesign by severity: a CRIT can be a one-line bug (a key printed to the journal), a MED a design flaw
   (one logger that cannot carry a reason per rule).
-- A plain cap on rounds stops churn and real verification alike; answers in the free text of a full round let the
-  author narrow the criteria or misquote the findings, which a reply round reads from the queue's own record.
+- A plain cap on rounds stops churn and real verification alike. A queue that holds the reply chain itself was
+  reviewed twice and dropped: the author still sets each full review, so the trust it added was partial.
 
 ## Consequences
 
 - Amends R7, §5 (its top tier asks for Codex level security), CLAUDE.md's review brief (a reply round
   carries the author's answers per finding, nothing else) and AGENTS.md's output format.
-- Outside this repository the queue gains a reply mode and the reviewers' rubrics these fields; the
-  maintainer installs them.
-- Measured over the next three checkpoints: full and reply rounds per pull request, window spent, findings
-  by class, and what the sampled full round finds.
+- Outside this repository the reviewers' rubrics gain these fields and the reply round; the maintainer
+  installs them.
+- Measured over three checkpoints: rounds per pull request, window spent, findings by class, the sampled round.
