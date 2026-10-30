@@ -264,7 +264,15 @@ max = 900
 unit = "s from the Pi dying or failing to push to the dead-man service's alert on the phone"
 rows = ["T27"]
 adr = "0034"
-method = "On the Pi (L12), 10 trials each, the worst phase (right after a ping): power it off, cut its uplink, stop balistid-pi, make ntfy unreachable, revoke the token's write access; each alerts through the service's non-ntfy channel within the limit. One dropped ping, or a push accepted on retry within 3 minutes, alerts nothing."
+method = "On the Pi (L12), 10 trials each, the worst phase (right after a ping): power it off, cut its uplink, stop balistid-pi, make ntfy unreachable; each alerts through the service's non-ntfy channel within the limit. One dropped ping, or a push accepted on retry within 3 minutes, alerts nothing."
+
+[[metric]]
+id = "push_refused_alarm_s"
+max = 2700
+unit = "s from ntfy refusing the Pi's token to the dead-man service's alert on the phone"
+rows = ["T27"]
+adr = "0034"
+method = "On the Pi (L12), 10 trials at the worst phase (right after a probe): revoke the token or exhaust the quota; each alerts through the service's non-ntfy channel within the limit. A probe refused once and accepted on retry within 3 minutes alerts nothing."
 
 # --- Process isolation (ADR 0007) ---
 
