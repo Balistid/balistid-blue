@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,6 +144,45 @@ func TestFetchCapped(t *testing.T) {
 	}
 	if _, err := src.Bundle(ctx, 9, 1); err == nil {
 		t.Error("a bundle the relay does not have was taken")
+	}
+}
+
+// rawServer answers every connection with resp, as a hostile relay may: Go's server writes no reason
+// phrase of its own choosing.
+func rawServer(t *testing.T, resp string) string {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, io.LimitReader(c, 1)) // the request has started
+			_, _ = c.Write([]byte(resp))
+			_ = c.Close()
+		}
+	}()
+	return "http://" + ln.Addr().String() + "/"
+}
+
+func TestHostileStatusTextIsNotRepeated(t *testing.T) {
+	evil := strings.Repeat("EVIL", 1000)
+	u := rawServer(t, "HTTP/1.1 500 "+evil+"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+	_, err := (Source{Relay: u, HTTP: testClient()}).Bundle(context.Background(), 0, 1)
+	if err == nil || strings.Contains(err.Error(), "EVIL") {
+		t.Fatalf("relay error %v", err)
+	}
+	p, perr := NewPusher(u, testToken, testClient(), time.Now)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	if err := p.Send(context.Background(), KeyLoss, "x"); err == nil || strings.Contains(err.Error(), "EVIL") {
+		t.Fatalf("push error %v", err)
 	}
 }
 

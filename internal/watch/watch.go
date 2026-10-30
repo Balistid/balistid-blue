@@ -38,7 +38,8 @@ func Run(ctx context.Context, c Config) error {
 		return err
 	}
 	now := c.Now()
-	x := &watcher{c: c, log: l, dog: NewWatchdog(c.Limits, now, quiet, l.Rules.Pending), saved: now, daily: now}
+	x := &watcher{c: c, log: l, dog: NewWatchdog(c.Limits, now, quiet, l.Rules.Pending), saved: now, daily: now,
+		active: map[Key]bool{}}
 	c.Push.Event(KeyStart, fmt.Sprintf("watching the log from %d verified entries", l.Size))
 	t := time.NewTicker(c.Poll)
 	defer t.Stop()
@@ -72,9 +73,9 @@ type watcher struct {
 	c            Config
 	log          Log
 	dog          *Watchdog
-	fork         string // the last step's fork or mismatch, until a step verifies
-	dirty        bool
-	grown        uint64 // entries verified since the last accept line
+	fork         string       // the last step's fork or mismatch, until a step verifies
+	grown        uint64       // entries verified since the last accept line
+	active       map[Key]bool // conditions holding after the last alarm
 	saved, daily time.Time
 }
 
@@ -90,7 +91,7 @@ func (x *watcher) step(ctx context.Context) {
 	}
 	now := x.c.Now()
 	conds := x.alarm(ctx, now, behind)
-	if x.dirty || now.Sub(x.saved) >= saveEvery {
+	if now.Sub(x.saved) >= saveEvery {
 		x.save(ctx, now)
 	}
 	if now.Sub(x.daily) >= daily {
@@ -107,11 +108,16 @@ func (x *watcher) alarm(ctx context.Context, now time.Time, behind bool) int {
 	if x.fork != "" {
 		conds[KeyFork] = x.fork
 	}
-	if x.c.Store.Full() {
-		conds[KeyStore] = "the Pi's store reached its cap: bundles are no longer kept, verification goes on"
-	}
 	for _, k := range conditions {
-		if text, ok := conds[k]; ok {
+		text, ok := conds[k]
+		switch {
+		case ok && !x.active[k]:
+			slog.WarnContext(ctx, "watch: condition", "decision", "alarm", "reason", string(k), "rule", RuleVersion, "text", text)
+		case !ok && x.active[k]:
+			slog.InfoContext(ctx, "watch: condition", "decision", "clear", "reason", string(k), "rule", RuleVersion)
+		}
+		x.active[k] = ok
+		if ok {
 			x.c.Push.Hold(k, text)
 		} else {
 			x.c.Push.Clear(k)
@@ -133,12 +139,9 @@ func (x *watcher) advance(ctx context.Context, h Head) {
 		x.alarm(ctx, x.c.Now(), true)
 		return b, err
 	}
-	next, f, err := Advance(ctx, x.log, h, fetch, x.c.Store.Stage)
+	next, f, err := Advance(ctx, x.log, h, fetch)
 	now := x.c.Now()
 	if err != nil {
-		if derr := x.c.Store.Discard(); derr != nil {
-			slog.ErrorContext(ctx, "watch: staged bundles not dropped", "err", derr)
-		}
 		if errors.Is(err, ErrFork) || errors.Is(err, ErrMismatch) {
 			if x.fork != err.Error() {
 				slog.WarnContext(ctx, "watch: log refused", "decision", "refuse", "reason", reason(err), "rule", RuleVersion,
@@ -150,13 +153,8 @@ func (x *watcher) advance(ctx context.Context, h Head) {
 		slog.WarnContext(ctx, "watch: log not verified", "err", err)
 		return
 	}
-	if err := x.c.Store.Keep(); err != nil {
-		slog.ErrorContext(ctx, "watch: verified bundles not kept", "err", err)
-		x.c.Push.Event(KeySave, "the Pi could not keep verified bundles")
-	}
 	x.fork = ""
 	x.log = next
-	x.dirty = x.dirty || len(f.Staged) > 0
 	if f.Entries > 0 {
 		x.grown += f.Entries
 		for _, e := range x.dog.Grew(now, f, next.Rules) {
@@ -187,5 +185,5 @@ func (x *watcher) save(ctx context.Context, now time.Time) {
 			"size", x.log.Size, "entries", x.grown)
 		x.grown = 0
 	}
-	x.saved, x.dirty = now, false
+	x.saved = now
 }

@@ -1,7 +1,9 @@
 package watch
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -86,7 +88,7 @@ func TestRunVerifiesAndAlertsOnFork(t *testing.T) {
 	n := &ntfy{}
 	c := &clock{now: time.Now()}
 	push := newTestPusher(t, n, c)
-	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	store, err := OpenStore(t.TempDir(), "balistid/log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,7 @@ func TestRunVerifiesAndAlertsOnFork(t *testing.T) {
 }
 
 func TestRunRefusesAConfigThatSilences(t *testing.T) {
-	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	store, err := OpenStore(t.TempDir(), "balistid/log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +161,7 @@ func TestDailyStatus(t *testing.T) {
 	n := &ntfy{}
 	c := &clock{now: time.Now()}
 	push := newTestPusher(t, n, c)
-	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	store, err := OpenStore(t.TempDir(), "balistid/log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +191,7 @@ func startWatch(t *testing.T, log [][]byte, tick, poll time.Duration) harness {
 	c := &clock{now: time.Now()}
 	h.clock, h.start = c, c.Now()
 	push := newTestPusher(t, h.n, c)
-	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	store, err := OpenStore(t.TempDir(), "balistid/log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +225,32 @@ func TestAlarmsRunBetweenBundles(t *testing.T) {
 		case <-h.notify:
 		case <-time.After(5 * time.Second):
 			t.Fatal("the watchdog was not fed between bundles")
+		}
+	}
+}
+
+// Every condition that starts or ends is a decision, logged with its reason and rule version.
+func TestConditionTransitionsAreLogged(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	t0 := time.Now()
+	c := &clock{now: t0}
+	push, err := NewPusher("https://ntfy.example/t", testToken, testClient(), c.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := &watcher{c: Config{Push: push, Notify: func(string) error { return nil }},
+		dog: NewWatchdog(DefaultLimits, t0, nil, false), active: map[Key]bool{}}
+	x.alarm(context.Background(), t0.Add(DefaultLimits.Silence), false)
+	x.dog.Grew(t0.Add(DefaultLimits.Silence+time.Second), grow, Rules{})
+	x.alarm(context.Background(), t0.Add(DefaultLimits.Silence+time.Second), false)
+	out := buf.String()
+	for _, want := range []string{"decision=alarm reason=silence rule=\"" + RuleVersion + "\"",
+		"decision=clear reason=silence rule=\"" + RuleVersion + "\""} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
 		}
 	}
 }

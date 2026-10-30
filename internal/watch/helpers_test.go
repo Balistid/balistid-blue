@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"math/bits"
 	"testing"
@@ -66,22 +67,20 @@ func fetchFrom(log [][]byte) Fetch {
 	}
 }
 
-// kept records the bundles Keep was given.
-type kept map[uint64][][]byte
-
-func (k kept) keep(idx uint64, entries [][]byte) error {
-	k[idx] = append([][]byte(nil), entries...)
-	return nil
-}
-
-func discard(uint64, [][]byte) error { return nil }
-
 // verified is the log l verified up to its full length.
 func verified(t testing.TB, log [][]byte) Log {
 	t.Helper()
-	l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log), discard)
+	l, _, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return l
+}
+
+// appendBundle encodes entries as ParseBundle reads them, as Tessera writes a bundle.
+func appendBundle(out []byte, entries [][]byte) []byte {
+	for _, e := range entries {
+		out = append(binary.BigEndian.AppendUint16(out, uint16(len(e))), e...) //nolint:gosec // entries are at most 256 bytes
+	}
+	return out
 }

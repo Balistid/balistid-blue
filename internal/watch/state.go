@@ -11,11 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
-
-	"github.com/transparency-dev/tessera/api/layout"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/wholefile"
@@ -43,127 +40,27 @@ type saved struct {
 	QuietS  *int64   `json:"quiet_s,omitempty"` // the open quiet episode's age
 }
 
-// Store is the Pi's directory for one origin: the state file and the complete bundles verified, in
-// Tessera's layout, with a staging directory for the bundles of a step not yet verified. Not safe for
-// concurrent use.
+// Store is the Pi's directory for one origin, which holds its state file. It keeps no copy of the log:
+// verification needs only the compact range (ADR 0031, point 5).
 type Store struct {
 	dir    string
 	origin string
-	cap    int64
-	stored int64
-	full   bool
-	staged map[uint64]int64 // bundles staged in this step, with their size
-	over   bool             // a bundle of this step was not staged: the cap
 }
 
-// OpenStore opens origin's directory under state, named by the origin's hash (an origin may hold "/"),
-// drops what an unfinished step staged and counts the bundles it keeps.
-func OpenStore(state, origin string, capBytes int64) (*Store, error) {
-	if !filepath.IsAbs(state) || origin == "" || capBytes <= 0 {
-		return nil, errors.New("watch: store: an absolute directory, an origin and a cap")
+// OpenStore opens origin's directory under state, named by the origin's hash (an origin may hold "/").
+func OpenStore(state, origin string) (*Store, error) {
+	if !filepath.IsAbs(state) || origin == "" {
+		return nil, errors.New("watch: store: an absolute directory and an origin")
 	}
 	sum := sha256.Sum256([]byte(origin))
-	s := &Store{dir: filepath.Join(state, hex.EncodeToString(sum[:16])), origin: origin, cap: capBytes,
-		staged: map[uint64]int64{}}
-	if err := os.RemoveAll(s.staging()); err != nil {
+	s := &Store{dir: filepath.Join(state, hex.EncodeToString(sum[:16])), origin: origin}
+	if err := os.MkdirAll(s.dir, 0o750); err != nil {
 		return nil, fmt.Errorf("watch: store: %w", err)
 	}
-	if err := os.MkdirAll(s.staging(), 0o750); err != nil {
-		return nil, fmt.Errorf("watch: store: %w", err)
-	}
-	err := filepath.WalkDir(filepath.Join(s.dir, "tile"), func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("watch: store: %w", err)
-		}
-		s.stored += info.Size()
-		return nil
-	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("watch: store: %w", err)
-	}
-	s.full = s.stored >= s.cap
 	return s, nil
 }
 
-func (s *Store) staging() string { return filepath.Join(s.dir, "staging") }
-
-// Full says the store reached its cap: bundles are no longer kept, verification goes on.
-func (s *Store) Full() bool { return s.full }
-
-// Stage writes a complete bundle to the staging directory, unless keeping it would pass the cap.
-func (s *Store) Stage(idx uint64, entries [][]byte) error {
-	if s.full {
-		return nil
-	}
-	data := appendBundle(nil, entries)
-	var held int64
-	for _, n := range s.staged {
-		held += n
-	}
-	if s.stored+held+int64(len(data)) > s.cap {
-		s.over = true
-		return nil
-	}
-	if err := wholefile.Write(filepath.Join(s.staging(), strconv.FormatUint(idx, 10)), data, 0o600); err != nil {
-		return fmt.Errorf("watch: store: %w", err)
-	}
-	s.staged[idx] = int64(len(data))
-	return nil
-}
-
-// Keep moves the bundles a verified step staged to their place; Discard drops those of a step that
-// failed. Either way the step's staging ends.
-func (s *Store) Keep() error {
-	defer s.reset()
-	for idx, n := range s.staged {
-		path := filepath.Join(s.dir, filepath.FromSlash(layout.EntriesPath(idx, 0)))
-		if info, err := os.Lstat(path); err == nil {
-			n -= info.Size()
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-			return fmt.Errorf("watch: store: %w", err)
-		}
-		if err := os.Rename(filepath.Join(s.staging(), strconv.FormatUint(idx, 10)), path); err != nil {
-			return fmt.Errorf("watch: store: %w", err)
-		}
-		if err := syncDir(filepath.Dir(path)); err != nil {
-			return err
-		}
-		s.stored += n
-	}
-	s.full = s.full || s.over || s.stored >= s.cap
-	return nil
-}
-
-// Discard drops the staged bundles of a step that did not verify.
-func (s *Store) Discard() error {
-	defer s.reset()
-	for idx := range s.staged {
-		if err := os.Remove(filepath.Join(s.staging(), strconv.FormatUint(idx, 10))); err != nil {
-			return fmt.Errorf("watch: store: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) reset() { clear(s.staged); s.over = false }
-
-func syncDir(dir string) error {
-	d, err := os.Open(dir) //nolint:gosec // the store's own directory
-	if err != nil {
-		return fmt.Errorf("watch: store: %w", err)
-	}
-	if err := errors.Join(d.Sync(), d.Close()); err != nil {
-		return fmt.Errorf("watch: store: %w", err)
-	}
-	return nil
-}
-
-// Save writes l and the quiet episode's age after the bundles it counts.
+// Save writes l and the quiet episode's age.
 func (s *Store) Save(l Log, quiet *time.Duration) error {
 	v := saved{Schema: stateSchema, Origin: s.origin, Size: l.Size, Root: l.Root[:], Hashes: l.Hashes,
 		Partial: l.Partial, Rules: l.Rules}

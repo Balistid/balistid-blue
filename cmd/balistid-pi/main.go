@@ -42,7 +42,6 @@ func run() int {
 	relayURL := flag.String("relay", "", "the relay's base URL, ending with /")
 	state := flag.String("state", "/var/lib/balistid-pi", "the Pi's own directory")
 	ntfy := flag.String("ntfy", "", "the ntfy topic URL")
-	capGiB := flag.Int64("store-cap-gib", 20, "GiB of bundles kept (pi_store_cap_gib holds the witness and OS too)")
 	failed := flag.Bool("alert-failed", false, "send one alert that the watching unit failed, then exit")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -70,22 +69,18 @@ func run() int {
 		}
 		return 0
 	}
-	if err := serve(ctx, push, *origin, *witnessURL, *relayURL, *state, *capGiB, client); err != nil {
+	if err := serve(ctx, push, *origin, *witnessURL, *relayURL, *state, client); err != nil {
 		log.Error("pi stopped", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(ctx context.Context, push *watch.Pusher, origin, witnessURL, relayURL, state string, capGiB int64,
-	client *http.Client) error {
+func serve(ctx context.Context, push *watch.Pusher, origin, witnessURL, relayURL, state string, client *http.Client) error {
 	if err := watch.CheckURLs(witnessURL, relayURL); err != nil {
 		return err //nolint:wrapcheck // watch errors carry their context
 	}
-	if capGiB <= 0 || capGiB > 1<<20 {
-		return errors.New("store cap out of range")
-	}
-	store, err := watch.OpenStore(state, origin, capGiB<<30)
+	store, err := watch.OpenStore(state, origin)
 	if err != nil {
 		return err //nolint:wrapcheck // as above
 	}

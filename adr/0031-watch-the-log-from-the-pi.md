@@ -32,10 +32,10 @@ any body whole; Prometheus with Alertmanager is a service stack for a few checks
    while the witness does not grow past the Pi; it closes after an hour of growth without one, a later
    announcement does not restart it, and at `announced_quiet_max_h` from its first announcement the silence
    alarm runs again. Freshness: no step caught up with the witness for `verify_freshness_s`.
-5. Complete bundles are staged and kept in the Pi's state directory only once their step's root matched; the
-   state file is read back only when its range gives its root. At the store cap (part of `pi_store_cap_gib`) it
-   alerts, stops keeping bundles and goes on verifying. Nothing is deleted automatically: without an RTC a wrong
-   clock would delete evidence; an old origin's directory is removed by hand after `log_retention_days` (R5).
+5. The Pi keeps one state file per origin: size, root, the compact range over complete bundles and the last
+   partial bundle's entries, read back only when they give the root; a file that does not stops the daemon. It
+   keeps no copy of the log: a mirror against deletion (T15) is its own step. An old origin's file is removed by
+   hand after `log_retention_days`, as nothing on the Pi trusts its clock to delete (R5 exit, T22).
 6. Alerts go to ntfy over HTTPS by POST with a token from a systemd credential, never argv, environment or logs,
    texts built from typed values only. An alert goes out when its condition starts, every 6 h while it holds,
    a key at most once a minute with what was held back sent after, retried with backoff; a daily message shows
@@ -45,10 +45,10 @@ any body whole; Prometheus with Alertmanager is a service stack for a few checks
 
 ## Alternatives considered
 
+- A mirror of verified bundles now: crash-safe staging for evidence nothing reads yet; it comes with its reader.
 - The relay's cosigned checkpoint for the Pi: one file, but the host chooses when the Pi sees which; the witness
   then has to grow out of the Pi's sight for withholding to show. It stays the fallback if `-obscurity` is needed.
-- Inclusion proofs per entry from hash tiles: a proof per entry is slower than one root over the bundles.
-- Reading litewitness's SQLite file: its write-ahead log needs write access to its shared memory file.
+- Inclusion proofs per entry from hash tiles: slower than one root. litewitness's SQLite file: its WAL needs writes.
 - A push-only uid behind a socket: the token can only post to its topic; the residual is in T16.
 
 ## Consequences
@@ -56,5 +56,5 @@ any body whole; Prometheus with Alertmanager is a service stack for a few checks
 - Amends ADR 0006 point 3 (bundles only, from the relay) and point 4, ADR 0030 point 3 (the quiet episode).
 - A dead Pi or a failed push is still silent until the daily message is missed (T27, floor 3).
 - Tests: a fork and a witness behind refused, every log rule broken once, silence, quiet with late entries, cap
-  not restarted, freshness, 11 against 10 truncations, the store cap, a capped fetch, one alert per condition.
-  `verify_s` and `pi_store_cap_gib` are measured on the Pi (L12).
+  not restarted, freshness, 11 against 10 truncations, a capped fetch, alerts merged and never dropped.
+  `verify_s` and `pi_store_cap_gib` (state and witness, no mirror yet) are measured on the Pi (L12).

@@ -18,7 +18,6 @@ const (
 	KeyTruncated Key = "truncated"
 	KeySilence   Key = "silence"
 	KeyFresh     Key = "freshness"
-	KeyStore     Key = "store"
 	KeySave      Key = "save"
 	KeyFinal     Key = "final"
 	KeyStart     Key = "start"
@@ -27,7 +26,7 @@ const (
 )
 
 // conditions are the keys that hold until their cause ends: raised on every step, cleared after it.
-var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh, KeyStore}
+var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh}
 
 // Limits are when the Pi alerts. The first four follow acceptance numbers (acceptance/0.toml), a minute
 // early so that the alert reaches the phone within them.
