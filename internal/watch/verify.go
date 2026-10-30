@@ -55,14 +55,10 @@ type Findings struct {
 	Unknown   int // health UNKNOWN for a reason that alarms at once
 	Announced int
 	Final     bool
-	Staged    []uint64 // complete bundles handed to stage, to keep once the step is verified
 }
 
 // Fetch returns the first width entries of bundle idx.
 type Fetch func(ctx context.Context, idx, width uint64) ([][]byte, error)
-
-// Stage holds a complete bundle until the step's root is checked; only a verified step keeps it.
-type Stage func(idx uint64, entries [][]byte) error
 
 var rangeFactory = &compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
 
@@ -70,7 +66,7 @@ var rangeFactory = &compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildre
 // leaves appended to l's compact range must give the head's root, which proves every new entry included
 // and the log consistent with l. Only then does it return the grown log and its findings; on any error
 // l stays as it is. The relay's copy of entries the Pi already verified is never read.
-func Advance(ctx context.Context, l Log, h Head, fetch Fetch, stage Stage) (Log, Findings, error) {
+func Advance(ctx context.Context, l Log, h Head, fetch Fetch) (Log, Findings, error) {
 	switch {
 	case h.Size < l.Size:
 		return l, Findings{}, fmt.Errorf("%w: it holds %d entries, the Pi verified %d", ErrFork, h.Size, l.Size)
@@ -105,10 +101,6 @@ func Advance(ctx context.Context, l Log, h Head, fetch Fetch, stage Stage) (Log,
 		}
 		partial = append(partial, got[len(partial):]...)
 		if w == width {
-			if err := stage(idx, partial); err != nil {
-				return l, Findings{}, err
-			}
-			f.Staged = append(f.Staged, idx)
 			next.Hashes, partial = slices.Clone(r.Hashes()), nil
 		}
 	}

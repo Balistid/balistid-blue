@@ -133,6 +133,40 @@ func TestPushHoldsNothingBack(t *testing.T) {
 	}
 }
 
+// A message whose send failed and one raised after it merge, counted: the second never overwrites the first.
+func TestPushFailedMessageIsNotOverwritten(t *testing.T) {
+	c := &clock{now: time.Now()}
+	p, err := NewPusher("https://ntfy.example/t", testToken, testClient(), c.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Event(KeyLoss, "first loss")
+	k, m, _ := p.next()
+	p.requeue(k, m) // its send failed
+	c.add(spacing)
+	p.Event(KeyLoss, "second loss")
+	if _, m, _ := p.next(); m.render() != "second loss (the latest of 2 alerts)" {
+		t.Fatalf("waiting message %q", m.render())
+	}
+	p.Event(KeyHealth, "first unknown")
+	k, m, _ = p.next() // being sent when the next one comes, past the spacing
+	c.add(spacing)
+	p.Event(KeyHealth, "second unknown")
+	p.requeue(k, m) // the send failed
+	if _, m, _ := p.next(); m.render() != "second unknown (the latest of 2 alerts)" {
+		t.Fatalf("waiting message %q", m.render())
+	}
+	p.Event(KeyFork, "fork")
+	k, m, _ = p.next()
+	p.Event(KeyFork, "fork again") // raised while the first is being sent, within the spacing
+	p.requeue(k, m)
+	c.add(spacing)
+	p.Flush()
+	if _, m, _ := p.next(); m.render() != "fork again (the latest of 2 alerts)" {
+		t.Fatalf("waiting message %q", m.render())
+	}
+}
+
 func TestPushNeverLogsToken(t *testing.T) {
 	var buf bytes.Buffer
 	old := slog.Default()

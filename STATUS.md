@@ -18,7 +18,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - L9 part 1 (ADR 0031, `feat/pi-watch`): `internal/watch` and `cmd/balistid-pi` read the Pi's own litewitness, recompute
   the root from the relay's entry bundles, check the log's rules, alarm on silence (quiet episode, cap kept),
-  freshness, losses, truncation and the store cap, and push through ntfy; units in `deploy/pi`, arm64 built
+  freshness, losses and truncation, and push through ntfy (no mirror yet); units in `deploy/pi`, arm64 built
   reproducibly in CI. Tests and 9 mutations pass; nothing serves bundles yet. L8 merged as b4d9ca3 (#148).
 ## Next step
 1. L9 part 2: the relay serves entry bundles, announcements wait until served (ADR 0030, 4), the watcher as a stand-in in the range (`pi_verified`); then L10-L12. `range-kvm` is advisory until

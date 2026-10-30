@@ -158,11 +158,3 @@ func ParseBundle(b []byte) ([][]byte, error) {
 	}
 	return out, nil
 }
-
-// appendBundle encodes entries as ParseBundle reads them.
-func appendBundle(out []byte, entries [][]byte) []byte {
-	for _, e := range entries {
-		out = append(binary.BigEndian.AppendUint16(out, uint16(len(e))), e...) //nolint:gosec // entries are at most 256 bytes
-	}
-	return out
-}
