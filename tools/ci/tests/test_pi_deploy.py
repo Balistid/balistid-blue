@@ -31,8 +31,6 @@ SANDBOX = {k: v for k, v in RELAY_SERVICE.items() if k not in {
 
 WATCHER_UNIT = {
     "Description": ["Balistid Blue Pi: verify the host's log and alert the phone"],
-    "After": ["network-online.target"],
-    "Wants": ["network-online.target"],
     "OnFailure": ["balistid-pi-failed.service"],
     "StartLimitIntervalSec": ["0"],
 }

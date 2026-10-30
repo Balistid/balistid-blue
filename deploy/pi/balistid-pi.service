@@ -2,8 +2,8 @@
 # relay's bundles against it and alerts the phone through ntfy. Installed on the Pi by hand, by hash.
 [Unit]
 Description=Balistid Blue Pi: verify the host's log and alert the phone
-After=network-online.target
-Wants=network-online.target
+# No ordering after the network: the watcher reads its witness and the relay every second anyway, and a
+# network that never comes online must not hold it back (its freshness alarm says so).
 # A failure alerts each time: with systemd 254 or later a restart passes through the failed state.
 OnFailure=balistid-pi-failed.service
 StartLimitIntervalSec=0
