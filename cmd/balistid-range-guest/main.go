@@ -38,7 +38,7 @@ const (
 	// floodMax bounds the overflow experiment: each exec makes several records, so this is far
 	// beyond the 16384-entry plugin queue of deploy/auditd/auditd.conf.
 	floodMax = 30000
-	// overflowLogWait bounds how long the overflow line may take to reach the journal.
+	// overflowLogWait bounds the wait for the overflow line, journalctl calls included.
 	overflowLogWait = 10 * time.Second
 )
 
@@ -585,6 +585,7 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 		return rangeguest.OverflowDetected(readTrim(auditdState))
 	}
 	before = state()
+	cursor := journalCursor(output(ctx, "/usr/bin/journalctl", "-q", "-n", "0", "--show-cursor"))
 	n, err := strconv.Atoi(pid)
 	if err != nil {
 		return before, "no laurel process", "missing", "no"
@@ -604,23 +605,45 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 		after = "error: " + err.Error()
 	}
 	lost = valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
-	journal = journalNames(ctx, func() string {
-		return output(ctx, "/usr/bin/journalctl", "-b", "-q", "--no-pager", "-o", "cat")
-	}, overflowLogWait, time.Second)
+	if cursor == "" {
+		return before, after, lost, "no cursor"
+	}
+	wait, cancel := context.WithTimeout(ctx, overflowLogWait)
+	defer cancel()
+	journal = journalNames(wait, func(c context.Context) string {
+		return output(c, "/usr/bin/journalctl", overflowJournalArgs(cursor)...)
+	}, time.Second)
 	return before, after, lost, journal
 }
 
-// journalNames reports whether the journal names the plugin queue's overflow within wait. auditd logs
-// it through syslog, so the line can reach the journal after the flood that caused it has ended.
-func journalNames(ctx context.Context, read func() string, wait, every time.Duration) string {
-	for deadline := time.Now().Add(wait); ; {
-		if strings.Contains(read(), "queue to plugins is full") {
-			return "yes"
-		}
-		if time.Now().After(deadline) || !pause(ctx, every) {
-			return "no"
+// journalCursor is the cursor --show-cursor prints, or "" when there is none.
+func journalCursor(out string) string {
+	for line := range strings.SplitSeq(out, "\n") {
+		if c, ok := strings.CutPrefix(line, "-- cursor: "); ok && c != "" {
+			return c
 		}
 	}
+	return ""
+}
+
+// overflowJournalArgs reads only what root's auditd logged after cursor, taken before the flood: an
+// earlier line, or one an unprivileged process writes under auditd's name, cannot count.
+func overflowJournalArgs(cursor string) []string {
+	return []string{"-q", "--no-pager", "-o", "cat", "--after-cursor=" + cursor, "_UID=0", "SYSLOG_IDENTIFIER=auditd"}
+}
+
+// journalNames reports whether read finds the plugin queue's overflow before ctx ends. auditd logs it
+// through syslog, so the line can reach the journal after the flood that caused it has ended.
+func journalNames(ctx context.Context, read func(context.Context) string, every time.Duration) string {
+	for ctx.Err() == nil {
+		if strings.Contains(read(ctx), "queue to plugins is full") && ctx.Err() == nil {
+			return "yes"
+		}
+		if !pause(ctx, every) {
+			break
+		}
+	}
+	return "no"
 }
 
 // diagnose prints how the sensor came up to the console, which the host keeps as serial.log, so a
