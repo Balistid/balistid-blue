@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-30 by claude/opus-5.5 (L9 merged)
+Updated: 2026-10-30 by claude/opus-5.5 (L10 in review, #152, #153)
 
 ## Where we are
 
@@ -13,22 +13,22 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified` |
+| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 (#153, ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- L9 (#150, ADR 0031): `balistid-pi` trusts only its own litewitness, recomputes the root from the relay's entry bundles,
-  checks the log's rules and alarms on its monotonic clock (silence, quiet cap, freshness, losses, truncation), pushing
-  through ntfy; no mirror on the Pi yet. The relay serves bundles at the width asked and records what it served; an
-  announcement waits for it. KVM PASS with `pi_verified`; review: critic and Codex, findings fixed. L8 is b4d9ca3.
+- #152: the exposure judge scores every recorder service, the Pi's too (it pinned only the collector: INVALID since
+  #142); critic and Codex, GO in round 2. #153 (L10, ADR 0032, on #152): `balistid-net` (own uid, CAP_NET_ADMIN, R13)
+  loads the table before the tunnel; only the relay's uid reaches the Pi; real WireGuard into a Pi namespace in the
+  range; KVM PASS with `pi_reach`. Review: critic 1 round, Codex 3 rounds (key in wg's stderr, unmarked endpoint,
+  forward by route, input unproven, logging redesigned), the last two MED fixed without a 4th round (maintainer).
 ## Next step
-1. L10 deploy (WireGuard, nftables, the relay's IPAddressAllow for the Pi only), L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
+1. Maintainer's approval, then merge #152 and #153; ADR: the witness is pluggable (own Pi, VPS, public witnesses); L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
    a week of runs, then the maintainer decides on required (0028); no retry yet (b4d9ca3: archive.archlinux.org timeout).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
-2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
-3. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
+2. Local go: go1.27.3 pinned; GOTOOLCHAIN=local until Arch ships it. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
    Alongside: B5, B6, a scheduled fuzz workflow (acceptance asks for it), sensor_down_s.
-4. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
-5. Host install (9.5) only when every metric the range decides passes, with balistid-install, R2 keys, an own
+3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
+4. Host install (9.5) only when every metric the range decides passes, with balistid-install, R2 keys, an own
    filesystem for the store, x32 and io_uring, alarms and a build unit with a syscall filter. Floor 2 after acceptance/2.toml.
 ## Open decisions (maintainer)
 - #142: seal continuity left to the Pi; appends wait each (about 45 ms on btrfs). #148: `-final` ends anchoring until rollover.
