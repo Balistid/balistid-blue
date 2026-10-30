@@ -26,7 +26,7 @@ A change is done when all of these hold, verified now and not from memory:
 | R4 | Done means a test that fails on the parent commit. |
 | R5 | Every store has an exit (close/expire), a size cap and retention from day one. Caches and baselines are keyed by content, not mtime. |
 | R6 | Missing is not healthy. A security decision on error, timeout or unknown input returns deny/UNKNOWN; OK is never a default. |
-| R7 | Boundaries are allowlists with negative tests. A third review round finding a defect in the same change, or a defect introduced by a fix, means redesign, not another patch. |
+| R7 | Boundaries are allowlists with negative tests. A finding no local fix can close without a special case or a changed assumption (DESIGN), or the same invariant failing again after a fix, means redesign, not another patch (§5, ADR 0033). |
 | R8 | No root action outside `balistid-install`. |
 | R9 | Do not write a sensor someone already maintains. A new component needs an ADR naming the existing tool, why it is not enough and what changes. |
 | R10 | Every detection and boundary names its `THREAT_MODEL.md` row and ships an attack scenario that triggers it and a legitimate one that does not. |
@@ -80,10 +80,14 @@ Independent review scales with the impact of a mistake, not with the file type:
 |---|---|
 | Small, reversible, with tests (about 50 lines, one file) | Tests and self-check |
 | Security-relevant gate, several files, weak tests | One Claude critic (Opus) |
-| Security boundary with root impact, signing, install path, architecture | Claude critic and Codex review (queue, level full) |
+| Security boundary with root impact, signing, install path, architecture | Claude critic and Codex review (queue, level security) |
 
-A further round runs only when the last review found a defect inside the change. If the third and
-any later round again finds one, stop and redesign (R7); the maintainer decides. Review findings are
+Each finding carries severity, class (BUG or DESIGN) and fix risk (ADR 0033); an open CRIT or HIGH inside
+the change blocks merge. A plain BUG fix is verified by its test failing on the parent; a fix that changes a
+decision, and a disputed finding, by a reply round on the fix range, at most two; a redesign, or a fix range
+over about 150 lines outside tests, by a full round. The author decides a redesign with one sentence why;
+the maintainer decides when it changes an ADR, acceptance number or threat claim, when author and reviewer
+still disagree after the replies, or when an invariant fails again after a redesign. Review findings are
 hypotheses until reproduced by a test.
 
 ## 6. Documentation
