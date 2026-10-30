@@ -56,7 +56,13 @@ func flowWaiting(t *testing.T, name string, drain func(*os.File, *exec.Cmd) erro
 	if !ok {
 		t.Fatal(name)
 	}
+	// The writer answers Freeze after the fsync it is in, and H counts from that answer: on a loaded disk one
+	// fsync outlasts the sync interval and S falls below H, so its file goes to tmpfs where one exists.
 	dir := t.TempDir()
+	if shm, err := os.MkdirTemp("/dev/shm", "balistid-flow-"); err == nil {
+		dir = shm
+		t.Cleanup(func() { _ = os.RemoveAll(shm) })
+	}
 	numbers, console := filepath.Join(dir, "numbers"), filepath.Join(dir, "console")
 	if err := os.WriteFile(console, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -143,6 +149,13 @@ func TestResetMeetsAFrozenWriter(t *testing.T) {
 	}
 	if v, ok := factValueOf(res.facts, rangevm.FactTrialError); !ok || v != "sysrq b did not reset the guest" {
 		t.Errorf("after a reset that returned: %v", res.facts)
+	}
+}
+
+// The guest gives the writer 1 s to answer Freeze: zero would make every failure trial INVALID.
+func TestGuestFreezeBound(t *testing.T) {
+	if guestEnv.freezeWait != time.Second {
+		t.Fatalf("guest freeze bound %v", guestEnv.freezeWait)
 	}
 }
 
