@@ -43,9 +43,18 @@ func run() int {
 	state := flag.String("state", "/var/lib/balistid-pi", "the Pi's own directory")
 	ntfy := flag.String("ntfy", "", "the ntfy topic URL")
 	failed := flag.Bool("alert-failed", false, "send one alert that the watching unit failed, then exit")
+	quiet := flag.Duration("quiet", 0, "range only (ADR 0036): a shorter announced-quiet cap; 0 keeps announced_quiet_max_h")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
+	lim := watch.DefaultLimits
+	if *quiet != 0 {
+		var err error
+		if lim, err = lim.WithQuiet(*quiet); err != nil {
+			log.Error("pi refused its flags", "err", err)
+			return 2
+		}
+	}
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(memLimit)
 	}
@@ -69,14 +78,14 @@ func run() int {
 		}
 		return 0
 	}
-	if err := serve(ctx, push, *origin, *witnessURL, *relayURL, *state, client); err != nil {
+	if err := serve(ctx, push, lim, *origin, *witnessURL, *relayURL, *state, client); err != nil {
 		log.Error("pi stopped", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(ctx context.Context, push *watch.Pusher, origin, witnessURL, relayURL, state string, client *http.Client) error {
+func serve(ctx context.Context, push *watch.Pusher, lim watch.Limits, origin, witnessURL, relayURL, state string, client *http.Client) error {
 	if err := watch.CheckURLs(witnessURL, relayURL); err != nil {
 		return err //nolint:wrapcheck // watch errors carry their context
 	}
@@ -93,7 +102,7 @@ func serve(ctx context.Context, push *watch.Pusher, origin, witnessURL, relayURL
 		slog.ErrorContext(ctx, "ready notify failed", "err", err)
 	}
 	return watch.Run(ctx, watch.Config{Origin: origin, Source: watch.Source{Witness: witnessURL, Relay: relayURL, HTTP: client}, //nolint:wrapcheck // as above
-		Store: store, Push: push, Limits: watch.DefaultLimits, Poll: poll, Now: time.Now, Notify: unixsock.Notify})
+		Store: store, Push: push, Limits: lim, Poll: poll, Now: time.Now, Notify: unixsock.Notify})
 }
 
 // readToken reads the ntfy token from systemd's credential directory (LoadCredential=).

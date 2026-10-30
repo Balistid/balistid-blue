@@ -75,6 +75,37 @@ func TestQuietCapDoesNotRestart(t *testing.T) {
 	}
 }
 
+// The range's shorter cap (ADR 0036) holds the alarm off until it and not longer; the default stays as it is.
+func TestWithQuietShortensTheCap(t *testing.T) {
+	lim, err := DefaultLimits.WithQuiet(20 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if DefaultLimits.Quiet != 24*time.Hour-time.Minute {
+		t.Fatalf("WithQuiet changed the default to %v", DefaultLimits.Quiet)
+	}
+	t0 := time.Now()
+	w := NewWatchdog(lim, t0, nil, false)
+	w.Grew(t0, announced, Rules{})
+	if silent(w, t0.Add(20*time.Minute-time.Second), false) {
+		t.Fatal("alarmed before the shortened cap")
+	}
+	if !silent(w, t0.Add(20*time.Minute), false) {
+		t.Fatal("no alarm at the shortened cap")
+	}
+}
+
+func TestWithQuietRefusesLongerOrBelowSilence(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Minute, DefaultLimits.Silence, DefaultLimits.Quiet + time.Nanosecond, 48 * time.Hour} {
+		if lim, err := DefaultLimits.WithQuiet(d); err == nil {
+			t.Errorf("quiet cap %v taken: %+v", d, lim)
+		}
+	}
+	if _, err := DefaultLimits.WithQuiet(DefaultLimits.Quiet); err != nil {
+		t.Errorf("the default cap itself refused: %v", err)
+	}
+}
+
 func TestQuietEndsWhenWitnessGrowsUnseen(t *testing.T) {
 	t0 := time.Now()
 	w := NewWatchdog(DefaultLimits, t0, nil, false)
