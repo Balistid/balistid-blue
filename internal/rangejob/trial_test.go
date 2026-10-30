@@ -87,6 +87,15 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}}, MethodCPU},
 		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadPtrace, Rate: 1000, Seconds: 600}}, ""},
 		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600, Drop: true}}, ""},
+		{Trial{Metric: MetricSilence, Inject: InjectHardStop}, MethodAlarm},
+		{Trial{Metric: MetricQuiet, Inject: InjectQuietAgain}, MethodAlarm},
+		{Trial{Metric: MetricSilence, Inject: InjectQuietOff}, ""},
+		{Trial{Metric: MetricQuiet, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricSilence}, ""},
+		{Trial{Metric: MetricSilence, Inject: "power-off"}, ""},
+		{Trial{Metric: MetricReady, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricSilence, Inject: InjectLedger, Failure: FailKill}, ""},
+		{Trial{Metric: MetricSilence, Inject: InjectLedger, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -102,8 +111,8 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 		t.Errorf("cpu-1000 = %+v", cpu)
 	}
 	for _, tr := range Trials() {
-		if tr.Trend && tr.Name != cpu.Name {
-			t.Errorf("%s is a trend; only cpu_cores is decided outside the range", tr.Name)
+		if tr.Trend != (tr.Name == cpu.Name || tr.Metric == MetricQuiet) {
+			t.Errorf("%s: trend %v; only cpu_cores and announced_quiet_max_h are decided outside the range", tr.Name, tr.Trend)
 		}
 	}
 	boots := 0
@@ -114,6 +123,30 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 	}
 	if boots < 10 {
 		t.Errorf("%d ready boots; acceptance ready_s asks 10", boots)
+	}
+}
+
+// Silence has one deciding trial per cause and the quiet cap one trend per case (ADR 0036, points 2 and 3).
+func TestAlarmTrialsAreTheADRs(t *testing.T) {
+	want := map[string]string{InjectWireGuard: MetricSilence, InjectLedger: MetricSilence, InjectHardStop: MetricSilence,
+		InjectQuietOff: MetricQuiet, InjectQuietMasked: MetricQuiet, InjectQuietAgain: MetricQuiet}
+	got := map[string]string{}
+	for _, tr := range Trials() {
+		if tr.Method() != MethodAlarm {
+			continue
+		}
+		if _, dup := got[tr.Inject]; dup || tr.Expect != "" || tr.Count != 1 {
+			t.Errorf("%s: injection %s twice, or a control, or more than one run", tr.Name, tr.Inject)
+		}
+		got[tr.Inject] = tr.Metric
+	}
+	if len(got) != len(want) {
+		t.Errorf("alarm trials %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("injection %s measures %q, want %q", k, got[k], v)
+		}
 	}
 }
 
