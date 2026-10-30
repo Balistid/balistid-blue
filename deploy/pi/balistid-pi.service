@@ -9,9 +9,9 @@ OnFailure=balistid-pi-failed.service
 StartLimitIntervalSec=0
 
 [Service]
-# READY=1 once the token is read; WATCHDOG=1 after each step, a day of log far within the limit.
+# READY=1 once the token is read; WATCHDOG=1 after each step and each bundle, every request has a 10 s timeout.
 Type=notify
-WatchdogSec=10min
+WatchdogSec=2min
 Restart=always
 RestartSec=30s
 RestartSteps=5
