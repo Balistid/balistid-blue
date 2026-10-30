@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -29,12 +30,12 @@ func piVerified(ctx context.Context) string {
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	for deadline := time.Now().Add(cosignWait); ; time.Sleep(time.Second) {
+	for deadline := time.Now().Add(cosignWait); ; {
 		n, err := cosign.ReadServed(filepath.Join(relayState, cosign.ServedName), keys.Origin)
 		if err == nil && n >= cp.Size {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) || !pause(ctx, time.Second) {
 			return fmt.Sprintf("error: the relay served %d of %d entries (%v); %s", n, cp.Size, err, piDiag(ctx))
 		}
 	}
@@ -44,7 +45,9 @@ func piVerified(ctx context.Context) string {
 	}
 	var l watch.Log
 	for range 5 {
-		time.Sleep(2 * time.Second)
+		if !pause(ctx, 2*time.Second) {
+			return "error: " + ctx.Err().Error()
+		}
 		if err := exec.CommandContext(ctx, "/usr/bin/systemctl", "stop", piUnit).Run(); err != nil {
 			return "error: stop " + piUnit + ": " + err.Error()
 		}
@@ -64,7 +67,7 @@ func piVerified(ctx context.Context) string {
 // piConsistent proves the Pi's saved root the root of the log the witness cosigned, at the Pi's size:
 // a state that only holds together in itself proves nothing (ADR 0031).
 func piConsistent(ctx context.Context, keys cosign.Keys, l watch.Log) string {
-	for deadline := time.Now().Add(cosignWait); ; time.Sleep(time.Second) {
+	for deadline := time.Now().Add(cosignWait); ; {
 		cp, err := cosign.Read(filepath.Join(relayState, cosign.Name), keys)
 		if err == nil && cp.Size >= l.Size {
 			p, err := cosign.OpenProven(ctx, ledgerLog, cp)
@@ -77,9 +80,21 @@ func piConsistent(ctx context.Context, keys cosign.Keys, l watch.Log) string {
 			}
 			return "yes"
 		}
-		if time.Now().After(deadline) {
-			return fmt.Sprintf("error: nothing cosigned at the Pi's %d entries (%v)", l.Size, err)
+		if time.Now().After(deadline) || !pause(ctx, time.Second) {
+			return fmt.Sprintf("error: nothing cosigned at the Pi's %d entries (%v)", l.Size, errors.Join(err, ctx.Err()))
 		}
+	}
+}
+
+// pause waits d, or less when ctx ends first, which it reports as false.
+func pause(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 

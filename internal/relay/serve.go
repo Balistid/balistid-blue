@@ -75,37 +75,42 @@ func NewServer(logDir, state, origin string) (*Server, error) {
 	return s, nil
 }
 
-// Close releases the log.
-func (s *Server) Close() error { return s.root.Close() } //nolint:wrapcheck // read-only
+// Close logs the decisions not yet summarized and releases the log.
+func (s *Server) Close() error {
+	s.mu.Lock()
+	s.summarize()
+	s.mu.Unlock()
+	return s.root.Close() //nolint:wrapcheck // read-only
+}
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.slots <- struct{}{}:
 		defer func() { <-s.slots }()
 	default:
-		s.decide(r.Context(), "busy")
+		s.decide("busy")
 		http.Error(w, "busy", http.StatusServiceUnavailable)
 		return
 	}
 	if r.Method != http.MethodGet {
-		s.decide(r.Context(), "method")
+		s.decide("method")
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	n, p, end, ok := bundlePath(r.URL)
 	if !ok {
-		s.decide(r.Context(), "path")
+		s.decide("path")
 		http.NotFound(w, r)
 		return
 	}
 	b, err := s.bundle(n, p)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		s.decide(r.Context(), "missing")
+		s.decide("missing")
 		http.NotFound(w, r)
 		return
 	case err != nil:
-		s.decide(r.Context(), "unreadable")
+		s.decide("unreadable")
 		slog.ErrorContext(r.Context(), "relay: bundle not read", "err", err)
 		http.Error(w, "not read", http.StatusInternalServerError)
 		return
@@ -119,14 +124,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		err = http.NewResponseController(w).Flush()
 	}
 	if err != nil {
-		s.decide(r.Context(), "unsent")
+		s.decide("unsent")
 		return
 	}
 	if err := s.grow(end); err != nil {
 		slog.ErrorContext(r.Context(), "relay: served record not written", "err", err)
 		return
 	}
-	s.decide(r.Context(), "served")
+	s.decide("served")
 }
 
 // bundle reads bundle n of width p (0: full). A partial one that Tessera already replaced by its full
@@ -178,19 +183,27 @@ func bundlePath(u *url.URL) (uint64, uint8, uint64, bool) {
 
 // decide counts a serving decision and logs the counts at most once a minute, with the rule they follow
 // (ENGINEERING.md 3): a peer cannot flood the journal by asking.
-func (s *Server) decide(ctx context.Context, reason string) {
+func (s *Server) decide(reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counts[reason]++
-	if now := s.now(); now.Sub(s.logged) >= time.Minute {
-		args := []any{"rule", serveRule, "entries_served", s.served}
-		for _, k := range slices.Sorted(maps.Keys(s.counts)) {
-			args = append(args, k, s.counts[k])
-		}
-		slog.InfoContext(ctx, "relay: bundle decisions", args...)
-		s.logged = now
-		clear(s.counts)
+	if s.now().Sub(s.logged) >= time.Minute {
+		s.summarize()
 	}
+}
+
+// summarize logs the decisions counted since the last summary, if any; s.mu is held.
+func (s *Server) summarize() {
+	if len(s.counts) == 0 {
+		return
+	}
+	args := []any{"rule", serveRule, "entries_served", s.served}
+	for _, k := range slices.Sorted(maps.Keys(s.counts)) {
+		args = append(args, k, s.counts[k])
+	}
+	slog.Info("relay: bundle decisions", args...)
+	s.logged = s.now()
+	clear(s.counts)
 }
 
 // grow records end when it passes what was served before; the file is written only then.
