@@ -40,7 +40,14 @@ func TestPiVerifiesWhatTheRelayServes(t *testing.T) {
 	if err != nil || l.Size != cp.Size || found.Broken != 0 || found.Entries != cp.Size {
 		t.Fatalf("verified %d of %d, %+v, %v", l.Size, cp.Size, found, err)
 	}
-	if n, err := cosign.ReadServed(filepath.Join(state, cosign.ServedName), origin); err != nil || n < cp.Size {
-		t.Fatalf("served %d of %d, %v", n, cp.Size, err)
+	// the record grows just after the answer left, as the announce client's poll allows for
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		n, err := cosign.ReadServed(filepath.Join(state, cosign.ServedName), origin)
+		if err == nil && n >= cp.Size {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("served %d of %d, %v", n, cp.Size, err)
+		}
 	}
 }
