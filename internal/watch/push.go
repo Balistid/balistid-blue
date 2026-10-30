@@ -48,7 +48,7 @@ type Pusher struct {
 
 // NewPusher posts to url (an ntfy topic) with token as its bearer. The token is never logged.
 func NewPusher(url, token string, c *http.Client, now func() time.Time) (*Pusher, error) {
-	if err := checkURL(url); err != nil {
+	if err := checkPushURL(url); err != nil {
 		return nil, err
 	}
 	if token == "" || len(token) > maxToken || strings.ContainsFunc(token, func(r rune) bool { return r <= ' ' || r > '~' }) {

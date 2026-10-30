@@ -129,8 +129,15 @@ func TestNewPusherRefuses(t *testing.T) {
 			t.Errorf("token %s: accepted", name)
 		}
 	}
-	if _, err := NewPusher("https://user@ntfy.example/t", testToken, c, time.Now); err == nil {
-		t.Error("a URL with a user: accepted")
+	for _, u := range []string{"https://user@ntfy.example/t", "http://ntfy.example/t", "http://10.0.0.1/t", "http://localhost/t"} {
+		if _, err := NewPusher(u, testToken, c, time.Now); err == nil {
+			t.Errorf("%s: accepted", u)
+		}
+	}
+	for _, u := range []string{"https://ntfy.example/t", "http://127.0.0.1:8080/t", "http://[::1]/t"} {
+		if _, err := NewPusher(u, testToken, c, time.Now); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
 	}
 	if _, err := NewPusher("https://ntfy.example/t", testToken, &http.Client{}, time.Now); err == nil {
 		t.Error("a client without a timeout: accepted")
