@@ -61,15 +61,17 @@ RELEASE_JOB = """
           mkdir -p "$a" "$b" "$RUNNER_TEMP/home-b" "$RUNNER_TEMP/tmp-b"
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
-          for cmd in balistid balistid-runner; do
-            (cd "$a" && go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
+          # balistid-pi runs on the maintainer's arm64 Pi, installed by the hash printed below (ADR 0031).
+          for target in balistid:amd64 balistid-runner:amd64 balistid-pi:arm64; do
+            cmd="${target%:*}" arch="${target#*:}"
+            (cd "$a" && GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
             (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \\
-              GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" \\
+              GOPATH="$RUNNER_TEMP/gopath-b" GOCACHE="$RUNNER_TEMP/cache-b" GOARCH="$arch" \\
               go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
           done
           # No built binary runs in this job: one run here could change what is bundled before it is
           # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
-          for cmd in balistid balistid-runner; do
+          for cmd in balistid balistid-runner balistid-pi; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
             sha256sum "$a/$cmd"
           done
