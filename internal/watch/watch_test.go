@@ -9,12 +9,15 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
 // fakeWitness serves an index page whose head the test sets.
 type fakeWitness struct {
 	mu   sync.Mutex
 	head Head
+	down bool
 }
 
 func (w *fakeWitness) set(h Head) { w.mu.Lock(); defer w.mu.Unlock(); w.head = h }
@@ -22,6 +25,10 @@ func (w *fakeWitness) set(h Head) { w.mu.Lock(); defer w.mu.Unlock(); w.head = h
 func (w *fakeWitness) ServeHTTP(rw http.ResponseWriter, _ *http.Request) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.down {
+		rw.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	_, _ = rw.Write(index(map[string]Head{"balistid/log": w.head}))
 }
 
@@ -161,4 +168,61 @@ func TestDailyStatus(t *testing.T) {
 		Store: store, Push: push, Limits: DefaultLimits, Poll: time.Millisecond, Now: now, Notify: func(string) error { return nil }})
 	waitKey(t, n, KeyDaily)
 	waitKey(t, n, KeySilence) // a log that stopped growing for a day
+}
+
+// harness runs the watcher against a fake relay, witness and ntfy, with a clock that moves by tick on
+// every reading.
+type harness struct {
+	wit    *fakeWitness
+	n      *ntfy
+	notify chan string
+	clock  *clock
+	start  time.Time
+}
+
+func startWatch(t *testing.T, log [][]byte, tick, poll time.Duration) harness {
+	t.Helper()
+	relay := relayServer(t, log, nil)
+	h := harness{wit: &fakeWitness{head: headOf(log)}, n: &ntfy{}, notify: make(chan string, 1<<16)}
+	ws := httptest.NewServer(h.wit)
+	t.Cleanup(ws.Close)
+	c := &clock{now: time.Now()}
+	h.clock, h.start = c, c.Now()
+	push := newTestPusher(t, h.n, c)
+	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := func() time.Time { c.add(tick); return c.Now() }
+	runWatch(t, Config{Origin: "balistid/log", Source: Source{Witness: ws.URL + "/", Relay: relay.URL + "/", HTTP: testClient()},
+		Store: store, Push: push, Limits: DefaultLimits, Poll: poll, Now: now,
+		Notify: func(s string) error { h.notify <- s; return nil }})
+	return h
+}
+
+// An unreadable witness proves nothing: after an announcement it does not hold off the silence alarm.
+func TestUnreadableWitnessDoesNotQuiet(t *testing.T) {
+	log := enc(t, append(batches(3), entry.Announce{Kind: entry.AnnounceShutdown})...)
+	h := startWatch(t, log, 10*time.Second, time.Millisecond)
+	waitKey(t, h.n, KeyStart)
+	h.wit.mu.Lock()
+	h.wit.down = true
+	h.wit.mu.Unlock()
+	waitKey(t, h.n, KeySilence)
+	if d := h.clock.Now().Sub(h.start); d >= DefaultLimits.Quiet {
+		t.Fatalf("silence alarmed only after %v, past the quiet cap", d)
+	}
+}
+
+// A long backlog feeds systemd's watchdog and the alarms after every bundle, not once at its end.
+func TestAlarmsRunBetweenBundles(t *testing.T) {
+	log := enc(t, batches(4*width)...)
+	h := startWatch(t, log, time.Second, time.Hour)
+	for range 5 { // four bundles and the step's end
+		select {
+		case <-h.notify:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the watchdog was not fed between bundles")
+		}
+	}
 }

@@ -31,19 +31,33 @@ var pushTitle = map[Key]struct {
 	KeyFinal: {"Balistid: log ended", 4}, KeyStart: {"Balistid: Pi watching", 3}, KeyDaily: {"Balistid: daily status", 2},
 }
 
-// Pusher sends alerts to an ntfy topic. Raise only queues, so a slow or failing push never holds up
-// verification; one message per key waits at most, and one goroutine (Run) sends.
+// The same key alerts again after spacing at the earliest, so a flapping condition cannot flood the
+// topic; what is held back then goes out once spacing has passed. A condition that holds reminds every
+// remind.
+const (
+	spacing = time.Minute
+	remind  = 6 * time.Hour
+)
+
+// Pusher sends alerts to an ntfy topic. Its methods only queue, so a slow or failing push never holds
+// up verification; one message per key waits at most, and one goroutine (Run) sends.
 type Pusher struct {
 	url, token string
 	http       *http.Client
 	now        func() time.Time
 	backoff    []time.Duration
 
-	mu    sync.Mutex
-	last  map[Key]time.Time // when a key was last queued
-	held  map[Key]int       // raised again since then, within its interval
-	queue map[Key]string
-	wake  chan struct{}
+	mu     sync.Mutex
+	sent   map[Key]time.Time // when a key was last queued
+	active map[Key]bool      // conditions that hold
+	held   map[Key]held      // raised within spacing, to send once it passed
+	queue  map[Key]string
+	wake   chan struct{}
+}
+
+type held struct {
+	n    int
+	text string // the latest
 }
 
 // NewPusher posts to url (an ntfy topic) with token as its bearer. The token is never logged.
@@ -59,37 +73,69 @@ func NewPusher(url, token string, c *http.Client, now func() time.Time) (*Pusher
 	}
 	return &Pusher{url: url, token: token, http: c, now: now,
 		backoff: []time.Duration{5 * time.Second, 30 * time.Second, time.Minute, 5 * time.Minute},
-		last:    map[Key]time.Time{}, held: map[Key]int{}, queue: map[Key]string{}, wake: make(chan struct{}, 1)}, nil
+		sent:    map[Key]time.Time{}, active: map[Key]bool{}, held: map[Key]held{}, queue: map[Key]string{},
+		wake: make(chan struct{}, 1)}, nil
 }
 
-// Raise queues text under key unless key was queued less than every ago; then it is counted and the
-// next message says how many were held back.
-func (p *Pusher) Raise(key Key, text string, every time.Duration) {
+// Event alerts one occurrence.
+func (p *Pusher) Event(key Key, text string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	now := p.now()
-	if t, ok := p.last[key]; ok && now.Sub(t) < every {
-		p.held[key]++
+	p.raise(key, text)
+}
+
+// Hold alerts a condition when it starts, then every remind while it holds.
+func (p *Pusher) Hold(key Key, text string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case !p.active[key]:
+		p.active[key] = true
+		p.raise(key, text)
+	case p.now().Sub(p.sent[key]) >= remind:
+		p.queueLocked(key, text)
+	}
+}
+
+// Clear ends a condition: when it holds again, it alerts again, spacing allowing. A start that is still
+// held back is sent all the same.
+func (p *Pusher) Clear(key Key) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.active, key)
+}
+
+// Flush sends what was held back once its spacing has passed.
+func (p *Pusher) Flush() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, h := range p.held {
+		if p.now().Sub(p.sent[key]) >= spacing {
+			text := h.text
+			if h.n > 1 {
+				text += fmt.Sprintf(" (the latest of %d alerts within %s)", h.n, spacing)
+			}
+			p.queueLocked(key, text)
+		}
+	}
+}
+
+func (p *Pusher) raise(key Key, text string) {
+	if t, ok := p.sent[key]; ok && p.now().Sub(t) < spacing {
+		p.held[key] = held{n: p.held[key].n + 1, text: text}
 		return
 	}
-	p.last[key] = now
-	if n := p.held[key]; n > 0 {
-		text += fmt.Sprintf(" (and %d more since the last alert)", n)
-	}
-	p.held[key] = 0
+	p.queueLocked(key, text)
+}
+
+func (p *Pusher) queueLocked(key Key, text string) {
+	p.sent[key] = p.now()
+	delete(p.held, key)
 	p.queue[key] = text
 	select {
 	case p.wake <- struct{}{}:
 	default:
 	}
-}
-
-// Clear ends a condition: when it holds again, it alerts at once.
-func (p *Pusher) Clear(key Key) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.last, key)
-	p.held[key] = 0
 }
 
 // Run sends queued messages until ctx ends, retrying a failed one with backoff unless a newer one of
@@ -174,7 +220,7 @@ func (p *Pusher) Send(ctx context.Context, key Key, text string) error {
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxPushResp))
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("watch: push: %s", resp.Status)
+		return fmt.Errorf("watch: push: status %d", resp.StatusCode)
 	}
 	return nil
 }

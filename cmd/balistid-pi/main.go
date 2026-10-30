@@ -30,6 +30,8 @@ const (
 	poll        = time.Second
 	tokenName   = "ntfy-token"
 	maxTokenBuf = 512
+	// maxHeader caps a response's status line and headers: the relay's are the host's (Go's default is 10 MiB).
+	maxHeader = 16 << 10
 )
 
 func main() { os.Exit(run()) }
@@ -121,6 +123,7 @@ func readToken() (string, error) {
 func newClient() *http.Client {
 	t := http.DefaultTransport.(*http.Transport).Clone() //nolint:forcetypeassert // the standard library's own type
 	t.Proxy = nil
+	t.MaxResponseHeaderBytes = maxHeader
 	return &http.Client{Timeout: httpTimeout, CheckRedirect: noRedirect, Transport: t}
 }
 

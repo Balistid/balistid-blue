@@ -15,7 +15,7 @@ func TestAdvanceVerifiesAcrossBundles(t *testing.T) {
 	log := enc(t, batches(600)...)
 	k := kept{}
 	l, f, err := Advance(ctx, Log{}, headOf(log[:300]), fetchFrom(log), k.keep)
-	if err != nil || l.Size != 300 || len(l.Partial) != 44 || f.Entries != 300 || f.Broken != 0 || !f.Complete {
+	if err != nil || l.Size != 300 || len(l.Partial) != 44 || f.Entries != 300 || f.Broken != 0 || len(f.Staged) != 1 {
 		t.Fatalf("to 300: size %d, partial %d, %+v, %v", l.Size, len(l.Partial), f, err)
 	}
 	l, f, err = Advance(ctx, l, headOf(log), fetchFrom(log), k.keep)
@@ -86,6 +86,16 @@ func TestWitnessBehindPiAlarms(t *testing.T) {
 	}
 }
 
+func TestEmptyHeadMustBeTheEmptyRoot(t *testing.T) {
+	ctx := context.Background()
+	if _, _, err := Advance(ctx, Log{}, Head{Size: 0, Root: mth(nil)}, fetchFrom(nil), discard); err != nil {
+		t.Fatalf("the empty log: %v", err)
+	}
+	if _, _, err := Advance(ctx, Log{}, Head{Size: 0, Root: [32]byte{1}}, fetchFrom(nil), discard); !errors.Is(err, ErrFork) {
+		t.Fatalf("another root at 0 entries: %v", err)
+	}
+}
+
 func TestLogRules(t *testing.T) {
 	b := func(first, last uint64) entry.Body { return entry.Batch{First: first, Last: last, Root: [32]byte{1}} }
 	s := func(first, last uint64) entry.Body { return entry.Seal{First: first, Last: last, SHA256: [32]byte{2}} }
@@ -106,6 +116,10 @@ func TestLogRules(t *testing.T) {
 		{"seals that do not tile", []entry.Body{b(1, 5), s(1, 5), b(6, 9), s(7, 9)}, 1},
 		{"a loss of a batched record", []entry.Body{b(1, 5), entry.Loss{Seq: 5, Stage: entry.StageQueue, Records: 3}}, 1},
 		{"an entry after final", []entry.Body{b(1, 5), entry.Final{NextOrigin: "next/log"}, b(6, 9)}, 1},
+		{"a loss the next batch does not cover", []entry.Body{b(1, 5), entry.Loss{Seq: 100, Stage: entry.StageQueue,
+			Records: 1}, b(6, 10)}, 1},
+		{"a loss left uncovered by final at the cap", []entry.Body{b(1, 5), entry.Loss{Seq: 6, Stage: entry.StageCap,
+			Records: 1}, entry.Final{NextOrigin: "next/log"}}, 0},
 	}
 	for _, c := range cases {
 		log := enc(t, c.bodies...)
@@ -131,7 +145,7 @@ func TestNothingAfterFinal(t *testing.T) {
 	if err != nil || !f.Final || f.Broken != 0 || !l.Rules.Final {
 		t.Fatalf("%+v %v", f, err)
 	}
-	if ev := NewWatchdog(DefaultLimits, time.Now(), nil).Grew(time.Now(), f, l.Rules); len(ev) != 1 || ev[0].Key != KeyFinal {
+	if ev := NewWatchdog(DefaultLimits, time.Now(), nil, false).Grew(time.Now(), f, l.Rules); len(ev) != 1 || ev[0].Key != KeyFinal {
 		t.Fatalf("events %+v, want one final", ev)
 	}
 	log = append(log, enc(t, entry.Health{State: entry.StateOK})...)
@@ -148,7 +162,7 @@ func TestLossThenOKAlarms(t *testing.T) {
 	if err != nil || f.Lost != 1 {
 		t.Fatalf("%+v %v", f, err)
 	}
-	ev := NewWatchdog(DefaultLimits, now, nil).Grew(now, f, l.Rules)
+	ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules)
 	if len(ev) != 1 || ev[0].Key != KeyLoss {
 		t.Fatalf("events %+v, want one loss", ev)
 	}
@@ -173,7 +187,7 @@ func TestHealthStartingGrace(t *testing.T) {
 	if err != nil || !l.Rules.Pending {
 		t.Fatalf("canary pending: %+v %v", l.Rules, err)
 	}
-	w := NewWatchdog(DefaultLimits, t0, nil)
+	w := NewWatchdog(DefaultLimits, t0, nil, false)
 	w.Grew(t0, f, l.Rules)
 	if _, ok := w.Conditions(t0.Add(59*time.Second), false)[KeyHealth]; ok {
 		t.Fatal("UNKNOWN alarmed within its grace")

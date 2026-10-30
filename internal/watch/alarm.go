@@ -29,7 +29,8 @@ const (
 // conditions are the keys that hold until their cause ends: raised on every step, cleared after it.
 var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh, KeyStore}
 
-// Limits are when the Pi alerts. The first four are acceptance numbers (acceptance/0.toml).
+// Limits are when the Pi alerts. The first four follow acceptance numbers (acceptance/0.toml), a minute
+// early so that the alert reaches the phone within them.
 type Limits struct {
 	Silence   time.Duration // silence_alarm_s
 	Quiet     time.Duration // announced_quiet_max_h
@@ -41,8 +42,8 @@ type Limits struct {
 }
 
 // DefaultLimits are the acceptance numbers of floor 0 and the defaults of ADR 0031.
-var DefaultLimits = Limits{Silence: 900 * time.Second, Quiet: 24 * time.Hour, Fresh: time.Hour, Truncated: 10,
-	Grace: time.Minute, Settle: time.Hour, Gap: 2 * time.Minute}
+var DefaultLimits = Limits{Silence: 840 * time.Second, Quiet: 24*time.Hour - time.Minute, Fresh: time.Hour - time.Minute,
+	Truncated: 10, Grace: time.Minute, Settle: time.Hour, Gap: 2 * time.Minute}
 
 // Event is one alert to send.
 type Event struct {
@@ -65,9 +66,13 @@ type Watchdog struct {
 // episode is a quiet window opened by an announcement; times are the Pi's.
 type episode struct{ opened, announced time.Time }
 
-// NewWatchdog starts at now; quiet is an open episode's age saved before a restart, or nil.
-func NewWatchdog(lim Limits, now time.Time, quiet *time.Duration) *Watchdog {
+// NewWatchdog starts at now; quiet is an open episode's age saved before a restart, or nil, and pending
+// says the saved log's last health is a pending UNKNOWN, whose grace then starts again.
+func NewWatchdog(lim Limits, now time.Time, quiet *time.Duration, pending bool) *Watchdog {
 	w := &Watchdog{lim: lim, grew: now, run: now, fresh: now}
+	if pending {
+		w.pending = now
+	}
 	if quiet != nil {
 		at := now.Add(-*quiet)
 		w.quiet = &episode{opened: at, announced: at}
@@ -98,8 +103,12 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	case w.pending.IsZero():
 		w.pending = now
 	}
-	for range f.Truncated {
+	// the newest Truncated+1 times decide "more than Truncated within an hour"; the host sets the count
+	for range min(f.Truncated, w.lim.Truncated+1) {
 		w.trunc = append(w.trunc, now)
+	}
+	if n := len(w.trunc) - (w.lim.Truncated + 1); n > 0 {
+		w.trunc = w.trunc[n:]
 	}
 	var out []Event
 	if f.Broken > 0 {

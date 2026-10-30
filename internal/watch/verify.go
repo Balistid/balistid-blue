@@ -23,8 +23,9 @@ var (
 	ErrMismatch = errors.New("watch: the relay's bundles do not give the witness's root")
 )
 
-// Log is what the Pi verified of one origin's log: its size and root, the compact range over its
-// leaves, the entries of an incomplete last bundle, and where the log's rules stand.
+// Log is what the Pi verified of one origin's log: its size and root, the compact range over its complete
+// bundles, the entries of an incomplete last bundle, and where the log's rules stand. The range and the
+// partial entries together give the root, which check proves.
 type Log struct {
 	Size    uint64
 	Root    [32]byte
@@ -39,6 +40,7 @@ type Rules struct {
 	BatchLast   uint64 `json:"batch_last"`
 	SealLast    uint64 `json:"seal_last"`
 	SealedBatch bool   `json:"sealed_batch"` // a seal follows the last batch already
+	LossMax     uint64 `json:"loss_max"`     // the highest lost record the next batch has to cover
 	Final       bool   `json:"final"`
 	Pending     bool   `json:"pending"` // the last health is UNKNOWN for a reason that clears by itself
 }
@@ -53,37 +55,37 @@ type Findings struct {
 	Unknown   int // health UNKNOWN for a reason that alarms at once
 	Announced int
 	Final     bool
-	Complete  bool // a bundle completed and was kept
+	Staged    []uint64 // complete bundles handed to stage, to keep once the step is verified
 }
 
 // Fetch returns the first width entries of bundle idx.
 type Fetch func(ctx context.Context, idx, width uint64) ([][]byte, error)
 
-// Keep stores a complete bundle. It runs before the root is checked: the state saved after a verified
-// step alone says how far kept bundles count.
-type Keep func(idx uint64, entries [][]byte) error
+// Stage holds a complete bundle until the step's root is checked; only a verified step keeps it.
+type Stage func(idx uint64, entries [][]byte) error
+
+var rangeFactory = &compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
 
 // Advance verifies the log from l's size to the witness's head with the bundles fetch returns: the
 // leaves appended to l's compact range must give the head's root, which proves every new entry included
 // and the log consistent with l. Only then does it return the grown log and its findings; on any error
 // l stays as it is. The relay's copy of entries the Pi already verified is never read.
-func Advance(ctx context.Context, l Log, h Head, fetch Fetch, keep Keep) (Log, Findings, error) {
+func Advance(ctx context.Context, l Log, h Head, fetch Fetch, stage Stage) (Log, Findings, error) {
 	switch {
 	case h.Size < l.Size:
 		return l, Findings{}, fmt.Errorf("%w: it holds %d entries, the Pi verified %d", ErrFork, h.Size, l.Size)
+	case h.Size == 0 && !bytes.Equal(h.Root[:], rfc6962.DefaultHasher.EmptyRoot()):
+		return l, Findings{}, fmt.Errorf("%w: not the empty root at 0 entries", ErrFork)
 	case h.Size == l.Size && l.Size > 0 && h.Root != l.Root:
 		return l, Findings{}, fmt.Errorf("%w: another root at %d entries", ErrFork, h.Size)
 	case h.Size == l.Size:
 		return l, Findings{}, nil
-	case uint64(len(l.Partial)) != l.Size%width:
-		return l, Findings{}, fmt.Errorf("watch: %d partial entries at size %d", len(l.Partial), l.Size)
 	}
-	rf := &compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}
-	r, err := rf.NewRange(0, l.Size, slices.Clone(l.Hashes))
+	r, err := l.leaves()
 	if err != nil {
-		return l, Findings{}, fmt.Errorf("watch: stored range: %w", err)
+		return l, Findings{}, err
 	}
-	next := Log{Rules: l.Rules}
+	next := Log{Rules: l.Rules, Hashes: slices.Clone(l.Hashes)}
 	var f Findings
 	partial := slices.Clone(l.Partial)
 	for idx := l.Size / width; idx*width < h.Size; idx++ {
@@ -103,10 +105,11 @@ func Advance(ctx context.Context, l Log, h Head, fetch Fetch, keep Keep) (Log, F
 		}
 		partial = append(partial, got[len(partial):]...)
 		if w == width {
-			if err := keep(idx, partial); err != nil {
+			if err := stage(idx, partial); err != nil {
 				return l, Findings{}, err
 			}
-			f.Complete, partial = true, nil
+			f.Staged = append(f.Staged, idx)
+			next.Hashes, partial = slices.Clone(r.Hashes()), nil
 		}
 	}
 	root, err := r.GetRootHash(nil)
@@ -116,9 +119,45 @@ func Advance(ctx context.Context, l Log, h Head, fetch Fetch, keep Keep) (Log, F
 	if !bytes.Equal(root, h.Root[:]) {
 		return l, Findings{}, fmt.Errorf("%w at %d entries", ErrMismatch, h.Size)
 	}
-	next.Size, next.Root, next.Hashes, next.Partial = h.Size, h.Root, slices.Clone(r.Hashes()), partial
+	next.Size, next.Root, next.Partial = h.Size, h.Root, partial
 	f.Entries = h.Size - l.Size
 	return next, f, nil
+}
+
+// leaves is the compact range over all of l's leaves: its complete bundles' range and the partial entries.
+func (l Log) leaves() (*compact.Range, error) {
+	if uint64(len(l.Partial)) != l.Size%width {
+		return nil, fmt.Errorf("watch: %d partial entries at size %d", len(l.Partial), l.Size)
+	}
+	r, err := rangeFactory.NewRange(0, l.Size-uint64(len(l.Partial)), slices.Clone(l.Hashes))
+	if err != nil {
+		return nil, fmt.Errorf("watch: stored range: %w", err)
+	}
+	for _, raw := range l.Partial {
+		if err := r.Append(rfc6962.DefaultHasher.HashLeaf(raw), nil); err != nil {
+			return nil, fmt.Errorf("watch: stored range: %w", err)
+		}
+	}
+	return r, nil
+}
+
+// check proves a stored log consistent: its range and partial entries give its root.
+func (l Log) check() error {
+	r, err := l.leaves()
+	if err != nil {
+		return err
+	}
+	if l.Size == 0 {
+		if l.Root != ([32]byte{}) {
+			return errors.New("watch: stored root of an empty log")
+		}
+		return nil
+	}
+	root, err := r.GetRootHash(nil)
+	if err != nil || !bytes.Equal(root, l.Root[:]) {
+		return errors.Join(errors.New("watch: the stored range does not give the stored root"), err)
+	}
+	return nil
 }
 
 // check takes the next entry, in log order. A broken rule is counted, not stopped at: the entry is
@@ -143,7 +182,10 @@ func (r *Rules) check(raw []byte, f *Findings) {
 		if r.BatchLast != 0 && b.First != r.BatchLast+1 {
 			broke("a batch that does not follow the last one")
 		}
-		r.BatchLast, r.SealedBatch = b.Last, false
+		if b.Last < r.LossMax {
+			broke("a loss the batch after it does not cover")
+		}
+		r.BatchLast, r.SealedBatch, r.LossMax = b.Last, false, 0
 	case entry.Seal:
 		switch {
 		case r.BatchLast == 0 || b.Last != r.BatchLast || r.SealedBatch:
@@ -156,6 +198,7 @@ func (r *Rules) check(raw []byte, f *Findings) {
 		if b.Seq <= r.BatchLast {
 			broke("a loss of a record already in a batch")
 		}
+		r.LossMax = max(r.LossMax, b.Seq)
 		if b.Stage == entry.StageTruncated {
 			f.Truncated++
 		} else {
@@ -166,7 +209,8 @@ func (r *Rules) check(raw []byte, f *Findings) {
 	case entry.Announce:
 		f.Announced++
 	case entry.Final:
-		r.Final, f.Final = true, true
+		// at the cap the waiting batch is left out of the old log, its losses with it (ADR 0030, point 5)
+		r.Final, f.Final, r.LossMax = true, true, 0
 	}
 }
 
