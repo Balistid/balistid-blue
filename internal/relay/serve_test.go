@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/transparency-dev/tessera/api/layout"
 
@@ -169,13 +173,117 @@ func FuzzServePath(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, path, query string) {
 		u := &url.URL{Path: path, RawQuery: query}
-		name, end, ok := bundlePath(u)
+		n, w, end, ok := bundlePath(u)
 		if !ok {
 			return
 		}
-		n, w, err := layout.ParseTileIndexPartial(name[len("tile/entries/"):])
-		if err != nil || layout.EntriesPath(n, w) != name || query != "" || end == 0 || end > n*layout.EntryBundleWidth+layout.EntryBundleWidth {
-			t.Fatalf("accepted %q as %q, %d", path, name, end)
+		if "/"+layout.EntriesPath(n, w) != path || query != "" || end == 0 || end > n*layout.EntryBundleWidth+layout.EntryBundleWidth {
+			t.Fatalf("accepted %q as %d.%d, %d", path, n, w, end)
 		}
 	})
+}
+
+// A partial bundle Tessera replaced by its full one is served from it, and the record says what was
+// asked for, not the full bundle's end: the Pi keeps exactly that much.
+func TestServePartialFromFull(t *testing.T) {
+	dir, full, _ := bundleLog(t)
+	s, path := newTestServer(t, dir)
+	w := get(s, http.MethodGet, "/"+layout.EntriesPath(0, 100))
+	if w.Code != http.StatusOK || !bytes.Equal(w.Body.Bytes(), full[:300]) {
+		t.Fatalf("%d, %d bytes", w.Code, w.Body.Len())
+	}
+	if n, err := cosign.ReadServed(path, serveOrigin); err != nil || n != 100 {
+		t.Fatalf("served %d, %v; want what was asked, 100", n, err)
+	}
+}
+
+// flushFails is a ResponseWriter whose bytes never leave: Write takes them, Flush fails.
+type flushFails struct{ *httptest.ResponseRecorder }
+
+func (flushFails) FlushError() error { return errors.New("connection reset") }
+
+func TestServeRecordsOnlyWhatLeft(t *testing.T) {
+	dir, _, _ := bundleLog(t)
+	s, path := newTestServer(t, dir)
+	r := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "http://relay/"+layout.EntriesPath(1, 5), nil)
+	s.ServeHTTP(flushFails{httptest.NewRecorder()}, r)
+	if n, err := cosign.ReadServed(path, serveOrigin); err != nil || n != 0 {
+		t.Fatalf("an answer that never left counted: %d %v", n, err)
+	}
+}
+
+func TestListenTakesOneIPv4Address(t *testing.T) {
+	for _, addr := range []string{":0", "0.0.0.0:0", "localhost:0", "[::1]:0", "127.0.0.1", ""} {
+		if ln, err := Listen(t.Context(), addr); err == nil {
+			_ = ln.Close()
+			t.Errorf("%q: listened", addr)
+		}
+	}
+}
+
+// Open connections are capped, idle ones too, and a server shutting down with every slot held returns.
+func TestServeCapsConnections(t *testing.T) {
+	dir, _, _ := bundleLog(t)
+	s, _ := newTestServer(t, dir)
+	ln, err := Listen(t.Context(), "127.0.0.1:0")
+	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EACCES) {
+		t.Skip("sockets denied here; CI runs it")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, ln, s) }()
+	d := net.Dialer{}
+	var held []net.Conn
+	for range maxConns {
+		c, err := d.DialContext(t.Context(), "tcp4", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	extra, err := d.DialContext(t.Context(), "tcp4", ln.Addr().String()) // accepted by the kernel, not served
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extra.Write([]byte("GET /" + layout.EntriesPath(1, 5) + " HTTP/1.1\r\nHost: r\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	_ = extra.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if n, _ := extra.Read(make([]byte, 64)); n != 0 {
+		t.Fatal("a connection past the cap was served")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shutdown hung with every slot held")
+	}
+	for _, c := range append(held, extra) {
+		_ = c.Close()
+	}
+}
+
+func TestServeLogsDecisionsBounded(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	dir, _, _ := bundleLog(t)
+	s, _ := newTestServer(t, dir)
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	for range 100 {
+		get(s, http.MethodGet, "/checkpoint")
+	}
+	if c := strings.Count(buf.String(), "relay: bundle decisions"); c != 1 || !strings.Contains(buf.String(), "rule=\"balistid/relay-serve v1\"") {
+		t.Fatalf("%d summary lines within a minute:\n%s", c, buf.String())
+	}
+	now = now.Add(time.Minute)
+	get(s, http.MethodGet, "/"+layout.EntriesPath(0, 0))
+	if !strings.Contains(buf.String(), "path=99") || !strings.Contains(buf.String(), "served=1") {
+		t.Fatalf("the counts were not summed:\n%s", buf.String())
+	}
 }

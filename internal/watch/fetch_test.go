@@ -77,21 +77,21 @@ func TestParseBundleRoundTrip(t *testing.T) {
 	}
 }
 
-// relayServer serves log's bundles at their Tessera paths, the partial one of the last bundle too.
+// relayServer serves log's bundles at their Tessera paths as the relay does: a full bundle, and any
+// partial width of it or of the last one.
 func relayServer(t *testing.T, log [][]byte, mutate func(path string, body []byte) []byte) *httptest.Server {
 	t.Helper()
-	files := map[string][]byte{}
-	for idx := uint64(0); idx*width < uint64(len(log)); idx++ {
-		w := min(uint64(len(log))-idx*width, width)
-		body := appendBundle(nil, log[idx*width:idx*width+w])
-		files["/"+layout.EntriesPath(idx, uint8(w%width))] = body
-	}
 	s := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		body, ok := files[r.URL.Path]
-		if !ok {
+		n, p, err := layout.ParseTileIndexPartial(strings.TrimPrefix(r.URL.Path, "/tile/entries/"))
+		w := uint64(p)
+		if w == 0 {
+			w = width
+		}
+		if err != nil || "/"+layout.EntriesPath(n, p) != r.URL.Path || n*width+w > uint64(len(log)) {
 			http.NotFound(rw, r)
 			return
 		}
+		body := appendBundle(nil, log[n*width:n*width+w])
 		if mutate != nil {
 			body = mutate(r.URL.Path, body)
 		}

@@ -75,18 +75,15 @@ func (s Source) Head(ctx context.Context, origin string) (Head, error) {
 	return ParseIndex(b, origin)
 }
 
-// Bundle returns the first width entries of bundle idx, 1 to 256: the partial bundle of that width, or
-// the full one once the relay's log has grown past it and Tessera removed the partial one.
+// Bundle returns the first width entries of bundle idx, 1 to 256, asked for at exactly that width: the
+// relay serves a partial bundle Tessera replaced from its full one, and records what was asked, which
+// the announce client waits for (ADR 0030, point 4).
 func (s Source) Bundle(ctx context.Context, idx, width uint64) ([][]byte, error) {
 	if width == 0 || width > layout.EntryBundleWidth {
 		return nil, fmt.Errorf("watch: bundle width %d", width)
 	}
 	p := uint8(width % layout.EntryBundleWidth)
 	b, err := s.get(ctx, s.Relay+layout.EntriesPath(idx, p), maxBundle)
-	if errors.Is(err, errMissing) && p != 0 {
-		p = 0
-		b, err = s.get(ctx, s.Relay+layout.EntriesPath(idx, 0), maxBundle)
-	}
 	if err != nil {
 		return nil, fmt.Errorf("watch: bundle %d: %w", idx, err)
 	}
