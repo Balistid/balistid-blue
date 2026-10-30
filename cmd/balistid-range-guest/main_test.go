@@ -504,12 +504,15 @@ func TestOverflowJournalReadsOnlyAuditdAfterTheCursor(t *testing.T) {
 		}
 	}
 	args := overflowJournalArgs("s=ab;i=1f")
-	for _, want := range []string{"--after-cursor=s=ab;i=1f", "_UID=0", "SYSLOG_IDENTIFIER=auditd"} {
+	for _, want := range []string{"--after-cursor=s=ab;i=1f", "_SYSTEMD_UNIT=auditd.service", "_EXE=/usr/bin/auditd", "_UID=0"} {
 		if !slices.Contains(args, want) {
 			t.Errorf("args %q lack %q", args, want)
 		}
 	}
-	if slices.Contains(args, "-b") {
-		t.Errorf("args %q read the whole boot", args)
+	for _, a := range args {
+		// Fields without a leading underscore are the sender's to choose (systemd.journal-fields).
+		if a == "-b" || strings.HasPrefix(a, "SYSLOG_") || strings.HasPrefix(a, "MESSAGE") {
+			t.Errorf("args %q match on %q", args, a)
+		}
 	}
 }
