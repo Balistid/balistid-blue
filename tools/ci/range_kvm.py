@@ -12,6 +12,7 @@ The runner check below only keeps the script off other machines by mistake; it p
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import secrets
 import shutil
@@ -51,6 +52,32 @@ image=$("$HOME/balistid-range" build)
 echo "image: $image"
 "$HOME/balistid-range" run "$image"'
 """
+
+# A verdict other than PASS becomes one annotation, which the API serves (check-runs/<id>/annotations)
+# where the job's log host may be out of reach. Workflow commands are on again by then, so the guest's
+# text is escaped as command data and capped.
+ANNOTATION_MAX = 4000
+
+
+def verdict_annotation(state: Path) -> str | None:
+    """The newest run's verdict and reason as an ::error:: command, or None when it passed or left none."""
+    results = sorted((state / "balistid-range" / "results").glob("*/result.json"))
+    if not results:
+        return None
+    unreadable = "::error title=range-kvm self-test::the result could not be read"
+    try:
+        with results[-1].open("rb") as f:
+            data = json.loads(f.read(1 << 20))
+    except (OSError, ValueError):
+        return unreadable
+    if not isinstance(data, dict):
+        return unreadable
+    verdict, reason = data.get("verdict"), data.get("reason")
+    if verdict == "PASS":
+        return None
+    text = f"{verdict}: {reason}"[:ANNOTATION_MAX]
+    return "::error title=range-kvm self-test::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
 
 class RangeError(Exception):
     """A condition under which the self-test did not run; the job fails (R6)."""
@@ -141,6 +168,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
         done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid()), check=False)
     finally:
         print(f"::{token}::", flush=True)
+    if annotation := verdict_annotation(state):
+        print(annotation, flush=True)
     if done.returncode != 0:
         print(f"range-kvm: the build or self-test failed (exit {done.returncode})", file=sys.stderr)
         return 1
