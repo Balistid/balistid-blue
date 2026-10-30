@@ -134,7 +134,7 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"short loss", loss[:len(loss)-1], short},
 		{"health OK with a reason", with(health, head, 1), "state and reason"},
 		{"health UNKNOWN without a reason", with(health, head+1, 0), "state and reason"},
-		{"health reason seven", with(health, head+1, 7), "state and reason"},
+		{"health reason eight", with(health, head+1, 8), "state and reason"},
 		{"health state three", with(health, head, 3), "state and reason"},
 		{"health state zero", with(health, head, 0, 0), "state and reason"},
 		{"short health", health[:len(health)-1], short},
