@@ -20,13 +20,17 @@ RELAY = REPO / "deploy" / "relay"
 BINARY = "/usr/local/lib/balistid/balistid-relay"
 FILES = {"sysusers.conf", "balistid-relay.service"}
 FORBIDDEN = COLLECTOR_FORBIDDEN - {"SupplementaryGroups"}
+# The Pi's witness and the host's end of the tunnel (ADR 0032); test_net_deploy checks they are the tunnel's.
+SUBMIT = "http://10.207.57.2:7380/add-checkpoint"
+LISTEN = "10.207.57.1:7381"
 
 SERVICE_UNIT = {
     "Description": ["Balistid Blue relay: the ledger's checkpoints to the witness"],
-    "After": ["balistid-ledger.service network.target"],
+    "Requires": ["balistid-net.service"],
+    "After": ["balistid-ledger.service balistid-net.service network.target"],
     "StartLimitIntervalSec": ["0"],
 }
-# ADR 0007 (own uid, no privilege), 0006 (no key on the relay, only the witness's address).
+# ADR 0007 (own uid, no privilege), 0006 (no key on the relay, only the witness's address), 0032 (the tunnel's).
 SERVICE = {
     "Type": "notify",
     "Restart": "always",
@@ -34,8 +38,7 @@ SERVICE = {
     "User": "balistid-relay",
     "Group": "balistid-relay",
     "SupplementaryGroups": "balistid-ledger",
-    "EnvironmentFile": "/etc/balistid/relay.env",
-    "ExecStart": f"{BINARY} -submit ${{BALISTID_WITNESS_URL}} -listen ${{BALISTID_RELAY_LISTEN}}",
+    "ExecStart": f"{BINARY} -submit {SUBMIT} -listen {LISTEN}",
     "StateDirectory": "balistid/relay",
     "StateDirectoryMode": "0750",
     "UMask": "0077",
@@ -44,6 +47,7 @@ SERVICE = {
     "NoExecPaths": "/ /var/lib/balistid /tmp -/dev/shm",
     "ExecPaths": BINARY,
     "IPAddressDeny": "any",
+    "IPAddressAllow": "10.207.57.2/32",
     "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
     "DevicePolicy": "closed",
     "ProtectSystem": "strict",
@@ -101,9 +105,9 @@ class RelayDeployTest(unittest.TestCase):
         main = (REPO / "cmd" / "balistid-relay" / "main.go").read_text()
         defaults = dict(re.findall(r'flag\.String\("([a-z-]+)", "([^"]*)"', main))
         argv = shlex.split(parse_unit(service_text())["Service"]["ExecStart"][0])
-        self.assertEqual(argv, [BINARY, "-submit", "${BALISTID_WITNESS_URL}", "-listen", "${BALISTID_RELAY_LISTEN}"])
-        self.assertEqual(defaults["submit"], "")  # no witness unless the install names one
-        self.assertEqual(defaults["listen"], "")  # no address unless the install names the WireGuard one
+        self.assertEqual(argv, [BINARY, "-submit", SUBMIT, "-listen", LISTEN])
+        self.assertEqual(defaults["submit"], "")  # no witness unless the unit names it
+        self.assertEqual(defaults["listen"], "")  # no address unless the unit names the tunnel's
         self.assertEqual(defaults["state"], "/var/lib/" + parse_unit(service_text())["Service"]["StateDirectory"][0])
         ledger = parse_unit((REPO / "deploy" / "ledger" / "balistid-ledger.service").read_text())["Service"]
         self.assertIn(f"-log {defaults['log']} ", ledger["ExecStart"][0] + " ")
@@ -117,6 +121,10 @@ class RelayDeployTest(unittest.TestCase):
         for old, new in (
             ("User=balistid-relay", "User=root"),
             ("IPAddressDeny=any", "IPAddressDeny="),
+            ("IPAddressAllow=10.207.57.2/32", "IPAddressAllow=10.207.57.0/30"),
+            ("IPAddressAllow=10.207.57.2/32", "IPAddressAllow=10.207.57.2/32 10.207.57.1/32"),
+            ("Requires=balistid-net.service", "Wants=balistid-net.service"),
+            ("-listen 10.207.57.1:7381", "-listen 127.0.0.1:7381"),
             ("SupplementaryGroups=balistid-ledger", "SupplementaryGroups=balistid-ledger balistid-collector"),
             ("CapabilityBoundingSet=", "CapabilityBoundingSet=CAP_NET_RAW"),
             ("ProtectSystem=strict", "ProtectSystem=full"),

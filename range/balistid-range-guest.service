@@ -9,6 +9,8 @@ After=systemd-sysctl.service
 After=balistid-collector.service
 # The ledger the guest checks the collector's stream in (ADR 0027).
 After=balistid-ledger.service
+# The tunnel and the Pi's namespace, so the guest's interfaces are all there when it lists them (ADR 0032).
+After=balistid-net.service balistid-range-pi-net.service
 SuccessAction=poweroff-force
 FailureAction=poweroff-force
 

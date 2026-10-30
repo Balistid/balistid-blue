@@ -36,12 +36,24 @@ func TestSelftest(t *testing.T) {
 		{"NIC without a driver yet", passing(map[string]string{FactPCINet: "0000:00:02.0"}), Fail},
 		{"NIC beats kernel mismatch", passing(map[string]string{FactKernel: "6.1.0", FactNet: "lo,wlan0"}), Fail},
 		{"guest sees nothing at all", passing(map[string]string{FactNet: ""}), Fail},
+		{"loopback only, no tunnel", passing(map[string]string{FactNet: "lo"}), Fail},
+		{"a NIC beside the range's links", passing(map[string]string{FactNet: "balistid-lan,balistid0,eth0,lo"}), Fail},
+		{"a uid besides the relay reaches the Pi", passing(map[string]string{
+			"pi_reach": "relay_tcp=open,job_tcp=open,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout"}), Fail},
+		{"the relay does not reach the Pi", passing(map[string]string{
+			"pi_reach": "relay_tcp=timeout,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout"}), Fail},
+		{"root reaches the Pi", passing(map[string]string{
+			"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=open"}), Fail},
+		{"the endpoint takes any port", passing(map[string]string{
+			"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=sent,root_tcp=timeout"}), Fail},
+		{"a probe left out", passing(map[string]string{"pi_reach": "relay_tcp=open,job_tcp=timeout"}), Fail},
+		{"the ledger sees the tunnel", passing(map[string]string{"ledger_net": "balistid0,lo"}), Fail},
 		{"other kernel", passing(map[string]string{FactKernel: "7.2.8-hardened1-2-hardened"}), Unknown},
 		{"sensor wrong on another kernel", passing(map[string]string{FactKernel: "6.1.0", "canary": "missing"}), Fail},
 		{"missing kernel", passing(map[string]string{FactKernel: "-"}), Invalid},
 		{"missing sensor fact", passing(map[string]string{"overflow_after": "-"}), Invalid},
 		{"no facts", nil, Invalid},
-		{"duplicate fact", append(passing(nil), fact(FactNet, "lo")), Invalid},
+		{"duplicate fact", append(passing(nil), fact(FactNet, "balistid-lan,balistid0,lo")), Invalid},
 		{"unexpected fact", append(passing(nil), fact("verdict", Pass)), Invalid},
 	}
 	for name, want := range expected {
@@ -70,7 +82,7 @@ func TestRequiredFactsArePinned(t *testing.T) {
 		FactNet, FactPCINet, "audit_enabled", "audit_failure", "audit_backlog_limit", "audit_rate_limit",
 		"audit_lost", "laurel_user", "laurel_cap_prm", "laurel_cap_eff", "laurel_cap_amb", "collector_user",
 		"collector_cap_prm", "collector_cap_eff", "collector_cap_amb", "collector_canary", "ledger_anchored", "ledger_cosigned", "fork_refused", "shard_cosigned",
-		"announce_cosigned", "suspend_announced", "pi_verified", "canary",
+		"announce_cosigned", "suspend_announced", "pi_verified", "pi_reach", "ledger_net", "canary",
 		"audit_enabled_after_e0", "e0_recorded", "io_uring_sysctl", "io_uring_off",
 		"io_uring_on", "overflow_before", "overflow_after", "overflow_journal", "audit_lost_after",
 	}

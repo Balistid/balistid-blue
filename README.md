@@ -95,7 +95,8 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
 | `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
-| `deploy/relay/` | Relay's service unit and its user; the witness's address and where the Pi reads bundles come from the install (ADR 0026, 0031) |
+| `deploy/relay/` | Relay's service unit and its user; it reaches only the Pi's end of the tunnel (ADR 0026, 0031, 0032) |
+| `deploy/net/` | The firewall that lets only the relay's uid reach the Pi, the WireGuard tunnel to it, and its user (ADR 0032) |
 | `deploy/announce/` | Units that announce a clean shutdown or suspend through the ledger's control socket (ADR 0030) |
 | `deploy/pi/` | The Pi's watcher unit, its failure alert and its user, installed on the Pi by hand (ADR 0031) |
 | `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |

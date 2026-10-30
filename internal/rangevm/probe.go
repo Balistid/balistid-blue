@@ -202,7 +202,7 @@ func ExposureUnits() map[string]bool {
 	return map[string]bool{
 		"balistid-collector.service": true, "balistid-ledger.service": true, "balistid-relay.service": true,
 		"balistid-announce.service": true, "balistid-announce-suspend.service": true,
-		"balistid-pi.service": true, "balistid-pi-failed.service": true,
+		"balistid-pi.service": true, "balistid-pi-failed.service": true, "balistid-net.service": true,
 	}
 }
 
@@ -213,6 +213,7 @@ func UnscoredUnits() map[string]bool {
 		"balistid-range-guest.service": true, "balistid-range-store.service": true,
 		"balistid-range-ledger-key.service": true, "balistid-range-witness-key.service": true,
 		"balistid-range-witness-agent.service": true, "balistid-range-witness.service": true,
+		"balistid-range-net-key.service": true, "balistid-range-pi-net.service": true,
 	}
 }
 

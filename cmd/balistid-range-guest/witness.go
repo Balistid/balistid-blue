@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	fnote "github.com/transparency-dev/formats/note"
@@ -33,17 +34,19 @@ import (
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
-// The range stands in for the Pi (ADR 0026, point 5): the pinned litewitness runs in the VM with a key
-// made at boot, and the relay reaches it on localhost.
+// The range stands in for the Pi (ADR 0026, point 5): the pinned litewitness runs in the Pi's namespace with
+// a key made at boot, and the relay reaches it through the tunnel (ADR 0032).
 const (
-	witnessKeyArg   = "witness-key"
-	witnessAgentArg = "witness-agent"
-	witnessName     = "balistid-range/witness"
-	witnessEnv      = "/etc/balistid-range/witness.env"
-	witnessSock     = "/run/balistid-range-witness/agent.sock"
-	witnessSubmit   = "http://127.0.0.1:7380/add-checkpoint"
-	relayState      = "/var/lib/balistid/relay"
-	maxWitnessReply = 4 << 10
+	witnessKeyArg     = "witness-key"
+	witnessAgentArg   = "witness-agent"
+	witnessPostArg    = "witness-post"
+	witnessName       = "balistid-range/witness"
+	witnessEnv        = "/etc/balistid-range/witness.env"
+	witnessSock       = "/run/balistid-range-witness/agent.sock"
+	witnessSubmit     = "http://" + piTunnel + ":" + witnessPort + "/add-checkpoint"
+	relayState        = "/var/lib/balistid/relay"
+	maxWitnessReply   = 4 << 10
+	maxWitnessRequest = 64 << 10
 	// cosignWait covers a seal's way to a cosign time: the next 5 s checkpoint, the relay's second, the
 	// witness, the ledger's second and the collector's tick, with room for a restart.
 	cosignWait = 60 * time.Second
@@ -261,20 +264,58 @@ func addCheckpoint(ctx context.Context, s note.Signer, old, size uint64, hash []
 	if err != nil {
 		return 0, nil, fmt.Errorf("sign: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, witnessSubmit, bytes.NewReader(append(fmt.Appendf(nil, "old %d\n\n", old), signed...)))
+	cred, err := credential(relayUser)
 	if err != nil {
-		return 0, nil, fmt.Errorf("request: %w", err)
+		return 0, nil, err
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	self, err := os.Executable()
 	if err != nil {
-		return 0, nil, fmt.Errorf("witness: %w", err)
+		return 0, nil, fmt.Errorf("witness post: %w", err)
+	}
+	// Only the relay's uid reaches the Pi (ADR 0032): the child posts what root signed, as that uid.
+	child := exec.CommandContext(ctx, self, witnessPostArg) //nolint:gosec // our own binary, fixed argv
+	child.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+	child.Stdin = bytes.NewReader(append(fmt.Appendf(nil, "old %d\n\n", old), signed...))
+	child.Stderr = os.Stderr
+	out, err := child.Output()
+	if err != nil {
+		return 0, nil, fmt.Errorf("witness post: %w", err)
+	}
+	line, body, _ := bytes.Cut(out, []byte("\n"))
+	status, err := strconv.Atoi(string(line))
+	if err != nil {
+		return 0, nil, fmt.Errorf("witness post said %q", line)
+	}
+	return status, body, nil
+}
+
+// witnessPostMain is the relay-uid child of addCheckpoint: it posts its standard input to the witness and
+// prints the status code, a newline and the capped reply.
+func witnessPostMain(args []string) error {
+	if len(args) != 0 {
+		return errors.New("usage: " + witnessPostArg + " (no arguments): " + strings.Join(args, " "))
+	}
+	req, err := io.ReadAll(io.LimitReader(os.Stdin, maxWitnessRequest))
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, witnessSubmit, bytes.NewReader(req))
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return fmt.Errorf("witness: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck // read-only
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxWitnessReply))
 	if err != nil {
-		return 0, nil, fmt.Errorf("witness reply: %w", err)
+		return fmt.Errorf("witness reply: %w", err)
 	}
-	return resp.StatusCode, body, nil
+	_, err = fmt.Printf("%d\n%s", resp.StatusCode, body)
+	return err //nolint:wrapcheck // the child's last word
 }
 
 // announced is "yes" once systemctl verb unit ran the ledger's client to success, under the unit's

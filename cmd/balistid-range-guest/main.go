@@ -51,7 +51,8 @@ func main() {
 		return
 	}
 	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain, ledgerKeyArg: ledgerKeyMain,
-		witnessKeyArg: witnessKeyMain, witnessAgentArg: witnessAgentMain} {
+		witnessKeyArg: witnessKeyMain, witnessAgentArg: witnessAgentMain, witnessPostArg: witnessPostMain, netKeyArg: netKeyMain,
+		reachArg: reachMain} {
 		if len(os.Args) > 1 && os.Args[1] == arg {
 			if err := sub(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "balistid-range-guest %s: %v\n", arg, err)
@@ -142,6 +143,9 @@ func run() error {
 	// The witness cosigned it, then refuses a fork and a rollback (T12). Only after a cosignature: a
 	// witness that never cosigned would take the probe's checkpoint as its first.
 	cos := ledgerCosigned(ctx)
+	if cos != "yes" {
+		cos += "; " + netDiag(ctx)
+	}
 	add("ledger_cosigned", cos)
 	if cos != "yes" {
 		for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", "balistid-relay.service", "-u",
@@ -190,6 +194,14 @@ func run() error {
 			fmt.Printf("balistid-range-guest: pi: %.400q\n", line)
 		}
 	}
+
+	// Only the relay's uid reaches the Pi, through the tunnel (T21, ADR 0032); the ledger has no network.
+	reach := piReach(ctx)
+	if strings.Contains(reach, "error") {
+		reach += "; " + netDiag(ctx)
+	}
+	add("pi_reach", reach)
+	add("ledger_net", ledgerNet(ctx))
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)

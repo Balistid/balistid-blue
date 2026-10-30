@@ -1,0 +1,25 @@
+# Range image only (ADR 0032, point 4): a network namespace stands in for the Pi, behind a veth whose host end
+# is its LAN. Its WireGuard end is made inside the namespace, so its socket lives there. Every boot.
+[Unit]
+Description=Balistid Blue range: the Pi's network namespace and its end of the tunnel
+DefaultDependencies=no
+Requires=balistid-range-net-key.service
+After=local-fs.target balistid-range-net-key.service
+Before=balistid-net.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# BALISTID_HOST_KEY, the host's WireGuard public key (balistid-range-net-key).
+EnvironmentFile=/etc/balistid-range/pi-net.env
+ExecStart=/usr/bin/ip netns add balistid-pi
+ExecStart=/usr/bin/ip link add balistid-lan type veth peer name veth-pi netns balistid-pi
+ExecStart=/usr/bin/ip address add 192.0.2.1/24 dev balistid-lan
+ExecStart=/usr/bin/ip link set balistid-lan up
+ExecStart=/usr/bin/ip -n balistid-pi link set lo up
+ExecStart=/usr/bin/ip -n balistid-pi address add 192.0.2.2/24 dev veth-pi
+ExecStart=/usr/bin/ip -n balistid-pi link set veth-pi up
+ExecStart=/usr/bin/ip -n balistid-pi link add wg-pi type wireguard
+ExecStart=/usr/bin/nsenter --net=/run/netns/balistid-pi /usr/bin/wg set wg-pi listen-port 51820 private-key /etc/balistid-range/pi-wg-key peer ${BALISTID_HOST_KEY} allowed-ips 10.207.57.1/32
+ExecStart=/usr/bin/ip -n balistid-pi address add 10.207.57.2 peer 10.207.57.1 dev wg-pi
+ExecStart=/usr/bin/ip -n balistid-pi link set wg-pi up

@@ -2,7 +2,9 @@
 # the log through the ledger's group, holds only public keys, and reaches only the witness's address.
 [Unit]
 Description=Balistid Blue relay: the ledger's checkpoints to the witness
-After=balistid-ledger.service network.target
+# Without the tunnel and its firewall the Pi's address would route elsewhere (ADR 0032).
+Requires=balistid-net.service
+After=balistid-ledger.service balistid-net.service network.target
 StartLimitIntervalSec=0
 
 [Service]
@@ -14,11 +16,8 @@ User=balistid-relay
 Group=balistid-relay
 # The log's tiles are 0640/0750 of the ledger's group: read, never write (ProtectSystem=strict).
 SupplementaryGroups=balistid-ledger
-# balistid-install writes BALISTID_WITNESS_URL and the Pi's address it names into IPAddressAllow (drop-in), and
-# BALISTID_RELAY_LISTEN, the host's WireGuard address the Pi reads bundles at (ADR 0031). IPAddressAllow holds the
-# Pi's address only, never the host's own: a local uid connecting from it could serve itself the bundles.
-EnvironmentFile=/etc/balistid/relay.env
-ExecStart=/usr/local/lib/balistid/balistid-relay -submit ${BALISTID_WITNESS_URL} -listen ${BALISTID_RELAY_LISTEN}
+# The tunnel's fixed addresses (ADR 0032): the Pi's witness, and the host's end, where the Pi reads bundles.
+ExecStart=/usr/local/lib/balistid/balistid-relay -submit http://10.207.57.2:7380/add-checkpoint -listen 10.207.57.1:7381
 StateDirectory=balistid/relay
 StateDirectoryMode=0750
 UMask=0077
@@ -26,8 +25,10 @@ MemoryMax=48M
 MemorySwapMax=0
 NoExecPaths=/ /var/lib/balistid /tmp -/dev/shm
 ExecPaths=/usr/local/lib/balistid/balistid-relay
-# No address until the install allows the witness's: fail closed.
+# The Pi's tunnel address only, never the host's own: a local uid connecting from it could serve itself the
+# bundles (the firewall drops that too).
 IPAddressDeny=any
+IPAddressAllow=10.207.57.2/32
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 DevicePolicy=closed
 ProtectSystem=strict

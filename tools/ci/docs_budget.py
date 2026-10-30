@@ -109,6 +109,10 @@ LAYOUT: tuple[str, ...] = (
     "deploy/pi/sysusers.conf",
     "deploy/pi/balistid-pi.service",
     "deploy/pi/balistid-pi-failed.service",
+    # The relay-only firewall and the tunnel to the Pi, by exact name (ADR 0032).
+    "deploy/net/sysusers.conf",
+    "deploy/net/nftables.conf",
+    "deploy/net/balistid-net.service",
     # The relay and a pinned litewitness in the range image, its own module (ADR 0026, point 5).
     "range/balistid-relay-range.conf",
     # The Pi's watcher standing in for the Pi in the range image (ADR 0031).
@@ -116,6 +120,10 @@ LAYOUT: tuple[str, ...] = (
     "range/balistid-range-witness-key.service",
     "range/balistid-range-witness-agent.service",
     "range/balistid-range-witness.service",
+    # The tunnel to a namespace standing in for the Pi (ADR 0032, point 4).
+    "range/balistid-range-net-key.service",
+    "range/balistid-range-pi-net.service",
+    "range/balistid-net-range.conf",
     "range/witness/go.mod",
     "range/witness/go.sum",
 )
