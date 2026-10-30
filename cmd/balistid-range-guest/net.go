@@ -117,15 +117,31 @@ func refusalsLogged(ctx context.Context) string {
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	uid := fmt.Sprintf(" UID=%d ", cred.Uid)
+	return loggedIn(ctx, kernelLog, fmt.Sprintf(" UID=%d ", cred.Uid))
+}
+
+func kernelLog(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "/usr/bin/journalctl", "-k", "-o", "cat", "--no-pager").Output()
+	if err != nil {
+		return "", fmt.Errorf("journalctl -k: %w", err)
+	}
+	return string(out), nil
+}
+
+// loggedIn is "yes" once read returns a log holding every loggedReasons refusal, the to-pi one with uid;
+// it waits up to 5 s for the records to arrive, but a failed read ends it at once.
+func loggedIn(ctx context.Context, read func(context.Context) (string, error), uid string) string {
 	var missing []string
 	for range 5 {
-		log := output(ctx, "/usr/bin/journalctl", "-k", "-o", "cat", "--no-pager")
+		log, err := read(ctx)
+		if err != nil {
+			return "error: " + err.Error()
+		}
 		missing = missing[:0]
 		for _, reason := range loggedReasons {
 			ok := false
 			for _, line := range strings.Split(log, "\n") {
-				if strings.Contains(line, "balistid-net 1 "+reason+": ") && (reason != "to-pi-not-relay" || strings.Contains(line, uid)) {
+				if strings.Contains(line, "balistid-net 1 drop "+reason+": ") && (reason != "to-pi-not-relay" || strings.Contains(line, uid)) {
 					ok = true
 				}
 			}
