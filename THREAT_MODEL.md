@@ -34,11 +34,11 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet; sha256 proves CI provenance, not review, of unowned source (0015) |
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom, free space a second cap (0013); auditd `disk_full_action` set, `-f 1` | test reserve | partial: a writer that keeps filling a shared filesystem takes the freed reserve; btrfs frees no part of it (UNKNOWN at once) |
 | T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie |
-| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006) | fork_refused (range, pinned litewitness) | partial: the Pi's verifier not built |
+| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006, 0031) | fork_refused (range); Pi tests (0031) | partial: Pi only in tests (L11, L12) |
 | T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
 | T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped | announced_quiet_max_h | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
-| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned and updated; entries decoded strictly (0026) | FuzzDecodeEntry | partial: Pi parsers are exposed to root; ntfy push needs the Pi's outbound internet (0026) |
+| T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned, updated; entries decoded strictly (0026) | FuzzDecodeEntry, Pi fuzz (0031) | partial: Pi parsers face root; ntfy needs outbound internet (0026) |
 | T17 | A2 | Start a new log origin to reset history | Pi adds a new origin only after the old log's cosigned final (0030) | TestRollover* | designed |
 | T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | No network; key only signs checkpoints; only the collector's and own uid connect (0027, 0030) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger signs, steers retention (0029), announces, ends the log (0030) |
