@@ -1,6 +1,7 @@
 package anchor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -206,5 +207,36 @@ func TestWaitUnservedTimesOut(t *testing.T) {
 	_, err := WaitCosigned(ctx, relay, w, 10*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "size 2 not served to the Pi") {
 		t.Fatalf("an unserved wait: %v", err)
+	}
+}
+
+// The Pi's verified root at an earlier size is proven against a later cosigned checkpoint from the
+// log's tiles (pi_verified, ADR 0031); another root, or a size past it, is refused.
+func TestProvenConsistentWithAnEarlierRoot(t *testing.T) {
+	f := cosigntest.New(t)
+	dir, first, second := announcedLog(t, f)
+	one, err := cosign.Open(first, f.Keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := cosign.Open(second, f.Keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := cosign.OpenProven(t.Context(), dir, two)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close() //nolint:errcheck // read-only
+	if err := errors.Join(p.Consistent(t.Context(), 1, one.Root), p.Consistent(t.Context(), 2, two.Root)); err != nil {
+		t.Fatal(err)
+	}
+	other := bytes.Repeat([]byte{7}, 32)
+	for name, err := range map[string]error{"another root": p.Consistent(t.Context(), 1, other),
+		"another root at the size": p.Consistent(t.Context(), 2, one.Root), "past it": p.Consistent(t.Context(), 3, two.Root),
+		"nothing": p.Consistent(t.Context(), 0, nil)} {
+		if err == nil {
+			t.Errorf("%s: consistent", name)
+		}
 	}
 }

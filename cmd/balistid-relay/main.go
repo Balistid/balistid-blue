@@ -83,8 +83,10 @@ func serve(logDir, state, logKeyPath, witnessKeyPath, submit, listen string) err
 		slog.Error("ready notify failed", "err", err)
 	}
 	r.Run(runCtx, every)
-	if err := <-served; err != nil || ctx.Err() == nil {
+	if err := <-served; ctx.Err() == nil {
 		return errors.Join(errors.New("the bundle server stopped"), err)
+	} else if err != nil {
+		slog.Warn("bundle server shut down unclean", "err", err)
 	}
 	return nil
 }

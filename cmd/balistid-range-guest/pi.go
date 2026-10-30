@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os/exec"
@@ -53,16 +52,35 @@ func piVerified(ctx context.Context) string {
 			return "error: " + err.Error()
 		}
 		if l.Size >= cp.Size {
-			if l.Size == cp.Size && !bytes.Equal(l.Root[:], cp.Root) {
-				return "error: the Pi verified another root at the cosigned size"
-			}
-			return "yes"
+			return piConsistent(ctx, keys, l)
 		}
 		if err := exec.CommandContext(ctx, "/usr/bin/systemctl", "start", piUnit).Run(); err != nil {
 			return "error: start " + piUnit + ": " + err.Error()
 		}
 	}
 	return fmt.Sprintf("error: the Pi verified %d of %d entries; %s", l.Size, cp.Size, piDiag(ctx))
+}
+
+// piConsistent proves the Pi's saved root the root of the log the witness cosigned, at the Pi's size:
+// a state that only holds together in itself proves nothing (ADR 0031).
+func piConsistent(ctx context.Context, keys cosign.Keys, l watch.Log) string {
+	for deadline := time.Now().Add(cosignWait); ; time.Sleep(time.Second) {
+		cp, err := cosign.Read(filepath.Join(relayState, cosign.Name), keys)
+		if err == nil && cp.Size >= l.Size {
+			p, err := cosign.OpenProven(ctx, ledgerLog, cp)
+			if err != nil {
+				return "error: " + err.Error()
+			}
+			defer p.Close() //nolint:errcheck // read-only
+			if err := p.Consistent(ctx, l.Size, l.Root[:]); err != nil {
+				return "error: the Pi's state: " + err.Error()
+			}
+			return "yes"
+		}
+		if time.Now().After(deadline) {
+			return fmt.Sprintf("error: nothing cosigned at the Pi's %d entries (%v)", l.Size, err)
+		}
+	}
 }
 
 // piDiag is the watcher's unit state and its last journal lines, bounded, for a fact that failed: the

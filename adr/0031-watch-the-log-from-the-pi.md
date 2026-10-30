@@ -40,8 +40,8 @@ any body whole; Prometheus with Alertmanager is a service stack for a few checks
    texts built from typed values only. An alert goes out when its condition starts, every 6 h while it holds,
    a key at most once a minute with what was held back sent after, retried with backoff; a daily message shows
    the Pi alive, a failed unit alerts from `OnFailure`. Triggers fire a minute before their acceptance limit.
-7. `cmd/balistid-pi` and `internal/watch` are code-owned and built for arm64 reproducibly in CI, installed by
-   hash. The relay's server and ADR 0030 point 4's served wait follow with a stand-in of this daemon in the range.
+7. The relay serves the entry bundles at the width asked, a replaced partial one from its full bundle, and records
+   the end it handed the kernel; announcements wait for it (ADR 0030, 4). `balistid-pi` is code-owned, arm64 by hash.
 
 ## Alternatives considered
 

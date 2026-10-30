@@ -1,6 +1,7 @@
 package cosign
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -83,6 +84,28 @@ func (p *Proven) Prove(ctx context.Context, at uint64, raw []byte) (entry.Entry,
 		return entry.Entry{}, fmt.Errorf("entry %d: %w", at, err)
 	}
 	return e, nil
+}
+
+// Consistent checks that root is the root of the cosigned log's first size entries: equal at the
+// cosigned size, by a consistency proof from the log's tiles below it.
+func (p *Proven) Consistent(ctx context.Context, size uint64, root []byte) error {
+	switch {
+	case size > p.cp.Size || size == 0:
+		return fmt.Errorf("cosign: size %d is not within the cosigned %d", size, p.cp.Size)
+	case size == p.cp.Size:
+		if !bytes.Equal(root, p.cp.Root) {
+			return fmt.Errorf("cosign: another root at the cosigned size %d", size)
+		}
+		return nil
+	}
+	path, err := p.pb.ConsistencyProof(ctx, size, p.cp.Size)
+	if err == nil {
+		err = proof.VerifyConsistency(rfc6962.DefaultHasher, size, p.cp.Size, path, root, p.cp.Root)
+	}
+	if err != nil {
+		return fmt.Errorf("cosign: size %d not consistent with the cosigned %d: %w", size, p.cp.Size, err)
+	}
+	return nil
 }
 
 // ProvenEntry is the entry at index at of the log in dir, proven included in cp, a checkpoint the witness
