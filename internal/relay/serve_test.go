@@ -286,4 +286,11 @@ func TestServeLogsDecisionsBounded(t *testing.T) {
 	if !strings.Contains(buf.String(), "path=99") || !strings.Contains(buf.String(), "served=1") {
 		t.Fatalf("the counts were not summed:\n%s", buf.String())
 	}
+	get(s, http.MethodPost, "/") // within the minute: held until Close
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "method=1") {
+		t.Fatalf("Close dropped the last decisions:\n%s", buf.String())
+	}
 }
