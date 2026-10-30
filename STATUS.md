@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-30 by claude/opus-5.5 (L10 in review, #152, #153)
+Updated: 2026-10-30 by claude/opus-5.5 (L10 merged)
 
 ## Where we are
 
@@ -13,16 +13,16 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 (#153, ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
+| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - #152: the exposure judge scores every recorder service, the Pi's too (it pinned only the collector: INVALID since
-  #142); critic and Codex, GO in round 2. #153 (L10, ADR 0032, on #152): `balistid-net` (own uid, CAP_NET_ADMIN, R13)
+  #142); critic and Codex, GO in round 2. #153 (L10, ADR 0032, main 6854cdf): `balistid-net` (own uid, CAP_NET_ADMIN, R13)
   loads the table before the tunnel; only the relay's uid reaches the Pi; real WireGuard into a Pi namespace in the
   range; KVM PASS with `pi_reach`. Review: critic 1 round, Codex 3 rounds (key in wg's stderr, unmarked endpoint,
-  forward by route, input unproven, logging redesigned), the last two MED fixed without a 4th round (maintainer).
+  forward by route, input unproven, logging redesigned), the last two MED fixed without a 4th round; #152 in #153.
 ## Next step
-1. Maintainer's approval, then merge #152 and #153; ADR: the witness is pluggable (own Pi, VPS, public witnesses); L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
+1. ADR: the witness is pluggable (own Pi, VPS, public witnesses); L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
    a week of runs, then the maintainer decides on required (0028); no retry yet (b4d9ca3: archive.archlinux.org timeout).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go1.27.3 pinned; GOTOOLCHAIN=local until Arch ships it. ADR 0024 (#137, 4 vCPU) on `main`; the full suite in KVM on 4 vCPU before C3. ADR 0025: cpu_cores on the host.
