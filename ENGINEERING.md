@@ -83,12 +83,12 @@ Independent review scales with the impact of a mistake, not with the file type:
 | Security boundary with root impact, signing, install path, architecture | Claude critic and Codex review (queue, level security) |
 
 Each finding carries severity, class (BUG or DESIGN) and fix risk (ADR 0033); an open CRIT or HIGH inside
-the change blocks merge. A plain BUG fix is verified by its test failing on the parent; a fix that changes a
-decision, and a disputed finding, by one reply round on the fix range; a redesign, or a fix range
-over about 150 lines outside tests, by a full round. The author decides a redesign with one sentence why;
-the maintainer decides when it changes an ADR, acceptance number or threat claim, when author and reviewer
-still disagree after the replies, or when an invariant fails again after a redesign. Review findings are
-hypotheses until reproduced by a test.
+the change blocks merge. A plain MED or LOW fix is verified by its test failing on the parent; a CRIT or
+HIGH fix, a fix that changes a decision and a disputed finding by one reply round on the fix range; a
+redesign, or a fix range over about 150 lines outside tests, by a full round. The author decides a redesign
+with one sentence why; the maintainer decides when it changes an ADR, acceptance number or threat claim,
+when author and reviewer still disagree after the reply round, or when an invariant fails again after a
+redesign. Review findings are hypotheses until reproduced by a test.
 
 ## 6. Documentation
 
