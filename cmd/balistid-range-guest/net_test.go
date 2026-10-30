@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdh"
 	"encoding/base64"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -98,5 +100,40 @@ func TestNetKey(t *testing.T) {
 	}
 	if err := netKey(dir, rangeDir); err == nil {
 		t.Error("keys made twice")
+	}
+}
+
+// The refusals' log check needs each reason with the table's version and decision, the to-pi one with the
+// job's uid, and ends at once when the log cannot be read: a failed read is never "missing".
+func TestLoggedIn(t *testing.T) {
+	const uid = " UID=1001 "
+	full := "nf: balistid-net 1 drop to-pi-not-relay: IN= OUT=balistid0 SYN URGP=0 UID=1001 GID=1001 \n" +
+		"balistid-net 1 drop to-endpoint-not-wireguard: OUT=balistid-lan\n" +
+		"balistid-net 1 drop host-address-off-tunnel: IN=lo\nbalistid-net 1 drop from-tunnel-not-relay-port: IN=balistid0\n"
+	read := func(log string, err error) func(context.Context) (string, error) {
+		return func(context.Context) (string, error) { return log, err }
+	}
+	reads := 0
+	failing := func(context.Context) (string, error) { reads++; return "", errors.New("journal gone") }
+	for name, c := range map[string]struct {
+		read func(context.Context) (string, error)
+		want string
+	}{
+		"every reason":     {read(full, nil), "yes"},
+		"another uid":      {read(strings.Replace(full, "UID=1001", "UID=0", 1), nil), "missing to-pi-not-relay"},
+		"no decision word": {read(strings.ReplaceAll(full, " drop ", " "), nil), "missing to-pi-not-relay+to-endpoint-not-wireguard+host-address-off-tunnel+from-tunnel-not-relay-port"},
+		"unreadable":       {failing, "error: journal gone"},
+	} {
+		ctx, cancel := context.WithCancel(t.Context())
+		if name != "every reason" && name != "unreadable" {
+			cancel() // no waiting for records that will not come
+		}
+		if got := loggedIn(ctx, c.read, uid); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+		cancel()
+	}
+	if reads != 1 {
+		t.Errorf("a failed read was retried: %d reads", reads)
 	}
 }

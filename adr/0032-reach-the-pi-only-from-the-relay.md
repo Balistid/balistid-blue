@@ -26,8 +26,8 @@ like WireGuard's, has no file, so `meta skuid` never matches it; a SYN-ACK is ma
    its port with WireGuard's fwmark, which no unprivileged socket can set. Input: from the tunnel only replies and
    the Pi to the relay's port; the Pi's or the host's tunnel address arriving elsewhere is dropped. Forward:
    nothing to or from the tunnel, nothing to either Pi address (routed containers and VMs bypass the output hook).
-   Each refusal is logged with the table's version and its reason, and on output the sender's uid, at most 10 a
-   minute per reason; its counter keeps every one.
+   Each refusal is logged with the table's version, the decision and its reason, and on output the sender's uid, at
+   most 10 a minute per reason; its counter keeps every one.
 3. The tunnel is fixed in the repository: host 10.207.57.1, Pi 10.207.57.2, UDP 51820. The relay requires
    `balistid-net`, submits to the Pi's witness on 7380, serves bundles at the host's end on 7381 and allows only
    the Pi's /32. The install writes `/etc/balistid/net.env` (the Pi's public key and LAN address, refused unless
