@@ -1,0 +1,43 @@
+# Sends one alert that balistid-pi failed (its OnFailure=), as the same uid, with the same credential.
+[Unit]
+Description=Balistid Blue Pi: alert that the watcher failed
+
+[Service]
+Type=oneshot
+User=balistid-pi
+Group=balistid-pi
+EnvironmentFile=/etc/balistid-pi/pi.env
+LoadCredential=ntfy-token:/etc/balistid-pi/ntfy-token
+ExecStart=/usr/local/lib/balistid/balistid-pi -alert-failed -ntfy ${BALISTID_PI_NTFY}
+TimeoutStartSec=30s
+UMask=0077
+MemoryMax=64M
+MemorySwapMax=0
+NoExecPaths=/ /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-pi
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
