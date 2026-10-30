@@ -40,7 +40,7 @@ func Rollover(ctx context.Context, cfg Config, previous string, keys cosign.Keys
 	switch {
 	case l.size != 0:
 		err = fmt.Errorf("anchor: rollover into a log of %d entries", l.size)
-	case uint64(len(tail)) >= l.maxSize:
+	case uint64(len(tail)) > l.maxSize-2:
 		err = errors.New("anchor: rollover tail over the cap")
 	}
 	for _, b := range tail {
@@ -54,7 +54,7 @@ func Rollover(ctx context.Context, cfg Config, previous string, keys cosign.Keys
 }
 
 // readTail returns the old log's entries from its last batch up to its final entry, without
-// announcements, each proven included in cp; the final entry must be cp's last and name next.
+// announcements or the cap's UNKNOWN, each proven included in cp; the final entry must be cp's last and name next.
 func readTail(ctx context.Context, dir string, cp cosign.Checkpoint, next string) ([][]byte, error) {
 	p, err := cosign.OpenProven(ctx, dir, cp)
 	if err != nil {
@@ -86,7 +86,9 @@ func readTail(ctx context.Context, dir string, cp cosign.Checkpoint, next string
 			case isFinal:
 				return nil, fmt.Errorf("a final entry at %d before the last", at)
 			}
-			if _, ok := e.Body.(entry.Announce); !ok {
+			// The old log's cap stays its own: copied, it would alarm on the new one (ADR 0036, point 5).
+			_, announce := e.Body.(entry.Announce)
+			if !announce && e.Body != entry.Body(capHealth) {
 				tail = append(tail, b[i])
 			}
 			if _, ok := e.Body.(entry.Batch); ok {

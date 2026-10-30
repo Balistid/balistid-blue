@@ -107,11 +107,14 @@ func TestControlLogsAnAnnouncementAndAFinal(t *testing.T) {
 func TestCollectorRefusedAtTheCap(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
 	cfg := config(dir, k, c)
-	cfg.CapBytes = 2 * entryBytes
+	cfg.CapBytes = 3 * entryBytes
 	l := openLog(t, cfg)
 	defer closeLog(t, l)
-	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err != nil { // 1 of 2: full
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err != nil { // 1 of 3
 		t.Fatal(err)
+	}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}); !errors.Is(err, ErrFull) {
+		t.Fatalf("the cap's UNKNOWN takes slot 2: %v", err) // full
 	}
 	s := serve(t, l, os.Getuid(), os.Getuid())
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: s.sock, Net: "unix"})
@@ -123,7 +126,7 @@ func TestCollectorRefusedAtTheCap(t *testing.T) {
 	if m, err := link.Read(conn); !errors.Is(err, io.EOF) {
 		t.Fatalf("the collector got %+v, %v at the cap", m, err)
 	}
-	if size, err := Ask(t.Context(), s.control, entry.Final{NextOrigin: next}); err != nil || size != 2 {
+	if size, err := Ask(t.Context(), s.control, entry.Final{NextOrigin: next}); err != nil || size != 3 {
 		t.Fatalf("final at the cap: size %d, %v", size, err)
 	}
 	if !strings.Contains(s.stop(), `"cap":1`) {
