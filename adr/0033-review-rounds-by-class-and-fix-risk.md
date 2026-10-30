@@ -53,8 +53,8 @@ two ways out: another full round or the maintainer.
 
 ## Consequences
 
-- Amends R7, §5 (its top tier asks for Codex level security), CLAUDE.md's review brief (a reply round
-  carries the author's answers per finding, nothing else) and AGENTS.md's output format.
-- Outside this repository the reviewers' rubrics gain these fields and the reply round; the maintainer
-  installs them.
-- Measured over three checkpoints: rounds per pull request, window spent, findings by class, the sampled round.
+- Amends R7, §5 (top tier: Codex level security), CLAUDE.md's review brief and AGENTS.md's output format.
+- Outside this repository the reviewers' rubrics gain these fields and the reply round (maintainer installs).
+  Residual, maintained by Codex and accepted by the maintainer: the author writes a reply round's criteria, so
+  a misquoted or missing finding is caught only by reading the record. Measured over three checkpoints: rounds
+  per pull request, window spent, findings by class, the sampled round.
