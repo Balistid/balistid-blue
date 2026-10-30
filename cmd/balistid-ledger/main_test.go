@@ -151,7 +151,10 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 		signed, err := os.ReadFile(filepath.Join(dir, "checkpoint")) //nolint:gosec // the test's own directory
 		if err == nil && bytes.Contains(signed, []byte("\n1\n")) {   // the checkpoint over the final, the empty log's first entry
 			note = f.Cosign(t, signed, time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC))
-			if err := os.WriteFile(relay.Path, note, 0o600); err != nil { //nolint:gosec // the test's own directory
+			// the relay serves the final's bundle to the Pi, which the install step waits for too (ADR 0030, point 4)
+			served := cosign.AppendServed(nil, f.Keys.Origin, 1)
+			if err := errors.Join(os.WriteFile(relay.Path, note, 0o600), //nolint:gosec // the test's own directory
+				os.WriteFile(filepath.Join(run, cosign.ServedName), served, 0o600)); err != nil {
 				t.Fatal(err)
 			}
 		}
