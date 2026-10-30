@@ -50,8 +50,8 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
 Pick the review level from `ENGINEERING.md` §5 before calling a change done. For a Claude critic use
 `subagent_type: "critic"` with the diff, the acceptance criteria and the threat model rows, never your
 own reasoning; a reply round carries only your answer per finding (ADR 0033). Default brief: "what
-should not exist here, and how would you get past each gate". Findings are hypotheses until a test
-reproduces them.
+should not exist here, and how would you get past each gate this change adds, within its goal and threat
+rows" (ADR 0035). Findings are hypotheses until a test reproduces them.
 
 ## Subagents
 
