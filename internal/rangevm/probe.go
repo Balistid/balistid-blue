@@ -214,6 +214,7 @@ func UnscoredUnits() map[string]bool {
 		"balistid-range-ledger-key.service": true, "balistid-range-witness-key.service": true,
 		"balistid-range-witness-agent.service": true, "balistid-range-witness.service": true,
 		"balistid-range-net-key.service": true, "balistid-range-pi-net.service": true,
+		"balistid-range-ntfy.service": true,
 	}
 }
 
