@@ -39,7 +39,7 @@ WATCHER_UNIT = {
 WATCHER = {
     **SANDBOX,
     "Type": "notify",
-    "WatchdogSec": "10min",
+    "WatchdogSec": "2min",
     "Restart": "always",
     "RestartSec": "30s",
     "RestartSteps": "5",
