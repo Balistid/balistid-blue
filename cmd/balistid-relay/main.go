@@ -5,7 +5,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -34,20 +36,21 @@ func run() int {
 	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
 	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
 	submit := flag.String("submit", "", "the witness's add-checkpoint URL")
+	listen := flag.String("listen", "", "ip:port where the Pi fetches entry bundles")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(memLimit)
 	}
-	if err := serve(*logDir, *state, *logKey, *witnessKey, *submit); err != nil {
+	if err := serve(*logDir, *state, *logKey, *witnessKey, *submit, *listen); err != nil {
 		log.Error("relay stopped", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func serve(logDir, state, logKeyPath, witnessKeyPath, submit string) error {
+func serve(logDir, state, logKeyPath, witnessKeyPath, submit, listen string) error {
 	keys, err := cosign.ReadKeys(logKeyPath, witnessKeyPath)
 	if err != nil {
 		return err //nolint:wrapcheck // cosign errors carry their context
@@ -57,12 +60,32 @@ func serve(logDir, state, logKeyPath, witnessKeyPath, submit string) error {
 	if err != nil {
 		return err //nolint:wrapcheck // relay errors carry their context
 	}
+	if listen == "" {
+		return errors.New("no -listen: the Pi reads the log's bundles there (ADR 0031)")
+	}
+	srv, err := relay.NewServer(logDir, state, keys.Origin)
+	if err != nil {
+		return err //nolint:wrapcheck // relay errors carry their context
+	}
+	defer srv.Close() //nolint:errcheck // read-only
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	ln, err := relay.Listen(ctx, listen)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", listen, err)
+	}
+	// a server that stops ends the relay too, so the unit restarts rather than submitting unseen by the Pi
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	served := make(chan error, 1)
+	go func() { served <- relay.Serve(runCtx, ln, srv); cancel() }()
 	if err := unixsock.Notify("READY=1"); err != nil {
 		slog.Error("ready notify failed", "err", err)
 	}
-	r.Run(ctx, every)
+	r.Run(runCtx, every)
+	if err := <-served; err != nil || ctx.Err() == nil {
+		return errors.Join(errors.New("the bundle server stopped"), err)
+	}
 	return nil
 }
 

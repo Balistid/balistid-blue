@@ -35,7 +35,7 @@ SERVICE = {
     "Group": "balistid-relay",
     "SupplementaryGroups": "balistid-ledger",
     "EnvironmentFile": "/etc/balistid/relay.env",
-    "ExecStart": f"{BINARY} -submit ${{BALISTID_WITNESS_URL}}",
+    "ExecStart": f"{BINARY} -submit ${{BALISTID_WITNESS_URL}} -listen ${{BALISTID_RELAY_LISTEN}}",
     "StateDirectory": "balistid/relay",
     "StateDirectoryMode": "0750",
     "UMask": "0077",
@@ -101,8 +101,9 @@ class RelayDeployTest(unittest.TestCase):
         main = (REPO / "cmd" / "balistid-relay" / "main.go").read_text()
         defaults = dict(re.findall(r'flag\.String\("([a-z-]+)", "([^"]*)"', main))
         argv = shlex.split(parse_unit(service_text())["Service"]["ExecStart"][0])
-        self.assertEqual(argv, [BINARY, "-submit", "${BALISTID_WITNESS_URL}"])
+        self.assertEqual(argv, [BINARY, "-submit", "${BALISTID_WITNESS_URL}", "-listen", "${BALISTID_RELAY_LISTEN}"])
         self.assertEqual(defaults["submit"], "")  # no witness unless the install names one
+        self.assertEqual(defaults["listen"], "")  # no address unless the install names the WireGuard one
         self.assertEqual(defaults["state"], "/var/lib/" + parse_unit(service_text())["Service"]["StateDirectory"][0])
         ledger = parse_unit((REPO / "deploy" / "ledger" / "balistid-ledger.service").read_text())["Service"]
         self.assertIn(f"-log {defaults['log']} ", ledger["ExecStart"][0] + " ")

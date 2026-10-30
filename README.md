@@ -79,7 +79,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/rangerun/` | The range runner: its record of the inbox (one run per job name and content in 30 days) and quota; it never changes the inbox |
 | `internal/anchor/` | The ledger's log: the collector's stream as typed entries in Tessera, signed checkpoints, resume from the log's tail (ADR 0027) |
 | `internal/entry/` | The ledger's log entries: typed events of hashes and ranges, their byte encoding and strict decoding (ADR 0026) |
-| `internal/relay/` | The ledger's checkpoints to the witness (c2sp.org/tlog-witness) and back its verified cosignature; holds no signing key (ADR 0006, 0026) |
+| `internal/relay/` | The ledger's checkpoints to the witness (c2sp.org/tlog-witness) and back its verified cosignature, the entry bundles to the Pi; holds no signing key (ADR 0006, 0026, 0031) |
 | `internal/cosign/` | The checkpoint the witness cosigned, verified with both keys; the witness's time from its signed line (ADR 0029) |
 | `internal/watch/` | The Pi's side of the log: root recomputed from the relay's bundles, the log's rules, alarms, push (ADR 0031) |
 | `internal/link/` | The wire between collector and ledger: typed, length-prefixed frames, decoded strictly (ADR 0027) |
@@ -95,7 +95,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
 | `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
-| `deploy/relay/` | Relay's service unit and its user; the witness's address comes from the install (ADR 0026) |
+| `deploy/relay/` | Relay's service unit and its user; the witness's address and where the Pi reads bundles come from the install (ADR 0026, 0031) |
 | `deploy/announce/` | Units that announce a clean shutdown or suspend through the ledger's control socket (ADR 0030) |
 | `deploy/pi/` | The Pi's watcher unit, its failure alert and its user, installed on the Pi by hand (ADR 0031) |
 | `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |
