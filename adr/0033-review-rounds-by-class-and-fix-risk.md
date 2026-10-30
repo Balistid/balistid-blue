@@ -40,7 +40,7 @@ two ways out: another full round or the maintainer.
    on a disagreement. A redesign, or a fix range over about 150 lines outside tests, gets a full round.
 5. The author decides a redesign, with one sentence why. The maintainer decides when it changes an ADR, an
    acceptance number or a threat claim, when author and reviewer still disagree after the reply round, or when
-   an invariant fails again after a redesign.
+   an invariant fails again after a redesign. (Amended by ADR 0035: also before a third full round.)
 6. A missing threat-model row is a plain BUG. The pull request keeps a ledger: finding, class, risk,
    answer, commit or test. Every third checkpoint a full round covers a range that had only reply rounds.
 
