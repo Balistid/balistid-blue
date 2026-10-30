@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-30 by claude/opus-5.5 (L9 in #150)
+Updated: 2026-10-30 by claude/opus-5.5 (L9 merged)
 
 ## Where we are
 
@@ -13,7 +13,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
 | Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
 | Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) in #150, range fact `pi_verified` |
+| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
 - L9 (#150, ADR 0031): `balistid-pi` trusts only its own litewitness, recomputes the root from the relay's entry bundles,
@@ -21,7 +21,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   through ntfy; no mirror on the Pi yet. The relay serves bundles at the width asked and records what it served; an
   announcement waits for it. KVM PASS with `pi_verified`; review: critic and Codex, findings fixed. L8 is b4d9ca3.
 ## Next step
-1. Merge #150 (its `ci:` commit is the maintainer's push, ADR 0002); then L10 deploy (WireGuard, nftables), L11 e2e, L12 the Pi. `range-kvm` is advisory until
+1. L10 deploy (WireGuard, nftables, the relay's IPAddressAllow for the Pi only), L11 e2e, L12 the Pi (balistid-pi by its CI hash). `range-kvm` is advisory until
    a week of runs, then the maintainer decides on required (0028); no retry yet (b4d9ca3: archive.archlinux.org timeout).
    /security-audit of floor 0 as a whole before 9.5, not per pull request (maintainer, 2026-10-28).
 2. Local go: go.mod pins go1.27.3; until Arch ships it, run go with GOTOOLCHAIN=local or let it download.
