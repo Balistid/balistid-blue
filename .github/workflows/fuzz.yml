@@ -1,9 +1,9 @@
 name: fuzz
 
-# fuzz_hours (acceptance/0.toml, ADR 0016): every fuzz target nightly on main, an hour each for code that
-# reads input on the host or the Pi, ten minutes for the range guest's own. A crasher fails its job and its
-# input is printed base64, to be committed as a seed. tools/ci/tests/test_fuzz_workflow.py keeps the matrix
-# equal to the repository's Fuzz functions.
+# The hours of fuzz_hours (acceptance/0.toml, ADR 0016): every fuzz target nightly on main, an hour each for
+# code that reads input on the host or the Pi, ten minutes for the range guest's own. A crasher fails its job
+# and its input is printed base64, to be committed as a seed. Installing only a fuzzed commit is 9.5's part.
+# tools/ci/tests/test_fuzz_workflow.py keeps the matrix equal to the repository's Fuzz functions.
 on:
   schedule:
     - cron: "23 1 * * *"
@@ -75,9 +75,19 @@ jobs:
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
       - name: Fuzz one target
-        run: go test -run '^$' -fuzz "^${TARGET}\$" -fuzztime "${MINUTES}m" "$PKG"
-      - name: Print the crasher as a seed to commit
-        if: failure()
+        # A panic's text is fuzzer-made: no line of it may become a workflow command.
         run: |
-          git ls-files --others -z -- "$PKG/testdata/fuzz/$TARGET" |
-            while IFS= read -r -d '' f; do echo "crasher: $f"; base64 -w 0 "$f"; echo; done
+          token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          echo "::stop-commands::$token"
+          rc=0
+          go test -run '^$' -fuzz "^${TARGET}\$" -fuzztime "${MINUTES}m" "$PKG" || rc=$?
+          printf '\n::%s::\n' "$token"
+          exit "$rc"
+      - name: Print the crasher as a seed to commit
+        if: failure() || cancelled()
+        run: |
+          found=0
+          while IFS= read -r -d '' f; do
+            found=1; echo "crasher: $f"; base64 -w 0 "$f"; echo
+          done < <(git ls-files --others -z -- "$PKG/testdata/fuzz/$TARGET")
+          [ "$found" = 1 ] || echo "::error title=fuzz $TARGET::failed without a crasher file (timeout or build)"
