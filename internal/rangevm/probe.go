@@ -196,24 +196,23 @@ func judgeReady(tr rangejob.Trial, o Outcome) (string, string) {
 }
 
 // ExposureUnits are the units systemd_exposure scores (ADR 0023 point 5): the floor-0 recorder's services
-// in the range image, not the range runner's on the host. Every other service of the image is in
-// UnscoredUnits; one in neither makes the exposure trial INVALID.
+// in the range image, the Pi's among them, not the range runner's on the host. Every other service of the
+// image is in UnscoredUnits; one in neither makes the exposure trial INVALID.
 func ExposureUnits() map[string]bool {
 	return map[string]bool{
 		"balistid-collector.service": true, "balistid-ledger.service": true, "balistid-relay.service": true,
 		"balistid-announce.service": true, "balistid-announce-suspend.service": true,
+		"balistid-pi.service": true, "balistid-pi-failed.service": true,
 	}
 }
 
-// UnscoredUnits are the image's services that are not the host's: the range's own, and the Pi's, which run
-// off the host (ADR 0031). balistid-auditstat, not in the image yet, has its own metric and joins neither set
-// until it comes with its trial.
+// UnscoredUnits are the range's own services, which no host or Pi installs. balistid-auditstat, scored by its
+// own metric, is not in the image yet; there it would be in neither set, and its trial INVALID until it has one.
 func UnscoredUnits() map[string]bool {
 	return map[string]bool{
 		"balistid-range-guest.service": true, "balistid-range-store.service": true,
 		"balistid-range-ledger-key.service": true, "balistid-range-witness-key.service": true,
 		"balistid-range-witness-agent.service": true, "balistid-range-witness.service": true,
-		"balistid-pi.service": true, "balistid-pi-failed.service": true,
 	}
 }
 

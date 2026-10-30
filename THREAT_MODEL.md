@@ -40,7 +40,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
 | T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned, updated; entries decoded strictly (0026) | FuzzDecodeEntry, Pi fuzz (0031) | partial: Pi parsers face root; ntfy needs outbound internet (0026) |
 | T17 | A2 | Start a new log origin to reset history | Pi adds a new origin only after the old log's cosigned final (0030) | TestRollover* | designed |
-| T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the collector's unit (0023) | designed |
+| T18 | A3 | Parser bug in collector or normalizer gains privilege | No capabilities, sandboxed units (0007) | test caps_matrix, fuzz_hours; exposure of the recorder's units (0023) | designed |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | No network; key only signs checkpoints; only the collector's and own uid connect (0027, 0030) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger signs, steers retention (0029), announces, ends the log (0030) |
 | T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries, ledger link and log caps (0027) | record-max, refusal-flood (0023); rss_mib; cpu_cores on the reference host (0025) | designed |
 | T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid firewall (0006); relay: Pi address, bundles only (0031) | test_relay_deploy; pi_reach | partial: no WireGuard, uid rule |
