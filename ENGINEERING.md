@@ -88,8 +88,8 @@ HIGH fix, a fix that changes a decision and a disputed finding by one reply roun
 redesign, or a fix range over about 150 lines outside tests, by a full round. The author decides a redesign
 with one sentence why; the maintainer decides when it changes an ADR, acceptance number or threat claim,
 when author and reviewer still disagree after the reply round, when an invariant fails again after a
-redesign, or before a third full round on one checkpoint. The reviewer's threat names the change's goal and
-threat rows, and each fix is checked for the path it opens (ADR 0035). Review findings are hypotheses until
+redesign, or before a third full round on one checkpoint. The reviewer's threat names the change's goal,
+and each fix is checked for the path it opens (ADR 0035). Review findings are hypotheses until
 reproduced by a test.
 
 ## 6. Documentation

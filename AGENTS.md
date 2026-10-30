@@ -14,7 +14,7 @@ maintainer assigns a bounded task explicitly. Default mode is read-only.
 2. Review the diff against rules R1–R14. The reviewer profile in the maintainer's Codex setup has an
    SP2/Balistid Blue mode that activates when the repository root holds `THREAT_MODEL.md` and `acceptance/`.
 3. Default question: what should not exist in this change, and how would an attacker or a careless
-   agent get past each gate it adds or touches, within the change's goal and threat rows (ADR 0035).
+   agent get past each gate it adds or touches, within the change's goal (ADR 0035).
 4. Tag every finding IN-CHANGE, PRE-EXISTING or INTRODUCED-BY-FIX, grade it VERIFIED (reproduced or proven
    from the code) or INFERRED, and give its class, invariant and fix risk (ADR 0033). Cite `file:line`.
 5. Do not propose extra features. A finding that says "add code" must name the reachable state that
