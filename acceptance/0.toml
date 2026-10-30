@@ -172,7 +172,7 @@ max = 10
 unit = "GiB of Tessera tiles and ledger state on the host per yearly log"
 rows = ["T20"]
 adr = "0006"
-method = "Fill test; reaching the cap sets UNKNOWN and alarms."
+method = "Fill test with the cap lowered in the range (ADR 0036): reaching it logs UNKNOWN before final and alarms; full bundles take at most the bytes per entry the cap counts."
 
 [[metric]]
 id = "refusal_summary_s"
@@ -198,7 +198,7 @@ max = 60
 unit = "s, maximum gap between cosigned checkpoints while host and Pi are connected"
 rows = ["T13"]
 adr = "0006"
-method = "Maximum (not a percentile) over a 24 h run with host and Pi connected."
+method = "Maximum (not a percentile) over a 24 h run with host and Pi connected, on the Pi (L12); range alarm trials report it as a trend (ADR 0036)."
 
 [[metric]]
 id = "loss_alarm_s"
@@ -206,7 +206,7 @@ max = 120
 unit = "s from injected kernel, dispatcher or collector loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
-method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials; so do a full collector queue and a failing store (ADR 0016). balistid-auditstat polls at most every 5 s."
+method = "Inject transient kernel loss followed by OK, sustained loss and dispatcher overflow; each alerts within the limit, 10 trials; so do a full collector queue, a full filesystem and a failing store (ADR 0016), timed at the range's ntfy sink (ADR 0036). Kernel and dispatcher cases are INVALID until balistid-auditstat; it polls at most every 5 s."
 
 [[metric]]
 id = "silence_alarm_s"
@@ -214,7 +214,7 @@ max = 900
 unit = "s of unannounced silence (no cosigned checkpoint) before a phone alert"
 rows = ["T13", "T28"]
 adr = "0006"
-method = "Cut WireGuard, kill the ledger, power off the VM without announcement: each alerts within the limit. Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
+method = "Cut WireGuard, kill the ledger, stop the host hard without announcement (power-off on the Pi, L12): each alerts within the limit at the range's ntfy sink (ADR 0036). Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
 
 [[metric]]
 id = "announced_quiet_max_h"
@@ -222,7 +222,7 @@ max = 24
 unit = "hours the Pi stays quiet after a shutdown or suspend announcement"
 rows = ["T14", "T28"]
 adr = "0006"
-method = "Announce, then stay off; announce, reboot with the ledger down; return briefly and announce again within 1 h (the cap does not restart): each alerts at the limit."
+method = "Announce, then stay off; announce, reboot with the ledger down; return briefly and announce again within 1 h (the cap does not restart): each alerts at the limit, on the Pi (L12); the range runs the three cases as trends with the cap shortened (ADR 0036)."
 
 [[metric]]
 id = "verify_freshness_s"
