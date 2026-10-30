@@ -462,29 +462,54 @@ func TestJobEvidenceWaitsThenComparesSamples(t *testing.T) {
 	}
 }
 
-// The overflow line may reach the journal after the flood: a later read within the wait finds it, a
-// line that never comes or a context that ends gives "no".
+// The overflow line may reach the journal after the flood: a later read before the context ends finds it,
+// a line that never comes gives "no", and an ended context reads nothing.
 func TestJournalNamesALateOverflowLine(t *testing.T) {
-	late := func(after int) func() string {
-		n := 0
-		return func() string {
-			n++
-			if n > after {
-				return "auditd[1]: queue to plugins is full - dropping event"
+	reads := 0
+	late := func(after int) func(context.Context) string {
+		return func(context.Context) string {
+			reads++
+			if reads > after {
+				return "queue to plugins is full - dropping event"
 			}
-			return "auditd[1]: started"
+			return "started"
 		}
 	}
 	ctx := context.Background()
-	if got := journalNames(ctx, late(2), time.Second, time.Millisecond); got != "yes" {
+	if got := journalNames(ctx, late(2), time.Millisecond); got != "yes" {
 		t.Errorf("a line on the third read: %q, want yes", got)
 	}
-	if got := journalNames(ctx, late(1<<30), 20*time.Millisecond, time.Millisecond); got != "no" {
-		t.Errorf("no line within the wait: %q, want no", got)
+	short, cancelShort := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancelShort()
+	reads = 0
+	if got := journalNames(short, late(1<<30), time.Millisecond); got != "no" {
+		t.Errorf("no line before the context ends: %q, want no", got)
 	}
 	ended, cancel := context.WithCancel(ctx)
 	cancel()
-	if got := journalNames(ended, late(2), time.Hour, time.Millisecond); got != "no" {
-		t.Errorf("an ended context: %q, want no", got)
+	reads = 0
+	if got := journalNames(ended, late(0), time.Millisecond); got != "no" || reads != 0 {
+		t.Errorf("an ended context: %q after %d reads, want no after 0", got, reads)
+	}
+}
+
+// Only root's auditd after the cursor taken before the flood counts; no cursor, no read.
+func TestOverflowJournalReadsOnlyAuditdAfterTheCursor(t *testing.T) {
+	if got := journalCursor("-- cursor: s=ab;i=1f\n"); got != "s=ab;i=1f" {
+		t.Errorf("cursor %q", got)
+	}
+	for _, out := range []string{"", "-- cursor: \n", "cursor: s=ab\n"} {
+		if got := journalCursor(out); got != "" {
+			t.Errorf("cursor of %q: %q, want none", out, got)
+		}
+	}
+	args := overflowJournalArgs("s=ab;i=1f")
+	for _, want := range []string{"--after-cursor=s=ab;i=1f", "_UID=0", "SYSLOG_IDENTIFIER=auditd"} {
+		if !slices.Contains(args, want) {
+			t.Errorf("args %q lack %q", args, want)
+		}
+	}
+	if slices.Contains(args, "-b") {
+		t.Errorf("args %q read the whole boot", args)
 	}
 }
