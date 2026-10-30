@@ -111,6 +111,38 @@ func TestRunVerifiesAndAlertsOnFork(t *testing.T) {
 	}
 }
 
+func TestRunRefusesAConfigThatSilences(t *testing.T) {
+	store, err := OpenStore(t.TempDir(), "balistid/log", 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	push, err := NewPusher("https://ntfy.example/t", testToken, testClient(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := Config{Origin: "balistid/log", Source: Source{Witness: "http://127.0.0.1:1/", Relay: "http://127.0.0.1:2/",
+		HTTP: testClient()}, Store: store, Push: push, Limits: DefaultLimits, Poll: time.Second, Now: time.Now,
+		Notify: func(string) error { return nil }}
+	if err := good.check(); err != nil {
+		t.Fatal(err)
+	}
+	bad := map[string]func(*Config){
+		"no gap":            func(c *Config) { c.Limits.Gap = 0 },
+		"no silence limit":  func(c *Config) { c.Limits.Silence = 0 },
+		"no poll":           func(c *Config) { c.Poll = 0 },
+		"no clock":          func(c *Config) { c.Now = nil },
+		"no client timeout": func(c *Config) { c.Source.HTTP = &http.Client{} },
+		"no relay slash":    func(c *Config) { c.Source.Relay = "http://127.0.0.1:2" },
+	}
+	for name, mutate := range bad {
+		c := good
+		mutate(&c)
+		if err := Run(context.Background(), c); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestDailyStatus(t *testing.T) {
 	log := enc(t, batches(10)...)
 	relay := relayServer(t, log, nil)

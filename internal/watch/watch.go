@@ -31,6 +31,9 @@ type Config struct {
 // Run watches until ctx ends. Only a state file that cannot be read stops it: the unit then fails and
 // its OnFailure alert reaches the phone.
 func Run(ctx context.Context, c Config) error {
+	if err := c.check(); err != nil {
+		return err
+	}
 	l, quiet, err := c.Store.Load()
 	if err != nil {
 		return err
@@ -49,6 +52,21 @@ func Run(ctx context.Context, c Config) error {
 		case <-t.C:
 		}
 	}
+}
+
+// check refuses a config whose zero value would silence an alarm or hang a step rather than fail.
+func (c Config) check() error {
+	lim := c.Limits
+	switch {
+	case c.Origin == "" || c.Store == nil || c.Push == nil || c.Now == nil || c.Notify == nil:
+		return errors.New("watch: incomplete config")
+	case c.Source.HTTP == nil || c.Source.HTTP.Timeout <= 0 || CheckURLs(c.Source.Witness, c.Source.Relay) != nil:
+		return errors.New("watch: the source needs its URLs and a client with a timeout")
+	case c.Poll <= 0 || lim.Silence <= 0 || lim.Quiet <= 0 || lim.Fresh <= 0 || lim.Truncated < 0 || lim.Grace <= 0 ||
+		lim.Settle <= 0 || lim.Gap <= 0:
+		return errors.New("watch: a poll interval or limit that is not positive")
+	}
+	return nil
 }
 
 type watcher struct {

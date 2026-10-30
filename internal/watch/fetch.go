@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -45,6 +46,22 @@ func checkURL(s string) error {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
 		u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
 		return errors.New("watch: a URL must be http(s)://host/..., no user, query or fragment")
+	}
+	return nil
+}
+
+// checkPushURL: the token goes out with every alert, so the ntfy URL is https, or plain http only to a
+// loopback address (the range's stand-in).
+func checkPushURL(s string) error {
+	if err := checkURL(s); err != nil {
+		return err
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("watch: push URL: %w", err)
+	}
+	if ip := net.ParseIP(u.Hostname()); u.Scheme != "https" && (ip == nil || !ip.IsLoopback()) {
+		return errors.New("watch: the push URL must be https, or http to a loopback address")
 	}
 	return nil
 }
