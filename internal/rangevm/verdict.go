@@ -51,8 +51,9 @@ const capsLaurel = "0000000000080004"
 const capsNone = "0000000000000000"
 
 // expected is every fact the guest reports besides the kernel, with the one value that passes.
-// Isolation: no interface but loopback and no network-class PCI device (present before any driver
-// binds, so a slow driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
+// Isolation: no interface but loopback and the range's two links to its stand-in for the Pi, a veth and the
+// tunnel over it (ADR 0032), and no network-class PCI device (present before any driver binds, so a slow
+// driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
 // Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
 // _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, the
@@ -60,29 +61,32 @@ const capsNone = "0000000000000000"
 // disable, io_uring refused with a control that the probe tells both states apart, and a
 // plugin-queue overflow reported while the kernel loses nothing.
 var expected = map[string]string{
-	FactNet:                  "lo",
-	FactPCINet:               "",
-	"audit_enabled":          "2",
-	"audit_failure":          "1",
-	"audit_backlog_limit":    "65536",
-	"audit_rate_limit":       "0",
-	"audit_lost":             "0",
-	"laurel_user":            "_laurel",
-	"laurel_cap_prm":         capsLaurel,
-	"laurel_cap_eff":         capsLaurel,
-	"laurel_cap_amb":         "0000000000000000",
-	"collector_user":         "balistid-collector",
-	"collector_cap_prm":      capsNone,
-	"collector_cap_eff":      capsNone,
-	"collector_cap_amb":      capsNone,
-	"collector_canary":       "yes",
-	"ledger_anchored":        "yes",
-	"ledger_cosigned":        "yes",
-	"fork_refused":           "yes",
-	"shard_cosigned":         "yes",
-	"announce_cosigned":      "yes",
-	"suspend_announced":      "yes",
-	"pi_verified":            "yes",
+	FactNet:               "balistid-lan,balistid0,lo",
+	FactPCINet:            "",
+	"audit_enabled":       "2",
+	"audit_failure":       "1",
+	"audit_backlog_limit": "65536",
+	"audit_rate_limit":    "0",
+	"audit_lost":          "0",
+	"laurel_user":         "_laurel",
+	"laurel_cap_prm":      capsLaurel,
+	"laurel_cap_eff":      capsLaurel,
+	"laurel_cap_amb":      "0000000000000000",
+	"collector_user":      "balistid-collector",
+	"collector_cap_prm":   capsNone,
+	"collector_cap_eff":   capsNone,
+	"collector_cap_amb":   capsNone,
+	"collector_canary":    "yes",
+	"ledger_anchored":     "yes",
+	"ledger_cosigned":     "yes",
+	"fork_refused":        "yes",
+	"shard_cosigned":      "yes",
+	"announce_cosigned":   "yes",
+	"suspend_announced":   "yes",
+	"pi_verified":         "yes",
+	// Only the relay's uid reaches the Pi (T21): a dropped SYN times out, a dropped datagram is refused.
+	"pi_reach":               "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout",
+	"ledger_net":             "lo",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",
 	"e0_recorded":            "yes",

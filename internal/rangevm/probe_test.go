@@ -103,7 +103,7 @@ func TestJudgeReady(t *testing.T) {
 func TestJudgeExposure(t *testing.T) {
 	const c = "balistid-collector.service="
 	const rest = ",balistid-ledger.service=0.8,balistid-relay.service=1.3,balistid-announce.service=0.8," +
-		"balistid-announce-suspend.service=0.8,balistid-pi.service=1.5,balistid-pi-failed.service=1.5"
+		"balistid-announce-suspend.service=0.8,balistid-pi.service=1.5,balistid-pi-failed.service=1.5,balistid-net.service=1.5"
 	run := func(change ...string) Outcome {
 		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: c + "0.8" + rest}, change...)
 	}

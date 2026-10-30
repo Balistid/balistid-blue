@@ -1,0 +1,14 @@
+# Range image only (ADR 0032, point 4), never on a host: both ends' WireGuard keys, made in the VM at boot as
+# balistid-install will make the host's. Private halves are root's 0600 files; net.env is the install's.
+[Unit]
+Description=Balistid Blue range: the tunnel's keys
+DefaultDependencies=no
+After=local-fs.target
+Before=balistid-range-pi-net.service balistid-net.service
+ConditionPathExists=!/etc/balistid/wg-key
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+UMask=0077
+ExecStart=/usr/lib/balistid-range/guest net-key

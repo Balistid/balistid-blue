@@ -27,7 +27,8 @@ CREDENTIAL = "ntfy-token:/etc/balistid-pi/ntfy-token"
 # The relay's sandbox, without what is the relay's own: its group, its address allowlist, its state.
 SANDBOX = {k: v for k, v in RELAY_SERVICE.items() if k not in {
     "Type", "Restart", "RestartSec", "User", "Group", "SupplementaryGroups", "EnvironmentFile", "ExecStart",
-    "StateDirectory", "StateDirectoryMode", "MemoryMax", "NoExecPaths", "ExecPaths", "IPAddressDeny", "RemoveIPC"}}
+    "StateDirectory", "StateDirectoryMode", "MemoryMax", "NoExecPaths", "ExecPaths", "IPAddressDeny", "IPAddressAllow",
+    "RemoveIPC"}}
 
 WATCHER_UNIT = {
     "Description": ["Balistid Blue Pi: verify the host's log and alert the phone"],
