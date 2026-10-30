@@ -1,0 +1,91 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rangejob"
+	"github.com/Balistid/balistid-blue/internal/rangevm"
+)
+
+func TestSinkPostsCountsOnlyTheRangeToken(t *testing.T) {
+	posts, refused, err := sinkPosts(strings.NewReader("1000 start ok\n2000 silence bad\n3000 - ok\n4000 silence ok\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []rangevm.Post{{MS: 1000, Tag: "start"}, {MS: 3000, Tag: "-"}, {MS: 4000, Tag: "silence"}}
+	if fmt.Sprint(posts) != fmt.Sprint(want) || refused != 1 {
+		t.Errorf("posts %v, refused %d", posts, refused)
+	}
+	for _, bad := range []string{"1000 start\n", "x start ok\n", "1000 start maybe\n", "-1 start ok\n", strings.Repeat("1 a ok\n", postsMax)} {
+		if _, _, err := sinkPosts(strings.NewReader(bad)); err == nil {
+			t.Errorf("%.40q read", bad)
+		}
+	}
+}
+
+// The posts fact keeps what the judge reads and parses back as the judge reads it.
+func TestPostsFactKeepsStartSilenceAndAfter(t *testing.T) {
+	posts := []rangevm.Post{{MS: 1000, Tag: "start"}, {MS: 2000, Tag: "daily"}, {MS: 3000, Tag: "start"}, {MS: 4000, Tag: "silence"},
+		{MS: 9000, Tag: "freshness"}, {MS: 9500, Tag: "silence"}}
+	got := postsFact(posts, 5000)
+	if got != "1000:start,4000:silence,9000:freshness,9500:silence" {
+		t.Errorf("posts fact %q", got)
+	}
+	if _, err := rangevm.ParsePosts(got); err != nil {
+		t.Errorf("the judge cannot read %q: %v", got, err)
+	}
+	if postsFact(nil, 0) != "none" {
+		t.Error("no posts is not none")
+	}
+	many := make([]rangevm.Post, 100)
+	for i := range many {
+		many[i] = rangevm.Post{MS: uint64(10_000 + i), Tag: "loss"}
+	}
+	if p, err := rangevm.ParsePosts(postsFact(many, 5000)); err != nil || len(p) != 64 {
+		t.Errorf("100 posts kept as %d (%v)", len(p), err)
+	}
+}
+
+func TestCosignWatchGapStopsAtTheInjection(t *testing.T) {
+	var w cosignWatch
+	w.see(5, 10*time.Second)
+	w.see(5, 12*time.Second) // the same size is no growth
+	w.see(7, 15*time.Second)
+	w.see(9, 22*time.Second)
+	w.freeze()
+	w.see(10, 900*time.Second)
+	grew, growths, gap := w.state()
+	if grew != 900*time.Second || growths != 4 || gap != 7*time.Second {
+		t.Errorf("grew %v, growths %d, gap %v", grew, growths, gap)
+	}
+}
+
+// Every injection of the table has steps; an unknown one fails its first step, so its run is INVALID.
+func TestAlarmStepsCoverTheTable(t *testing.T) {
+	for _, tr := range rangejob.Trials() {
+		if tr.Method() != rangejob.MethodAlarm {
+			continue
+		}
+		steps := alarmSteps(tr.Inject)
+		announces := 0
+		for _, s := range steps {
+			if s.announces {
+				announces++
+			}
+		}
+		want := map[string]int{rangejob.MetricSilence: 0, rangejob.MetricQuiet: 1}[tr.Metric]
+		if tr.Inject == rangejob.InjectQuietAgain {
+			want = 2
+		}
+		if len(steps) == 0 || announces != want {
+			t.Errorf("%s: %d steps, %d announcing, want %d", tr.Name, len(steps), announces, want)
+		}
+	}
+	if err := alarmSteps("power-off")[0].run(context.Background()); err == nil {
+		t.Error("an unknown injection ran")
+	}
+}
