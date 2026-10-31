@@ -23,8 +23,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   dispatcher INVALID (no detector); queue INVALID (dispatcher overflows first); a full fs's store-down INVALID.
 - #167 ADR 0037: `range-trial` on `repository_dispatch` (main's definition, payload checked), the bot dispatches it.
 ## Next step
-1. Merge #170 (maintainer approve). The store's disk full in a shard write (below), its own change. Then
-   balistid-auditstat (ADR 0007): kernel/dispatcher loss, per-stage alert keys, a socket writer for loss-queue, 10-run shapes.
+1. Merge #170 (maintainer approve). Then balistid-auditstat (ADR 0007): kernel/dispatcher loss, per-stage alert keys,
+   a socket writer for loss-queue, the 10-run shapes; then L12 the Pi.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
 3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
 4. Host install (9.5) only when every metric the range decides passes, with balistid-install (its ADR sets the install
@@ -35,6 +35,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - cpu_cores: ADR 0025 (#138); 0.70 of 0.5 on 4 vCPU, auditd with Laurel 0.46: a host MISS is likely.
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
-- #170: a fill after the store's statfs check breaks the shard's SQLite commit (disk full): UNKNOWN, not its cap.
+- #170: another writer filling the store's fs after its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
 - #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
   unpinned shellcheck: as before (git log of this file).
