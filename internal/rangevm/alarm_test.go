@@ -24,6 +24,7 @@ func alarmRun(name string, alertAfter time.Duration, change map[string]string) O
 		FactInject: "ok", FactInjectMS: "101000", FactCosignedMS: "100000", FactGrownAfter: "no",
 		FactPosts:   "60000:start," + strconv.FormatUint(from+alert, 10) + ":silence",
 		FactRefused: "0", FactRestartsPre: "0", FactRestartsPost: "0", FactAgainMS: again, FactCosignGapMS: "5200",
+		FactPiActive: "active",
 	}
 	var changes []string
 	for k, v := range change {
@@ -94,6 +95,7 @@ func TestAlarmInvalidAndMissCases(t *testing.T) {
 			{FactPosts: "940000:silence,60000:start"},
 			{FactInjectMS: "-1"}, {FactRefused: "x"}, {FactKernel: "6.0.0"}, {FactTrial: "silence-wireguard"},
 			{"-": FactPosts}, {"extra": "1"},
+			{FactPiActive: "inactive"}, {FactPiActive: "inactive", FactPosts: "60000:start"},
 		},
 		Miss: {
 			{FactPosts: "60000:start"},

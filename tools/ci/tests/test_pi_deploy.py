@@ -117,7 +117,12 @@ class PiDeployTest(unittest.TestCase):
         # default keeps announced_quiet_max_h on a real Pi.
         main = (REPO / "cmd" / "balistid-pi" / "main.go").read_text()
         self.assertRegex(main, r'flag\.Duration\("quiet", 0, "range only \(ADR 0036\)')
-        drop_in = parse_unit((REPO / "range" / "balistid-pi-range.conf").read_text())["Service"]
+        unit = parse_unit((REPO / "range" / "balistid-pi-range.conf").read_text())
+        drop_in = unit["Service"]
+        # An alarm trial stops the host's units: a Requires= on one of them would stop the watcher too.
+        host = {"balistid-relay.service", "balistid-ledger.service", "balistid-collector.service", "balistid-net.service"}
+        self.assertFalse(host & set(" ".join(unit["Unit"].get("Requires", [])).split()))
+        self.assertFalse(host & set(" ".join(unit["Unit"].get("BindsTo", []) + unit["Unit"].get("PartOf", [])).split()))
         installed = shlex.split(parse_unit(text("balistid-pi.service"))["Service"]["ExecStart"][0])
         self.assertNotIn("-quiet", installed)
         self.assertEqual(set(drop_in), {"NetworkNamespacePath", "EnvironmentFile", "Environment", "SetCredential",

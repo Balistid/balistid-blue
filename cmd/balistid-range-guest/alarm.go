@@ -179,6 +179,7 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	waitAlarm(ctx, tr, &cw, inject.at)
 	grew, _, gap := cw.state()
 	stopWatch()
+	active := valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit)))
 	after := "no"
 	if grew > done+rangevm.SettleAfter {
 		after = fmt.Sprintf("yes, at %d ms", grew.Milliseconds())
@@ -186,6 +187,9 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	posts, refused, err := readSink()
 	if err != nil {
 		return r.fail(err.Error())
+	}
+	if !firstAfter(posts, "silence", inject.at) { // the range keeps no guest journal: the console shows why
+		fmt.Printf("balistid-range-guest: no silence alert; posts %s; watcher %s\n", postsFact(posts, 0), piDiag(ctx))
 	}
 	ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
 	r.add(rangevm.FactInject, inject.proof)
@@ -198,6 +202,7 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRestartsPost, valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", piUnit))))
 	r.add(rangevm.FactAgainMS, again)
 	r.add(rangevm.FactCosignGapMS, ms(gap))
+	r.add(rangevm.FactPiActive, active)
 	return r.send(r.facts)
 }
 
