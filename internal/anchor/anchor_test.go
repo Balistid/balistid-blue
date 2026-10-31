@@ -331,6 +331,29 @@ func TestTheCapStopsAppending(t *testing.T) {
 	}
 }
 
+// A cap lowered below the log's size is refused at Open: the cap's UNKNOWN could not be logged and the final
+// entry might find no slot (ADR 0036, point 5). A log at the cap with its UNKNOWN opens.
+func TestOpenRefusesALogPastItsCap(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	cfg := config(dir, k, c)
+	l := openLog(t, cfg)
+	for _, h := range []entry.Health{{State: entry.StateOK}, {State: entry.StateUnknown, Reason: entry.ReasonStarting}, {State: entry.StateOK}} {
+		if err := l.Health(t.Context(), h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closeLog(t, l)                         // 3 entries
+	for _, slots := range []uint64{3, 4} { // 3: past the cap; 4: an OK in the cap's UNKNOWN slot
+		cfg.CapBytes = slots * entryBytes
+		if l, err := Open(t.Context(), cfg); err == nil {
+			_ = l.Close(t.Context())
+			t.Errorf("a log of 3 entries opened under a cap of %d", slots)
+		}
+	}
+	cfg.CapBytes = 5 * entryBytes
+	closeLog(t, openLog(t, cfg)) // 3 of 5: room for the UNKNOWN and the final entry
+}
+
 // Only the ledger logs the cap's UNKNOWN: a collector claiming it is out of stream, and nothing is logged.
 func TestCollectorCannotClaimTheCap(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}

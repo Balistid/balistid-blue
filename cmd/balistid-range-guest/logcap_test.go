@@ -30,6 +30,11 @@ func TestFullBundleBytes(t *testing.T) {
 	if b != 1 || n < 30000+8192 || n > 30000+8192+2*64<<10 {
 		t.Errorf("one full bundle: %d bundles, %d bytes", b, n)
 	}
+	// partial copies Tessera's GC has not removed yet count against the full bundle
+	put(layout.EntriesPath(0, 0)+".p/200", 20000)
+	if _, n2 := fullBundleBytes(dir, 300); n2 < n+20000 {
+		t.Errorf("a leftover partial of a full bundle: %d bytes, was %d", n2, n)
+	}
 	if b, n := fullBundleBytes(dir, 600); b != 0 || n != 0 {
 		t.Errorf("a full bundle without its files: %d, %d", b, n)
 	}
