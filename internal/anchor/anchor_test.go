@@ -354,6 +354,35 @@ func TestOpenRefusesALogPastItsCap(t *testing.T) {
 	closeLog(t, openLog(t, cfg)) // 3 of 5: room for the UNKNOWN and the final entry
 }
 
+// A log that holds its cap's UNKNOWN stays at its cap when reopened with a higher one: nothing but the final
+// entry follows, and the UNKNOWN is never logged twice.
+func TestCapStaysAcrossAHigherCap(t *testing.T) {
+	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}
+	cfg := config(dir, k, c)
+	cfg.CapBytes = 3 * entryBytes
+	l := openLog(t, cfg)
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateOK}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}); !errors.Is(err, ErrFull) {
+		t.Fatalf("at the cap: %v", err)
+	}
+	closeLog(t, l)
+	cfg.CapBytes = 5 * entryBytes
+	l = openLog(t, cfg)
+	if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStarting}); !errors.Is(err, ErrFull) || !l.Full() {
+		t.Fatalf("an entry after the cap's UNKNOWN under a higher cap: %v, full %v", err, l.Full())
+	}
+	if _, err := l.Final(t.Context(), next); err != nil {
+		t.Fatal(err)
+	}
+	closeLog(t, l)
+	got, _ := logged(t, dir, k)
+	if len(got) != 3 || got[1] != entry.Body(capHealth) || got[2] != (entry.Final{NextOrigin: next}) {
+		t.Fatalf("log %v; want OK, the cap's UNKNOWN once, final", got)
+	}
+}
+
 // Only the ledger logs the cap's UNKNOWN: a collector claiming it is out of stream, and nothing is logged.
 func TestCollectorCannotClaimTheCap(t *testing.T) {
 	dir, k, c := t.TempDir(), newKeys(t), &clock{t: time.Unix(1e9, 0)}

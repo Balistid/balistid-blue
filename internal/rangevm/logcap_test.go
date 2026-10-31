@@ -11,7 +11,7 @@ func logCapRun(change map[string]string) Outcome {
 	base := map[string]string{
 		FactInject: "ok", FactCapEntries: "300", FactRestartMS: "100000", FactCapMS: "400000", FactCosignedEnd: "299",
 		FactCapEntry: "yes", FactCapRefused: "yes", FactFullBundles: "1", FactFullBytes: "40960",
-		FactPosts: "60000:start,403000:unknown", FactRefused: "0", FactPiActive: "active",
+		FactPosts: "60000:start,403000:logcap", FactRefused: "0", FactPiActive: "active",
 	}
 	var changes []string
 	for k, v := range change {
@@ -30,15 +30,16 @@ func TestJudgeLogCap(t *testing.T) {
 	for want, changes := range map[string][]map[string]string{
 		Pass: {
 			nil,
-			{FactPosts: "60000:start,465000:unknown"},               // 65 s
-			{FactPosts: "60000:start,396000:unknown"},               // seen before the guest's sample
-			{FactPosts: "50000:unknown,60000:start,403000:unknown"}, // an old one does not count, the new one does
+			{FactPosts: "60000:start,465000:logcap"}, // 65 s
+			{FactPosts: "60000:start,396000:logcap"}, // seen before the guest's sample
+			{FactPosts: "50000:logcap,60000:start,403000:logcap"}, // an old one does not count, the new one does
 		},
 		Miss: {
-			{FactPosts: "60000:start,465001:unknown"},
+			{FactPosts: "60000:start,465001:logcap"},
 			{FactPosts: "60000:start"},
-			{FactPosts: "60000:start,90000:unknown"}, // only before the restart
-			{FactCosignedEnd: "300"},                 // something took the final slot or more
+			{FactPosts: "60000:start,90000:logcap"},   // only before the restart
+			{FactPosts: "60000:start,403000:unknown"}, // another cause's UNKNOWN is not the cap's alert
+			{FactCosignedEnd: "300"},                  // something took the final slot or more
 			{FactCapEntry: "entry 298 is entry.Batch"},
 			{FactCapRefused: "no"},
 			{FactFullBytes: over},
@@ -51,7 +52,7 @@ func TestJudgeLogCap(t *testing.T) {
 			{FactCapMS: "90000"},
 			{FactFullBundles: "0"},
 			{FactPiActive: "inactive"},
-			{FactPosts: "403000:unknown"},
+			{FactPosts: "403000:logcap"},
 			{FactCapEntries: "2", FactCosignedEnd: "1"},
 			{FactKernel: "6.0.0"}, {"-": FactCapEntry}, {"extra": "1"},
 		},

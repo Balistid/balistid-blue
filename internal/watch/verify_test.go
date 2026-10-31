@@ -162,16 +162,19 @@ func TestLossThenOKAlarms(t *testing.T) {
 	}
 }
 
-// The ledger's log at its cap (ADR 0036, point 5) is an UNKNOWN that alarms at once.
+// The ledger's log at its cap (ADR 0036, point 5) alarms at once under its own key, not the collector's UNKNOWN.
 func TestLogCapAlarms(t *testing.T) {
 	now := time.Now()
 	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap})
 	l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
-	if err != nil || f.Unknown != 1 || f.Broken != 0 || l.Rules.Pending {
+	if err != nil || f.LogCap != 1 || f.Unknown != 0 || f.Broken != 0 || l.Rules.Pending {
 		t.Fatalf("%+v %v", f, err)
 	}
-	if ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules); len(ev) != 1 || ev[0].Key != KeyUnknown {
-		t.Fatalf("events %+v, want one unknown", ev)
+	if ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules); len(ev) != 1 || ev[0].Key != KeyLogCap {
+		t.Fatalf("events %+v, want one logcap", ev)
+	}
+	if _, ok := pushTitle[KeyLogCap]; !ok {
+		t.Fatal("no title for the log cap's alert")
 	}
 }
 

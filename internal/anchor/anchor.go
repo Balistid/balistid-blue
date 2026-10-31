@@ -84,6 +84,7 @@ type Log struct {
 	lock       *os.File
 	now        func() time.Time
 	maxSize    uint64
+	capped     bool // the log holds its cap's UNKNOWN: only the final entry follows
 	size       uint64
 	resume     Resume
 	tailLoss   map[lossKey]entry.Loss // loss entries logged after the last batch
@@ -223,6 +224,10 @@ func (l *Log) tail(after []entry.Entry) error {
 				return fmt.Errorf("loss of record %d after the batch through %d", body.Seq, l.resume.Last)
 			}
 			l.tailLoss[lossKey{body.Seq, body.Stage}] = body
+		case entry.Health:
+			if body == capHealth { // the log reached a cap once: it stays there, whatever cap it is opened with
+				l.capped = true
+			}
 		case entry.Seal:
 			if body.Last != l.resume.Last || l.tailSeal != nil {
 				return fmt.Errorf("seal through %d after the batch through %d", body.Last, l.resume.Last)
@@ -251,7 +256,7 @@ func (l *Log) Broken() error {
 func (l *Log) Full() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.final == nil && l.size >= l.maxSize-1
+	return l.final == nil && (l.capped || l.size >= l.maxSize-1)
 }
 
 // Ended reports whether the log holds its final entry.
@@ -268,7 +273,7 @@ func (l *Log) stopped() error {
 		return l.broken
 	case l.final != nil:
 		return ErrFinal
-	case l.size >= l.maxSize-1:
+	case l.capped || l.size >= l.maxSize-1:
 		return ErrFull
 	}
 	return nil
@@ -484,12 +489,13 @@ var capHealth = entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogC
 func (l *Log) append(ctx context.Context, body entry.Body) error {
 	_, final := body.(entry.Final)
 	switch {
-	case final && l.size >= l.maxSize, !final && body != entry.Body(capHealth) && l.size > l.maxSize-2:
+	case final && l.size >= l.maxSize, !final && (l.capped || body != entry.Body(capHealth) && l.size > l.maxSize-2):
 		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
 	case !final && body != entry.Body(capHealth) && l.size == l.maxSize-2:
 		if err := l.append(ctx, capHealth); err != nil {
 			return err
 		}
+		l.capped = true
 		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
 	}
 	b, err := entry.Entry{At: l.now().UnixNano(), Body: body}.Encode()

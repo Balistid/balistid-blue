@@ -23,19 +23,32 @@ func TestFullBundleBytes(t *testing.T) {
 	put(layout.EntriesPath(0, 0), 30000)
 	put(layout.TilePath(0, 0, 0), 8192)
 	put(layout.EntriesPath(1, 44), 5000) // the right edge's partial bundle
-	if b, n := fullBundleBytes(dir, 255); b != 0 || n != 0 {
+	if b, n, err := fullBundleBytes(dir, 255); b != 0 || n != 0 || err != nil {
 		t.Errorf("no full bundle yet: %d, %d", b, n)
 	}
-	b, n := fullBundleBytes(dir, 300)
+	b, n, err := fullBundleBytes(dir, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if b != 1 || n < 30000+8192 || n > 30000+8192+2*64<<10 {
 		t.Errorf("one full bundle: %d bundles, %d bytes", b, n)
 	}
 	// partial copies Tessera's GC has not removed yet count against the full bundle
 	put(layout.EntriesPath(0, 0)+".p/200", 20000)
-	if _, n2 := fullBundleBytes(dir, 300); n2 < n+20000 {
+	if _, n2, err := fullBundleBytes(dir, 300); err != nil || n2 < n+20000 {
 		t.Errorf("a leftover partial of a full bundle: %d bytes, was %d", n2, n)
 	}
-	if b, n := fullBundleBytes(dir, 600); b != 0 || n != 0 {
+	if b, n, err := fullBundleBytes(dir, 600); b != 0 || n != 0 || err != nil {
 		t.Errorf("a full bundle without its files: %d, %d", b, n)
+	}
+	// a partials directory that cannot be read is an error, not fewer bytes
+	if err := os.Chmod(filepath.Join(dir, layout.EntriesPath(0, 0)+".p"), 0); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(dir, layout.EntriesPath(0, 0)+".p"), 0o700) //nolint:errcheck,gosec // the test's own directory, back to traversable
+	if os.Getuid() != 0 {
+		if _, _, err := fullBundleBytes(dir, 300); err == nil {
+			t.Error("an unreadable partials directory measured")
+		}
 	}
 }
