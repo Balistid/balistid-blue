@@ -66,6 +66,10 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
+	base, err := priorEntry(ctx, func(entry.Body) bool { return true })
+	if err != nil {
+		return r.fail(err.Error())
+	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	restarts := func() string {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
@@ -109,6 +113,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
+	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, base))
 	return r.send(r.facts)
 }
 
@@ -128,7 +133,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 	for deadline := end + lossWait; ; {
 		posts, _, _ := readSink()
 		now, err := uptime()
-		seen := firstAfter(posts, "loss", from) || tr.Inject == rangejob.InjectStore && firstAfter(posts, "unknown", from)
+		tag := rangevm.LossTag(tr.Inject)
+		seen := tag != "" && firstAfter(posts, tag, from) || tr.Inject == rangejob.InjectStore && firstAfter(posts, "unknown", from)
 		switch {
 		case err != nil:
 			return err
@@ -161,6 +167,27 @@ func lossMatch(inject string) func(entry.Body) bool {
 	return func(entry.Body) bool { return false }
 }
 
+// firstUnknown is the reason of the log's first health UNKNOWN after index base, "none" without one, which tells
+// whether a store trial's unknown alert is the store's (ADR 0039, point 3).
+func firstUnknown(ctx context.Context, base int64) string {
+	keys, err := rangeKeys()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	at, reason := int64(-1), "none"
+	_, err = lastEntry(ctx, ledgerLog, keys.Log, func(b entry.Body) bool {
+		at++ // lastEntry offers every entry once, in index order
+		if h, ok := b.(entry.Health); ok && at > base && h.State == entry.StateUnknown && reason == "none" {
+			reason = strconv.Itoa(int(h.Reason))
+		}
+		return false
+	})
+	if err != nil && !errors.Is(err, errNoAnnouncement) {
+		return "error: " + err.Error()
+	}
+	return reason
+}
+
 // priorEntry is the index of the log's last entry match takes, -1 when none does.
 func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error) {
 	keys, err := rangeKeys()
@@ -178,7 +205,7 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 }
 
 // otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
-// with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection,
+// with unstored records, which the Pi alerts as lossunstored, beside the cause's last entry before the injection,
 // and the collector's last journaled store failure, which tells where the store met the full filesystem.
 func otherLoss(ctx context.Context, prior int64) string {
 	var loss entry.Loss

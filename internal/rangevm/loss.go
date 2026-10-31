@@ -2,9 +2,11 @@ package rangevm
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	logentry "github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
@@ -14,6 +16,17 @@ import (
 // counter around the run and the dispatcher's overflow flag after it.
 const FactLossEntry = "loss_entry"
 
+// FactFirstUnknown of a loss trial is the reason of the ledger's first health UNKNOWN after the injection began,
+// "none" without one: a store trial's unknown alert is its cause's only when that reason is the store's (ADR 0039,
+// point 3), not another UNKNOWN that came first.
+const FactFirstUnknown = "first_unknown"
+
+// lossTags are the Pi's alert keys of the collector's loss cases, one per stage (internal/watch, ADR 0039 point 1).
+var lossTags = map[string]string{rangejob.InjectQueue: "lossqueue", rangejob.InjectFullFS: "losscap", rangejob.InjectStore: "lossstore"}
+
+// LossTag is the alert key of loss case inject's stage, "" for a case without one.
+func LossTag(inject string) string { return lossTags[inject] }
+
 // FactCollectorRestarts is the collector's NRestarts before and after a loss trial, "before after".
 const FactCollectorRestarts = "collector_restarts"
 
@@ -22,7 +35,7 @@ const FactCollectorRestarts = "collector_restarts"
 const lossAlarm = 65 * time.Second
 
 var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactInjectEndMS, FactLossEntry, FactPosts,
-	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter, FactCollectorRestarts}
+	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter, FactCollectorRestarts, FactFirstUnknown}
 
 // judgeLoss: the closed facts, a proven injection, a readable watcher and its start through the sink, else
 // INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
@@ -54,7 +67,7 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, "the sink saw no start of the watcher before the injection"
 	case n[FactLostAfter] != n[FactLostBefore] || f[FactOverflowAfter] != "no":
 		return Invalid, "the kernel or the dispatcher lost records too: " + lost
-	case strings.HasPrefix(f[FactLossEntry], "error"):
+	case strings.HasPrefix(f[FactLossEntry], "error") || strings.HasPrefix(f[FactFirstUnknown], "error"):
 		return Invalid, fmt.Sprintf("the ledger could not be read: \"%s\"", Printable(f[FactLossEntry], 256))
 	case tr.Inject == rangejob.InjectQueue && !sameRestarts(f[FactCollectorRestarts]):
 		// a restarted collector takes its queued losses with it: the queue's loss was never shown
@@ -64,12 +77,12 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	if tr.Inject == rangejob.InjectNone {
 		// an alert while the watcher warms up, before the control's moment of injection, is a false alarm too
-		if alarm := lossPost(tr, posts, 0); alarm != nil {
+		if alarm := lossPost(tr, posts, 0, ""); alarm != nil {
 			return Miss, fmt.Sprintf("a %s alert at %d ms without a loss", alarm.Tag, alarm.MS)
 		}
 		return Pass, "no loss alert without a loss"
 	}
-	alarm := lossPost(tr, posts, n[FactInjectMS])
+	alarm := lossPost(tr, posts, n[FactInjectMS], f[FactFirstUnknown])
 	switch {
 	case f[FactLossEntry] != "yes":
 		return Miss, fmt.Sprintf("no entry of the loss in the ledger: \"%s\"", Printable(f[FactLossEntry], 256))
@@ -95,12 +108,23 @@ func sameRestarts(v string) bool {
 	return ok && err == nil && before == after
 }
 
-// lossPost is the first alert of a loss after ms: a loss, for the store also its UNKNOWN, for the control either.
-func lossPost(tr rangejob.Trial, posts []Post, ms uint64) *Post {
+// lossPost is the first alert of tr's cause after ms (ADR 0039, point 3): its stage's key, for the store also an
+// unknown when firstUnknown, the ledger's first UNKNOWN after the injection, is the store's; for the control any
+// loss or unknown alert.
+func lossPost(tr rangejob.Trial, posts []Post, ms uint64, firstUnknown string) *Post {
+	storeDown := strconv.Itoa(int(logentry.ReasonStoreDown))
 	for i := range posts {
 		p := &posts[i]
-		unknown := p.Tag == "unknown" && (tr.Inject == rangejob.InjectStore || tr.Inject == rangejob.InjectNone)
-		if p.MS > ms && (p.Tag == "loss" || unknown) {
+		var cause bool
+		switch tr.Inject {
+		case rangejob.InjectNone:
+			cause = strings.HasPrefix(p.Tag, "loss") || p.Tag == "unknown"
+		case rangejob.InjectStore:
+			cause = p.Tag == LossTag(tr.Inject) || p.Tag == "unknown" && firstUnknown == storeDown
+		default:
+			cause = p.Tag != "" && p.Tag == LossTag(tr.Inject)
+		}
+		if p.MS > ms && cause {
 			return p
 		}
 	}
@@ -114,7 +138,7 @@ func lossMeasures(tr rangejob.Trial, o Outcome, m map[string]uint64) {
 		return
 	}
 	posts, err := ParsePosts(f[FactPosts])
-	if alarm := lossPost(tr, posts, n[FactInjectMS]); err == nil && alarm != nil {
+	if alarm := lossPost(tr, posts, n[FactInjectMS], f[FactFirstUnknown]); err == nil && alarm != nil {
 		m[MeasureAlarmMS] = alarm.MS - n[FactInjectMS]
 	}
 }
