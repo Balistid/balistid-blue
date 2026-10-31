@@ -92,6 +92,16 @@ func TestJudgeLoss(t *testing.T) {
 			t.Errorf("loss-store with an unknown alert and first UNKNOWN %s: %s (%s)", first, v, r)
 		}
 	}
+	// An UNKNOWN the ledger logged before the injection leaves the store's unknown alert unattributed: INVALID; the
+	// queue's trial does not depend on it.
+	before := map[string]string{FactPosts: "60000:start,120000:unknown", FactFirstUnknown: "before 2"}
+	if v, r := JudgeTrial(trial(t, "loss-store-2"), lossRun("loss-store-2", before), cleanBuild, cleanBuild); v != Invalid {
+		t.Errorf("loss-store with an UNKNOWN before the injection: %s (%s)", v, r)
+	}
+	if v, r := JudgeTrial(trial(t, "loss-queue-1"), lossRun("loss-queue-1", map[string]string{FactFirstUnknown: "before 3"}),
+		cleanBuild, cleanBuild); v != Pass {
+		t.Errorf("loss-queue with an UNKNOWN before the injection: %s (%s)", v, r)
+	}
 	// Another stage's alert is not the cause's (ADR 0039, point 3).
 	for name, post := range map[string]string{"loss-queue-1": "lossstore", "loss-full-fs-1": "lossqueue", "loss-store-1": "losscap"} {
 		run := probeRun(name, lossFacts, map[string]string{
