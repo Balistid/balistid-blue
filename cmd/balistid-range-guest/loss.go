@@ -174,7 +174,8 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 }
 
 // otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
-// with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection.
+// with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection,
+// and the collector's last journaled store failure, which tells where the store met the full filesystem.
 func otherLoss(ctx context.Context, prior int64) string {
 	var loss entry.Loss
 	var health entry.Health
@@ -198,8 +199,14 @@ func otherLoss(ctx context.Context, prior int64) string {
 	if err != nil {
 		return "; the log's health: error: " + err.Error()
 	}
-	return fmt.Sprintf("; last loss: entry %d stage %d records %d; last unstored health: entry %d state %d reason %d unstored %d"+
-		" (the cause's last %d)", lossAt, loss.Stage, loss.Records, healthAt, health.State, health.Reason, health.Unstored, prior)
+	failed := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-g", "store failed", "-n", "1")
+	if _, after, ok := strings.Cut(failed, "reason="); ok {
+		failed = "store failed: reason=" + strings.TrimSpace(after)
+	} else {
+		failed = "no store failure journaled"
+	}
+	return fmt.Sprintf("; loss %d s%d r%d; unstored health %d s%d r%d u%d; prior %d; %.140s", lossAt, loss.Stage, loss.Records,
+		healthAt, health.State, health.Reason, health.Unstored, prior, failed)
 }
 
 // injectLoss injects a loss cause and returns "ok" with its proof held, else why not, and when it ended if the
