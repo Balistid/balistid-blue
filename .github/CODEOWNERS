@@ -44,5 +44,6 @@
 /cmd/balistid-relay/ @Jvc0n
 /cmd/balistid-pi/ @Jvc0n
 /internal/watch/ @Jvc0n
+/internal/auditstat/ @Jvc0n
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n

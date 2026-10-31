@@ -89,6 +89,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/collector/` | Collector: Laurel's lines to records as evidence, a byte-bounded queue that never blocks Laurel, loss counted per stage (ADR 0016) |
 | `internal/unixsock/` | What every service needs from its local sockets: the peer's uid from the kernel, messages to systemd (ADR 0007) |
 | `internal/wholefile/` | Files written whole: temp file, fsync, rename, directory fsync (ENGINEERING.md 7) |
+| `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
 | `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
