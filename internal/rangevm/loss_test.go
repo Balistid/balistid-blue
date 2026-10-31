@@ -10,7 +10,7 @@ func lossRun(name string, change map[string]string) Outcome {
 	base := map[string]string{
 		FactInject: "ok", FactInjectMS: "100000", FactInjectEndMS: "106000", FactLossEntry: "yes",
 		FactPosts: "60000:start,120000:loss", FactRefused: "0", FactPiActive: "active",
-		FactLostBefore: "0", FactLostAfter: "0", FactOverflowAfter: "no",
+		FactLostBefore: "0", FactLostAfter: "0", FactOverflowAfter: "no", FactCollectorRestarts: "0 0",
 	}
 	var changes []string
 	for k, v := range change {
@@ -40,7 +40,8 @@ func TestJudgeLoss(t *testing.T) {
 				{FactInject: "error: fsfreeze --freeze: exit status 1"},
 				{FactInjectEndMS: "99999"},
 				{FactPiActive: "missing"},
-				{FactLostAfter: "3"},
+				{FactLostAfter: "3"}, {FactOverflowAfter: "yes"}, {FactOverflowAfter: "missing"},
+				{FactLossEntry: "error: checkpoint: no such file"},
 				{FactPosts: "120000:loss"},
 				{FactKernel: "6.0.0"}, {"-": FactLossEntry}, {"extra": "1"},
 			},
@@ -51,6 +52,13 @@ func TestJudgeLoss(t *testing.T) {
 				}
 			}
 		}
+	}
+	// A restarted collector spoils the queue's case only; a store may restart it as it fails.
+	if v, _ := JudgeTrial(trial(t, "loss-queue-1"), lossRun("loss-queue-1", map[string]string{FactCollectorRestarts: "0 1"}), cleanBuild, cleanBuild); v != Invalid {
+		t.Errorf("loss-queue with a collector restart: %s", v)
+	}
+	if v, r := JudgeTrial(trial(t, "loss-store-1"), lossRun("loss-store-1", map[string]string{FactCollectorRestarts: "0 1"}), cleanBuild, cleanBuild); v != Pass {
+		t.Errorf("loss-store with a collector restart: %s (%s)", v, r)
 	}
 	// The store's loss may come as its UNKNOWN; the queue's may not.
 	if v, r := JudgeTrial(trial(t, "loss-store-2"), lossRun("loss-store-2", map[string]string{FactPosts: "60000:start,120000:unknown"}),

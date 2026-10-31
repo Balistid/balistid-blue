@@ -30,8 +30,14 @@ const (
 	bigArgs    = 12
 	fillFile   = scratchMount + "/fill"
 	kernelWait = 75 * time.Second
-	// lossWait is how long after the injection a loss trial waits for the alert: lossAlarm's 65 s and a margin.
-	lossWait = 80 * time.Second
+	// lossWait is how long after the injection a loss trial waits for the alert: lossAlarm's 65 s and a margin;
+	// checkpointWait covers the ledger's next 5 s checkpoint after it.
+	lossWait       = 80 * time.Second
+	checkpointWait = 6 * time.Second
+	// fiFreeze and fiThaw are FIFREEZE and FITHAW, _IOWR('X', 119 and 120, int): ioctls, which no audit rule records,
+	// so a thaw never waits on the backlog the burst filled, as an exec of fsfreeze would.
+	fiFreeze = 0xc0045877
+	fiThaw   = 0xc0045878
 )
 
 // runLoss runs loss trial tr (ADR 0036, point 4): with the watcher started through the sink and the log growing,
@@ -57,28 +63,22 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(err.Error())
 	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
-	lostBefore := auditLost()
+	restarts := func() string {
+		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
+	}
+	lostBefore, restartsBefore := auditLost(), restarts()
 	from, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	proof := injectLoss(ctx, tr.Inject)
-	end, err := uptime()
-	if err != nil {
-		return r.fail(err.Error())
-	}
-	for deadline := end + lossWait; ; {
-		posts, _, _ := readSink()
-		now, err := uptime()
-		switch {
-		case err != nil:
+	proof, end := injectLoss(ctx, tr.Inject)
+	if end == 0 {
+		if end, err = uptime(); err != nil {
 			return r.fail(err.Error())
-		case tr.Inject != rangejob.InjectNone && (firstAfter(posts, "loss", from) || firstAfter(posts, "unknown", from)),
-			now > deadline, !pause(ctx, time.Second):
-		default:
-			continue
 		}
-		break
+	}
+	if err := waitLoss(ctx, tr, from, end); err != nil {
+		return r.fail(err.Error())
 	}
 	stopLoad()
 	entryFact := "no new entry of the cause"
@@ -102,7 +102,28 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
+	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	return r.send(r.facts)
+}
+
+// waitLoss waits until the alert the judge takes for tr's loss reached the sink and a checkpoint more has been
+// published, so the ledger's entry is in the log the guest then reads, or until lossWait after the injection; the
+// control waits it out. A clock that cannot be read is an error.
+func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) error {
+	for deadline := end + lossWait; ; {
+		posts, _, _ := readSink()
+		now, err := uptime()
+		seen := firstAfter(posts, "loss", from) || tr.Inject == rangejob.InjectStore && firstAfter(posts, "unknown", from)
+		switch {
+		case err != nil:
+			return err
+		case tr.Inject != rangejob.InjectNone && seen:
+			pause(ctx, checkpointWait)
+			return nil
+		case now > deadline || !pause(ctx, time.Second):
+			return nil
+		}
+	}
 }
 
 // lossMatch is which ledger entries an injection's loss makes: a loss of the queue's stage, of the cap's (a
@@ -141,12 +162,14 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 	return int64(at), nil //nolint:gosec // a log index is far below 2^63
 }
 
-// injectLoss injects a loss cause and returns "ok" with its proof held, else why not.
-func injectLoss(ctx context.Context, inject string) string {
+// injectLoss injects a loss cause and returns "ok" with its proof held, else why not, and when it ended if the
+// injection knows that better than its return (the queue's thaw), else 0.
+func injectLoss(ctx context.Context, inject string) (string, time.Duration) {
 	var err error
+	var end time.Duration
 	switch inject {
 	case rangejob.InjectQueue:
-		err = freezeStore(ctx)
+		end, err = freezeStore(ctx)
 	case rangejob.InjectFullFS:
 		err = fillScratch()
 	case rangejob.InjectStore:
@@ -162,14 +185,15 @@ func injectLoss(ctx context.Context, inject string) string {
 		err = fmt.Errorf("no injection %q", inject)
 	}
 	if err != nil {
-		return "error: " + err.Error()
+		return "error: " + err.Error(), end
 	}
-	return "ok"
+	return "ok", end
 }
 
 // freezeStore freezes the store's filesystem for freezeFor under execs with large arguments, so the collector's
-// writer blocks and its queue fills; the proof is the freeze and the thaw both done.
-func freezeStore(ctx context.Context) error {
+// writer blocks and its queue fills; the proof is the freeze and the thaw both done, and it returns the thaw's
+// uptime, where the injection ends.
+func freezeStore(ctx context.Context) (time.Duration, error) {
 	args := make([]string, bigArgs)
 	for i := range args {
 		args[i] = strings.Repeat("q", bigArg)
@@ -189,16 +213,26 @@ func freezeStore(ctx context.Context) error {
 	})
 	defer func() { stop(); wg.Wait() }()
 	if err := systemctl(ctx, "is-active", collectorUnitName); err != nil {
-		return err
+		return 0, err
 	}
-	if out, err := exec.CommandContext(ctx, "/usr/bin/fsfreeze", "--freeze", scratchMount).CombinedOutput(); err != nil {
-		return fmt.Errorf("fsfreeze --freeze: %w: %s", err, strings.TrimSpace(string(out)))
+	d, err := os.OpenFile(scratchMount, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open %s: %w", scratchMount, err)
+	}
+	defer d.Close() //nolint:errcheck // read-only
+	if err := unix.IoctlSetInt(int(d.Fd()), fiFreeze, 0); err != nil {
+		return 0, fmt.Errorf("FIFREEZE: %w", err)
 	}
 	pause(ctx, freezeFor)
-	if out, err := exec.CommandContext(context.WithoutCancel(ctx), "/usr/bin/fsfreeze", "--unfreeze", scratchMount).CombinedOutput(); err != nil {
-		return fmt.Errorf("fsfreeze --unfreeze: %w: %s", err, strings.TrimSpace(string(out)))
+	thawErr := unix.IoctlSetInt(int(d.Fd()), fiThaw, 0)
+	end, err := uptime()
+	switch {
+	case thawErr != nil:
+		return 0, fmt.Errorf("FITHAW: %w", thawErr)
+	case err != nil:
+		return 0, err
 	}
-	return nil
+	return end, nil
 }
 
 // fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem; the proof
