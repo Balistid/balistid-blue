@@ -62,6 +62,10 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
+	downBefore, err := priorEntry(ctx, storeDown)
+	if err != nil {
+		return r.fail(err.Error())
+	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	restarts := func() string {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
@@ -86,6 +90,8 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		entryFact = "error: " + err.Error()
 	} else if at > prior {
 		entryFact = "yes"
+	} else if down, err := priorEntry(ctx, storeDown); tr.Inject == rangejob.InjectFullFS && err == nil && down > downBefore {
+		entryFact = rangevm.LossStoreDown + otherLoss(ctx, prior)
 	} else {
 		entryFact += otherLoss(ctx, prior)
 	}
@@ -149,12 +155,15 @@ func lossMatch(inject string) func(entry.Body) bool {
 	case rangejob.InjectFullFS:
 		return stage(entry.StageCap)
 	case rangejob.InjectStore:
-		return func(b entry.Body) bool {
-			h, ok := b.(entry.Health)
-			return stage(entry.StageStore)(b) || ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
-		}
+		return func(b entry.Body) bool { return stage(entry.StageStore)(b) || storeDown(b) }
 	}
 	return func(entry.Body) bool { return false }
+}
+
+// storeDown is the collector's UNKNOWN for a store that failed.
+func storeDown(b entry.Body) bool {
+	h, ok := b.(entry.Health)
+	return ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
 }
 
 // priorEntry is the index of the log's last entry match takes, -1 when none does.

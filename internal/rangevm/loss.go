@@ -14,6 +14,10 @@ import (
 // counter around the run and the dispatcher's overflow flag after it.
 const FactLossEntry = "loss_entry"
 
+// LossStoreDown starts a full filesystem's loss_entry when, instead of a loss at the cap, the store went down: the
+// fill came between its check of free space and its write, and the shard's write failed.
+const LossStoreDown = "store down"
+
 // FactCollectorRestarts is the collector's NRestarts before and after a loss trial, "before after".
 const FactCollectorRestarts = "collector_restarts"
 
@@ -28,7 +32,8 @@ var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjec
 // INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
 // lost counter spoils a collector case or the control. With those, a refused token, a watcher not running, no
 // entry of the cause in the ledger or no alert within lossAlarm is a MISS, and a bracket too wide to prove
-// lossAlarm INVALID; the control MISSes on any alert since the watcher started.
+// lossAlarm or a full filesystem's store gone down (LossStoreDown) INVALID; the control MISSes on any alert since
+// the watcher started.
 func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, lossFacts, []string{FactInjectMS, FactInjectEndMS, FactRefused, FactLostBefore, FactLostAfter})
 	if why != "" {
@@ -71,6 +76,9 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	alarm := lossPost(tr, posts, n[FactInjectMS])
 	switch {
+	case tr.Inject == rangejob.InjectFullFS && strings.HasPrefix(f[FactLossEntry], LossStoreDown):
+		// the race of the fill and a write is the store's, not the alarm's: the cap was never met
+		return Invalid, fmt.Sprintf("the fill raced a store write, the store went down: \"%s\"", Printable(f[FactLossEntry], 256))
 	case f[FactLossEntry] != "yes":
 		return Miss, fmt.Sprintf("no entry of the loss in the ledger: \"%s\"", Printable(f[FactLossEntry], 256))
 	case alarm == nil:
