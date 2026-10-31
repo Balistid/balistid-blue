@@ -54,6 +54,7 @@ type Findings struct {
 	Problem   string                         // the first rule broken
 	Lost      [entry.StageDispatcher + 1]int // losses per stage; truncated ones count in Truncated
 	Unstored  int                            // health entries with unstored records
+	Overflow  int                            // health entries of auditd's dispatcher overflow
 	Truncated int
 	Unknown   int // health UNKNOWN for a reason that alarms at once
 	LogCap    int // the ledger's log at its cap (ADR 0036, point 5)
@@ -200,8 +201,10 @@ func (r *Rules) check(raw []byte, f *Findings) {
 		r.LossMax = max(r.LossMax, b.Seq)
 		if b.Stage == entry.StageTruncated {
 			f.Truncated++
-		} else {
+		} else if int(b.Stage) < len(f.Lost) {
 			f.Lost[b.Stage]++
+		} else { // a stage the decoder took and the Pi has no key for: alarm, never panic
+			broke("a loss of a stage the Pi has no alert for")
 		}
 	case entry.Health:
 		r.health(b, f)
@@ -229,6 +232,7 @@ func (r *Rules) health(h entry.Health, f *Findings) {
 		f.LogCap++
 		r.Pending, r.Capped = false, true
 	case r.Overflow: // a condition of its own while it holds (ADR 0039, point 1), not a one-off UNKNOWN
+		f.Overflow++
 		r.Pending = false
 	default:
 		f.Unknown++

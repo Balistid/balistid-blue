@@ -254,3 +254,49 @@ func TestConditionTransitionsAreLogged(t *testing.T) {
 		}
 	}
 }
+
+// A restart keeps auditd's dispatcher overflow through the saved state: the condition alerts again.
+func TestRunKeepsTheOverflowAcrossARestart(t *testing.T) {
+	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}},
+		entry.Health{State: entry.StateUnknown, Reason: entry.ReasonDispatcher})
+	relay := relayServer(t, log, func(_ string, b []byte) []byte { return b })
+	ws := httptest.NewServer(&fakeWitness{head: headOf(log)})
+	defer ws.Close()
+	store, err := OpenStore(t.TempDir(), "balistid/log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &clock{now: time.Now()}
+	run := func(n *ntfy) func() {
+		push := newTestPusher(t, n, c)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- Run(ctx, Config{Origin: "balistid/log", Source: Source{Witness: ws.URL + "/", Relay: relay.URL + "/",
+				HTTP: testClient()}, Store: store, Push: push, Limits: DefaultLimits,
+				Poll: 2 * time.Millisecond, Now: c.Now, Notify: func(string) error { return nil }})
+		}()
+		return func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	first := &ntfy{}
+	stop := run(first)
+	waitKey(t, first, KeyLossDispatcher)
+	c.add(saveEvery) // the watcher saves its state once a minute of its clock
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if l, _, err := store.Load(); err == nil && l.Rules.Overflow {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the overflow was never saved")
+		}
+	}
+	stop()
+	second := &ntfy{}
+	defer run(second)()
+	waitKey(t, second, KeyLossDispatcher)
+}
