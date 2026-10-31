@@ -3,6 +3,8 @@ package watch
 import (
 	"fmt"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/entry"
 )
 
 // Key names one alert: a condition that holds for a while, or a kind of event.
@@ -12,7 +14,6 @@ type Key string
 const (
 	KeyFork      Key = "fork"
 	KeyLog       Key = "log"
-	KeyLoss      Key = "loss"
 	KeyHealth    Key = "health"
 	KeyUnknown   Key = "unknown"
 	KeyLogCap    Key = "logcap"
@@ -26,8 +27,28 @@ const (
 	KeyFailed    Key = "failed"
 )
 
+// The loss alerts, one per stage, so that an alert names where records were lost (ADR 0039, point 1); a
+// truncated record has its own condition, and unstored records are a health entry's.
+const (
+	KeyLossCap        Key = "losscap"
+	KeyLossQueue      Key = "lossqueue"
+	KeyLossFraming    Key = "lossframing"
+	KeyLossStore      Key = "lossstore"
+	KeyLossShutdown   Key = "lossshutdown"
+	KeyLossKernel     Key = "losskernel"
+	KeyLossDispatcher Key = "lossdispatcher"
+	KeyLossUnstored   Key = "lossunstored"
+)
+
+// lossKeys is each loss stage's key; truncated (6) has none, as Findings counts it apart.
+var lossKeys = [...]Key{
+	entry.StageCap: KeyLossCap, entry.StageQueue: KeyLossQueue, entry.StageFraming: KeyLossFraming,
+	entry.StageStore: KeyLossStore, entry.StageShutdown: KeyLossShutdown, entry.StageKernel: KeyLossKernel,
+	entry.StageDispatcher: KeyLossDispatcher,
+}
+
 // conditions are the keys that hold until their cause ends: raised on every step, cleared after it.
-var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh, KeyLogCap}
+var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh, KeyLogCap, KeyLossDispatcher}
 
 // Limits are when the Pi alerts. The first four follow acceptance numbers (acceptance/0.toml), a minute
 // early so that the alert reaches the phone within them.
@@ -64,14 +85,15 @@ type Event struct {
 // Watchdog turns verified steps into alerts. Its times come from the Pi's monotonic clock; a host time
 // never reaches it (T22). Not safe for concurrent use.
 type Watchdog struct {
-	lim     Limits
-	grew    time.Time   // the last verified growth, or the start
-	run     time.Time   // when the current run of growth began
-	fresh   time.Time   // the last step caught up with the witness, or the start
-	trunc   []time.Time // truncated records of the last hour
-	pending time.Time   // since when the last health is a pending UNKNOWN; zero: it is not
-	capped  bool        // the log holds its cap's UNKNOWN and no final yet: a condition until final
-	quiet   *episode
+	lim      Limits
+	grew     time.Time   // the last verified growth, or the start
+	run      time.Time   // when the current run of growth began
+	fresh    time.Time   // the last step caught up with the witness, or the start
+	trunc    []time.Time // truncated records of the last hour
+	pending  time.Time   // since when the last health is a pending UNKNOWN; zero: it is not
+	capped   bool        // the log holds its cap's UNKNOWN and no final yet: a condition until final
+	overflow bool        // the last health is auditd's dispatcher overflow: a condition until it changes (ADR 0039)
+	quiet    *episode
 }
 
 // episode is a quiet window opened by an announcement; times are the Pi's.
@@ -115,6 +137,7 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 		w.pending = now
 	}
 	w.capped = r.Capped && !r.Final
+	w.overflow = r.Overflow && !r.Final
 	// the newest Truncated+1 times decide "more than Truncated within an hour"; the host sets the count
 	for range min(f.Truncated, w.lim.Truncated+1) {
 		w.trunc = append(w.trunc, now)
@@ -126,8 +149,13 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	if f.Broken > 0 {
 		out = append(out, Event{KeyLog, fmt.Sprintf("%d new entries break the log's rules, first: %s", f.Broken, f.Problem)})
 	}
-	if f.Lost > 0 {
-		out = append(out, Event{KeyLoss, fmt.Sprintf("%d new entries report lost records", f.Lost)})
+	for stage, n := range f.Lost {
+		if n > 0 {
+			out = append(out, Event{lossKeys[stage], fmt.Sprintf("%d new entries report lost records", n)})
+		}
+	}
+	if f.Unstored > 0 {
+		out = append(out, Event{KeyLossUnstored, fmt.Sprintf("%d new health entries report records not stored", f.Unstored)})
 	}
 	if f.Unknown > 0 {
 		out = append(out, Event{KeyUnknown, fmt.Sprintf("%d new health entries report UNKNOWN", f.Unknown)})
@@ -158,6 +186,9 @@ func (w *Watchdog) Conditions(now time.Time, behind bool) map[Key]string {
 	}
 	if len(w.trunc) > w.lim.Truncated {
 		out[KeyTruncated] = fmt.Sprintf("%d records stored truncated within the last hour", len(w.trunc))
+	}
+	if w.overflow {
+		out[KeyLossDispatcher] = "auditd's dispatcher overflowed: what it drops is not counted until auditd restarts"
 	}
 	if w.capped {
 		out[KeyLogCap] = "the host's log reports it reached host_log_cap_gib: only its final entry may follow"

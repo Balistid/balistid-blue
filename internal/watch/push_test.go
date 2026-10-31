@@ -108,10 +108,10 @@ func TestPushHoldsNothingBack(t *testing.T) {
 	n := &ntfy{}
 	c := &clock{now: time.Now()}
 	p := newTestPusher(t, n, c)
-	p.Event(KeyLoss, "1 record lost")
+	p.Event(KeyLossQueue, "1 record lost")
 	n.wait(t, 1)
 	c.add(10 * time.Second)
-	p.Event(KeyLoss, "9000 records lost")
+	p.Event(KeyLossQueue, "9000 records lost")
 	p.Hold(KeyFork, "fork")
 	p.Clear(KeyFork)
 	n.wait(t, 2)
@@ -140,11 +140,11 @@ func TestPushFailedMessageIsNotOverwritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.Event(KeyLoss, "first loss")
+	p.Event(KeyLossQueue, "first loss")
 	k, m, _ := p.next()
 	p.requeue(k, m) // its send failed
 	c.add(spacing)
-	p.Event(KeyLoss, "second loss")
+	p.Event(KeyLossQueue, "second loss")
 	if _, m, _ := p.next(); m.render() != "second loss (the latest of 2 alerts)" {
 		t.Fatalf("waiting message %q", m.render())
 	}

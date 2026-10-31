@@ -42,16 +42,18 @@ type Rules struct {
 	SealedBatch bool   `json:"sealed_batch"` // a seal follows the last batch already
 	LossMax     uint64 `json:"loss_max"`     // the highest lost record the next batch has to cover
 	Final       bool   `json:"final"`
-	Pending     bool   `json:"pending"` // the last health is UNKNOWN for a reason that clears by itself
-	Capped      bool   `json:"capped"`  // the log holds its cap's UNKNOWN: only final may follow (ADR 0036)
+	Pending     bool   `json:"pending"`  // the last health is UNKNOWN for a reason that clears by itself
+	Capped      bool   `json:"capped"`   // the log holds its cap's UNKNOWN: only final may follow (ADR 0036)
+	Overflow    bool   `json:"overflow"` // the last health is auditd's dispatcher overflow (ADR 0039, point 1)
 }
 
 // Findings is what one verified step's new entries say.
 type Findings struct {
 	Entries   uint64
-	Broken    int    // entries that break a rule
-	Problem   string // the first rule broken
-	Lost      int    // losses of a stage other than truncated, and health with unstored records
+	Broken    int                            // entries that break a rule
+	Problem   string                         // the first rule broken
+	Lost      [entry.StageDispatcher + 1]int // losses per stage; truncated ones count in Truncated
+	Unstored  int                            // health entries with unstored records
 	Truncated int
 	Unknown   int // health UNKNOWN for a reason that alarms at once
 	LogCap    int // the ledger's log at its cap (ADR 0036, point 5)
@@ -199,7 +201,7 @@ func (r *Rules) check(raw []byte, f *Findings) {
 		if b.Stage == entry.StageTruncated {
 			f.Truncated++
 		} else {
-			f.Lost++
+			f.Lost[b.Stage]++
 		}
 	case entry.Health:
 		r.health(b, f)
@@ -215,8 +217,9 @@ func (r *Rules) check(raw []byte, f *Findings) {
 // alarms only when no OK follows in time (ADR 0031, point 3).
 func (r *Rules) health(h entry.Health, f *Findings) {
 	if h.Unstored > 0 {
-		f.Lost++
+		f.Unstored++
 	}
+	r.Overflow = h.State == entry.StateUnknown && h.Reason == entry.ReasonDispatcher
 	switch {
 	case h.State == entry.StateOK:
 		r.Pending = false
@@ -225,6 +228,8 @@ func (r *Rules) health(h entry.Health, f *Findings) {
 	case h.Reason == entry.ReasonLogCap: // the ledger's, not the collector's: its own condition, saved with the rules
 		f.LogCap++
 		r.Pending, r.Capped = false, true
+	case r.Overflow: // a condition of its own while it holds (ADR 0039, point 1), not a one-off UNKNOWN
+		r.Pending = false
 	default:
 		f.Unknown++
 		r.Pending = false

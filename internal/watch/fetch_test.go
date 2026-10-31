@@ -189,7 +189,7 @@ func TestHostileStatusTextIsNotRepeated(t *testing.T) {
 		if perr != nil {
 			t.Fatal(perr)
 		}
-		if err := p.Send(context.Background(), KeyLoss, "x"); err == nil || strings.Contains(err.Error(), "EVIL") || len(err.Error()) > 200 {
+		if err := p.Send(context.Background(), KeyLossQueue, "x"); err == nil || strings.Contains(err.Error(), "EVIL") || len(err.Error()) > 200 {
 			t.Errorf("%s: push error %.300q", name, err)
 		}
 	}

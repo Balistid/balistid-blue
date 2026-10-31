@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -142,23 +143,78 @@ func TestNothingAfterFinal(t *testing.T) {
 	}
 }
 
-func TestLossThenOKAlarms(t *testing.T) {
+// Each loss stage alarms under its own key and no other, so an alert names where records were lost (ADR 0039,
+// point 1); truncated records keep their own condition.
+func TestLossAlarmsUnderItsStage(t *testing.T) {
 	now := time.Now()
-	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Loss{Seq: 5, Stage: entry.StageQueue, Records: 7},
-		entry.Batch{First: 5, Last: 9, Root: [32]byte{1}}, entry.Health{State: entry.StateOK})
+	for stage := entry.StageCap; stage <= entry.StageDispatcher; stage++ {
+		if stage == entry.StageTruncated {
+			continue
+		}
+		log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Loss{Seq: 5, Stage: stage, Records: 1},
+			entry.Batch{First: 5, Last: 9, Root: [32]byte{1}}, entry.Health{State: entry.StateOK})
+		l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
+		if err != nil || f.Broken != 0 || f.Lost[stage] != 1 {
+			t.Fatalf("stage %d: %+v %v", stage, f, err)
+		}
+		ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules)
+		if len(ev) != 1 || ev[0].Key != lossKeys[stage] || ev[0].Key == "" {
+			t.Errorf("stage %d: events %+v, want one %q", stage, ev, lossKeys[stage])
+		}
+		if _, ok := pushTitle[lossKeys[stage]]; !ok {
+			t.Errorf("stage %d: no title for %q", stage, lossKeys[stage])
+		}
+	}
+}
+
+// A health entry with unstored records alarms as lossunstored; an UNKNOWN for a lasting reason, auditstat's and
+// auditd's ones included (ADR 0038, point 4), alarms at once.
+func TestUnstoredAndUnknownAlarm(t *testing.T) {
+	now := time.Now()
+	for _, r := range []entry.Reason{entry.ReasonStoreDown, entry.ReasonAuditStale, entry.ReasonAuditd} {
+		log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}},
+			entry.Health{State: entry.StateUnknown, Reason: r, Unstored: 3})
+		l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
+		if err != nil || f.Unstored != 1 || f.Unknown != 1 || l.Rules.Overflow {
+			t.Fatalf("reason %d: %+v %v", r, f, err)
+		}
+		ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules)
+		if len(ev) != 2 || ev[0].Key != KeyLossUnstored || ev[1].Key != KeyUnknown {
+			t.Errorf("reason %d: events %+v, want lossunstored and unknown", r, ev)
+		}
+	}
+}
+
+// auditd's dispatcher overflow is a condition under lossdispatcher while the health says so, not a one-off
+// UNKNOWN: it reminds every 6 h like the others, a restart keeps it and the next other health ends it.
+func TestDispatcherOverflowIsACondition(t *testing.T) {
+	now := time.Now()
+	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}},
+		entry.Health{State: entry.StateUnknown, Reason: entry.ReasonDispatcher})
 	l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
-	if err != nil || f.Lost != 1 {
-		t.Fatalf("%+v %v", f, err)
+	if err != nil || f.Unknown != 0 || !l.Rules.Overflow || l.Rules.Pending {
+		t.Fatalf("%+v %+v %v", f, l.Rules, err)
 	}
-	ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules)
-	if len(ev) != 1 || ev[0].Key != KeyLoss {
-		t.Fatalf("events %+v, want one loss", ev)
+	w := NewWatchdog(DefaultLimits, now, nil, false)
+	if ev := w.Grew(now, f, l.Rules); len(ev) != 0 {
+		t.Fatalf("events %+v: the overflow is a condition, not an event", ev)
 	}
-	// a health entry with unstored records is a loss too, an UNKNOWN for a lasting reason alarms at once
-	log = append(log, enc(t, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown, Unstored: 3})...)
-	_, f, err = Advance(context.Background(), l, headOf(log), fetchFrom(log))
-	if err != nil || f.Lost != 1 || f.Unknown != 1 {
-		t.Fatalf("%+v %v", f, err)
+	if _, ok := w.Conditions(now, false)[KeyLossDispatcher]; !ok || !slices.Contains(conditions, KeyLossDispatcher) {
+		t.Fatalf("no lossdispatcher condition: %v", w.Conditions(now, false))
+	}
+	re := NewWatchdog(DefaultLimits, now, nil, false)
+	re.overflow = l.Rules.Overflow && !l.Rules.Final
+	if _, ok := re.Conditions(now.Add(time.Hour), false)[KeyLossDispatcher]; !ok {
+		t.Fatal("a restart lost the lossdispatcher condition")
+	}
+	log = append(log, enc(t, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLaurelDisconnected})...)
+	l2, f2, err := Advance(context.Background(), l, headOf(log), fetchFrom(log))
+	if err != nil || l2.Rules.Overflow || f2.Unknown != 1 {
+		t.Fatalf("after another reason: %+v %+v %v", f2, l2.Rules, err)
+	}
+	w.Grew(now, f2, l2.Rules)
+	if _, ok := w.Conditions(now, false)[KeyLossDispatcher]; ok {
+		t.Fatal("the lossdispatcher condition outlived another health")
 	}
 }
 
