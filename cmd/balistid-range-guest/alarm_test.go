@@ -87,6 +87,30 @@ func TestLossPostsFactControlFromStart(t *testing.T) {
 	}
 }
 
+// Only a full filesystem's store, healthy before and not restarted, gone down after the fill on a disk-full write
+// is the store's race; anything else without the cause's entry is no entry.
+func TestLossEntryStoreDownOnlyForTheFillsRace(t *testing.T) {
+	raced := lossEntry{inject: rangejob.InjectFullFS, downBefore: -1, down: 14, healthyBefore: true, sameRestarts: true,
+		failure: `store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"`}
+	if got := raced.fact(); got != rangevm.LossStoreDown {
+		t.Errorf("the race: %q", got)
+	}
+	for name, change := range map[string]func(*lossEntry){
+		"another trial":         func(le *lossEntry) { le.inject = rangejob.InjectStore },
+		"down before the fill":  func(le *lossEntry) { le.downBefore = 14 },
+		"unhealthy before":      func(le *lossEntry) { le.healthyBefore = false },
+		"the collector restart": func(le *lossEntry) { le.sameRestarts = false },
+		"no disk full":          func(le *lossEntry) { le.failure = `store open failed","err":"permission denied"` },
+		"an unreadable log":     func(le *lossEntry) { le.downErr = true },
+	} {
+		le := raced
+		change(&le)
+		if got := le.fact(); got != "no new entry of the cause" {
+			t.Errorf("%s: %q", name, got)
+		}
+	}
+}
+
 // Each collector loss is matched by the entry its cause makes, and by nothing else.
 func TestLossMatch(t *testing.T) {
 	for inject, cases := range map[string]map[entry.Body]bool{

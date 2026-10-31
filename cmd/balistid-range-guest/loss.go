@@ -62,9 +62,11 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	downBefore, err := priorEntry(ctx, storeDown)
-	if err != nil {
-		return r.fail(err.Error())
+	var le lossEntry
+	if tr.Inject == rangejob.InjectFullFS {
+		if le.downBefore, le.healthyBefore, err = storeHealth(ctx); err != nil {
+			return r.fail(err.Error())
+		}
 	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	restarts := func() string {
@@ -85,15 +87,19 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(err.Error())
 	}
 	stopLoad()
-	entryFact := "no new entry of the cause"
+	restartsAfter := restarts()
+	var entryFact string
 	if at, err := priorEntry(ctx, match); err != nil {
 		entryFact = "error: " + err.Error()
 	} else if at > prior {
 		entryFact = "yes"
-	} else if down, err := priorEntry(ctx, storeDown); tr.Inject == rangejob.InjectFullFS && err == nil && down > downBefore {
-		entryFact = rangevm.LossStoreDown + otherLoss(ctx, prior)
 	} else {
-		entryFact += otherLoss(ctx, prior)
+		le.inject, le.sameRestarts, le.failure = tr.Inject, restartsBefore == restartsAfter && restartsAfter != "missing", storeFailure(ctx)
+		if tr.Inject == rangejob.InjectFullFS {
+			le.down, _, err = storeHealth(ctx)
+			le.downErr = err != nil
+		}
+		entryFact = le.fact() + otherLoss(ctx, prior, le.failure)
 	}
 	posts, refused, err := readSink()
 	if err != nil {
@@ -110,7 +116,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
-	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
+	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restartsAfter)
 	return r.send(r.facts)
 }
 
@@ -182,10 +188,63 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 	return int64(at), nil //nolint:gosec // a log index is far below 2^63
 }
 
+// lossEntry is what decides a loss_entry without the cause's entry: for a full filesystem the log's last store-down
+// health before the injection and after it, whether its last health before was OK, the collector's restarts and its
+// last journaled store failure.
+type lossEntry struct {
+	inject                      string
+	downBefore, down            int64
+	healthyBefore, sameRestarts bool
+	downErr                     bool
+	failure                     string
+}
+
+// fact is LossStoreDown when a full filesystem's store, healthy before the fill and not restarted, went down after
+// it on a disk-full shard write: the fill raced the store's check of free space, so it never met its cap. Else no
+// entry of the cause.
+func (le lossEntry) fact() string {
+	if le.inject == rangejob.InjectFullFS && le.healthyBefore && le.sameRestarts && !le.downErr && le.down > le.downBefore &&
+		strings.Contains(le.failure, diskFull) {
+		return rangevm.LossStoreDown
+	}
+	return "no new entry of the cause"
+}
+
+// diskFull is how the shard's SQLite reports a full filesystem (SQLITE_FULL).
+const diskFull = "database or disk is full"
+
+// storeHealth is the index of the log's last store-down health, -1 when none, and whether its last health is OK.
+func storeHealth(ctx context.Context) (int64, bool, error) {
+	healthy := false
+	at, err := priorEntry(ctx, func(b entry.Body) bool {
+		if h, ok := b.(entry.Health); ok {
+			healthy = h.State == entry.StateOK
+		}
+		return storeDown(b)
+	})
+	return at, healthy, err
+}
+
+// storeFailure is the collector's last journaled store failure, of an append, flush, close or open, from its
+// message on; it journals JSON.
+func storeFailure(ctx context.Context) string {
+	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
+	if journal == "" {
+		return "the collector's journal could not be read"
+	}
+	failed := "no store failure in the journal's last 400 lines"
+	for line := range strings.Lines(journal) {
+		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
+			failed = "store " + strings.TrimSpace(after)
+		}
+	}
+	return failed
+}
+
 // otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
 // with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection,
-// and the collector's last journaled store failure, which tells where the store met the full filesystem.
-func otherLoss(ctx context.Context, prior int64) string {
+// and the store's failure, which tells where the store met the full filesystem.
+func otherLoss(ctx context.Context, prior int64, failed string) string {
 	var loss entry.Loss
 	var health entry.Health
 	lossAt, err := priorEntry(ctx, func(b entry.Body) bool {
@@ -207,17 +266,6 @@ func otherLoss(ctx context.Context, prior int64) string {
 	})
 	if err != nil {
 		return "; the log's health: error: " + err.Error()
-	}
-	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
-	failed := "no store failure in the journal's last 400 lines"
-	if journal == "" {
-		failed = "the collector's journal could not be read"
-	}
-	for line := range strings.Lines(journal) {
-		// the collector journals JSON: its last store failure, of an append, flush, close or open, from its message on
-		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
-			failed = "store " + strings.TrimSpace(after)
-		}
 	}
 	return fmt.Sprintf("; loss %d s%d r%d; unstored health %d s%d r%d u%d; prior %d; %.140s", lossAt, loss.Stage, loss.Records,
 		healthAt, health.State, health.Reason, health.Unstored, prior, failed)
