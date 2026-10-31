@@ -147,6 +147,8 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		names = []string{FactReadyMS}
 	case rangejob.MethodCPU:
 		names = []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS}
+	case rangejob.MethodLogCap:
+		names = []string{FactCapEntries, FactFullBundles, FactFullBytes}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -220,6 +222,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeCPU(tr, o)
 	case rangejob.MethodAlarm:
 		return judgeAlarm(tr, o)
+	case rangejob.MethodLogCap:
+		return judgeLogCap(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }
