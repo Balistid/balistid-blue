@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -96,28 +97,38 @@ func Watch(ctx context.Context) (context.Context, func()) {
 
 func watch(ctx context.Context, every time.Duration, read func() ([]byte, error)) (context.Context, func()) {
 	child, cancel := context.WithCancelCause(ctx)
-	done := make(chan struct{})
+	stopping, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
+		// Only this goroutine ends the child, after its last sample: a low or unreadable sample in flight when stop
+		// comes still sets its cause, and the run it watched is INVALID.
+		defer cancel(nil)
 		tick := time.NewTicker(every)
 		defer tick.Stop()
 		for {
-			if child.Err() != nil { // stopped while select took the tick: no new read once stop is seen
+			select { // stopped while select took the tick: no new read once stop is seen
+			case <-stopping:
 				return
+			case <-child.Done():
+				return
+			default:
 			}
 			if cause := memoryCause(read); cause != nil {
 				cancel(cause)
 				return
 			}
 			select {
+			case <-stopping:
+				return
 			case <-child.Done():
 				return
 			case <-tick.C:
 			}
 		}
 	}()
+	var once sync.Once
 	return child, func() {
-		cancel(nil)
+		once.Do(func() { close(stopping) })
 		<-done
 	}
 }

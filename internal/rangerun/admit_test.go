@@ -270,6 +270,45 @@ func TestWatchStopWaitsForTheGoroutine(t *testing.T) {
 	stop() // a second stop returns at once
 }
 
+// A low or unreadable sample in flight when stop comes still sets its cause: the run it watched is INVALID.
+func TestWatchStopKeepsTheCauseOfASampleInFlight(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		sample func() ([]byte, error)
+		want   error
+	}{
+		"below reserve": {func() ([]byte, error) { return meminfo(MemReserve>>10 - 1), nil }, ErrMemoryReserve},
+		"read error":    {func() ([]byte, error) { return nil, errors.New("gone") }, ErrMemoryUnknown},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			n := 0
+			read := func() ([]byte, error) { // called only from the one watch goroutine
+				if n++; n == 2 {
+					close(entered)
+					<-release
+					return c.sample()
+				}
+				return meminfo(MemReserve >> 9), nil
+			}
+			ctx, stop := watch(t.Context(), time.Millisecond, read)
+			<-entered
+			stopped := make(chan struct{})
+			go func() {
+				stop()
+				close(stopped)
+			}()
+			time.Sleep(10 * time.Millisecond) // stop is waiting on the sample
+			close(release)
+			<-stopped
+			if cause := context.Cause(ctx); !errors.Is(cause, c.want) {
+				t.Fatalf("cause = %v, want %v", cause, c.want)
+			}
+		})
+	}
+}
+
 func FuzzMemAvailable(f *testing.F) {
 	f.Add(meminfo(7421384))
 	f.Add([]byte("MemAvailable:   123456789012 kB\n"))
