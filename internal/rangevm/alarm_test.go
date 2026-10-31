@@ -62,8 +62,11 @@ func TestJudgeQuietCapNotRestarted(t *testing.T) {
 			after time.Duration
 			want  string
 		}{
-			{RangeQuiet, Pass}, {RangeQuiet - 5*time.Second, Pass}, {RangeQuiet + time.Minute, Pass},
-			{RangeQuiet - 6*time.Second, Miss}, {14 * time.Minute, Miss}, {23 * time.Minute, Miss},
+			// counted from the stop (101 s); the proof ended 5 s later, at 106 s
+			{RangeQuiet, Pass}, {RangeQuiet + time.Minute, Pass},
+			{RangeQuiet - time.Millisecond, Miss},               // 19:54.999 after the proof's end
+			{RangeQuiet + time.Minute + time.Millisecond, Miss}, // 21:00.001 after the stop
+			{RangeQuiet - 5*time.Second, Miss}, {14 * time.Minute, Miss}, {23 * time.Minute, Miss},
 		} {
 			if v, r := JudgeTrial(tr, alarmRun(name, c.after, nil), cleanBuild, cleanBuild); v != c.want {
 				t.Errorf("%s alert after %s: %s (%s), want %s", name, c.after, v, r, c.want)
@@ -79,6 +82,10 @@ func TestJudgeQuietCapNotRestarted(t *testing.T) {
 	// quiet-again's log grows again between its announcements, after the first one: still sound.
 	if v, r := JudgeTrial(tr, alarmRun("quiet-again", RangeQuiet, map[string]string{FactCosignedMS: "280000"}), cleanBuild, cleanBuild); v != Pass {
 		t.Errorf("quiet-again with growth between its announcements: %s (%s)", v, r)
+	}
+	// a proof longer than proofMax cannot time the cap
+	if v, _ := JudgeTrial(trial(t, "quiet-off"), alarmRun("quiet-off", RangeQuiet, map[string]string{FactInjectEndMS: "166001"}), cleanBuild, cleanBuild); v != Invalid {
+		t.Errorf("quiet-off with a 65.001 s proof: %s", v)
 	}
 	if v, _ := JudgeTrial(trial(t, "quiet-off"), alarmRun("quiet-off", RangeQuiet, map[string]string{FactAgainMS: "301000"}), cleanBuild, cleanBuild); v != Invalid {
 		t.Errorf("quiet-off with a second announcement: %s", v)
@@ -126,7 +133,7 @@ func TestAlarmMeasures(t *testing.T) {
 		t.Errorf("measures %v", m)
 	}
 	m = Measures(trial(t, "quiet-again"), alarmRun("quiet-again", RangeQuiet, nil))
-	if m[MeasureAlarmMS] != uint64(RangeQuiet/time.Millisecond) {
+	if m[MeasureAlarmMS] != uint64((RangeQuiet-5*time.Second)/time.Millisecond) { // from the proof's end, 5 s after the stop
 		t.Errorf("quiet measures %v", m)
 	}
 }

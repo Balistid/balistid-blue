@@ -12,7 +12,7 @@ import (
 )
 
 func TestSinkPostsCountsOnlyTheRangeToken(t *testing.T) {
-	posts, refused, err := sinkPosts(strings.NewReader("1000 start ok\n2000 silence bad\n3000 - ok\n4000 silence ok\n"))
+	posts, refused, err := sinkPosts(strings.NewReader(sinkHeader + "\n1000 start ok\n2000 silence bad\n3000 - ok\n4000 silence ok\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,8 +21,13 @@ func TestSinkPostsCountsOnlyTheRangeToken(t *testing.T) {
 		t.Errorf("posts %v, refused %d", posts, refused)
 	}
 	for _, bad := range []string{"1000 start\n", "x start ok\n", "1000 start maybe\n", "-1 start ok\n", strings.Repeat("1 a ok\n", postsMax)} {
-		if _, _, err := sinkPosts(strings.NewReader(bad)); err == nil {
+		if _, _, err := sinkPosts(strings.NewReader(sinkHeader + "\n" + bad)); err == nil {
 			t.Errorf("%.40q read", bad)
+		}
+	}
+	for _, header := range []string{"", "balistid-range-ntfy 2 token=bearer-range-only", "1000 start ok"} {
+		if _, _, err := sinkPosts(strings.NewReader(header + "\n1000 start ok\n")); err == nil {
+			t.Errorf("header %q read", header)
 		}
 	}
 }
