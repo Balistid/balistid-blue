@@ -14,10 +14,6 @@ import (
 // counter around the run and the dispatcher's overflow flag after it.
 const FactLossEntry = "loss_entry"
 
-// LossStoreDown starts a full filesystem's loss_entry when, instead of a loss at the cap, the store went down: the
-// fill came between its check of free space and its write, and the shard's write failed on the full disk.
-const LossStoreDown = "store down"
-
 // FactCollectorRestarts is the collector's NRestarts before and after a loss trial, "before after".
 const FactCollectorRestarts = "collector_restarts"
 
@@ -32,8 +28,7 @@ var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjec
 // INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
 // lost counter spoils a collector case or the control. With those, a refused token, a watcher not running, no
 // entry of the cause in the ledger or no alert within lossAlarm is a MISS, and a bracket too wide to prove
-// lossAlarm, or a full filesystem's store gone down (LossStoreDown) with its alert in time, INVALID; the control
-// MISSes on any alert since the watcher started.
+// lossAlarm INVALID; the control MISSes on any alert since the watcher started.
 func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, lossFacts, []string{FactInjectMS, FactInjectEndMS, FactRefused, FactLostBefore, FactLostAfter})
 	if why != "" {
@@ -75,10 +70,8 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Pass, "no loss alert without a loss"
 	}
 	alarm := lossPost(tr, posts, n[FactInjectMS])
-	// a store gone down with unstored records is still a loss the Pi alerts: its alert is judged, it never passes
-	raced := tr.Inject == rangejob.InjectFullFS && strings.HasPrefix(f[FactLossEntry], LossStoreDown)
 	switch {
-	case !raced && f[FactLossEntry] != "yes":
+	case f[FactLossEntry] != "yes":
 		return Miss, fmt.Sprintf("no entry of the loss in the ledger: \"%s\"", Printable(f[FactLossEntry], 256))
 	case alarm == nil:
 		return Miss, "no loss alert reached the sink"
@@ -88,9 +81,6 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	switch {
 	case young > lossAlarm:
 		return Miss, fmt.Sprintf("%s alert %s after the injection, over %s", alarm.Tag, young, lossAlarm)
-	case raced:
-		return Invalid, fmt.Sprintf("the fill raced a store write and the store went down, not to its cap (%s alert %s after): \"%s\"",
-			alarm.Tag, young, Printable(f[FactLossEntry], 256))
 	case old > lossAlarm:
 		return Invalid, fmt.Sprintf("%s alert %s to %s after the injection: its bracket is too wide to prove %s", alarm.Tag,
 			young, old, lossAlarm)

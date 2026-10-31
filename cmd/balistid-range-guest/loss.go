@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/shard"
 )
 
 const (
@@ -27,9 +27,12 @@ const (
 	freezeFor = 6 * time.Second
 	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB); bigArgs of them make a record of about 1.2 MB,
 	// under record_max_kib (2 MiB, stored whole), so a few dozen execs fill the collector's 64 MiB queue.
-	bigArg     = 100 << 10
-	bigArgs    = 12
-	fillFile   = scratchMount + "/fill"
+	bigArg   = 100 << 10
+	bigArgs  = 12
+	fillFile = scratchMount + "/fill"
+	// fillSlack bounds what the fill leaves above a WAL: the store's admit slack (64 KiB), so the least a record
+	// needs, a WAL, twice its size and that slack, is more than is left.
+	fillSlack  = 64 << 10
 	kernelWait = 75 * time.Second
 	// lossWait is how long after the injection a loss trial waits for the alert: lossAlarm's 65 s and a margin;
 	// checkpointWait covers the ledger's next 5 s checkpoint after it.
@@ -63,12 +66,6 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	var le lossEntry
-	if tr.Inject == rangejob.InjectFullFS {
-		if le.downBefore, le.healthyBefore, err = storeHealth(ctx); err != nil {
-			return r.fail(err.Error())
-		}
-	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	restarts := func() string {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
@@ -88,19 +85,13 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(err.Error())
 	}
 	stopLoad()
-	restartsAfter := restarts()
-	var entryFact string
+	entryFact := "no new entry of the cause"
 	if at, err := priorEntry(ctx, match); err != nil {
 		entryFact = "error: " + err.Error()
 	} else if at > prior {
 		entryFact = "yes"
 	} else {
-		le.inject, le.sameRestarts, le.failure = tr.Inject, restartsBefore == restartsAfter && restartsAfter != "missing", storeFailure(ctx)
-		if tr.Inject == rangejob.InjectFullFS {
-			le.down, _, err = storeHealth(ctx)
-			le.downErr = err != nil
-		}
-		entryFact = le.fact() + otherLoss(ctx, prior, le.failure)
+		entryFact += otherLoss(ctx, prior)
 	}
 	posts, refused, err := readSink()
 	if err != nil {
@@ -117,7 +108,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
-	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restartsAfter)
+	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	return r.send(r.facts)
 }
 
@@ -162,15 +153,12 @@ func lossMatch(inject string) func(entry.Body) bool {
 	case rangejob.InjectFullFS:
 		return stage(entry.StageCap)
 	case rangejob.InjectStore:
-		return func(b entry.Body) bool { return stage(entry.StageStore)(b) || storeDown(b) }
+		return func(b entry.Body) bool {
+			h, ok := b.(entry.Health)
+			return stage(entry.StageStore)(b) || ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
+		}
 	}
 	return func(entry.Body) bool { return false }
-}
-
-// storeDown is the collector's UNKNOWN for a store that failed.
-func storeDown(b entry.Body) bool {
-	h, ok := b.(entry.Health)
-	return ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
 }
 
 // priorEntry is the index of the log's last entry match takes, -1 when none does.
@@ -189,71 +177,10 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 	return int64(at), nil //nolint:gosec // a log index is far below 2^63
 }
 
-// lossEntry is what decides a loss_entry without the cause's entry: for a full filesystem the log's last store-down
-// health before the injection and after it, whether its last health before was OK, the collector's restarts and its
-// last journaled store failure.
-type lossEntry struct {
-	inject                      string
-	downBefore, down            int64
-	healthyBefore, sameRestarts bool
-	downErr                     bool
-	failure                     string
-}
-
-// fact is LossStoreDown when a full filesystem's store, healthy before the fill and not restarted, went down after
-// it on a disk-full shard write: the fill raced the store's check of free space, so it never met its cap. Else no
-// entry of the cause.
-func (le lossEntry) fact() string {
-	if le.inject == rangejob.InjectFullFS && le.healthyBefore && le.sameRestarts && !le.downErr && le.down > le.downBefore &&
-		strings.Contains(le.failure, diskFull) {
-		return rangevm.LossStoreDown
-	}
-	return "no new entry of the cause"
-}
-
-// diskFull is how the shard's SQLite reports a full filesystem (SQLITE_FULL).
-const diskFull = "database or disk is full"
-
-// storeHealth is the index of the log's last store-down health, -1 when none, and whether its last health is OK.
-func storeHealth(ctx context.Context) (int64, bool, error) {
-	healthy := false
-	at, err := priorEntry(ctx, func(b entry.Body) bool {
-		if h, ok := b.(entry.Health); ok {
-			healthy = h.State == entry.StateOK
-		}
-		return storeDown(b)
-	})
-	return at, healthy, err
-}
-
-// storeFailure is the collector's last journaled store failure (lastStoreFailure).
-func storeFailure(ctx context.Context) string {
-	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
-	if journal == "" {
-		return "the collector's journal could not be read"
-	}
-	return lastStoreFailure(journal)
-}
-
-// lastStoreFailure is the journal's last store failure on a full disk, else its last of any kind, of an append,
-// flush, close or open, from its message on: reopens fail every half minute after the race. The collector journals JSON.
-func lastStoreFailure(journal string) string {
-	failed, full := "no store failure in the journal's last 400 lines", ""
-	for line := range strings.Lines(journal) {
-		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
-			failed = "store " + strings.TrimSpace(after)
-			if strings.Contains(after, diskFull) {
-				full = failed
-			}
-		}
-	}
-	return cmp.Or(full, failed)
-}
-
 // otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
 // with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection,
-// and the store's failure, which tells where the store met the full filesystem.
-func otherLoss(ctx context.Context, prior int64, failed string) string {
+// and the collector's last journaled store failure, which tells where the store met the full filesystem.
+func otherLoss(ctx context.Context, prior int64) string {
 	var loss entry.Loss
 	var health entry.Health
 	lossAt, err := priorEntry(ctx, func(b entry.Body) bool {
@@ -275,6 +202,17 @@ func otherLoss(ctx context.Context, prior int64, failed string) string {
 	})
 	if err != nil {
 		return "; the log's health: error: " + err.Error()
+	}
+	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
+	failed := "no store failure in the journal's last 400 lines"
+	if journal == "" {
+		failed = "the collector's journal could not be read"
+	}
+	for line := range strings.Lines(journal) {
+		// the collector journals JSON: its last store failure, of an append, flush, close or open, from its message on
+		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
+			failed = "store " + strings.TrimSpace(after)
+		}
 	}
 	return fmt.Sprintf("; loss %d s%d r%d; unstored health %d s%d r%d u%d; prior %d; %.140s", lossAt, loss.Stage, loss.Records,
 		healthAt, health.State, health.Reason, health.Unstored, prior, failed)
@@ -353,8 +291,8 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 	return end, nil
 }
 
-// fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem; the proof
-// is no block left for an unprivileged writer.
+// fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem: no room for
+// its next record. The proof is less than a WAL and the admit slack left for an unprivileged writer.
 func fillScratch() error {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(scratchMount, &st); err != nil {
@@ -364,15 +302,21 @@ func fillScratch() error {
 	if err != nil {
 		return fmt.Errorf("fill: %w", err)
 	}
-	defer f.Close()                                                                         //nolint:errcheck // written by fallocate, nothing to flush
-	if err := syscall.Fallocate(int(f.Fd()), 0, 0, int64(st.Bavail)*st.Bsize); err != nil { //nolint:gosec // block counts of a 512 MiB disk
+	defer f.Close() //nolint:errcheck // written by fallocate, nothing to flush
+	// A whole WAL stays free: the store admitted its writes in flight against it, so they finish, and its next
+	// record, which needs a WAL more, drops at the free-space cap; a fill to the last block races those writes.
+	fill := int64(st.Bavail)*st.Bsize - shard.WALMaxBytes //nolint:gosec // block counts of a 512 MiB disk
+	if fill <= 0 {
+		return fmt.Errorf("%d bytes free, less than a WAL", int64(st.Bavail)*st.Bsize) //nolint:gosec // as above
+	}
+	if err := syscall.Fallocate(int(f.Fd()), 0, 0, fill/st.Bsize*st.Bsize); err != nil {
 		return fmt.Errorf("fallocate: %w", err)
 	}
 	if err := syscall.Statfs(scratchMount, &st); err != nil {
 		return fmt.Errorf("statfs: %w", err)
 	}
-	if left := st.Bavail * uint64(st.Bsize); left > 1<<20 { //nolint:gosec // as above
-		return fmt.Errorf("%d bytes still free", left)
+	if left := int64(st.Bavail) * st.Bsize; left >= shard.WALMaxBytes+fillSlack { //nolint:gosec // as above
+		return fmt.Errorf("%d bytes still free, a WAL is %d", left, shard.WALMaxBytes)
 	}
 	return nil
 }
