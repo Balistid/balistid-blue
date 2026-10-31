@@ -32,10 +32,10 @@ appends nothing more: the Pi sees silence after 840 s, not the UNKNOWN 0027 poin
 4. `loss_alarm_s`: under load the guest freezes the store's filesystem (a full queue), fills it, or makes the
    store's files refuse writes, four trials per case. Each injection has its own proof (the freeze held, no free
    blocks, a refused write in the collector's journal); without it, or with the sink, clock or facts broken, a run
-   is INVALID. A proven injection without its loss (store: health) entry in the ledger and its alert within 65 s
-   is a MISS; a control without injection must not alert. Kernel loss (auditd stopped) and dispatcher overflow
-   (Laurel stopped) run with the rules locked (`-e 2`) and are INVALID "no detector" until `balistid-auditstat`
-   (ADR 0007), its own milestone after L11 and before L12; until then `loss_alarm_s` cannot pass.
+   is INVALID. A proven injection without its loss (store: health) entry and its alert within 65 s is a MISS; a
+   fill whose store went down on a disk-full write, not to its cap, is INVALID with that alert (Alex 2026-10-31).
+   A control must not alert. Kernel loss (auditd stopped) and dispatcher overflow (Laurel stopped), rules locked
+   (`-e 2`), are INVALID "no detector" until `balistid-auditstat` (ADR 0007, before L12), which `loss_alarm_s` needs.
 5. The log keeps its last two slots: a health UNKNOWN with the new reason 7, "log at its cap", logged once, also
    after a restart at that size; then `final`. Rollover does not copy it into the next log. The Pi alarms on it at
    once under its own key, `logcap`. `balistid-ledger -cap-bytes` only lowers the 10 GiB cap, to at least three
