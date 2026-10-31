@@ -345,3 +345,23 @@ func TestVerifyDayIndicator(t *testing.T) {
 	}
 	t.Logf("verified %d entries in %v", l.Size, time.Since(start))
 }
+
+// An overflow that a later health ends in the same step alerts once (the condition never holds), and final ends
+// the condition a restart keeps.
+func TestDispatcherOverflowWithinOneStep(t *testing.T) {
+	now := time.Now()
+	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}},
+		entry.Health{State: entry.StateUnknown, Reason: entry.ReasonDispatcher}, entry.Health{State: entry.StateOK})
+	l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
+	if err != nil || f.Overflow != 1 || l.Rules.Overflow {
+		t.Fatalf("%+v %+v %v", f, l.Rules, err)
+	}
+	w := NewWatchdog(DefaultLimits, now, nil, false)
+	if ev := w.Grew(now, f, l.Rules); len(ev) != 1 || ev[0].Key != KeyLossDispatcher {
+		t.Fatalf("events %+v, want one lossdispatcher", ev)
+	}
+	w.holds(Rules{Overflow: true, Final: true})
+	if _, ok := w.Conditions(now, false)[KeyLossDispatcher]; ok {
+		t.Fatal("the lossdispatcher condition outlived final")
+	}
+}

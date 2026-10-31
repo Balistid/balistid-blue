@@ -136,8 +136,7 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	case w.pending.IsZero():
 		w.pending = now
 	}
-	w.capped = r.Capped && !r.Final
-	w.overflow = r.Overflow && !r.Final
+	w.holds(r)
 	// the newest Truncated+1 times decide "more than Truncated within an hour"; the host sets the count
 	for range min(f.Truncated, w.lim.Truncated+1) {
 		w.trunc = append(w.trunc, now)
@@ -160,6 +159,9 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	if f.Unknown > 0 {
 		out = append(out, Event{KeyUnknown, fmt.Sprintf("%d new health entries report UNKNOWN", f.Unknown)})
 	}
+	if f.Overflow > 0 && !w.overflow { // it began and ended within one step: the condition never holds, so alert once
+		out = append(out, Event{KeyLossDispatcher, "auditd's dispatcher overflowed, and a later health ended it in the same step"})
+	}
 	if f.LogCap > 0 && r.Final { // the cap and final in one step: the condition never holds, so alert once
 		out = append(out, Event{KeyLogCap, "the host's log reports it reached host_log_cap_gib, and it ended"})
 	}
@@ -167,6 +169,13 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 		out = append(out, Event{KeyFinal, "the log ended with a cosigned final: add the next origin by hand"})
 	}
 	return out
+}
+
+// holds takes the conditions the rules carry, from a step or from the saved state at a restart: the cap's (ADR
+// 0036) and auditd's dispatcher overflow (ADR 0039), each until final.
+func (w *Watchdog) holds(r Rules) {
+	w.capped = r.Capped && !r.Final
+	w.overflow = r.Overflow && !r.Final
 }
 
 // Caught records a step that ended at the witness's size.
