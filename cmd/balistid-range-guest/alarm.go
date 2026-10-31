@@ -167,8 +167,8 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(why)
 	}
 	restarts := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", piUnit))
+	cw.freeze() // the gap trend ends where the injection begins: quiet-again's ledger stop is no cosign gap
 	inject, again, done := injectAlarm(ctx, tr, stopLoad)
-	cw.freeze()
 	injectAt, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
