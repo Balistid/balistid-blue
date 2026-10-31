@@ -1,0 +1,27 @@
+# One acceptance trial of the range on a GitHub-hosted runner's KVM, on request (ADR 0037): the run a session
+# cannot make in its sandbox before review. Advisory, never evidence (ADR 0028, point 4).
+name: range-trial
+
+on:
+  workflow_dispatch:
+    inputs:
+      trial:
+        description: a trial of internal/rangejob's table
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  range-trial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the ref's range image and run one trial on KVM
+        env:
+          TRIAL: ${{ inputs.trial }}
+        run: python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range" --trial "$TRIAL"

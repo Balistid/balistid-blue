@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build the checked-out commit's range image and run its self-test on a GitHub-hosted runner's KVM
-(ADR 0028).
+"""Build the checked-out commit's range image and run its self-test, or one trial, on a GitHub-hosted
+runner's KVM (ADR 0028, ADR 0037).
 
 The runner is a throwaway VM, so this script changes it with sudo: /dev/kvm for the runner user and
 unprivileged user namespaces for bwrap and mkosi. The Arch tools run in an archlinux container pinned
@@ -45,13 +45,13 @@ printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$SNAP
 pacman -Syyuu --noconfirm --needed "$@"
 useradd --no-create-home --home-dir /cache/home --uid "$RANGE_UID" range
 exec runuser -u range -- /usr/bin/env -i HOME=/cache/home XDG_CACHE_HOME=/cache XDG_STATE_HOME=/state \
-  PATH=/usr/bin GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0 /usr/bin/bash -euo pipefail -c '
+  RANGE_TRIAL="${RANGE_TRIAL:-}" PATH=/usr/bin GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0 /usr/bin/bash -euo pipefail -c '
 mkdir -p "$HOME"
 cd /src
 go build -trimpath -o "$HOME/balistid-range" ./cmd/balistid-range
 image=$("$HOME/balistid-range" build)
 echo "image: $image"
-"$HOME/balistid-range" run "$image"'
+if [ -n "$RANGE_TRIAL" ]; then "$HOME/balistid-range" trial "$RANGE_TRIAL" "$image"; else "$HOME/balistid-range" run "$image"; fi'
 """
 
 # A verdict other than PASS becomes one annotation, which the API serves (check-runs/<id>/annotations)
@@ -59,15 +59,17 @@ echo "image: $image"
 # text is escaped as command data and capped.
 ANNOTATION_MAX = 4000
 RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
+# A trial's name as ADR 0018 point 1 allows it; the launcher's closed table refuses any other (T37).
+TRIAL_NAME = re.compile(r"[a-z0-9-]{1,32}")
 
 
-def verdict_annotation(state: Path) -> str | None:
+def verdict_annotation(state: Path, title: str = "range-kvm self-test") -> str | None:
     """The newest run's verdict and reason as an ::error:: command, or None when it passed or left none."""
     results = sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json")
                      if RESULT_ID.fullmatch(p.parent.name))
     if not results:
         return None
-    unreadable = "::error title=range-kvm self-test::the result could not be read"
+    unreadable = f"::error title={title}::the result could not be read"
     # Container root can write the state directory: no symlink, no FIFO, a regular file only.
     try:
         fd = os.open(results[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -83,7 +85,7 @@ def verdict_annotation(state: Path) -> str | None:
     if verdict == "PASS":
         return None
     text = f"{verdict}: {reason}"[:ANNOTATION_MAX]
-    return "::error title=range-kvm self-test::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::error title={title}::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 class RangeError(Exception):
@@ -129,7 +131,7 @@ def prepare_host(run: Runner, kvm: Path, sysctl: Path) -> None:
         run(["sudo", "sysctl", "-w", "kernel.apparmor_restrict_unprivileged_userns=0"], check=True)
 
 
-def docker_argv(repo: Path, state: Path, cache: Path, uid: int) -> list[str]:
+def docker_argv(repo: Path, state: Path, cache: Path, uid: int, trial: str = "") -> list[str]:
     """The container: KVM, no added capability, the source read-only, state and cache from the work
     directory. seccomp, AppArmor and the masked /proc paths stay off because bwrap and mkosi make
     user namespaces and mount a fresh /proc in them. Without them, container root (the pacman step)
@@ -145,6 +147,7 @@ def docker_argv(repo: Path, state: Path, cache: Path, uid: int) -> list[str]:
         "--volume", f"{cache}:/cache",
         "--env", f"SNAPSHOT={SNAPSHOT}",
         "--env", f"RANGE_UID={uid}",
+        *(["--env", f"RANGE_TRIAL={trial}"] if trial else []),
         IMAGE,
         "/usr/bin/bash", "-c", CONTAINER_SCRIPT, "bash", *PACKAGES,
     ]
@@ -155,8 +158,13 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", type=Path, required=True, help="directory for the state and cache mounts")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--trial", default="", help="run this trial of the table instead of the self-test (ADR 0037)")
     args = parser.parse_args(argv)
+    what = f"trial {args.trial}" if TRIAL_NAME.fullmatch(args.trial) else "self-test"
+    title = f"range-kvm {what}"
     try:
+        if args.trial and not TRIAL_NAME.fullmatch(args.trial):
+            raise RangeError("--trial is not a trial name (^[a-z0-9-]{1,32}$)")
         check_runner(env)
         check_kvm(kvm)
         state, cache = args.work / "state", args.work / "cache"
@@ -172,17 +180,17 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     token = secrets.token_hex(16)
     print(f"::stop-commands::{token}", flush=True)
     try:
-        done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid()), check=False)
+        done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid(), args.trial), check=False)
     finally:
         # On a line of its own: the runner resumes commands only on a line that starts with "::".
         print(f"\n::{token}::", flush=True)
-    annotation = verdict_annotation(state)
+    annotation = verdict_annotation(state, title)
     if annotation is None and done.returncode != 0:
-        annotation = f"::error title=range-kvm self-test::no result: the build or self-test failed (exit {done.returncode})"
+        annotation = f"::error title={title}::no result: the build or {what} failed (exit {done.returncode})"
     if annotation:
         print(annotation, flush=True)
     if done.returncode != 0:
-        print(f"range-kvm: the build or self-test failed (exit {done.returncode})", file=sys.stderr)
+        print(f"range-kvm: the build or {what} failed (exit {done.returncode})", file=sys.stderr)
         return 1
     return 0
 

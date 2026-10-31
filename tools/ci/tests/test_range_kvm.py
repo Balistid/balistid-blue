@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO / "tools" / "ci"))
 import range_kvm  # noqa: E402
 
 CI = REPO / ".github" / "workflows" / "ci.yml"
+TRIAL_WORKFLOW = REPO / ".github" / "workflows" / "range-trial.yml"
 HOSTED = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"}
 
 
@@ -71,6 +72,15 @@ class Pins(unittest.TestCase):
         self.assertNotIn("sudo", user_part)
         self.assertIn("GOTOOLCHAIN=local", user_part)
         self.assertIn('"$HOME/balistid-range" run "$image"', user_part)
+        # A trial's name is data from the environment, never part of the script's text (ADR 0037).
+        self.assertIn('RANGE_TRIAL="${RANGE_TRIAL:-}" PATH=/usr/bin', script)
+        self.assertIn('"$HOME/balistid-range" trial "$RANGE_TRIAL" "$image"', user_part)
+
+    def test_a_trial_goes_in_by_environment_only(self) -> None:
+        argv = range_kvm.docker_argv(Path("/r"), Path("/s"), Path("/c"), 1001, "silence-ledger")
+        envs = [argv[i + 1] for i, a in enumerate(argv) if a in ("--env", "-e")]
+        self.assertEqual(envs, [f"SNAPSHOT={range_kvm.SNAPSHOT}", "RANGE_UID=1001", "RANGE_TRIAL=silence-ledger"])
+        self.assertNotIn("silence-ledger", range_kvm.CONTAINER_SCRIPT)
 
 
 class FailsClosed(unittest.TestCase):
@@ -91,6 +101,14 @@ class FailsClosed(unittest.TestCase):
         code = range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work)], env=env, run=rec,
                               kvm=kvm or self.kvm, sysctl=self.work / "no-sysctl")
         return code, rec
+
+    def test_a_bad_trial_name_fails_before_anything_runs(self) -> None:
+        for name in ("Silence", "a b", "x" * 33, "../x", "$(id)", "a;b"):
+            rec = Recorder()
+            with contextlib.redirect_stderr(io.StringIO()):
+                code = range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work), "--trial", name],
+                                      env=HOSTED, run=rec, kvm=Path("/dev/null"), sysctl=self.work / "no-sysctl")
+            self.assertEqual((code, rec.calls), (1, []), name)
 
     def test_refuses_outside_a_github_hosted_runner(self) -> None:
         for env in ({}, {"GITHUB_ACTIONS": "true"}, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "self-hosted"}):
@@ -201,6 +219,21 @@ class Workflow(unittest.TestCase):
     def test_job_tests_the_tree_that_would_land(self) -> None:
         # Like every other job: the merge commit, whose workflow then runs its own script.
         self.assertNotIn("ref:", ci_job("range-kvm"))
+
+
+class TrialWorkflow(unittest.TestCase):
+    def test_dispatch_runs_one_trial_with_the_input_from_env(self) -> None:
+        text = TRIAL_WORKFLOW.read_text(encoding="utf-8")
+        runs = re.findall(r"(?m)^\s+(?:- )?run: (.*)$", text)
+        self.assertEqual(runs, ['python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range" --trial "$TRIAL"'])
+        self.assertEqual(re.findall(r"\$\{\{.*?\}\}", text), ["${{ inputs.trial }}"])
+        self.assertIn("          TRIAL: ${{ inputs.trial }}\n", text)
+        self.assertRegex(text, r"(?m)^on:\n  workflow_dispatch:\n")
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
+        self.assertIn("persist-credentials: false", text)
+        for needle in ("secrets.", "github.token", "pull_request", "continue-on-error", "|| true", "actions/upload-artifact@"):
+            self.assertNotIn(needle, text)
+        self.assertEqual(re.findall(r"uses: (\S+)", text), re.findall(r"uses: (actions/checkout@\S+)", CI.read_text(encoding="utf-8"))[:1])
 
 
 if __name__ == "__main__":
