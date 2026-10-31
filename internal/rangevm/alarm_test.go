@@ -76,6 +76,10 @@ func TestJudgeQuietCapNotRestarted(t *testing.T) {
 			t.Errorf("quiet-again with a second announcement at %q: %s", again, v)
 		}
 	}
+	// quiet-again's log grows again between its announcements, after the first one: still sound.
+	if v, r := JudgeTrial(tr, alarmRun("quiet-again", RangeQuiet, map[string]string{FactCosignedMS: "280000"}), cleanBuild, cleanBuild); v != Pass {
+		t.Errorf("quiet-again with growth between its announcements: %s (%s)", v, r)
+	}
 	if v, _ := JudgeTrial(trial(t, "quiet-off"), alarmRun("quiet-off", RangeQuiet, map[string]string{FactAgainMS: "301000"}), cleanBuild, cleanBuild); v != Invalid {
 		t.Errorf("quiet-off with a second announcement: %s", v)
 	}
