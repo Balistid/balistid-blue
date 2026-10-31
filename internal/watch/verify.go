@@ -53,6 +53,7 @@ type Findings struct {
 	Lost      int    // losses of a stage other than truncated, and health with unstored records
 	Truncated int
 	Unknown   int // health UNKNOWN for a reason that alarms at once
+	LogCap    int // the ledger's log at its cap (ADR 0036, point 5)
 	Announced int
 	Final     bool
 }
@@ -217,6 +218,9 @@ func (r *Rules) health(h entry.Health, f *Findings) {
 		r.Pending = false
 	case h.Reason == entry.ReasonStarting || h.Reason == entry.ReasonCanaryPending:
 		r.Pending = true
+	case h.Reason == entry.ReasonLogCap: // the ledger's, not the collector's: its own alert says what to do
+		f.LogCap++
+		r.Pending = false
 	default:
 		f.Unknown++
 		r.Pending = false

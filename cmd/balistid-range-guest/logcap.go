@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -78,7 +80,10 @@ func runLogCap(ctx context.Context, r *report) error {
 	if cpErr != nil {
 		return r.fail("cosigned: " + cpErr.Error())
 	}
-	bundles, bytes := fullBundleBytes(ledgerLog, cp.Size)
+	bundles, bytes, err := fullBundleBytes(ledgerLog, cp.Size)
+	if err != nil {
+		return r.fail(err.Error())
+	}
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	r.add(rangevm.FactInject, inject)
 	r.add(rangevm.FactCapEntries, u(entries))
@@ -131,22 +136,31 @@ func capEntry(ctx context.Context, cp cosign.Checkpoint, entries uint64) string 
 // fullBundleBytes is how many full entry bundles the log of size holds and their bytes on disk with their
 // level-0 hash tiles, and the partial copies (.p/) of both that Tessera keeps until its GC: what the cap counts
 // per entry, without the right edge, whose partials belong to the bundle still filling.
-func fullBundleBytes(dir string, size uint64) (bundles, bytes uint64) {
+// A file that cannot be read is an error, never fewer bytes; a partial GC removed in between counts as gone.
+func fullBundleBytes(dir string, size uint64) (bundles, bytes uint64, err error) {
 	for i := range size / layout.EntryBundleWidth {
 		for _, p := range []string{layout.EntriesPath(i, 0), layout.TilePath(0, i, 0)} {
 			var st syscall.Stat_t
 			if err := syscall.Lstat(filepath.Join(dir, p), &st); err != nil {
-				return 0, 0 // a full bundle without its file measures nothing
+				return 0, 0, nil // a full bundle without its file measures nothing: no full bundle, INVALID
 			}
 			bytes += uint64(st.Blocks) * 512 //nolint:gosec // st_blocks is never negative
-			partials, _ := os.ReadDir(filepath.Join(dir, p+".p"))
+			partials, err := os.ReadDir(filepath.Join(dir, p+".p"))
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return 0, 0, fmt.Errorf("partials of %s: %w", p, err)
+			}
 			for _, e := range partials {
-				if err := syscall.Lstat(filepath.Join(dir, p+".p", e.Name()), &st); err == nil {
+				err := syscall.Lstat(filepath.Join(dir, p+".p", e.Name()), &st)
+				switch {
+				case errors.Is(err, fs.ErrNotExist):
+				case err != nil:
+					return 0, 0, fmt.Errorf("partial %s of %s: %w", e.Name(), p, err)
+				default:
 					bytes += uint64(st.Blocks) * 512 //nolint:gosec // as above
 				}
 			}
 		}
 		bundles++
 	}
-	return bundles, bytes
+	return bundles, bytes, nil
 }

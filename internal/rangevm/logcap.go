@@ -38,7 +38,7 @@ var logCapFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactCap
 // judgeLogCap: the closed facts, the lowered cap set and reached, a full bundle to measure and the watcher's
 // start through the sink, else INVALID. With those, a log grown past the cap's UNKNOWN, no such entry before the
 // final slot, no refusal of the collector for the cap, full bundles over the bytes the cap counts per entry,
-// or no unknown alert within capAlarm is a MISS.
+// or no logcap alert (the Pi's own key for reason 7) within capAlarm is a MISS.
 func judgeLogCap(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, logCapFacts, []string{FactCapEntries, FactRestartMS, FactCosignedEnd, FactFullBundles,
 		FactFullBytes, FactRefused})
@@ -77,14 +77,14 @@ func judgeLogCap(tr rangejob.Trial, o Outcome) (string, string) {
 		return Miss, fmt.Sprintf("%d full bundles take %d bytes, over %d a bundle", n[FactFullBundles], n[FactFullBytes],
 			bundleEntries*logentry.LogBytes)
 	}
-	alarm := firstPost(posts, "unknown", max(capMS, n[FactRestartMS]+uint64(capEarly/time.Millisecond))-uint64(capEarly/time.Millisecond))
+	alarm := firstPost(posts, "logcap", max(capMS, n[FactRestartMS]+uint64(capEarly/time.Millisecond))-uint64(capEarly/time.Millisecond))
 	if alarm == nil {
-		return Miss, "no unknown alert reached the sink"
+		return Miss, "no logcap alert reached the sink"
 	}
 	at := msDuration(max(alarm.MS, capMS) - capMS)
 	if at > capAlarm {
-		return Miss, fmt.Sprintf("unknown alert %s after the cap's UNKNOWN was cosigned, over %s", at, capAlarm)
+		return Miss, fmt.Sprintf("logcap alert %s after the cap's UNKNOWN was cosigned, over %s", at, capAlarm)
 	}
-	return Pass, fmt.Sprintf("unknown alert %s after the cap's UNKNOWN was cosigned; %d full bundles in %d bytes", at,
+	return Pass, fmt.Sprintf("logcap alert %s after the cap's UNKNOWN was cosigned; %d full bundles in %d bytes", at,
 		n[FactFullBundles], n[FactFullBytes])
 }
