@@ -30,10 +30,8 @@ const (
 	CutEvery = 800 * time.Millisecond
 	// tailBundles bounds how far back Open looks for the last batch (ADR 0027, point 4).
 	tailBundles = 64
-	// entryBytes bounds one entry on disk: its encoding, the bundle's length prefix and its share of
-	// the hash tiles (32 bytes at level 0, a 255th of that per level above).
-	entryBytes = entry.MaxBytes + 2 + 33
-	lockName   = "ledger.lock"
+	entryBytes  = entry.LogBytes
+	lockName    = "ledger.lock"
 )
 
 // ErrStream marks a message the collector should not have sent; the log is unharmed.
