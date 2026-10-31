@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -225,20 +226,28 @@ func storeHealth(ctx context.Context) (int64, bool, error) {
 	return at, healthy, err
 }
 
-// storeFailure is the collector's last journaled store failure, of an append, flush, close or open, from its
-// message on; it journals JSON.
+// storeFailure is the collector's last journaled store failure (lastStoreFailure).
 func storeFailure(ctx context.Context) string {
 	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
 	if journal == "" {
 		return "the collector's journal could not be read"
 	}
-	failed := "no store failure in the journal's last 400 lines"
+	return lastStoreFailure(journal)
+}
+
+// lastStoreFailure is the journal's last store failure on a full disk, else its last of any kind, of an append,
+// flush, close or open, from its message on: reopens fail every half minute after the race. The collector journals JSON.
+func lastStoreFailure(journal string) string {
+	failed, full := "no store failure in the journal's last 400 lines", ""
 	for line := range strings.Lines(journal) {
 		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
 			failed = "store " + strings.TrimSpace(after)
+			if strings.Contains(after, diskFull) {
+				full = failed
+			}
 		}
 	}
-	return failed
+	return cmp.Or(full, failed)
 }
 
 // otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
