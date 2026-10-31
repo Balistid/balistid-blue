@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
@@ -70,6 +71,26 @@ func TestCosignWatchGapStopsAtTheInjection(t *testing.T) {
 	grew, growths, gap := w.state()
 	if grew != 900*time.Second || growths != 4 || gap != 7*time.Second {
 		t.Errorf("grew %v, growths %d, gap %v", grew, growths, gap)
+	}
+}
+
+// Each collector loss is matched by the entry its cause makes, and by nothing else.
+func TestLossMatch(t *testing.T) {
+	for inject, cases := range map[string]map[entry.Body]bool{
+		rangejob.InjectQueue:  {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: true, entry.Loss{Seq: 1, Stage: entry.StageCap, Records: 3}: false},
+		rangejob.InjectFullFS: {entry.Loss{Seq: 1, Stage: entry.StageCap, Records: 3}: true, entry.Loss{Seq: 1, Stage: entry.StageStore, Records: 3}: false},
+		rangejob.InjectStore: {entry.Loss{Seq: 1, Stage: entry.StageStore, Records: 3}: true,
+			entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}: true,
+			entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStream}:    false},
+		rangejob.InjectKernel: {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false},
+		rangejob.InjectNone:   {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false},
+	} {
+		match := lossMatch(inject)
+		for b, want := range cases {
+			if match(b) != want {
+				t.Errorf("%s matches %+v: %v, want %v", inject, b, !want, want)
+			}
+		}
 	}
 }
 
