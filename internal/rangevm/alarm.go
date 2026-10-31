@@ -102,7 +102,7 @@ func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the injection is not proven: \"%s\"", Printable(f[FactInject], 256))
 	case f[FactGrownAfter] != "no":
 		return Invalid, fmt.Sprintf("the cosigned size grew after the injection: \"%s\"", Printable(f[FactGrownAfter], 64))
-	case n[FactCosignedMS] > n[FactInjectMS]+uint64(SettleAfter/time.Millisecond):
+	case tr.Metric == rangejob.MetricSilence && n[FactCosignedMS] > n[FactInjectMS]+uint64(SettleAfter/time.Millisecond):
 		return Invalid, "the last growth came over 30 s after the injection"
 	}
 	again, why := againMS(tr, f[FactAgainMS], n[FactInjectMS])
