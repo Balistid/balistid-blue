@@ -11,17 +11,17 @@ import (
 // alarmRun is a sound run of trial name: the start pushed at 60 s, the last growth at 100 s, the injection at
 // 101 s and the silence alert after alertAfter, counted from the growth for silence, the injection for quiet.
 func alarmRun(name string, alertAfter time.Duration, change map[string]string) Outcome {
-	from := uint64(100_000)
+	from, end := uint64(100_000), "101000"
 	again := "none"
 	if name == "quiet-off" || name == "quiet-masked" || name == "quiet-again" {
-		from = 101_000
+		from, end = 101_000, "106000" // the announcement's proof took 5 s
 	}
 	if name == "quiet-again" {
 		again = "301000"
 	}
 	alert := uint64(alertAfter / time.Millisecond) //nolint:gosec // positive test durations
 	base := map[string]string{
-		FactInject: "ok", FactInjectMS: "101000", FactCosignedMS: "100000", FactGrownAfter: "no",
+		FactInject: "ok", FactInjectMS: "101000", FactInjectEndMS: end, FactCosignedMS: "100000", FactGrownAfter: "no",
 		FactPosts:   "60000:start," + strconv.FormatUint(from+alert, 10) + ":silence",
 		FactRefused: "0", FactRestartsPre: "0", FactRestartsPost: "0", FactAgainMS: again, FactCosignGapMS: "5200",
 		FactPiActive: "active",
@@ -92,20 +92,24 @@ func TestAlarmInvalidAndMissCases(t *testing.T) {
 		Invalid: {
 			{FactInject: "error: systemctl stop balistid-ledger.service: exit status 1"},
 			{FactGrownAfter: "yes"}, {FactGrownAfter: ""},
-			{FactCosignedMS: "131001"},
+			{FactInjectEndMS: "101001"}, {FactInjectEndMS: "100999"}, {FactPiActive: "missing"},
 			{FactPosts: "940000:silence"},                           // no start: the sink path is not shown
 			{FactPosts: "60000:start,90000:silence,940000:silence"}, // silence before the injection
 			{FactPosts: "60000:start,940000:Silence"}, {FactPosts: "60000:start;940000:silence"},
 			{FactPosts: "940000:silence,60000:start"},
 			{FactInjectMS: "-1"}, {FactRefused: "x"}, {FactKernel: "6.0.0"}, {FactTrial: "silence-wireguard"},
 			{"-": FactPosts}, {"extra": "1"},
-			{FactPiActive: "inactive"}, {FactPiActive: "inactive", FactPosts: "60000:start"},
 		},
 		Miss: {
+			// a watcher that is not running at the end, or restarted, broke the alarm's path (ADR 0021)
+			{FactPiActive: "inactive"}, {FactPiActive: "failed"}, {FactPiActive: "activating"},
+			{FactPiActive: "inactive", FactPosts: "60000:start"},
+			{FactPosts: "60000:start", FactRestartsPost: "1"},
 			{FactPosts: "60000:start"},
 			{FactPosts: "60000:start,940000:loss"},
 			{FactRestartsPost: "1"},
 			{FactPosts: "none", FactRefused: "3"}, // the watcher's token refused: broken plumbing, not a pass
+			{FactPosts: "940000:silence", FactRefused: "1"},
 		},
 	} {
 		for _, c := range changes {

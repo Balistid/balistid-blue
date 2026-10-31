@@ -37,6 +37,8 @@ const (
 	// quietOff and quietBack are quiet-again's ledger stop and its brief return before the second announcement.
 	quietOff  = 2 * time.Minute
 	quietBack = time.Minute
+	// gapWindow is the connected stretch under load the cosign gap trend covers before an injection.
+	gapWindow = 90 * time.Second
 )
 
 // cosignWatch samples the size the witness cosigned, as the relay keeps it, on the guest's uptime: when it
@@ -139,7 +141,7 @@ func postsFact(posts []rangevm.Post, inject uint64) string {
 	for _, p := range posts {
 		first := p.Tag == "start" && !started
 		started = started || p.Tag == "start"
-		if (first || p.Tag == "silence" || p.MS > inject) && len(keep) < 64 {
+		if p.Tag != "-" && (first || p.Tag == "silence" || p.MS > inject) && len(keep) < 64 { // "-": no alert key
 			keep = append(keep, rangevm.FormatPost(p))
 		}
 	}
@@ -161,22 +163,18 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	var cw cosignWatch
 	go cw.run(wctx, keys)
 	lctx, stopLoad := context.WithCancel(ctx)
-	defer stopLoad()
+	defer stopLoad() // the load runs through the wait: growth the injection did not stop shows as grown_after
 	go lightLoad(lctx)
 	if why := alarmReady(ctx, &cw); why != "" {
 		return r.fail(why)
 	}
+	pause(ctx, gapWindow) // a connected stretch for the cosign gap trend, under load
 	restarts := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", piUnit))
 	cw.freeze() // the gap trend ends where the injection begins: quiet-again's ledger stop is no cosign gap
-	inject, again, done := injectAlarm(ctx, tr, stopLoad)
-	injectAt, err := uptime()
-	if err != nil {
+	inject, again, done := injectAlarm(ctx, tr)
+	if err := waitAlarm(ctx, tr, &cw, inject); err != nil {
 		return r.fail(err.Error())
 	}
-	if inject.at == 0 {
-		inject.at = injectAt
-	}
-	waitAlarm(ctx, tr, &cw, inject.at)
 	grew, _, gap := cw.state()
 	stopWatch()
 	active := valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit)))
@@ -193,10 +191,11 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
 	r.add(rangevm.FactInject, inject.proof)
-	r.add(rangevm.FactInjectMS, ms(inject.at))
+	r.add(rangevm.FactInjectMS, ms(inject.from))
+	r.add(rangevm.FactInjectEndMS, ms(inject.at))
 	r.add(rangevm.FactCosignedMS, ms(grew))
 	r.add(rangevm.FactGrownAfter, after)
-	r.add(rangevm.FactPosts, postsFact(posts, uint64(inject.at.Milliseconds()))) //nolint:gosec // uptime is positive
+	r.add(rangevm.FactPosts, postsFact(posts, uint64(inject.from.Milliseconds()))) //nolint:gosec // uptime is positive
 	r.add(rangevm.FactRefused, strconv.Itoa(refused))
 	r.add(rangevm.FactRestartsPre, valueOr(restarts))
 	r.add(rangevm.FactRestartsPost, valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", piUnit))))
@@ -206,14 +205,14 @@ func runAlarm(ctx context.Context, tr rangejob.Trial, r *report) error {
 	return r.send(r.facts)
 }
 
-// alarmReady waits until the watcher is active, its start went through the sink and the cosigned size grew
-// twice; "" when it did, else why not.
+// alarmReady waits until the watcher is active, its start reached the sink, accepted or refused for its token
+// (the judge makes a refused one a MISS), and the cosigned size grew twice; "" when it did, else why not.
 func alarmReady(ctx context.Context, cw *cosignWatch) string {
 	for deadline := time.Now().Add(alarmReadyWait); ; {
-		posts, _, err := readSink()
+		posts, refused, err := readSink()
 		_, growths, _ := cw.state()
 		active := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "is-active", piUnit)) == "active"
-		if err == nil && active && growths >= 2 && slicesHasTag(posts, "start") {
+		if err == nil && active && growths >= 2 && (slicesHasTag(posts, "start") || refused > 0) {
 			return ""
 		}
 		if time.Now().After(deadline) || !pause(ctx, time.Second) {
@@ -239,21 +238,22 @@ func lightLoad(ctx context.Context) {
 }
 
 // waitAlarm waits until a silence alert after the injection reached the sink, or its window and alarmGrace
-// passed: silence counts from the last growth, the quiet cap from the first announcement.
-func waitAlarm(ctx context.Context, tr rangejob.Trial, cw *cosignWatch, at time.Duration) {
+// passed: silence counts from the last growth, the quiet cap from the first announcement proven. A clock that
+// cannot be read is an error: the run is INVALID, not a MISS.
+func waitAlarm(ctx context.Context, tr rangejob.Trial, cw *cosignWatch, in injection) error {
 	for {
 		grew, _, _ := cw.state()
 		end := grew + 845*time.Second + alarmGrace
 		if tr.Metric == rangejob.MetricQuiet {
-			end = at + rangevm.RangeQuiet + time.Minute + alarmGrace
+			end = in.at + rangevm.RangeQuiet + time.Minute + alarmGrace
 		}
 		posts, _, err := readSink()
 		now, uerr := uptime()
-		if err == nil && firstAfter(posts, "silence", at) || uerr != nil || now > end {
-			return
-		}
-		if !pause(ctx, time.Second) {
-			return
+		switch {
+		case uerr != nil:
+			return uerr
+		case err == nil && firstAfter(posts, "silence", in.from) || now > end || !pause(ctx, time.Second):
+			return nil
 		}
 	}
 }
@@ -267,50 +267,52 @@ func firstAfter(posts []rangevm.Post, tag string, at time.Duration) bool {
 	return false
 }
 
-// injection is what an alarm trial did: "ok" with its proof held, else why not, and when it counts from:
-// the cut for silence, the first announcement cosigned for the quiet cap.
+// injection is what an alarm trial did: "ok" with its proof held, else why not, and the bracket it counts
+// from: the cut for silence (from = at), for the quiet cap the first announcement from before its stop to its
+// cosignature proven, as the Pi opens its quiet episode in between.
 type injection struct {
-	proof string
-	at    time.Duration
+	proof    string
+	from, at time.Duration
 }
 
-// injectAlarm injects tr's cause and returns it, quiet-again's second announcement in ms or "none", and when
-// the injection's last step ended, after which the cosigned size must not grow.
-func injectAlarm(ctx context.Context, tr rangejob.Trial, stopLoad func()) (injection, string, time.Duration) {
-	steps := alarmSteps(tr.Inject)
+// injectAlarm injects tr's cause and returns it, quiet-again's second announcement proven in ms or "none", and
+// when the injection's last step ended, after which the cosigned size must not grow.
+func injectAlarm(ctx context.Context, tr rangejob.Trial) (injection, string, time.Duration) {
 	var in injection
 	again := "none"
-	if tr.Metric == rangejob.MetricSilence {
-		stopLoad()
-	}
-	for i, s := range steps {
-		if err := s.run(ctx); err != nil {
-			in.proof = fmt.Sprintf("error: step %d: %v", i+1, err)
+	fail := func(i int, err error) { in.proof = fmt.Sprintf("error: step %d: %v", i+1, err) }
+	for i, s := range alarmSteps(tr.Inject) {
+		before, err := uptime()
+		if err != nil {
+			fail(i, err)
 			break
 		}
-		if s.announces {
-			up, err := uptime()
-			if err != nil {
-				in.proof = "error: " + err.Error()
-				break
-			}
-			if in.at == 0 {
-				in.at = up
-				stopLoad()
-			} else {
-				again = strconv.FormatInt(up.Milliseconds(), 10)
-			}
+		if err := s.run(ctx); err != nil {
+			fail(i, err)
+			break
+		}
+		proven, err := uptime()
+		switch {
+		case err != nil:
+			fail(i, err)
+		case s.announces && in.at == 0:
+			in.from, in.at = before, proven
+		case s.announces:
+			again = strconv.FormatInt(proven.Milliseconds(), 10)
+		}
+		if in.proof != "" {
+			break
 		}
 	}
-	if in.proof == "" {
+	done, err := uptime()
+	switch {
+	case err != nil && in.proof == "":
+		in.proof = "error: " + err.Error()
+	case in.proof == "":
 		in.proof = "ok"
 	}
-	done, err := uptime()
-	if err != nil {
-		in.proof = "error: " + err.Error()
-	}
 	if tr.Metric == rangejob.MetricSilence {
-		in.at = done
+		in.from, in.at = done, done
 	}
 	return in, again, done
 }
@@ -326,7 +328,11 @@ func alarmSteps(inject string) []step {
 		return stopUnits(ctx, collectorUnitName, collectorSock, relayUnit, ledgerUnit)
 	}}
 	announce := step{run: func(ctx context.Context) error {
-		if got := announced(ctx, "stop", announceUnit, entry.AnnounceShutdown); got != "yes" {
+		prior, err := priorAnnouncement(ctx)
+		if err != nil {
+			return err
+		}
+		if got := announced(ctx, "stop", announceUnit, entry.AnnounceShutdown, prior); got != "yes" {
 			return errors.New("announce: " + got)
 		}
 		return nil
@@ -403,6 +409,23 @@ func inactive(ctx context.Context, units ...string) error {
 		}
 	}
 	return nil
+}
+
+// priorAnnouncement is the index of the log's last shutdown announcement, -1 when it has none: a new one must
+// come after it.
+func priorAnnouncement(ctx context.Context) (int64, error) {
+	keys, err := rangeKeys()
+	if err != nil {
+		return 0, err
+	}
+	at, err := lastAnnouncement(ctx, ledgerLog, keys.Log, entry.AnnounceShutdown)
+	switch {
+	case errors.Is(err, errNoAnnouncement):
+		return -1, nil
+	case err != nil:
+		return 0, err
+	}
+	return int64(at), nil //nolint:gosec // a log index is far below 2^63
 }
 
 // errStillUp is a link whose IFF_UP survived its ip link set down.

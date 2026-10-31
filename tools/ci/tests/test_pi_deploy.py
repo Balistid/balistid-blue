@@ -120,7 +120,8 @@ class PiDeployTest(unittest.TestCase):
         unit = parse_unit((REPO / "range" / "balistid-pi-range.conf").read_text())
         drop_in = unit["Service"]
         # An alarm trial stops the host's units: a Requires= on one of them would stop the watcher too.
-        host = {"balistid-relay.service", "balistid-ledger.service", "balistid-collector.service", "balistid-net.service"}
+        host = {"balistid-relay.service", "balistid-ledger.service", "balistid-collector.service", "balistid-net.service",
+                "balistid-collector.socket", "balistid-announce.service"}
         self.assertFalse(host & set(" ".join(unit["Unit"].get("Requires", [])).split()))
         self.assertFalse(host & set(" ".join(unit["Unit"].get("BindsTo", []) + unit["Unit"].get("PartOf", [])).split()))
         installed = shlex.split(parse_unit(text("balistid-pi.service"))["Service"]["ExecStart"][0])

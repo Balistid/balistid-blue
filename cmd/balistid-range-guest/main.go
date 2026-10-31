@@ -177,7 +177,7 @@ func run() error {
 		{"announce_cosigned", "stop", "balistid-announce.service", entry.AnnounceShutdown},
 		{"suspend_announced", "start", "balistid-announce-suspend.service", entry.AnnounceSuspend},
 	} {
-		got := announced(ctx, a.verb, a.unit, a.kind)
+		got := announced(ctx, a.verb, a.unit, a.kind, -1)
 		add(a.fact, got)
 		if got != "yes" {
 			for line := range strings.SplitSeq(output(ctx, "/usr/bin/journalctl", "-u", a.unit, "-u",

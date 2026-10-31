@@ -318,10 +318,14 @@ func witnessPostMain(args []string) error {
 	return err //nolint:wrapcheck // the child's last word
 }
 
+// errNoAnnouncement is a log without an announcement of the kind asked for.
+var errNoAnnouncement = errors.New("no announcement")
+
 // announced is "yes" once systemctl verb unit ran the ledger's client to success, under the unit's
-// sandbox, and an announcement of kind in the ledger's log is proven included in a checkpoint the witness
-// cosigned (ADR 0030): the client waited for that cosignature itself, so the check finds it at once.
-func announced(ctx context.Context, verb, unit string, kind entry.Announcement) string {
+// sandbox, and an announcement of kind after index after (-1: any) in the ledger's log is proven included in
+// a checkpoint the witness cosigned (ADR 0030): the client waited for that cosignature itself, so the check
+// finds it at once. after keeps a second announcement from proving itself with the first.
+func announced(ctx context.Context, verb, unit string, kind entry.Announcement, after int64) string {
 	if verb == "stop" && strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "is-active", unit)) != "active" {
 		return "error: " + unit + " was not active, so its stop announces nothing"
 	}
@@ -341,6 +345,9 @@ func announced(ctx context.Context, verb, unit string, kind entry.Announcement) 
 		var at uint64
 		if err == nil {
 			at, err = lastAnnouncement(ctx, ledgerLog, keys.Log, kind)
+		}
+		if err == nil && int64(at) <= after {
+			err = fmt.Errorf("the last announcement is at %d, not after %d", at, after)
 		}
 		if err == nil && at < cp.Size { // the bytes on disk count only as far as the cosigned root vouches for them
 			var e entry.Entry
@@ -387,7 +394,7 @@ func lastAnnouncement(ctx context.Context, root string, v note.Verifier, kind en
 		}
 	}
 	if !found {
-		return 0, fmt.Errorf("no announcement of kind %d in %d entries", kind, cp.Size)
+		return 0, fmt.Errorf("%w of kind %d in %d entries", errNoAnnouncement, kind, cp.Size)
 	}
 	return at, nil
 }

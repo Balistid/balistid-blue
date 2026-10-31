@@ -12,6 +12,8 @@ DynamicUser=yes
 User=balistid-range-ntfy
 RuntimeDirectory=balistid-range-ntfy
 RuntimeDirectoryMode=0700
+# Kept across a restart, so the sink's O_EXCL file refuses to start over and hide earlier posts.
+RuntimeDirectoryPreserve=restart
 UMask=0077
 ExecStart=/usr/lib/balistid-range/guest ntfy-sink
 NetworkNamespacePath=/run/netns/balistid-pi
@@ -19,6 +21,8 @@ IPAddressAllow=localhost
 IPAddressDeny=any
 RestrictAddressFamilies=AF_UNIX AF_INET
 MemoryMax=64M
+MemorySwapMax=0
+Environment=GOMEMLIMIT=32MiB
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 ProtectSystem=strict
