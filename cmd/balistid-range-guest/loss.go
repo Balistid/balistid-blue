@@ -86,6 +86,8 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		entryFact = "error: " + err.Error()
 	} else if at > prior {
 		entryFact = "yes"
+	} else {
+		entryFact += otherLoss(ctx, prior)
 	}
 	posts, refused, err := readSink()
 	if err != nil {
@@ -169,6 +171,27 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 		return 0, err
 	}
 	return int64(at), nil //nolint:gosec // a log index is far below 2^63
+}
+
+// otherLoss says what the log holds instead of the cause's entry: its last loss of any stage, beside the cause's
+// last entry before the injection (prior), so a MISS tells a loss of another stage from none.
+func otherLoss(ctx context.Context, prior int64) string {
+	var last entry.Loss
+	at, err := priorEntry(ctx, func(b entry.Body) bool {
+		l, ok := b.(entry.Loss)
+		if ok {
+			last = l
+		}
+		return ok
+	})
+	switch {
+	case err != nil:
+		return "; the log's losses: error: " + err.Error()
+	case at < 0:
+		return fmt.Sprintf("; no loss in the log (the cause's last %d)", prior)
+	}
+	return fmt.Sprintf("; the log's last loss: stage %d, %d records, entry %d (the cause's last %d)", last.Stage, last.Records,
+		at, prior)
 }
 
 // injectLoss injects a loss cause and returns "ok" with its proof held, else why not, and when it ended if the
