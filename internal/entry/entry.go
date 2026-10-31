@@ -68,14 +68,17 @@ type Seal struct {
 type Stage byte
 
 // The stages: the store's cap or a full filesystem, the collector's queue, framing, store and shutdown
-// losses, and a record stored truncated.
+// losses, a record stored truncated, and the kernel's and auditd's dispatcher losses (ADR 0038, point 3), whose
+// Records is a lower bound: the dispatcher counts nothing, so its loss is one record.
 const (
-	StageCap       Stage = 1
-	StageQueue     Stage = 2
-	StageFraming   Stage = 3
-	StageStore     Stage = 4
-	StageShutdown  Stage = 5
-	StageTruncated Stage = 6
+	StageCap        Stage = 1
+	StageQueue      Stage = 2
+	StageFraming    Stage = 3
+	StageStore      Stage = 4
+	StageShutdown   Stage = 5
+	StageTruncated  Stage = 6
+	StageKernel     Stage = 7
+	StageDispatcher Stage = 8
 )
 
 // Loss counts records lost at one stage; Seq is the stored record that says so, which for a truncated
@@ -97,7 +100,9 @@ const (
 
 // Reason says why the collector is UNKNOWN; OK has none. ReasonStream: its stream to the ledger stopped,
 // cannot read the store's leaves, or is still reading back the ledger's last batch. ReasonLogCap: the ledger's log
-// reached host_log_cap_gib; only the ledger logs it (ADR 0036). A new reason widens Decode: the Pi gets it first.
+// reached host_log_cap_gib; only the ledger logs it (ADR 0036). ReasonAuditStale: auditstat's report or auditd's
+// state is not fresh; ReasonDispatcher: auditd's dispatcher overflowed; ReasonAuditd: auditd is not running, audit is
+// not locked, or auditd restarted (ADR 0038, point 4). A new reason widens Decode: the Pi gets it first.
 type Reason byte
 
 // The reasons of the collector's health (ADR 0017, ADR 0027 point 6).
@@ -110,6 +115,9 @@ const (
 	ReasonCanaryPending      Reason = 5
 	ReasonStream             Reason = 6
 	ReasonLogCap             Reason = 7
+	ReasonAuditStale         Reason = 8
+	ReasonDispatcher         Reason = 9
+	ReasonAuditd             Reason = 10
 )
 
 // Health is the collector's state, sent beside the store (ADR 0017, point 7); Unstored counts the
@@ -168,12 +176,14 @@ func (l Loss) check() error {
 	switch {
 	case l.Seq < 1 || l.Seq > MaxSeq:
 		return fmt.Errorf("entry: loss seq outside 1 to %d", uint64(MaxSeq))
-	case l.Stage < StageCap || l.Stage > StageTruncated:
+	case l.Stage < StageCap || l.Stage > StageDispatcher:
 		return errors.New("entry: unknown loss stage")
 	case l.Records == 0:
 		return errors.New("entry: loss of no records")
 	case l.Stage == StageTruncated && l.Records != 1:
 		return errors.New("entry: a truncated loss is its one record")
+	case l.Stage == StageDispatcher && l.Records != 1:
+		return errors.New("entry: a dispatcher loss is one record")
 	}
 	return nil
 }
@@ -181,7 +191,7 @@ func (l Loss) check() error {
 func (h Health) check() error {
 	switch {
 	case h.State == StateOK && h.Reason == ReasonNone:
-	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonLogCap:
+	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonAuditd:
 	default:
 		return errors.New("entry: health state and reason do not match")
 	}
