@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-31 by claude/opus-5.5 (L11 on `main`: #163, #165, #167, #168, #172; ADRs 0038, 0039 proposed)
+Updated: 2026-10-31 by claude/opus-5.5 (ADRs 0038, 0039 #173; the Pi decodes stages 7-8, alerts per stage: this PR)
 
 ## Where we are
 
@@ -23,8 +23,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   control PASS; kernel and dispatcher INVALID (no detector); queue INVALID (the dispatcher overflows first).
 - #167 ADR 0037: `range-trial` on `repository_dispatch` (main's definition, payload checked), the bot dispatches it.
 ## Next step
-1. balistid-auditstat (ADR 0038, 0039): per-stage alert keys ∥ entry stages 7-8 and reasons 8-10, auditstat, the collector
-   reading it, `-queue-bytes` for loss-queue, the 10-run shapes; then L12 the Pi.
+1. balistid-auditstat (ADR 0038, 0039): per-stage keys and entry 7-8/8-10 in this PR; next auditstat (CP3), the
+   collector reading it (CP4), `-queue-bytes` and the 10-run shapes (CP5); then L12 the Pi.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
 3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
 4. Host install (9.5) only when every metric the range decides passes, with balistid-install (its ADR sets the install
