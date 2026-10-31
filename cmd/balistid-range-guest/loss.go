@@ -199,11 +199,16 @@ func otherLoss(ctx context.Context, prior int64) string {
 	if err != nil {
 		return "; the log's health: error: " + err.Error()
 	}
-	failed := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-g", "store failed", "-n", "1")
-	if _, after, ok := strings.Cut(failed, "reason="); ok {
-		failed = "store failed: reason=" + strings.TrimSpace(after)
-	} else {
-		failed = "no store failure journaled"
+	journal := output(ctx, "/usr/bin/journalctl", "-b", "-u", collectorUnitName, "-o", "cat", "--no-pager", "-n", "400")
+	failed := "no store failure in the journal's last 400 lines"
+	if journal == "" {
+		failed = "the collector's journal could not be read"
+	}
+	for line := range strings.Lines(journal) {
+		// the collector journals JSON: its last store failure, of an append, flush, close or open, from its message on
+		if _, after, ok := strings.Cut(line, `"msg":"store `); ok && strings.Contains(after, "failed") {
+			failed = "store " + strings.TrimSpace(after)
+		}
 	}
 	return fmt.Sprintf("; loss %d s%d r%d; unstored health %d s%d r%d u%d; prior %d; %.140s", lossAt, loss.Stage, loss.Records,
 		healthAt, health.State, health.Reason, health.Unstored, prior, failed)
