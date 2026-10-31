@@ -36,6 +36,7 @@ const (
 	MetricCPU       = "cpu_cores"
 	MetricSilence   = "silence_alarm_s"
 	MetricQuiet     = "announced_quiet_max_h"
+	MetricLogCap    = "host_log_cap_gib"
 )
 
 // Injections of an alarm trial (ADR 0036): the host side of the tunnel down, the ledger killed and kept
@@ -56,7 +57,7 @@ const (
 // malformed records, a refusal trial floods the socket from refused peers, a ready trial times a boot to
 // health OK, an exposure trial scores the recorder's units and a CPU trial times the collector's processes under
 // exec load (ADR 0023), an alarm trial times the Pi's alert at the range's ntfy sink after an injection
-// (ADR 0036).
+// (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -67,6 +68,7 @@ const (
 	MethodExposure         = "exposure"
 	MethodCPU              = "cpu"
 	MethodAlarm            = "alarm"
+	MethodLogCap           = "log-cap"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -97,6 +99,8 @@ func (tr Trial) Method() string {
 		return MethodExposure
 	case tr.Metric == MetricCPU && tr.Load.Kind == LoadExec && !tr.Load.Drop:
 		return MethodCPU
+	case tr.Metric == MetricLogCap && tr.Load == (Load{}):
+		return MethodLogCap
 	}
 	return ""
 }
@@ -220,6 +224,8 @@ var trials = slices.Concat([]Trial{
 			Inject: InjectQuietMasked, Trend: true},
 		{Name: "quiet-again", Metric: MetricQuiet, Wall: 28 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
 			Inject: InjectQuietAgain, Trend: true},
+		// host_log_cap_gib with the cap lowered to fill in minutes (ADR 0036, point 5).
+		{Name: "log-cap", Metric: MetricLogCap, Wall: 12 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
 	},
 )
 

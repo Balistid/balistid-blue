@@ -16,6 +16,9 @@ const (
 	Label = "balistid/entry/v1"
 	// MaxBytes bounds an encoding; the largest entry is far below it.
 	MaxBytes = 256
+	// LogBytes bounds one entry on the ledger's disk, as its cap counts it (host_log_cap_gib): its encoding,
+	// the bundle's length prefix and its share of the hash tiles (32 bytes at level 0, a 255th of that per level above).
+	LogBytes = MaxBytes + 2 + 33
 	// MaxOrigin bounds a final entry's origin.
 	MaxOrigin = 128
 	// MaxSeq is the highest seq the store issues; it issues none below 1.
