@@ -49,11 +49,6 @@ func (s *sink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body", http.StatusRequestEntityTooLarge)
 		return
 	}
-	at, err := s.now()
-	if err != nil {
-		http.Error(w, "clock", http.StatusInternalServerError)
-		return
-	}
 	tag := r.Header.Get("Tags")
 	if !sinkTag(tag) {
 		tag = "-"
@@ -64,6 +59,11 @@ func (s *sink) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	at, err := s.now() // under the lock, so lines stay in time order
+	if err != nil {
+		http.Error(w, "clock", http.StatusInternalServerError)
+		return
+	}
 	if s.lines >= s.max {
 		http.Error(w, "full", http.StatusInsufficientStorage)
 		return
