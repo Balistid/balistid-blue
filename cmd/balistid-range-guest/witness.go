@@ -318,7 +318,7 @@ func witnessPostMain(args []string) error {
 	return err //nolint:wrapcheck // the child's last word
 }
 
-// errNoAnnouncement is a log without an announcement of the kind asked for.
+// errNoAnnouncement is a log without the entry asked for: an announcement of a kind, or a loss.
 var errNoAnnouncement = errors.New("no announcement")
 
 // announced is "yes" once systemctl verb unit ran the ledger's client to success, under the unit's
@@ -372,6 +372,19 @@ func announced(ctx context.Context, verb, unit string, kind entry.Announcement, 
 // lastAnnouncement is the index of the last announcement of kind in the log at root, under its signed
 // checkpoint.
 func lastAnnouncement(ctx context.Context, root string, v note.Verifier, kind entry.Announcement) (uint64, error) {
+	at, err := lastEntry(ctx, root, v, func(b entry.Body) bool {
+		a, ok := b.(entry.Announce)
+		return ok && a.Kind == kind
+	})
+	if errors.Is(err, errNoAnnouncement) {
+		return 0, fmt.Errorf("%w of kind %d", err, kind)
+	}
+	return at, err
+}
+
+// lastEntry is the index of the last entry match takes in the log at root, under its signed checkpoint, or
+// errNoAnnouncement when none does.
+func lastEntry(ctx context.Context, root string, v note.Verifier, match func(entry.Body) bool) (uint64, error) {
 	f := client.FileFetcher{Root: root}
 	cp, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, v, ledgerOrigin)
 	if err != nil {
@@ -388,13 +401,13 @@ func lastAnnouncement(ctx context.Context, root string, v note.Verifier, kind en
 			if err != nil {
 				return 0, fmt.Errorf("bundle %d: %w", idx, err)
 			}
-			if a, ok := e.Body.(entry.Announce); ok && a.Kind == kind {
+			if match(e.Body) {
 				found, at = true, idx*layout.EntryBundleWidth+uint64(i)
 			}
 		}
 	}
 	if !found {
-		return 0, fmt.Errorf("%w of kind %d in %d entries", errNoAnnouncement, kind, cp.Size)
+		return 0, fmt.Errorf("%w in %d entries", errNoAnnouncement, cp.Size)
 	}
 	return at, nil
 }
