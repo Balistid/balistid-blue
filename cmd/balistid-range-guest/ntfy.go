@@ -23,7 +23,7 @@ const (
 	ntfySinkTopic = "/balistid-range"
 	// sinkHeader opens the sink's file: its schema and the rule each line's ok or bad decides (ENGINEERING.md §3).
 	sinkHeader = "balistid-range-ntfy 1 token=bearer-range-only"
-	ntfyPosts     = "/run/balistid-range-ntfy/posts"
+	ntfyPosts  = "/run/balistid-range-ntfy/posts"
 	// ntfyToken is the token range/balistid-pi-range.conf gives the watcher (SetCredential).
 	ntfyToken    = "range-only"
 	sinkMaxBody  = 4 << 10
