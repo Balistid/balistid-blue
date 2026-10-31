@@ -14,7 +14,8 @@ import (
 // as the range's ntfy sink records its posts; when the cosigned size last grew before it and whether it grew
 // after; the posts the sink accepted with the range token, "ms:tag" joined by commas or "none", and how many
 // it refused; the watcher's restarts before and after; the second announcement of quiet-again or "none"; and
-// the largest gap between cosigned sizes before the injection, a trend for cosign_gap_s.
+// the largest gap between cosigned sizes before the injection, a trend for cosign_gap_s; and the watcher's
+// ActiveState at the end: the range stopping it is no alarm's failure.
 const (
 	FactInject       = "inject"
 	FactInjectMS     = "inject_ms"
@@ -26,6 +27,7 @@ const (
 	FactRestartsPost = "pi_restarts_after"
 	FactAgainMS      = "again_ms"
 	FactCosignGapMS  = "cosign_gap_ms"
+	FactPiActive     = "pi_active"
 	// MeasureAlarmMS is how long after the silence began, or the first announcement, the alert came.
 	MeasureAlarmMS = "alarm_ms"
 
@@ -50,7 +52,7 @@ const (
 )
 
 var alarmFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactCosignedMS, FactGrownAfter, FactPosts,
-	FactRefused, FactRestartsPre, FactRestartsPost, FactAgainMS, FactCosignGapMS}
+	FactRefused, FactRestartsPre, FactRestartsPost, FactAgainMS, FactCosignGapMS, FactPiActive}
 
 // Post is one push the sink accepted: the guest's uptime in ms and the alert's key.
 type Post struct {
@@ -114,6 +116,8 @@ func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
 			return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
 		}
 		return Invalid, "the sink saw no start of the watcher before the injection"
+	case f[FactPiActive] != "active":
+		return Invalid, fmt.Sprintf("the watcher ended %s: the range stopped it", Printable(f[FactPiActive], 64))
 	case alarm != nil && alarm.MS <= n[FactInjectMS]:
 		return Invalid, fmt.Sprintf("a silence alert at %d ms, before the injection at %d", alarm.MS, n[FactInjectMS])
 	case n[FactRestartsPost] != n[FactRestartsPre]:
