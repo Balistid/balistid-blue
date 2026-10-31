@@ -102,7 +102,7 @@ func watch(ctx context.Context, every time.Duration, read func() ([]byte, error)
 		tick := time.NewTicker(every)
 		defer tick.Stop()
 		for {
-			if child.Err() != nil { // stopped while select took the tick: no read after stop
+			if child.Err() != nil { // stopped while select took the tick: no new read once stop is seen
 				return
 			}
 			if cause := memoryCause(read); cause != nil {
