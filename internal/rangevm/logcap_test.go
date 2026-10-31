@@ -1,7 +1,9 @@
 package rangevm
 
 import (
+	"os"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +53,9 @@ func TestJudgeLogCap(t *testing.T) {
 			{FactCosignedEnd: "250"},
 			{FactCapMS: "90000"},
 			{FactFullBundles: "0"}, {FactFullBundles: "2"}, {FactFullBundles: "1000000"},
+			// facts no ledger under its 10 GiB cap can make
+			{FactCapEntries: "256000001", FactCosignedEnd: "256000000", FactFullBundles: "1000000"},
+			{FactCosignedEnd: "301"},
 			{FactPiActive: "inactive"},
 			{FactPosts: "403000:logcap"},
 			{FactCapEntries: "2", FactCosignedEnd: "1"},
@@ -66,5 +71,16 @@ func TestJudgeLogCap(t *testing.T) {
 	m := Measures(tr, logCapRun(nil))
 	if m[FactFullBytes] != 40960 || m[FactFullBundles] != 1 || m[FactCapEntries] != 300 {
 		t.Errorf("measures %v", m)
+	}
+}
+
+// The judge's bound is the ledger's own cap constant.
+func TestHostLogCapIsTheLedgers(t *testing.T) {
+	data, err := os.ReadFile("../../cmd/balistid-ledger/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "capBytes        = 10 << 30\n") || hostLogCap != 10<<30 {
+		t.Fatal("hostLogCap is not balistid-ledger's capBytes")
 	}
 }
