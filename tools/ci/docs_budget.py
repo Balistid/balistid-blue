@@ -102,6 +102,9 @@ LAYOUT: tuple[str, ...] = (
     # Relay, by exact name (ADR 0006, 0026).
     "deploy/relay/sysusers.conf",
     "deploy/relay/balistid-relay.service",
+    # auditstat, the one long-running unit with a capability, by exact name (ADR 0038).
+    "deploy/auditstat/sysusers.conf",
+    "deploy/auditstat/balistid-auditstat.service",
     # Announcements of a clean stop, by exact name (ADR 0030).
     "deploy/announce/balistid-announce.service",
     "deploy/announce/balistid-announce-suspend.service",
