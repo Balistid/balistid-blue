@@ -1,6 +1,7 @@
 # One acceptance trial of the range on a GitHub-hosted runner's KVM, on request (ADR 0037): the run a session
 # cannot make in its sandbox before review. Advisory, never evidence (ADR 0028, point 4). repository_dispatch runs
-# this file as it is on main; the commit and the trial come only as data, checked before anything else runs.
+# this file as it is on main: its permissions and expressions are main's. The payload is checked first; the
+# commit it names then runs as its pull request CI would, its range_kvm.py with sudo on the throwaway runner.
 name: range-trial
 
 on:
