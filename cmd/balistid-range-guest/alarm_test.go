@@ -111,6 +111,21 @@ func TestLossEntryStoreDownOnlyForTheFillsRace(t *testing.T) {
 	}
 }
 
+// The race's disk-full failure is found past the reopens that fail after it; without one, the last failure.
+func TestLastStoreFailurePrefersTheDiskFull(t *testing.T) {
+	full := `{"level":"ERROR","msg":"store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"}`
+	reopen := `{"level":"ERROR","msg":"store open failed","err":"store: no space left on device"}`
+	for journal, want := range map[string]string{
+		full + "\n" + reopen + "\n" + reopen + "\n": `store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"}`,
+		`{"msg":"started"}` + "\n" + reopen + "\n":  `store open failed","err":"store: no space left on device"}`,
+		`{"msg":"started"}` + "\n":                  "no store failure in the journal's last 400 lines",
+	} {
+		if got := lastStoreFailure(journal); got != want {
+			t.Errorf("journal %q: %q, want %q", journal, got, want)
+		}
+	}
+}
+
 // Each collector loss is matched by the entry its cause makes, and by nothing else.
 func TestLossMatch(t *testing.T) {
 	for inject, cases := range map[string]map[entry.Body]bool{
