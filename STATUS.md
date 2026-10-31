@@ -19,8 +19,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - L11 (ADR 0036): range trials time the Pi's alerts at an ntfy sink in its namespace. #165 on `main`: silence 3
   trials PASS at 840.8-840.9 s, quiet-off/-masked/-again trends PASS at 20:00.8-20:02.5 (KVM via ADR 0037 dispatch).
 - #168 L11c: the log at its cap logs reason 7 before final, alerted as `logcap`; `-cap-bytes` range-only; log-cap
-  PASS 2/2. #170 L11b (on 4cfba3b): full-fs PASS 6/6 at 4.1-5.4 s, store 2/2 at 6.3-6.4 s, control PASS; kernel and
-  dispatcher INVALID (no detector); queue INVALID (dispatcher overflows first); a full fs's store-down INVALID.
+  PASS 2/2. #170 L11b (on f79ff99): full-fs PASS 20/20 at 4.1-6.3 s (the fill leaves a WAL), store 2/2 at 5.3-5.4 s,
+  control PASS; kernel and dispatcher INVALID (no detector); queue INVALID (the dispatcher overflows first).
 - #167 ADR 0037: `range-trial` on `repository_dispatch` (main's definition, payload checked), the bot dispatches it.
 ## Next step
 1. Merge #170 (maintainer approve). Then balistid-auditstat (ADR 0007): kernel/dispatcher loss, per-stage alert keys,
@@ -35,6 +35,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - cpu_cores: ADR 0025 (#138); 0.70 of 0.5 on 4 vCPU, auditd with Laurel 0.46: a host MISS is likely.
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
-- #170: another writer filling the store's fs after its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
+- #170: another writer filling the store's fs past its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
 - #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
   unpinned shellcheck: as before (git log of this file).
