@@ -68,6 +68,11 @@ func TestJudgeLoss(t *testing.T) {
 		cleanBuild, cleanBuild); v != Pass {
 		t.Errorf("loss-store with an unknown alert: %s (%s)", v, r)
 	}
+	// A full filesystem's store gone down instead of to its cap is a MISS, even with its alert in time.
+	down := map[string]string{FactLossEntry: "store down; loss -1 s0 r0; unstored health 14 s2 r2 u4"}
+	if v, r := JudgeTrial(trial(t, "loss-full-fs-1"), lossRun("loss-full-fs-1", down), cleanBuild, cleanBuild); v != Miss {
+		t.Errorf("loss-full-fs with its store down and a timely alert: %s (%s)", v, r)
+	}
 	if v, _ := JudgeTrial(trial(t, "loss-queue-2"), lossRun("loss-queue-2", map[string]string{FactPosts: "60000:start,120000:unknown"}),
 		cleanBuild, cleanBuild); v != Miss {
 		t.Errorf("loss-queue with only an unknown alert: %s", v)
