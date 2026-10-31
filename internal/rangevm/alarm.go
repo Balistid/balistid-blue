@@ -19,6 +19,7 @@ import (
 const (
 	FactInject       = "inject"
 	FactInjectMS     = "inject_ms"
+	FactInjectEndMS  = "inject_end_ms"
 	FactCosignedMS   = "cosigned_ms"
 	FactGrownAfter   = "grown_after"
 	FactPosts        = "posts"
@@ -51,7 +52,7 @@ const (
 	SettleAfter = 30 * time.Second
 )
 
-var alarmFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactCosignedMS, FactGrownAfter, FactPosts,
+var alarmFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactInjectEndMS, FactCosignedMS, FactGrownAfter, FactPosts,
 	FactRefused, FactRestartsPre, FactRestartsPost, FactAgainMS, FactCosignGapMS, FactPiActive}
 
 // Post is one push the sink accepted: the guest's uptime in ms and the alert's key.
@@ -85,12 +86,13 @@ func ParsePosts(s string) ([]Post, error) {
 }
 
 // judgeAlarm: the closed facts and a proven injection that stopped the cosigned size, with the watcher's
-// start pushed through the sink before it, else INVALID: the observer or the injection failed. A silence
-// alert before the injection is INVALID too, the range was not quiet. With those, a restarted watcher, no
-// silence alert, or one outside the window is a MISS.
+// start pushed through the sink before it, else INVALID: the observer or the injection failed; a silence
+// alert before the injection is INVALID too, the range was not quiet. With those, a watcher whose token the sink
+// refused, that restarted or is not running at the end, no silence alert, or one outside the window is a MISS:
+// the alarm's path broke (ADR 0021).
 func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
-	f, n, why := probeFacts(tr, o, alarmFacts, []string{FactInjectMS, FactCosignedMS, FactRefused, FactRestartsPre,
-		FactRestartsPost, FactCosignGapMS})
+	f, n, why := probeFacts(tr, o, alarmFacts, []string{FactInjectMS, FactInjectEndMS, FactCosignedMS, FactRefused,
+		FactRestartsPre, FactRestartsPost, FactCosignGapMS})
 	if why != "" {
 		return Invalid, why
 	}
@@ -102,43 +104,46 @@ func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the injection is not proven: \"%s\"", Printable(f[FactInject], 256))
 	case f[FactGrownAfter] != "no":
 		return Invalid, fmt.Sprintf("the cosigned size grew after the injection: \"%s\"", Printable(f[FactGrownAfter], 64))
-	case tr.Metric == rangejob.MetricSilence && n[FactCosignedMS] > n[FactInjectMS]+uint64(SettleAfter/time.Millisecond):
-		return Invalid, "the last growth came over 30 s after the injection"
+	case n[FactInjectEndMS] < n[FactInjectMS] || tr.Metric == rangejob.MetricSilence && n[FactInjectEndMS] != n[FactInjectMS]:
+		return Invalid, fmt.Sprintf("the injection's bracket %d to %d ms does not fit its trial", n[FactInjectMS], n[FactInjectEndMS])
+	case f[FactPiActive] == "missing":
+		return Invalid, "the watcher's state could not be read"
 	}
-	again, why := againMS(tr, f[FactAgainMS], n[FactInjectMS])
+	again, why := againMS(tr, f[FactAgainMS], n[FactInjectEndMS])
 	if why != "" {
 		return Invalid, why
 	}
 	start, alarm := firstPost(posts, "start", 0), firstPost(posts, "silence", 0)
 	switch {
+	case (start == nil || start.MS > n[FactInjectMS]) && n[FactRefused] > 0:
+		return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
 	case start == nil || start.MS > n[FactInjectMS]:
-		if n[FactRefused] > 0 {
-			return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
-		}
 		return Invalid, "the sink saw no start of the watcher before the injection"
-	case f[FactPiActive] != "active":
-		return Invalid, fmt.Sprintf("the watcher ended %s: the range stopped it", Printable(f[FactPiActive], 64))
 	case alarm != nil && alarm.MS <= n[FactInjectMS]:
 		return Invalid, fmt.Sprintf("a silence alert at %d ms, before the injection at %d", alarm.MS, n[FactInjectMS])
-	case n[FactRestartsPost] != n[FactRestartsPre]:
-		return Miss, fmt.Sprintf("the watcher restarted (%d to %d), which restarts its silence", n[FactRestartsPre], n[FactRestartsPost])
+	case n[FactRestartsPost] != n[FactRestartsPre] || f[FactPiActive] != "active":
+		return Miss, fmt.Sprintf("the watcher restarted (%d to %d) or is %s at the end: its silence restarts", n[FactRestartsPre],
+			n[FactRestartsPost], Printable(f[FactPiActive], 64))
 	case alarm == nil:
 		return Miss, "no silence alert reached the sink"
 	}
-	from, lo, hi := n[FactCosignedMS], silenceFrom, silenceTo
+	// Silence counts from the last cosigned growth; the quiet cap from the first announcement, which the Pi saw
+	// between its stop (inject_ms) and its cosignature proven (inject_end_ms).
+	lo, hi := msDuration(alarm.MS-min(alarm.MS, n[FactCosignedMS])), msDuration(alarm.MS-min(alarm.MS, n[FactCosignedMS]))
+	from, to := silenceFrom, silenceTo
 	if tr.Metric == rangejob.MetricQuiet {
-		from, lo, hi = n[FactInjectMS], quietFrom, quietTo
+		lo, hi = msDuration(alarm.MS-n[FactInjectMS]), msDuration(alarm.MS-min(alarm.MS, n[FactInjectEndMS]))
+		from, to = quietFrom, quietTo
 	}
-	at := msDuration(alarm.MS - from)
-	if at < lo || at > hi {
-		return Miss, fmt.Sprintf("silence alert %s after %d ms, outside %s to %s%s", at, from, lo, hi, again)
+	if lo < from || hi > to {
+		return Miss, fmt.Sprintf("silence alert %s to %s after its start, outside %s to %s%s", hi, lo, from, to, again)
 	}
-	return Pass, fmt.Sprintf("silence alert %s after %d ms%s", at, from, again)
+	return Pass, fmt.Sprintf("silence alert %s to %s after its start%s", hi, lo, again)
 }
 
 // againMS checks quiet-again's second announcement: after the first by at least againAfter, so a cap it
 // restarted alerts outside the window; any other trial has none.
-func againMS(tr rangejob.Trial, v string, inject uint64) (string, string) {
+func againMS(tr rangejob.Trial, v string, first uint64) (string, string) {
 	if tr.Inject != rangejob.InjectQuietAgain {
 		if v != "none" {
 			return "", "a second announcement in a trial without one"
@@ -146,10 +151,10 @@ func againMS(tr rangejob.Trial, v string, inject uint64) (string, string) {
 		return "", ""
 	}
 	ms, err := plainNumber(v)
-	if err != nil || ms < inject+uint64(againAfter/time.Millisecond) {
+	if err != nil || ms < first+uint64(againAfter/time.Millisecond) {
 		return "", fmt.Sprintf("the second announcement \"%s\" is not %s after the first", Printable(v, 64), againAfter)
 	}
-	return fmt.Sprintf(" (announced again %s after the first)", msDuration(ms-inject)), ""
+	return fmt.Sprintf(" (announced again %s after the first)", msDuration(ms-first)), ""
 }
 
 // msDuration is ms as a Duration; ms beyond a Duration's range comes out as the longest one, past every window.

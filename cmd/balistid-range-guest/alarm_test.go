@@ -38,6 +38,10 @@ func TestPostsFactKeepsStartSilenceAndAfter(t *testing.T) {
 	if _, err := rangevm.ParsePosts(got); err != nil {
 		t.Errorf("the judge cannot read %q: %v", got, err)
 	}
+	// a post without an alert key is no alert, and the judge must still read the fact
+	if got := postsFact([]rangevm.Post{{MS: 1000, Tag: "start"}, {MS: 6000, Tag: "-"}, {MS: 7000, Tag: "silence"}}, 5000); got != "1000:start,7000:silence" {
+		t.Errorf("posts fact with an untagged post %q", got)
+	}
 	if postsFact(nil, 0) != "none" {
 		t.Error("no posts is not none")
 	}
