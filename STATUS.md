@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-31 by claude/opus-5.5 (L11: #163 ADR 0036, #165 alarm trials, #167 ADR 0037, #168 log cap, #169 loss)
+Updated: 2026-10-31 by claude/opus-5.5 (L11: #163 ADR 0036, #165 alarm trials, #167 ADR 0037, #168 log cap, #170 loss)
 
 ## Where we are
 
@@ -19,12 +19,12 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - L11 (ADR 0036): range trials time the Pi's alerts at an ntfy sink in its namespace. #165 on `main`: silence 3
   trials PASS at 840.8-840.9 s, quiet-off/-masked/-again trends PASS at 20:00.8-20:02.5 (KVM via ADR 0037 dispatch).
 - #168 L11c: the log at its cap logs reason 7 before final, alerted as `logcap`; `-cap-bytes` range-only; log-cap
-  PASS 2/2. #169 L11b: loss full-fs PASS 4.4 s, store PASS 5.2 s, control PASS; kernel/dispatcher INVALID (no detector);
-  loss-queue INVALID (dispatcher overflows first; exec bursts cannot fill the collector's queue).
+  PASS 2/2. #170 L11b (on 4cfba3b): full-fs PASS 6/6 at 4.1-5.4 s, store 2/2 at 6.3-6.4 s, control PASS; kernel and
+  dispatcher INVALID (no detector); queue INVALID (dispatcher overflows first); a full fs's store-down INVALID.
 - #167 ADR 0037: `range-trial` on `repository_dispatch` (main's definition, payload checked), the bot dispatches it.
 ## Next step
-1. Merge #168, #169 (maintainer approve). Then balistid-auditstat (ADR 0007): kernel/dispatcher loss, per-stage loss
-   alert keys and a socket writer for loss-queue (maintainer 2026-10-31), the 10-run shapes; then L12 the Pi.
+1. Merge #170 (maintainer approve). The store's disk full in a shard write (below), its own change. Then
+   balistid-auditstat (ADR 0007): kernel/dispatcher loss, per-stage alert keys, a socket writer for loss-queue, 10-run shapes.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
 3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
 4. Host install (9.5) only when every metric the range decides passes, with balistid-install (its ADR sets the install
@@ -35,5 +35,6 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - cpu_cores: ADR 0025 (#138); 0.70 of 0.5 on 4 vCPU, auditd with Laurel 0.46: a host MISS is likely.
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
+- #170: a fill after the store's statfs check breaks the shard's SQLite commit (disk full): UNKNOWN, not its cap.
 - #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
   unpinned shellcheck: as before (git log of this file).
