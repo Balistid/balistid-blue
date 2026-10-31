@@ -34,9 +34,9 @@ rewritten in place as root:`log_group` 0640 on SIGCONT or every `report_interval
 4. Health reasons, named only where health would otherwise be OK, in the order 9, 10, 8, 6: 9 dispatcher overflowed,
    while the fresh flag reads yes (sticky in auditd until a restart or a larger `q_depth`, by root); 10 auditd not
    running or audit not locked (`enabled` ≠ 2); 8 not fresh: no new report seq, or no new mtime of a valid state file
-   (three of auditd's writes), within 15 s of the collector's monotonic clock. 8 and 10 wait for the collector's first
-   15 s. A new auditd pid in the boot, not the first the collector sees, logs one UNKNOWN with reason 10 over any
-   other reason, held until that auditd's first fresh state, as a restart may take an unseen overflow with it.
+   (three of auditd's writes), within 15 s of the collector's monotonic clock. 8 and 10 wait the collector's first 15
+   s. A new auditd pid in the boot, not the first the collector sees, logs one UNKNOWN with reason 10 over any other
+   reason, held until that auditd's first fresh state or 15 s, as a restart may take an unseen overflow with it.
 5. The loaded-rules check (ADR 0004 point 4, `sensor_down_s` "rules differ") is a later checkpoint and open until
    then: `AUDIT_LIST_RULES` returns variable records, a larger parser in the privileged process.
 
