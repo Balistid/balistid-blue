@@ -19,7 +19,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - L11 (ADR 0036): range trials time the Pi's alerts at an ntfy sink in its namespace. #165 on `main`: silence 3
   trials PASS at 840.8-840.9 s, quiet-off/-masked/-again trends PASS at 20:00.8-20:02.5 (KVM via ADR 0037 dispatch).
 - #168 L11c: the log at its cap logs reason 7 before final, alerted as `logcap`; `-cap-bytes` range-only; log-cap
-  PASS 2/2. #170 L11b (on f79ff99): full-fs PASS 20/20 at 4.1-6.3 s (the fill leaves a WAL), store 2/2 at 5.3-5.4 s,
+  PASS 2/2. #170 L11b (f79ff99, 3fbdb72): full-fs PASS 30/30 at 4.1-6.3 s (a WAL left), store 3/3 at 5.3-6.3 s,
   control PASS; kernel and dispatcher INVALID (no detector); queue INVALID (the dispatcher overflows first).
 - #167 ADR 0037: `range-trial` on `repository_dispatch` (main's definition, payload checked), the bot dispatches it.
 ## Next step
