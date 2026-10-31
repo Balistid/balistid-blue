@@ -71,6 +71,12 @@ func (w *cosignWatch) state() (grew time.Duration, growths int, maxGap time.Dura
 	return w.grew, w.growths, w.maxGap
 }
 
+func (w *cosignWatch) cosignedSize() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.size
+}
+
 // freeze ends the gap trend: after an injection the gap is the silence itself.
 func (w *cosignWatch) freeze() {
 	w.mu.Lock()
