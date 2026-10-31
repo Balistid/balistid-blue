@@ -37,6 +37,7 @@ const (
 	MetricSilence   = "silence_alarm_s"
 	MetricQuiet     = "announced_quiet_max_h"
 	MetricLogCap    = "host_log_cap_gib"
+	MetricLoss      = "loss_alarm_s"
 )
 
 // Injections of an alarm trial (ADR 0036): the host side of the tunnel down, the ledger killed and kept
@@ -49,6 +50,18 @@ const (
 	InjectQuietOff    = "quiet-off"
 	InjectQuietMasked = "quiet-masked"
 	InjectQuietAgain  = "quiet-again"
+)
+
+// Injections of a loss trial (ADR 0036, point 4): the store's filesystem frozen under load so the collector's
+// queue fills, filled, or its files made to refuse writes; auditd or Laurel stopped so the kernel or the
+// dispatcher loses, which no detector reports yet; none, the control that must not alert.
+const (
+	InjectQueue      = "queue"
+	InjectFullFS     = "full-fs"
+	InjectStore      = "store"
+	InjectKernel     = "kernel"
+	InjectDispatcher = "dispatcher"
+	InjectNone       = "none"
 )
 
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
@@ -69,6 +82,7 @@ const (
 	MethodCPU              = "cpu"
 	MethodAlarm            = "alarm"
 	MethodLogCap           = "log-cap"
+	MethodLoss             = "loss"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -105,12 +119,19 @@ func (tr Trial) Method() string {
 	return ""
 }
 
-// alarmMethod is MethodAlarm for an injection of tr's metric and nothing else, else "".
+// alarmMethod is MethodAlarm or MethodLoss for an injection of tr's metric and nothing else, else "".
 func alarmMethod(tr Trial) string {
 	silence := tr.Inject == InjectWireGuard || tr.Inject == InjectLedger || tr.Inject == InjectHardStop
 	quiet := tr.Inject == InjectQuietOff || tr.Inject == InjectQuietMasked || tr.Inject == InjectQuietAgain
-	if tr.Load == (Load{}) && tr.Failure == "" && (tr.Metric == MetricSilence && silence || tr.Metric == MetricQuiet && quiet) {
+	loss := tr.Inject == InjectQueue || tr.Inject == InjectFullFS || tr.Inject == InjectStore || tr.Inject == InjectKernel ||
+		tr.Inject == InjectDispatcher || tr.Inject == InjectNone
+	switch {
+	case tr.Load != (Load{}) || tr.Failure != "":
+		return ""
+	case tr.Metric == MetricSilence && silence || tr.Metric == MetricQuiet && quiet:
 		return MethodAlarm
+	case tr.Metric == MetricLoss && loss:
+		return MethodLoss
 	}
 	return ""
 }
@@ -226,6 +247,22 @@ var trials = slices.Concat([]Trial{
 			Inject: InjectQuietAgain, Trend: true},
 		// host_log_cap_gib with the cap lowered to fill in minutes (ADR 0036, point 5).
 		{Name: "log-cap", Metric: MetricLogCap, Wall: 12 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
+	},
+	// loss_alarm_s (ADR 0036, point 4): three collector cases, four runs each in rows of two; the kernel and
+	// dispatcher cases are INVALID until balistid-auditstat; a control without injection must not alert.
+	repeated(Trial{Name: "loss-queue", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+		Count: 2, Inject: InjectQueue}, 2),
+	repeated(Trial{Name: "loss-full-fs", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+		Count: 2, Inject: InjectFullFS}, 2),
+	repeated(Trial{Name: "loss-store", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+		Count: 2, Inject: InjectStore}, 2),
+	[]Trial{
+		{Name: "loss-kernel", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Inject: InjectKernel},
+		{Name: "loss-dispatcher", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1,
+			Inject: InjectDispatcher},
+		{Name: "loss-control-none", Metric: MetricLoss, Expect: ExpectPass, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
+			Scratch: StoreScratch, Count: 1, Inject: InjectNone},
 	},
 )
 
