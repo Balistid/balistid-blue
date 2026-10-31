@@ -54,6 +54,14 @@ var vectors = []struct {
 		label, "04", atNoon,
 		"02", "02", "0000000000000007", // state, reason, unstored
 	}},
+	{"kernel loss", Entry{At: noon, Body: Loss{Seq: 43, Stage: StageKernel, Records: 5}}, []string{
+		label, "03", atNoon,
+		"000000000000002b", "07", "0000000000000005",
+	}},
+	{"dispatcher overflowed", Entry{At: noon, Body: Health{State: StateUnknown, Reason: ReasonDispatcher}}, []string{
+		label, "04", atNoon,
+		"02", "09", "0000000000000000",
+	}},
 	{"announce before the epoch", Entry{At: -1, Body: Announce{Kind: AnnounceSuspend}}, []string{
 		label, "05", "ffffffffffffffff", "02",
 	}},
@@ -128,13 +136,15 @@ func TestDecodeRefusesWhatEncodeCannotProduce(t *testing.T) {
 		{"loss seq zero", with(loss, head, 0, 0, 0, 0, 0, 0, 0, 0), "loss seq outside"},
 		{"loss seq over MaxSeq", with(loss, head, 0x80), "loss seq outside"},
 		{"loss stage zero", with(loss, head+8, 0), "unknown loss stage"},
-		{"loss stage seven", with(loss, head+8, 7), "unknown loss stage"},
+		{"loss stage nine", with(loss, head+8, 9), "unknown loss stage"},
 		{"loss of no records", with(loss, head+9+7, 0), "loss of no records"},
 		{"truncated loss of two", with(with(loss, head+8, 6), head+9+7, 2), "truncated loss"},
+		{"dispatcher loss of two", with(with(loss, head+8, 8), head+9+7, 2), "dispatcher loss"},
 		{"short loss", loss[:len(loss)-1], short},
 		{"health OK with a reason", with(health, head, 1), "state and reason"},
 		{"health UNKNOWN without a reason", with(health, head+1, 0), "state and reason"},
-		{"health reason eight", with(health, head+1, 8), "state and reason"},
+		{"health reason eleven", with(health, head+1, 11), "state and reason"},
+		{"health OK for an overflow", with(health, head, 1, 9), "state and reason"},
 		{"health state three", with(health, head, 3), "state and reason"},
 		{"health state zero", with(health, head, 0, 0), "state and reason"},
 		{"short health", health[:len(health)-1], short},
@@ -200,6 +210,10 @@ func TestEncodeRefusesWhatDecodeWouldRefuse(t *testing.T) {
 		{Body: Health{State: StateOK, Unstored: math.MaxUint64}},
 		{Body: Health{State: StateUnknown, Reason: ReasonCanaryPending}},
 		{Body: Health{State: StateUnknown, Reason: ReasonStream}},
+		{Body: Loss{Seq: 1, Stage: StageKernel, Records: math.MaxUint64}},
+		{Body: Loss{Seq: 1, Stage: StageDispatcher, Records: 1}},
+		{Body: Health{State: StateUnknown, Reason: ReasonAuditStale}},
+		{Body: Health{State: StateUnknown, Reason: ReasonAuditd}},
 	} {
 		b, err := e.Encode()
 		if err != nil {
