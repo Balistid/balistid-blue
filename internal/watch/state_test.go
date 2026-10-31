@@ -128,3 +128,25 @@ func FuzzStateParse(f *testing.F) {
 		}
 	})
 }
+
+// A state saved before the overflow's condition (ADR 0039) still loads, without it: the field is additive.
+func TestStateFromBeforeTheOverflowLoads(t *testing.T) {
+	s, err := OpenStore(t.TempDir(), "balistid/log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(verified(t, enc(t, batches(300)...)), nil); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(s.dir, stateName)) //nolint:gosec // the test's own file
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := strings.Replace(string(b), `,"overflow":false`, "", 1)
+	if older == string(b) {
+		t.Fatalf("no overflow field in %s", b)
+	}
+	if l, _, err := parseState([]byte(older), "balistid/log"); err != nil || l.Size != 300 || l.Rules.Overflow {
+		t.Fatalf("older state: %+v %v", l.Rules, err)
+	}
+}
