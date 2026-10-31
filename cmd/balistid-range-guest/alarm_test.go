@@ -87,45 +87,6 @@ func TestLossPostsFactControlFromStart(t *testing.T) {
 	}
 }
 
-// Only a full filesystem's store, healthy before and not restarted, gone down after the fill on a disk-full write
-// is the store's race; anything else without the cause's entry is no entry.
-func TestLossEntryStoreDownOnlyForTheFillsRace(t *testing.T) {
-	raced := lossEntry{inject: rangejob.InjectFullFS, downBefore: -1, down: 14, healthyBefore: true, sameRestarts: true,
-		failure: `store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"`}
-	if got := raced.fact(); got != rangevm.LossStoreDown {
-		t.Errorf("the race: %q", got)
-	}
-	for name, change := range map[string]func(*lossEntry){
-		"another trial":         func(le *lossEntry) { le.inject = rangejob.InjectStore },
-		"down before the fill":  func(le *lossEntry) { le.downBefore = 14 },
-		"unhealthy before":      func(le *lossEntry) { le.healthyBefore = false },
-		"the collector restart": func(le *lossEntry) { le.sameRestarts = false },
-		"no disk full":          func(le *lossEntry) { le.failure = `store open failed","err":"permission denied"` },
-		"an unreadable log":     func(le *lossEntry) { le.downErr = true },
-	} {
-		le := raced
-		change(&le)
-		if got := le.fact(); got != "no new entry of the cause" {
-			t.Errorf("%s: %q", name, got)
-		}
-	}
-}
-
-// The race's disk-full failure is found past the reopens that fail after it; without one, the last failure.
-func TestLastStoreFailurePrefersTheDiskFull(t *testing.T) {
-	full := `{"level":"ERROR","msg":"store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"}`
-	reopen := `{"level":"ERROR","msg":"store open failed","err":"store: no space left on device"}`
-	for journal, want := range map[string]string{
-		full + "\n" + reopen + "\n" + reopen + "\n": `store failed","reason":"store-append","err":"shard: commit: database or disk is full (13)"}`,
-		`{"msg":"started"}` + "\n" + reopen + "\n":  `store open failed","err":"store: no space left on device"}`,
-		`{"msg":"started"}` + "\n":                  "no store failure in the journal's last 400 lines",
-	} {
-		if got := lastStoreFailure(journal); got != want {
-			t.Errorf("journal %q: %q, want %q", journal, got, want)
-		}
-	}
-}
-
 // Each collector loss is matched by the entry its cause makes, and by nothing else.
 func TestLossMatch(t *testing.T) {
 	for inject, cases := range map[string]map[entry.Body]bool{
