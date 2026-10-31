@@ -18,8 +18,9 @@ self-test (ADR 0028). So the maintainer built and ran each new trial by hand: L1
    (`^[a-z0-9-]{1,32}$`) are checked first; then that commit is checked out and its own code runs, as its pull
    request CI would: `tools/ci/range_kvm.py --trial` builds its image and runs `balistid-range trial <trial>`; an empty or bad name fails there too, never falls back to the self-test. The
    name reaches the container only as an environment variable; the launcher's table refuses any other (T37).
-2. The rest is ADR 0028 points 2 and 3, as the named commit's `range_kvm.py` holds them: the container and pins, no secret, `contents: read`, no
-   checkout credentials, nothing uploaded, workflow commands off while the build prints. The payload reaches
+2. Main's workflow holds no secret, `contents: read`, no checkout credentials and no upload. The named commit's
+   `range_kvm.py` holds ADR 0028's container, pins and workflow commands off while the build prints, and like its
+   pull request CI it can reach the network. The payload reaches
    steps only through `env` and the checkout's `ref`, never as expression text in `run`. 60 minutes cover a
    build and a trial's wall clock (at most 29 minutes, ADR 0018). Only a run whose launcher exits non-zero, a
    verdict other than the trial's expected one, is annotated: a control's expected MISS is no error.
