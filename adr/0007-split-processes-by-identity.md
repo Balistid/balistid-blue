@@ -1,7 +1,7 @@
 # 0007 — Split Balistid Blue into small processes with separate identities
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (points 2 and 5 by ADR 0016)
+- Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (points 2 and 5 by ADR 0016), 2026-10-31 (table, point 4 by 0038)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
@@ -17,8 +17,8 @@ are inside the threat model.
 
 | Process | Identity | Privilege | Reads | Writes / network |
 |---|---|---|---|---|
-| `balistid-auditstat` | own uid | `CAP_AUDIT_CONTROL` | audit status, loaded rules | fixed-size reports |
-| `balistid-collector` | own uid | none | Laurel socket, reports, ledger status | shards, canary; stream |
+| `balistid-auditstat` | own uid | `CAP_AUDIT_CONTROL` | audit status (loaded rules later, 0038) | fixed-size reports |
+| `balistid-collector` | own uid | none | Laurel socket, reports, `auditd.state`, ledger status | shards, canary; stream |
 | `balistid-ledger` | own uid | none, no network | collector stream | log tiles, signing key |
 | `balistid-relay` | own uid | none | tiles | HTTP and witness, WireGuard only |
 | `balistid-normalize` | own uid | none | sealed shards | derived database |
@@ -33,7 +33,8 @@ are inside the threat model.
    `balistid-install`; the maintainer's user, and so the agents, can read the derived database but
    cannot write it or any of these. Raw records leave the collector only towards ledger and normalizer.
 4. Units use systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateNetwork` except
-   the relay, restricted capabilities and address families) and live in the repository.
+   the relay, restricted capabilities and address families) and live in the repository. (Amended by ADR 0038:
+   auditstat keeps `AF_NETLINK` and no `PrivateUsers`; the collector reads `auditd.state` as auditd's `log_group`.)
 5. A slow reader catches up from `seq`. (Amended by ADR 0016: the collector never blocks Laurel; a full queue drops
    and counts, because blocking moves loss into auditd, where nothing counts it, and can freeze the host.)
 
