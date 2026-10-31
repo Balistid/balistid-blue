@@ -34,7 +34,8 @@ are inside the threat model.
    cannot write it or any of these. Raw records leave the collector only towards ledger and normalizer.
 4. Units use systemd sandboxing (`NoNewPrivileges`, `ProtectSystem=strict`, `PrivateNetwork` except
    the relay, restricted capabilities and address families) and live in the repository. (Amended by ADR 0038:
-   auditstat keeps `AF_NETLINK` and no `PrivateUsers`; the collector reads `auditd.state` as auditd's `log_group`.)
+   auditstat keeps `AF_NETLINK`, no `PrivateUsers` or `PrivatePIDs`; the collector reads `auditd.state` through
+   auditd's `log_group`, a group of its own; both units hide /var/log/audit.)
 5. A slow reader catches up from `seq`. (Amended by ADR 0016: the collector never blocks Laurel; a full queue drops
    and counts, because blocking moves loss into auditd, where nothing counts it, and can freeze the host.)
 
