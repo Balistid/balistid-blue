@@ -63,6 +63,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runCPU(ctx, tr, r)
 	case rangejob.MethodAlarm:
 		return runAlarm(ctx, tr, r)
+	case rangejob.MethodLoss:
+		return runLoss(ctx, tr, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }
