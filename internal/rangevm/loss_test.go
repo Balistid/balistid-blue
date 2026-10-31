@@ -27,9 +27,9 @@ func TestJudgeLoss(t *testing.T) {
 	for _, name := range []string{"loss-queue-1", "loss-full-fs-2", "loss-store-1"} {
 		tr := trial(t, name)
 		for want, changes := range map[string][]map[string]string{
-			Pass: {nil, {FactPosts: "60000:start,171000:loss"}}, // 65 s after the injection's end
+			Pass: {nil, {FactPosts: "60000:start,165000:loss"}}, // 65 s after the injection's start
 			Miss: {
-				{FactPosts: "60000:start,171001:loss"},
+				{FactPosts: "60000:start,171001:loss"}, // over 65 s even after its end
 				{FactPosts: "60000:start"},
 				{FactPosts: "60000:start,90000:loss"}, // before the injection
 				{FactLossEntry: "no new entry of the cause"},
@@ -43,6 +43,9 @@ func TestJudgeLoss(t *testing.T) {
 				{FactLostAfter: "3"}, {FactOverflowAfter: "yes"}, {FactOverflowAfter: "missing"},
 				{FactLossEntry: "error: checkpoint: no such file"},
 				{FactPosts: "120000:loss"},
+				// within 65 s of the end, not of the start: the loss may have come at the start
+				{FactPosts: "60000:start,171000:loss"},
+				{FactInjectEndMS: "200000", FactPosts: "60000:start,200001:loss"},
 				{FactKernel: "6.0.0"}, {"-": FactLossEntry}, {"extra": "1"},
 			},
 		} {
@@ -82,13 +85,16 @@ func TestKernelCasesInvalidWithoutDetector(t *testing.T) {
 	}
 }
 
-// The control has no loss: any loss or unknown alert after its start is a MISS, none a PASS.
+// The control has no loss: any loss or unknown alert after the watcher's start is a MISS, also one before the
+// control's moment of injection, none a PASS.
 func TestLossControl(t *testing.T) {
 	tr := trial(t, "loss-control-none")
 	for posts, want := range map[string]string{
 		"60000:start":                Pass,
 		"60000:start,120000:loss":    Miss,
 		"60000:start,120000:unknown": Miss,
+		"60000:start,90000:loss":     Miss,
+		"60000:start,95000:unknown":  Miss,
 		"60000:start,120000:daily":   Pass,
 	} {
 		run := lossRun("loss-control-none", map[string]string{FactPosts: posts, FactLossEntry: "no new entry of the cause"})
@@ -97,7 +103,7 @@ func TestLossControl(t *testing.T) {
 		}
 	}
 	m := Measures(trial(t, "loss-queue-1"), lossRun("loss-queue-1", nil))
-	if m[MeasureAlarmMS] != 14000 {
+	if m[MeasureAlarmMS] != 20000 { // from the injection's start, the bound a PASS proves
 		t.Errorf("measures %v", m)
 	}
 }
