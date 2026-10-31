@@ -292,7 +292,7 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 }
 
 // fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem: no room for
-// its next record. The proof is less than a WAL and the admit slack left for an unprivileged writer.
+// its next record. The proof is fillLeft's, for an unprivileged writer.
 func fillScratch() error {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(scratchMount, &st); err != nil {
@@ -315,7 +315,16 @@ func fillScratch() error {
 	if err := syscall.Statfs(scratchMount, &st); err != nil {
 		return fmt.Errorf("statfs: %w", err)
 	}
-	if left := int64(st.Bavail) * st.Bsize; left >= shard.WALMaxBytes+fillSlack { //nolint:gosec // as above
+	return fillLeft(int64(st.Bavail) * st.Bsize) //nolint:gosec // as above
+}
+
+// fillLeft proves a fill by what it left: a WAL at least, so the store's writes in flight finish, and less than a
+// WAL and the admit slack, so its next record drops.
+func fillLeft(left int64) error {
+	switch {
+	case left < shard.WALMaxBytes:
+		return fmt.Errorf("%d bytes left, less than a WAL (%d): the fill raced the store's writes", left, shard.WALMaxBytes)
+	case left >= shard.WALMaxBytes+fillSlack:
 		return fmt.Errorf("%d bytes still free, a WAL is %d", left, shard.WALMaxBytes)
 	}
 	return nil

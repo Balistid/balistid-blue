@@ -10,6 +10,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
+	"github.com/Balistid/balistid-blue/internal/shard"
 )
 
 func TestSinkPostsCountsOnlyTheRangeToken(t *testing.T) {
@@ -83,6 +84,18 @@ func TestLossPostsFactControlFromStart(t *testing.T) {
 	} {
 		if got := lossPostsFact(rangejob.Trial{Inject: inject}, posts, 100*time.Second); got != want {
 			t.Errorf("%s: posts fact %q, want %q", inject, got, want)
+		}
+	}
+}
+
+// A fill is proven only with a WAL left and less than a WAL and the admit slack: less raced the store's writes.
+func TestFillLeftNeedsAWALAndNoMore(t *testing.T) {
+	for left, ok := range map[int64]bool{
+		0: false, shard.WALMaxBytes - 1: false, shard.WALMaxBytes: true, shard.WALMaxBytes + fillSlack - 1: true,
+		shard.WALMaxBytes + fillSlack: false, 1 << 30: false,
+	} {
+		if err := fillLeft(left); (err == nil) != ok {
+			t.Errorf("%d bytes left: %v, want ok %v", left, err, ok)
 		}
 	}
 }
