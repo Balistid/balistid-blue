@@ -1,14 +1,11 @@
 # One acceptance trial of the range on a GitHub-hosted runner's KVM, on request (ADR 0037): the run a session
-# cannot make in its sandbox before review. Advisory, never evidence (ADR 0028, point 4).
+# cannot make in its sandbox before review. Advisory, never evidence (ADR 0028, point 4). repository_dispatch runs
+# this file as it is on main; the commit and the trial come only as data, checked before anything else runs.
 name: range-trial
 
 on:
-  workflow_dispatch:
-    inputs:
-      trial:
-        description: a trial of internal/rangejob's table
-        required: true
-        type: string
+  repository_dispatch:
+    types: [range-trial]
 
 permissions:
   contents: read
@@ -18,10 +15,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
+      - name: Check the dispatched commit and trial
+        env:
+          SHA: ${{ github.event.client_payload.sha }}
+          TRIAL: ${{ github.event.client_payload.trial }}
+        run: '[[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TRIAL" =~ ^[a-z0-9-]{1,32}$ ]]'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.client_payload.sha }}
           persist-credentials: false
-      - name: Build the ref's range image and run one trial on KVM
+      - name: Build the commit's range image and run one trial on KVM
         env:
-          TRIAL: ${{ inputs.trial }}
+          TRIAL: ${{ github.event.client_payload.trial }}
         run: python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range" --trial "$TRIAL"

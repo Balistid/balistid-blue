@@ -158,12 +158,13 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--work", type=Path, required=True, help="directory for the state and cache mounts")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--trial", default="", help="run this trial of the table instead of the self-test (ADR 0037)")
+    parser.add_argument("--trial", help="run this trial of the table instead of the self-test (ADR 0037)")
     args = parser.parse_args(argv)
-    what = f"trial {args.trial}" if TRIAL_NAME.fullmatch(args.trial) else "self-test"
+    trial = args.trial or ""
+    what = f"trial {trial}" if TRIAL_NAME.fullmatch(trial) else "self-test"
     title = f"range-kvm {what}"
     try:
-        if args.trial and not TRIAL_NAME.fullmatch(args.trial):
+        if args.trial is not None and not TRIAL_NAME.fullmatch(args.trial):  # an empty one too: no silent self-test
             raise RangeError("--trial is not a trial name (^[a-z0-9-]{1,32}$)")
         check_runner(env)
         check_kvm(kvm)
@@ -180,14 +181,14 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     token = secrets.token_hex(16)
     print(f"::stop-commands::{token}", flush=True)
     try:
-        done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid(), args.trial), check=False)
+        done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid(), trial), check=False)
     finally:
         # On a line of its own: the runner resumes commands only on a line that starts with "::".
         print(f"\n::{token}::", flush=True)
-    annotation = verdict_annotation(state, title)
-    if annotation is None and done.returncode != 0:
-        annotation = f"::error title={title}::no result: the build or {what} failed (exit {done.returncode})"
-    if annotation:
+    # The launcher exits non-zero exactly when the verdict is not the expected one: a control's MISS is no error.
+    if done.returncode != 0:
+        annotation = verdict_annotation(state, title) or \
+            f"::error title={title}::no result: the build or {what} failed (exit {done.returncode})"
         print(annotation, flush=True)
     if done.returncode != 0:
         print(f"range-kvm: the build or {what} failed (exit {done.returncode})", file=sys.stderr)
