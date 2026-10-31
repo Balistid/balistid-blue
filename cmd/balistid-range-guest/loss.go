@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -22,8 +24,10 @@ const (
 	// freezeFor holds the store's filesystem frozen: under the collector's WatchdogSec (10 s), so the watchdog
 	// does not restart it and turn the queue's loss into a shutdown's.
 	freezeFor = 6 * time.Second
-	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB), so few execs fill the collector's 64 MiB queue.
+	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB); bigArgs of them make a record of about 1.2 MB,
+	// under record_max_kib (2 MiB, stored whole), so a few dozen execs fill the collector's 64 MiB queue.
 	bigArg     = 100 << 10
+	bigArgs    = 12
 	fillFile   = scratchMount + "/fill"
 	kernelWait = 75 * time.Second
 	// lossWait is how long after the injection a loss trial waits for the alert: lossAlarm's 65 s and a margin.
@@ -146,7 +150,7 @@ func injectLoss(ctx context.Context, inject string) string {
 	case rangejob.InjectFullFS:
 		err = fillScratch()
 	case rangejob.InjectStore:
-		err = refuseStore(ctx)
+		err = failStore()
 	case rangejob.InjectKernel:
 		err = stopAuditd(ctx)
 	case rangejob.InjectDispatcher:
@@ -166,7 +170,10 @@ func injectLoss(ctx context.Context, inject string) string {
 // freezeStore freezes the store's filesystem for freezeFor under execs with large arguments, so the collector's
 // writer blocks and its queue fills; the proof is the freeze and the thaw both done.
 func freezeStore(ctx context.Context) error {
-	arg := strings.Repeat("q", bigArg)
+	args := make([]string, bigArgs)
+	for i := range args {
+		args[i] = strings.Repeat("q", bigArg)
+	}
 	burst, stop := context.WithTimeout(ctx, freezeFor+2*time.Second)
 	defer stop()
 	var wg sync.WaitGroup
@@ -176,7 +183,7 @@ func freezeStore(ctx context.Context) error {
 			sem <- struct{}{}
 			wg.Go(func() {
 				defer func() { <-sem }()
-				_ = exec.CommandContext(burst, "/usr/bin/true", arg).Run() //nolint:gosec // our own fixed argument
+				_ = exec.CommandContext(burst, "/usr/bin/true", args...).Run() //nolint:gosec // our own fixed arguments
 			})
 		}
 	})
@@ -218,26 +225,29 @@ func fillScratch() error {
 	return nil
 }
 
-// refuseStore makes the store's directory and files immutable, so its writes fail; the proof is a refused write
-// in the collector's journal after it.
-func refuseStore(ctx context.Context) error {
-	cursor := journalCursor(output(ctx, "/usr/bin/journalctl", "-q", "-n", "0", "--show-cursor"))
-	if cursor == "" {
-		return errors.New("no journal cursor")
+// ext4Shutdown is EXT4_IOC_SHUTDOWN, _IOR('X', 125, __u32), and ext4NoLogFlush its flag that drops the
+// journal: the filesystem fails every later read and write, as a dying disk under the store would.
+const (
+	ext4Shutdown   = 0x8004587d
+	ext4NoLogFlush = 2
+	shutdownProbe  = scratchMount + "/probe"
+)
+
+// failStore shuts the store's filesystem down, so its writes fail; the proof is a write there refused after it.
+// chattr +i was tried first and does not stop writes to the files the store already holds open.
+func failStore() error {
+	d, err := os.OpenFile(scratchMount, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", scratchMount, err)
 	}
-	if out, err := exec.CommandContext(ctx, "/usr/bin/chattr", "-R", "+i", storeDir).CombinedOutput(); err != nil {
-		return fmt.Errorf("chattr: %w: %s", err, strings.TrimSpace(string(out)))
+	defer d.Close() //nolint:errcheck // read-only
+	if err := unix.IoctlSetPointerInt(int(d.Fd()), ext4Shutdown, ext4NoLogFlush); err != nil {
+		return fmt.Errorf("EXT4_IOC_SHUTDOWN: %w", err)
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; {
-		out := output(ctx, "/usr/bin/journalctl", "-q", "--no-pager", "-o", "cat", "--after-cursor", cursor, "-u", collectorUnitName,
-			"-g", "operation not permitted")
-		if strings.TrimSpace(out) != "" {
-			return nil
-		}
-		if time.Now().After(deadline) || !pause(ctx, time.Second) {
-			return errors.New("no refused write in the collector's journal")
-		}
+	if err := os.WriteFile(shutdownProbe, []byte("x"), 0o600); err == nil {
+		return errors.New("a write to the store's filesystem still succeeds after its shutdown")
 	}
+	return nil
 }
 
 // stopAuditd stops auditd and floods syscall records until the kernel counts a loss, then resumes it; the proof
