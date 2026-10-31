@@ -30,6 +30,9 @@ const (
 	capEarly = 5 * time.Second
 	// bundleEntries is a full entry bundle's (Tessera's layout.EntryBundleWidth).
 	bundleEntries = 256
+	// hostLogCap is balistid-ledger's capBytes (host_log_cap_gib): -cap-bytes refuses more, so a cap of more
+	// entries than it holds is no run the ledger made.
+	hostLogCap = 10 << 30
 )
 
 var logCapFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactCapEntries, FactRestartMS, FactCapMS, FactCosignedEnd,
@@ -55,7 +58,8 @@ func judgeLogCap(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the cap was not lowered: \"%s\"", Printable(f[FactInject], 256))
 	case capErr != nil:
 		return Invalid, fmt.Sprintf("the log did not reach its lowered cap: \"%s\"", Printable(f[FactCapMS], 64))
-	case n[FactCapEntries] < 3 || n[FactCosignedEnd] < n[FactCapEntries]-1 || capMS < n[FactRestartMS]:
+	case n[FactCapEntries] < 3 || n[FactCapEntries] > hostLogCap/logentry.LogBytes || n[FactCosignedEnd] > n[FactCapEntries] ||
+		n[FactCosignedEnd] < n[FactCapEntries]-1 || capMS < n[FactRestartMS]:
 		return Invalid, fmt.Sprintf("cap %d entries, cosigned %d, reached at %d ms before the restart at %d", n[FactCapEntries],
 			n[FactCosignedEnd], capMS, n[FactRestartMS])
 	case n[FactFullBundles] == 0 || n[FactFullBundles] != n[FactCosignedEnd]/bundleEntries:

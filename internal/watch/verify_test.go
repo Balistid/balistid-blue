@@ -162,6 +162,28 @@ func TestLossThenOKAlarms(t *testing.T) {
 	}
 }
 
+// The cap's UNKNOWN and final verified in one step still alert the cap, once, as the condition never holds.
+func TestLogCapAndFinalInOneStep(t *testing.T) {
+	now := time.Now()
+	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap},
+		entry.Final{NextOrigin: "next/log"})
+	l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))
+	if err != nil || f.LogCap != 1 || !f.Final || f.Broken != 0 {
+		t.Fatalf("%+v %v", f, err)
+	}
+	w := NewWatchdog(DefaultLimits, now, nil, false)
+	keys := map[Key]int{}
+	for _, e := range w.Grew(now, f, l.Rules) {
+		keys[e.Key]++
+	}
+	if keys[KeyLogCap] != 1 || keys[KeyFinal] != 1 {
+		t.Fatalf("events %v; want one logcap and one final", keys)
+	}
+	if _, held := w.Conditions(now, false)[KeyLogCap]; held {
+		t.Fatal("the cap holds after final")
+	}
+}
+
 // After the cap's UNKNOWN only final may follow: anything else breaks the log's rules (ADR 0036, point 5).
 func TestOnlyFinalFollowsTheCap(t *testing.T) {
 	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap},
