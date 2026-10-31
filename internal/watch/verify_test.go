@@ -162,7 +162,17 @@ func TestLossThenOKAlarms(t *testing.T) {
 	}
 }
 
-// The ledger's log at its cap (ADR 0036, point 5) alarms at once under its own key, not the collector's UNKNOWN.
+// After the cap's UNKNOWN only final may follow: anything else breaks the log's rules (ADR 0036, point 5).
+func TestOnlyFinalFollowsTheCap(t *testing.T) {
+	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap},
+		entry.Batch{First: 5, Last: 6, Root: [32]byte{1}})
+	if _, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log)); err != nil || f.Broken != 1 {
+		t.Fatalf("a batch after the cap: %+v %v", f, err)
+	}
+}
+
+// The ledger's log at its cap (ADR 0036, point 5) alarms under its own key, not the collector's UNKNOWN, as a
+// condition that a restart keeps and final ends.
 func TestLogCapAlarms(t *testing.T) {
 	now := time.Now()
 	log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}}, entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap})
@@ -170,8 +180,27 @@ func TestLogCapAlarms(t *testing.T) {
 	if err != nil || f.LogCap != 1 || f.Unknown != 0 || f.Broken != 0 || l.Rules.Pending {
 		t.Fatalf("%+v %v", f, err)
 	}
-	if ev := NewWatchdog(DefaultLimits, now, nil, false).Grew(now, f, l.Rules); len(ev) != 1 || ev[0].Key != KeyLogCap {
-		t.Fatalf("events %+v, want one logcap", ev)
+	w := NewWatchdog(DefaultLimits, now, nil, false)
+	if ev := w.Grew(now, f, l.Rules); len(ev) != 0 {
+		t.Fatalf("events %+v: the cap is a condition, not an event", ev)
+	}
+	if _, ok := w.Conditions(now, false)[KeyLogCap]; !ok || !l.Rules.Capped {
+		t.Fatalf("no logcap condition: %v, capped %v", w.Conditions(now, false), l.Rules.Capped)
+	}
+	// it holds across a restart from the saved rules, until final
+	re := NewWatchdog(DefaultLimits, now, nil, false)
+	re.capped = l.Rules.Capped && !l.Rules.Final
+	if _, ok := re.Conditions(now.Add(time.Hour), false)[KeyLogCap]; !ok {
+		t.Fatal("a restart lost the logcap condition")
+	}
+	log = append(log, enc(t, entry.Final{NextOrigin: "next/log"})...)
+	l2, f2, err := Advance(context.Background(), l, headOf(log), fetchFrom(log))
+	if err != nil || f2.Broken != 0 || !l2.Rules.Final {
+		t.Fatalf("final after the cap: %+v %v", f2, err)
+	}
+	w.Grew(now, f2, l2.Rules)
+	if _, ok := w.Conditions(now, false)[KeyLogCap]; ok {
+		t.Fatal("the logcap condition outlived final")
 	}
 	if _, ok := pushTitle[KeyLogCap]; !ok {
 		t.Fatal("no title for the log cap's alert")

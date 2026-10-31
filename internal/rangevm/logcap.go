@@ -58,8 +58,8 @@ func judgeLogCap(tr rangejob.Trial, o Outcome) (string, string) {
 	case n[FactCapEntries] < 3 || n[FactCosignedEnd] < n[FactCapEntries]-1 || capMS < n[FactRestartMS]:
 		return Invalid, fmt.Sprintf("cap %d entries, cosigned %d, reached at %d ms before the restart at %d", n[FactCapEntries],
 			n[FactCosignedEnd], capMS, n[FactRestartMS])
-	case n[FactFullBundles] == 0:
-		return Invalid, "no full bundle to measure"
+	case n[FactFullBundles] == 0 || n[FactFullBundles] != n[FactCosignedEnd]/bundleEntries:
+		return Invalid, fmt.Sprintf("%d full bundles for a log of %d entries", n[FactFullBundles], n[FactCosignedEnd])
 	case f[FactPiActive] != "active":
 		return Invalid, fmt.Sprintf("the watcher ended %s: the range stopped it", Printable(f[FactPiActive], 64))
 	case start == nil || start.MS > n[FactRestartMS]:
