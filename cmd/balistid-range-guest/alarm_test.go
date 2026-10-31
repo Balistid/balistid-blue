@@ -74,6 +74,19 @@ func TestCosignWatchGapStopsAtTheInjection(t *testing.T) {
 	}
 }
 
+// The control reports every alert since the watcher's start, a loss trial those after its injection.
+func TestLossPostsFactControlFromStart(t *testing.T) {
+	posts := []rangevm.Post{{MS: 60000, Tag: "start"}, {MS: 90000, Tag: "loss"}, {MS: 95000, Tag: "unknown"}, {MS: 120000, Tag: "loss"}}
+	for inject, want := range map[string]string{
+		rangejob.InjectNone:  "60000:start,90000:loss,95000:unknown,120000:loss",
+		rangejob.InjectStore: "60000:start,120000:loss",
+	} {
+		if got := lossPostsFact(rangejob.Trial{Inject: inject}, posts, 100*time.Second); got != want {
+			t.Errorf("%s: posts fact %q, want %q", inject, got, want)
+		}
+	}
+}
+
 // Each collector loss is matched by the entry its cause makes, and by nothing else.
 func TestLossMatch(t *testing.T) {
 	for inject, cases := range map[string]map[entry.Body]bool{
