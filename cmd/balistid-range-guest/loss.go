@@ -173,25 +173,33 @@ func priorEntry(ctx context.Context, match func(entry.Body) bool) (int64, error)
 	return int64(at), nil //nolint:gosec // a log index is far below 2^63
 }
 
-// otherLoss says what the log holds instead of the cause's entry: its last loss of any stage, beside the cause's
-// last entry before the injection (prior), so a MISS tells a loss of another stage from none.
+// otherLoss says what the log holds instead of the cause's entry: its last loss of any stage and its last health
+// with unstored records, which the Pi alerts as a loss too, beside the cause's last entry before the injection.
 func otherLoss(ctx context.Context, prior int64) string {
-	var last entry.Loss
-	at, err := priorEntry(ctx, func(b entry.Body) bool {
+	var loss entry.Loss
+	var health entry.Health
+	lossAt, err := priorEntry(ctx, func(b entry.Body) bool {
 		l, ok := b.(entry.Loss)
 		if ok {
-			last = l
+			loss = l
 		}
 		return ok
 	})
-	switch {
-	case err != nil:
+	if err != nil {
 		return "; the log's losses: error: " + err.Error()
-	case at < 0:
-		return fmt.Sprintf("; no loss in the log (the cause's last %d)", prior)
 	}
-	return fmt.Sprintf("; the log's last loss: stage %d, %d records, entry %d (the cause's last %d)", last.Stage, last.Records,
-		at, prior)
+	healthAt, err := priorEntry(ctx, func(b entry.Body) bool {
+		h, ok := b.(entry.Health)
+		if ok && h.Unstored > 0 {
+			health = h
+		}
+		return ok && h.Unstored > 0
+	})
+	if err != nil {
+		return "; the log's health: error: " + err.Error()
+	}
+	return fmt.Sprintf("; last loss: entry %d stage %d records %d; last unstored health: entry %d state %d reason %d unstored %d"+
+		" (the cause's last %d)", lossAt, loss.Stage, loss.Records, healthAt, health.State, health.Reason, health.Unstored, prior)
 }
 
 // injectLoss injects a loss cause and returns "ok" with its proof held, else why not, and when it ended if the
