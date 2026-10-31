@@ -197,6 +197,16 @@ class FailsClosed(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertNotIn("::error", out.getvalue())
 
+    def test_an_unexpected_pass_is_annotated_as_itself(self) -> None:
+        # A control that must miss and passes: the launcher exits 1, and the annotation shows the PASS it got.
+        self.result('{"verdict": "PASS", "reason": "every number stored"}')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work), "--trial", "rate-control-drop"],
+                                  env=HOSTED, run=Recorder(exit=1), kvm=Path("/dev/null"), sysctl=self.work / "no-sysctl")
+        self.assertEqual(code, 1)
+        self.assertEqual(out.getvalue().splitlines()[-1], "::error title=range-kvm trial rate-control-drop::PASS: every number stored")
+
     def test_a_failed_run_without_result_is_annotated(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -246,6 +256,23 @@ class TrialWorkflow(unittest.TestCase):
         # The check runs before the checkout, and only env and the checkout's ref take the payload.
         self.assertLess(text.index("=~ ^[0-9a-f]{40}$"), text.index("actions/checkout@"))
         self.assertEqual(len(re.findall(r"(?m)^          (?:SHA|TRIAL|ref): \$\{\{", text)), 4)
+
+    def test_bad_payload_stops_pre_checkout(self) -> None:
+        # The first step's own test, run as the runner runs it: bash with the payload in SHA and TRIAL.
+        text = TRIAL_WORKFLOW.read_text(encoding="utf-8")
+        check = re.findall(r"(?m)^\s+(?:- )?run: '(.*)'$", text)[0]
+        sha = "0123456789abcdef0123456789abcdef01234567"
+
+        def ok(s: str, t: str) -> bool:
+            env = {"PATH": "/usr/bin:/bin", "SHA": s, "TRIAL": t}
+            return subprocess.run(["bash", "-c", check], env=env, check=False).returncode == 0
+
+        self.assertTrue(ok(sha, "silence-ledger"))
+        self.assertTrue(ok(sha, "a" * 32))
+        for s, t in ((sha[:-1], "x"), (sha + "0", "x"), (sha.upper(), "x"), ("", "x"), (sha + "\n", "x"), ("\n" + sha, "x"),
+                     (sha, ""), (sha, "a" * 33), (sha, "Silence"), (sha, "a b"), (sha, "$(id)"), (sha, "a;b"),
+                     (sha, "x\ny"), (sha, "../x"), ('{"a": 1}', "x"), (sha, '["x"]')):
+            self.assertFalse(ok(s, t), (s, t))
         self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
         self.assertIn("persist-credentials: false", text)
         for needle in ("secrets.", "github.token", "pull_request", "continue-on-error", "|| true", "actions/upload-artifact@"):

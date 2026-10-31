@@ -63,8 +63,9 @@ RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 TRIAL_NAME = re.compile(r"[a-z0-9-]{1,32}")
 
 
-def verdict_annotation(state: Path, title: str = "range-kvm self-test") -> str | None:
-    """The newest run's verdict and reason as an ::error:: command, or None when it passed or left none."""
+def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpected: bool = False) -> str | None:
+    """The newest run's verdict and reason as an ::error:: command, or None when it left none or passed and
+    unexpected is false; with unexpected the launcher refused the verdict, so even a control's PASS is shown."""
     results = sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json")
                      if RESULT_ID.fullmatch(p.parent.name))
     if not results:
@@ -82,7 +83,7 @@ def verdict_annotation(state: Path, title: str = "range-kvm self-test") -> str |
     if not isinstance(data, dict):
         return unreadable
     verdict, reason = data.get("verdict"), data.get("reason")
-    if verdict == "PASS":
+    if verdict == "PASS" and not unexpected:
         return None
     text = f"{verdict}: {reason}"[:ANNOTATION_MAX]
     return f"::error title={title}::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -187,7 +188,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
         print(f"\n::{token}::", flush=True)
     # The launcher exits non-zero exactly when the verdict is not the expected one: a control's MISS is no error.
     if done.returncode != 0:
-        annotation = verdict_annotation(state, title) or \
+        annotation = verdict_annotation(state, title, unexpected=True) or \
             f"::error title={title}::no result: the build or {what} failed (exit {done.returncode})"
         print(annotation, flush=True)
     if done.returncode != 0:

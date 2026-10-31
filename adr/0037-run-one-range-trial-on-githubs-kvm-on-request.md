@@ -14,11 +14,11 @@ self-test (ADR 0028). So the maintainer built and ran each new trial by hand: L1
 ## Decision
 
 1. Workflow `range-trial`, on `repository_dispatch` of type `range-trial`, runs as it is on `main`: a dispatched
-   commit cannot rewrite it. The payload's `sha` (40 hex) and `trial` (`^[a-z0-9-]{1,32}$`) are checked first,
-   then that commit is checked out as data, its image built and `balistid-range trial <trial>` run once through
-   `tools/ci/range_kvm.py --trial`; an empty or bad name fails there too, never falls back to the self-test. The
+   commit cannot change its permissions or expressions. The payload's `sha` (40 hex) and `trial`
+   (`^[a-z0-9-]{1,32}$`) are checked first; then that commit is checked out and its own code runs, as its pull
+   request CI would: `tools/ci/range_kvm.py --trial` builds its image and runs `balistid-range trial <trial>`; an empty or bad name fails there too, never falls back to the self-test. The
    name reaches the container only as an environment variable; the launcher's table refuses any other (T37).
-2. The rest is ADR 0028 points 2 and 3 unchanged: the same container and pins, no secret, `contents: read`, no
+2. The rest is ADR 0028 points 2 and 3, as the named commit's `range_kvm.py` holds them: the container and pins, no secret, `contents: read`, no
    checkout credentials, nothing uploaded, workflow commands off while the build prints. The payload reaches
    steps only through `env` and the checkout's `ref`, never as expression text in `run`. 60 minutes cover a
    build and a trial's wall clock (at most 29 minutes, ADR 0018). Only a run whose launcher exits non-zero, a
