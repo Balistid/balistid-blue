@@ -17,7 +17,7 @@ import (
 const FactLossEntry = "loss_entry"
 
 // FactFirstUnknown of a loss trial is the reason of the ledger's first health UNKNOWN after the injection began,
-// "none" without one, "before N" when the ledger logged it before the injection: a store trial's unknown alert is its cause's only when that reason is the store's (ADR 0039,
+// "none" without one, "before N" when the ledger logged one within LossAlarm before it: a store trial's unknown alert is its cause's only when that reason is the store's (ADR 0039,
 // point 3), not another UNKNOWN that came first.
 const FactFirstUnknown = "first_unknown"
 
@@ -33,6 +33,10 @@ const FactCollectorRestarts = "collector_restarts"
 // lossAlarm bounds the alert at the sink after the loss, somewhere in the injection's bracket: loss_alarm_s's
 // 120 s less the minute that delivery has (ADR 0036, point 1), with a poll's slack.
 const lossAlarm = 65 * time.Second
+
+// LossAlarm is lossAlarm for the guest: an UNKNOWN the ledger logged that long before an injection can still have
+// its alert land after it.
+const LossAlarm = lossAlarm
 
 var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactInjectEndMS, FactLossEntry, FactPosts,
 	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter, FactCollectorRestarts, FactFirstUnknown}
@@ -69,9 +73,6 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, "the kernel or the dispatcher lost records too: " + lost
 	case strings.HasPrefix(f[FactLossEntry], "error"):
 		return Invalid, fmt.Sprintf("the ledger could not be read: \"%s\"", Printable(f[FactLossEntry], 256))
-	case tr.Inject == rangejob.InjectStore && strings.HasPrefix(f[FactFirstUnknown], "before"):
-		// an UNKNOWN the ledger logged before the injection came first: no later alert can be shown to be the store's
-		return Invalid, fmt.Sprintf("the ledger's first UNKNOWN after the checkpoint is from %s the injection", Printable(f[FactFirstUnknown], 32))
 	case strings.HasPrefix(f[FactFirstUnknown], "error"):
 		return Invalid, fmt.Sprintf("the ledger's UNKNOWNs could not be read: \"%s\"", Printable(f[FactFirstUnknown], 256))
 	case tr.Inject == rangejob.InjectQueue && !sameRestarts(f[FactCollectorRestarts]):
@@ -89,6 +90,9 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	alarm := lossPost(tr, posts, n[FactInjectMS], f[FactFirstUnknown])
 	switch {
+	case alarm != nil && alarm.Tag == "unknown" && strings.HasPrefix(f[FactFirstUnknown], "before"):
+		// an UNKNOWN the ledger logged within lossAlarm before the injection: its alert may be this one
+		return Invalid, fmt.Sprintf("an unknown alert with an UNKNOWN logged %s the injection", Printable(f[FactFirstUnknown], 32))
 	case f[FactLossEntry] != "yes":
 		return Miss, fmt.Sprintf("no entry of the loss in the ledger: \"%s\"", Printable(f[FactLossEntry], 256))
 	case alarm == nil:
@@ -125,7 +129,7 @@ func lossPost(tr rangejob.Trial, posts []Post, ms uint64, firstUnknown string) *
 		case rangejob.InjectNone:
 			cause = strings.HasPrefix(p.Tag, "loss") || p.Tag == "unknown"
 		case rangejob.InjectStore:
-			cause = p.Tag == LossTag(tr.Inject) || p.Tag == "unknown" && firstUnknown == storeDown
+			cause = p.Tag == LossTag(tr.Inject) || p.Tag == "unknown" && (firstUnknown == storeDown || strings.HasPrefix(firstUnknown, "before"))
 		default:
 			cause = p.Tag != "" && p.Tag == LossTag(tr.Inject)
 		}

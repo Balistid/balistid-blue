@@ -14,6 +14,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/anchor"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
+	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
 // The key units run under UMask=0077: the public halves must still be readable by the relay's uid.
@@ -142,8 +143,8 @@ func TestLastAnnouncementIsTheNewestOfItsKind(t *testing.T) {
 	}
 }
 
-// A store trial's first UNKNOWN after the checkpoint index is the store's only when the ledger logged it after the
-// injection began; one logged before is "before N", which the judge does not attribute (ADR 0039, point 3).
+// A store trial's unknown alert is attributed by the ledger's stamps: an UNKNOWN logged within LossAlarm before
+// the injection makes it "before N", else the first UNKNOWN from the injection on names it (ADR 0039, point 3).
 func TestFirstUnknownByTheLedgersTime(t *testing.T) {
 	health := func(r entry.Reason) func(*anchor.Log) {
 		return func(l *anchor.Log) {
@@ -154,16 +155,13 @@ func TestFirstUnknownByTheLedgersTime(t *testing.T) {
 	}
 	var fromNs int64
 	mark := func(*anchor.Log) { time.Sleep(time.Millisecond); fromNs = time.Now().UnixNano() }
-	// batch 1-3 (entry 0), the store's UNKNOWN (1), the injection, auditstat's (2)
+	// batch 1-3, the store's UNKNOWN, the injection, auditstat's UNKNOWN
 	root, v := writeLog(t, 3, health(entry.ReasonStoreDown), mark, health(entry.ReasonAuditStale))
-	for _, c := range []struct {
-		base, from int64
-		want       string
-	}{
-		{0, fromNs, "before 2"}, {1, fromNs, "8"}, {0, 0, "2"}, {2, fromNs, "none"},
-	} {
-		if got := firstUnknownIn(t.Context(), root, v, c.base, c.from); got != c.want {
-			t.Errorf("after %d from %d: %q, want %q", c.base, c.from, got, c.want)
+	later := time.Now().Add(time.Hour).UnixNano()
+	for from, want := range map[int64]string{fromNs: "before 2", 1: "2", later: "none",
+		fromNs + rangevm.LossAlarm.Nanoseconds(): "before 8"} {
+		if got := firstUnknownIn(t.Context(), root, v, from); got != want {
+			t.Errorf("from %d: %q, want %q", from, got, want)
 		}
 	}
 }
