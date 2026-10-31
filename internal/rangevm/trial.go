@@ -165,8 +165,11 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 			m[name] = v
 		}
 	}
-	if tr.Method() == rangejob.MethodAlarm {
+	switch tr.Method() {
+	case rangejob.MethodAlarm:
 		alarmMeasures(tr, o, m)
+	case rangejob.MethodLoss:
+		lossMeasures(tr, o, m)
 	}
 	if tr.Failure == "" || o.Marks.Fail.IsZero() {
 		return m
@@ -224,6 +227,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeAlarm(tr, o)
 	case rangejob.MethodLogCap:
 		return judgeLogCap(tr, o)
+	case rangejob.MethodLoss:
+		return judgeLoss(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }
