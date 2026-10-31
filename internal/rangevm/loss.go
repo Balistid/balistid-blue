@@ -2,6 +2,7 @@ package rangevm
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -13,12 +14,15 @@ import (
 // counter around the run and the dispatcher's overflow flag after it.
 const FactLossEntry = "loss_entry"
 
+// FactCollectorRestarts is the collector's NRestarts before and after a loss trial, "before after".
+const FactCollectorRestarts = "collector_restarts"
+
 // lossAlarm bounds the alert at the sink after the injection ends: loss_alarm_s's 120 s less the minute that
 // delivery has (ADR 0036, point 1), with a poll's slack.
 const lossAlarm = 65 * time.Second
 
 var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactInjectEndMS, FactLossEntry, FactPosts,
-	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter}
+	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter, FactCollectorRestarts}
 
 // judgeLoss: the closed facts, a proven injection, a readable watcher and its start through the sink, else
 // INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
@@ -47,8 +51,13 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
 	case start == nil || start.MS > n[FactInjectMS]:
 		return Invalid, "the sink saw no start of the watcher before the injection"
-	case n[FactLostAfter] != n[FactLostBefore]:
-		return Invalid, "the kernel lost records too: " + lost
+	case n[FactLostAfter] != n[FactLostBefore] || f[FactOverflowAfter] != "no":
+		return Invalid, "the kernel or the dispatcher lost records too: " + lost
+	case strings.HasPrefix(f[FactLossEntry], "error"):
+		return Invalid, fmt.Sprintf("the ledger could not be read: \"%s\"", Printable(f[FactLossEntry], 256))
+	case tr.Inject == rangejob.InjectQueue && !sameRestarts(f[FactCollectorRestarts]):
+		// a restarted collector takes its queued losses with it: the queue's loss was never shown
+		return Invalid, fmt.Sprintf("the collector restarted during the queue's injection: %s", Printable(f[FactCollectorRestarts], 64))
 	case f[FactPiActive] != "active":
 		return Miss, fmt.Sprintf("the watcher is %s at the end", Printable(f[FactPiActive], 64))
 	}
@@ -70,6 +79,13 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Miss, fmt.Sprintf("%s alert %s after the injection, over %s", alarm.Tag, at, lossAlarm)
 	}
 	return Pass, fmt.Sprintf("%s alert %s after the injection", alarm.Tag, at)
+}
+
+// sameRestarts is "n n": the collector's restart count did not move.
+func sameRestarts(v string) bool {
+	before, after, ok := strings.Cut(v, " ")
+	_, err := plainNumber(before)
+	return ok && err == nil && before == after
 }
 
 // lossPost is the first alert of a loss after ms: a loss, for the store also its UNKNOWN, for the control either.
