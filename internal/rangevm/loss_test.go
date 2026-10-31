@@ -63,11 +63,21 @@ func TestJudgeLoss(t *testing.T) {
 	if v, r := JudgeTrial(trial(t, "loss-store-1"), lossRun("loss-store-1", map[string]string{FactCollectorRestarts: "0 1"}), cleanBuild, cleanBuild); v != Pass {
 		t.Errorf("loss-store with a collector restart: %s (%s)", v, r)
 	}
-	// A full filesystem's store gone down is the store's race, not a proof either way; any other case still MISSes.
-	down := map[string]string{FactLossEntry: LossStoreDown + "; loss -1 s0 r0; unstored health 14 s2 r2 u4"}
-	for name, want := range map[string]string{"loss-full-fs-1": Invalid, "loss-store-1": Miss, "loss-queue-1": Miss} {
-		if v, r := JudgeTrial(trial(t, name), lossRun(name, down), cleanBuild, cleanBuild); v != want {
-			t.Errorf("%s with its store down: %s (%s), want %s", name, v, r, want)
+	// A full filesystem's store gone down is the store's race: INVALID with its alert in time, never PASS, and a
+	// MISS without it; any other case without its entry still MISSes.
+	down := LossStoreDown + "; loss -1 s0 r0; unstored health 14 s2 r2 u4"
+	for _, c := range []struct{ name, posts, want string }{
+		{"loss-full-fs-1", "60000:start,120000:loss", Invalid},
+		{"loss-full-fs-1", "60000:start,165000:loss", Invalid},
+		{"loss-full-fs-1", "60000:start", Miss},
+		{"loss-full-fs-1", "60000:start,120000:unknown", Miss},
+		{"loss-full-fs-1", "60000:start,171001:loss", Miss},
+		{"loss-store-1", "60000:start,120000:loss", Miss},
+		{"loss-queue-1", "60000:start,120000:loss", Miss},
+	} {
+		run := lossRun(c.name, map[string]string{FactLossEntry: down, FactPosts: c.posts})
+		if v, r := JudgeTrial(trial(t, c.name), run, cleanBuild, cleanBuild); v != c.want {
+			t.Errorf("%s with its store down and %s: %s (%s), want %s", c.name, c.posts, v, r, c.want)
 		}
 	}
 	// The store's loss may come as its UNKNOWN; the queue's may not.
