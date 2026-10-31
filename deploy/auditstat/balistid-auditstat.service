@@ -1,0 +1,57 @@
+# Reports the kernel's audit status every 5 s for the collector (ADR 0038 point 1): the one long-running process
+# with CAP_AUDIT_CONTROL, which sends only AUDIT_GET (ADR 0007, R13).
+[Unit]
+Description=Balistid Blue auditstat: the kernel's audit status for the collector
+After=systemd-sysusers.service
+StartLimitIntervalSec=0
+
+[Service]
+# No sd_notify, which needs AF_UNIX: the report's seq shows auditstat alive (ADR 0038 point 4).
+Type=exec
+Restart=always
+RestartSec=1s
+User=balistid-auditstat
+Group=balistid-auditreport
+AmbientCapabilities=CAP_AUDIT_CONTROL
+CapabilityBoundingSet=CAP_AUDIT_CONTROL
+ExecStart=/usr/local/lib/balistid/balistid-auditstat
+RuntimeDirectory=balistid-auditstat
+RuntimeDirectoryMode=0750
+UMask=0027
+MemoryMax=32M
+MemorySwapMax=0
+TasksMax=16
+NoExecPaths=/ /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-auditstat
+InaccessiblePaths=/var/log/audit
+# Audit netlink answers only in the initial namespaces (I): no PrivateNetwork, PrivateUsers or PrivatePIDs.
+IPAddressDeny=any
+RestrictAddressFamilies=AF_NETLINK
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
