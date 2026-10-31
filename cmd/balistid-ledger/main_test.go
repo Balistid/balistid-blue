@@ -97,8 +97,22 @@ func TestNoticesNameTheMPLModuleAndItsSource(t *testing.T) {
 
 func TestServeWithoutAKeyFails(t *testing.T) {
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
-	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), filepath.Join(t.TempDir(), "c"), "", "", anchor.Relay{}, nil); err == nil {
+	if err := serve(t.TempDir(), filepath.Join(t.TempDir(), "s"), filepath.Join(t.TempDir(), "c"), "", "", capBytes, anchor.Relay{}, nil); err == nil {
 		t.Fatal("served without a key")
+	}
+}
+
+// Only the range lowers the cap (ADR 0036): 0 keeps host_log_cap_gib, anything over it is refused.
+func TestLogCapOnlyLowers(t *testing.T) {
+	for flagged, want := range map[uint64]uint64{0: capBytes, 1 << 20: 1 << 20, capBytes: capBytes} {
+		if got, err := logCap(flagged); err != nil || got != want {
+			t.Errorf("logCap(%d) = %d, %v; want %d", flagged, got, err, want)
+		}
+	}
+	for _, flagged := range []uint64{capBytes + 1, 1 << 40} {
+		if got, err := logCap(flagged); err == nil {
+			t.Errorf("logCap(%d) = %d, taken", flagged, got)
+		}
 	}
 }
 
