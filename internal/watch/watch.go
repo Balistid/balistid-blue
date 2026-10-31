@@ -40,6 +40,7 @@ func Run(ctx context.Context, c Config) error {
 	now := c.Now()
 	x := &watcher{c: c, log: l, dog: NewWatchdog(c.Limits, now, quiet, l.Rules.Pending), saved: now, daily: now,
 		active: map[Key]bool{}}
+	x.dog.capped = l.Rules.Capped && !l.Rules.Final // a restart keeps the cap's condition (ADR 0036)
 	c.Push.Event(KeyStart, fmt.Sprintf("watching the log from %d verified entries", l.Size))
 	t := time.NewTicker(c.Poll)
 	defer t.Stop()

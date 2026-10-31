@@ -50,7 +50,7 @@ func TestJudgeLogCap(t *testing.T) {
 			{FactCapMS: "none"},
 			{FactCosignedEnd: "250"},
 			{FactCapMS: "90000"},
-			{FactFullBundles: "0"},
+			{FactFullBundles: "0"}, {FactFullBundles: "2"}, {FactFullBundles: "1000000"},
 			{FactPiActive: "inactive"},
 			{FactPosts: "403000:logcap"},
 			{FactCapEntries: "2", FactCosignedEnd: "1"},

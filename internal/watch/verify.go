@@ -43,6 +43,7 @@ type Rules struct {
 	LossMax     uint64 `json:"loss_max"`     // the highest lost record the next batch has to cover
 	Final       bool   `json:"final"`
 	Pending     bool   `json:"pending"` // the last health is UNKNOWN for a reason that clears by itself
+	Capped      bool   `json:"capped"`  // the log holds its cap's UNKNOWN: only final may follow (ADR 0036)
 }
 
 // Findings is what one verified step's new entries say.
@@ -170,6 +171,9 @@ func (r *Rules) check(raw []byte, f *Findings) {
 	if r.Final {
 		broke("an entry after final")
 	}
+	if _, final := e.Body.(entry.Final); r.Capped && !final {
+		broke("an entry other than final after the log's cap")
+	}
 	switch b := e.Body.(type) {
 	case entry.Batch:
 		if r.BatchLast != 0 && b.First != r.BatchLast+1 {
@@ -218,9 +222,9 @@ func (r *Rules) health(h entry.Health, f *Findings) {
 		r.Pending = false
 	case h.Reason == entry.ReasonStarting || h.Reason == entry.ReasonCanaryPending:
 		r.Pending = true
-	case h.Reason == entry.ReasonLogCap: // the ledger's, not the collector's: its own alert says what to do
+	case h.Reason == entry.ReasonLogCap: // the ledger's, not the collector's: its own condition, saved with the rules
 		f.LogCap++
-		r.Pending = false
+		r.Pending, r.Capped = false, true
 	default:
 		f.Unknown++
 		r.Pending = false

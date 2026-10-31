@@ -27,7 +27,7 @@ const (
 )
 
 // conditions are the keys that hold until their cause ends: raised on every step, cleared after it.
-var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh}
+var conditions = []Key{KeyFork, KeyHealth, KeyTruncated, KeySilence, KeyFresh, KeyLogCap}
 
 // Limits are when the Pi alerts. The first four follow acceptance numbers (acceptance/0.toml), a minute
 // early so that the alert reaches the phone within them.
@@ -70,6 +70,7 @@ type Watchdog struct {
 	fresh   time.Time   // the last step caught up with the witness, or the start
 	trunc   []time.Time // truncated records of the last hour
 	pending time.Time   // since when the last health is a pending UNKNOWN; zero: it is not
+	capped  bool        // the log holds its cap's UNKNOWN and no final yet: a condition until final
 	quiet   *episode
 }
 
@@ -113,6 +114,7 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	case w.pending.IsZero():
 		w.pending = now
 	}
+	w.capped = r.Capped && !r.Final
 	// the newest Truncated+1 times decide "more than Truncated within an hour"; the host sets the count
 	for range min(f.Truncated, w.lim.Truncated+1) {
 		w.trunc = append(w.trunc, now)
@@ -129,9 +131,6 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 	}
 	if f.Unknown > 0 {
 		out = append(out, Event{KeyUnknown, fmt.Sprintf("%d new health entries report UNKNOWN", f.Unknown)})
-	}
-	if f.LogCap > 0 {
-		out = append(out, Event{KeyLogCap, "the host's log reports it reached host_log_cap_gib: only its final entry may follow"})
 	}
 	if f.Final {
 		out = append(out, Event{KeyFinal, "the log ended with a cosigned final: add the next origin by hand"})
@@ -156,6 +155,9 @@ func (w *Watchdog) Conditions(now time.Time, behind bool) map[Key]string {
 	}
 	if len(w.trunc) > w.lim.Truncated {
 		out[KeyTruncated] = fmt.Sprintf("%d records stored truncated within the last hour", len(w.trunc))
+	}
+	if w.capped {
+		out[KeyLogCap] = "the host's log reports it reached host_log_cap_gib: only its final entry may follow"
 	}
 	if !w.pending.IsZero() && now.Sub(w.pending) >= w.lim.Grace {
 		out[KeyHealth] = fmt.Sprintf("the collector has been UNKNOWN for %d s", int64(now.Sub(w.pending).Seconds()))
