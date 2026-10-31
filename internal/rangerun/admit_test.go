@@ -264,7 +264,7 @@ func TestWatchStopWaitsForTheGoroutine(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("stop did not return")
 	}
-	if n > 3 {
+	if n > 2 { // the read stop came in was the last
 		t.Fatalf("%d reads, the watch went on after stop", n)
 	}
 	stop() // a second stop returns at once
