@@ -31,8 +31,10 @@ collector's 64 MiB queue fills. auditd writes its state file every 5 s, so a fli
    is INVALID, so a pass keeps detection, push and 55 s of delivery within 120 s of the loss.
 5. `loss_alarm_s`, 10 trials each: kernel loss transient (auditd stopped, then resumed: its key, then OK within 65 s
    of the resume) and sustained (auditd kept stopped; `lost` rises only after the 60 s backlog wait), and dispatcher
-   overflow, INVALID when the flag reads yes before injection. Four trials kill auditd right after an overflow for
-   systemd to restart it (Laurel ends with it). The control without injection must not alert.
+   overflow, INVALID when the flag reads yes before injection. Four trials stop Laurel, flood past `q_depth` and kill
+   auditd before its next state write, for systemd to restart it; their bracket runs from the SIGKILL to auditd's exit
+   seen by the guest, and a yes read before the kill makes the run INVALID. The control without injection must not
+   alert.
 
 ## Alternatives considered
 
