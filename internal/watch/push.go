@@ -26,6 +26,7 @@ var pushTitle = map[Key]struct {
 }{
 	KeyFork: {"Balistid: log fork", 5}, KeyLog: {"Balistid: log rules broken", 5}, KeyLoss: {"Balistid: records lost", 5},
 	KeyUnknown: {"Balistid: collector UNKNOWN", 5}, KeyHealth: {"Balistid: collector UNKNOWN", 5},
+	KeyLogCap:    {"Balistid: log at its cap", 5},
 	KeyTruncated: {"Balistid: truncated records", 5}, KeySilence: {"Balistid: host silent", 5},
 	KeyFresh: {"Balistid: Pi not verifying", 4}, KeySave: {"Balistid: Pi state", 4}, KeyFailed: {"Balistid: Pi failed", 4},
 	KeyFinal: {"Balistid: log ended", 4}, KeyStart: {"Balistid: Pi watching", 3}, KeyDaily: {"Balistid: daily status", 2},

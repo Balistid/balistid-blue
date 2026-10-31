@@ -123,6 +123,21 @@ class LedgerDeployTest(unittest.TestCase):
         self.assertEqual(defaults["key"], "")  # the credential below, never a path in argv
         self.assertIn('filepath.Join(creds, "ledger-key")', main)
 
+    def test_range_drop_in_adds_only_the_cap(self):
+        # ADR 0036: only the image may lower the cap, through one variable the log-cap trial overrides;
+        # its default is host_log_cap_gib, and the installed argv has no -cap-bytes.
+        main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
+        self.assertRegex(main, r'capBytes        = 10 << 30\n')
+        self.assertRegex(main, r'flag\.Uint64\("cap-bytes", 0, "range only \(ADR 0036\)')
+        drop_in = parse_unit((REPO / "range" / "balistid-ledger-range.conf").read_text())["Service"]
+        installed = shlex.split(parse_unit(service_text())["Service"]["ExecStart"][0])
+        self.assertNotIn("-cap-bytes", installed)
+        self.assertEqual(set(drop_in), {"Environment", "ExecStart"})
+        self.assertEqual(drop_in["Environment"], [f"BALISTID_RANGE_LEDGER_CAP={10 << 30}"])
+        self.assertEqual(drop_in["ExecStart"][0], "")
+        self.assertEqual([shlex.split(v) for v in drop_in["ExecStart"][1:]],
+                         [installed + ["-cap-bytes", "${BALISTID_RANGE_LEDGER_CAP}"]])
+
     def test_paths_agree_across_files(self):
         service = parse_unit(service_text())["Service"]
         self.assertEqual(STATE, "/var/lib/" + service["StateDirectory"][0])

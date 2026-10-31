@@ -37,9 +37,9 @@ appends nothing more: the Pi sees silence after 840 s, not the UNKNOWN 0027 poin
    (Laurel stopped) run with the rules locked (`-e 2`) and are INVALID "no detector" until `balistid-auditstat`
    (ADR 0007), its own milestone after L11 and before L12; until then `loss_alarm_s` cannot pass.
 5. The log keeps its last two slots: a health UNKNOWN with the new reason 7, "log at its cap", logged once, also
-   after a restart at that size; then `final`. Rollover does not copy it into the next log. The Pi alarms on it as on
-   any UNKNOWN. `balistid-ledger -cap-bytes` only lowers the 10 GiB cap, to at least three entries; the range lowers
-   it to fill in minutes. Pass: `unknown` at the sink within 65 s of a checkpoint at the cap, one such entry, the
+   after a restart at that size; then `final`. Rollover does not copy it into the next log. The Pi alarms on it at
+   once under its own key, `logcap`. `balistid-ledger -cap-bytes` only lowers the 10 GiB cap, to at least three
+   entries; the range lowers it to fill in minutes. Pass: `logcap` at the sink within 65 s of the cap, one entry, the
    final slot free, the collector refused for `cap` and full bundles at most the bytes per entry the cap counts.
 
 ## Alternatives considered

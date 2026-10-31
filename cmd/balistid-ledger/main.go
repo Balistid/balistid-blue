@@ -69,6 +69,7 @@ func run() int {
 	announce := flag.String("announce", "", "announce shutdown or suspend to the running ledger, wait for the cosignature and exit")
 	final := flag.String("final", "", "end the running ledger's log naming this next origin, wait for the cosignature, save it beside the log and exit")
 	rollover := flag.String("rollover-from", "", "start the empty -log as the next yearly log after the old log in this directory, then exit")
+	capFlag := flag.Uint64("cap-bytes", 0, "range only (ADR 0036): a lower log cap in bytes; 0 keeps host_log_cap_gib")
 	flag.Parse()
 	if *showNotices {
 		fmt.Println(notices)
@@ -85,12 +86,17 @@ func run() int {
 	} else {
 		relay = anchor.Relay{Path: *relayFile, Keys: keys}
 	}
+	logLimit, err := logCap(*capFlag)
+	if err != nil {
+		log.Error("ledger refused its flags", "err", err)
+		return 2
+	}
 	if modes := countSet(*rollover, *announce, *final); modes > 1 {
 		log.Error("-rollover-from, -announce and -final exclude each other")
 		return 2
 	}
 	if *rollover != "" {
-		if err := rolloverFrom(*dir, *rollover, *keyPath, *witnessKey); err != nil {
+		if err := rolloverFrom(*dir, *rollover, *keyPath, *witnessKey, logLimit); err != nil {
 			log.Error("rollover refused", "err", err)
 			return 1
 		}
@@ -103,7 +109,7 @@ func run() int {
 		}
 		return 0
 	}
-	if err := serve(*dir, *sock, *control, *keyPath, *witnessKey, relay, log); err != nil {
+	if err := serve(*dir, *sock, *control, *keyPath, *witnessKey, logLimit, relay, log); err != nil {
 		log.Error("ledger stopped", "err", err)
 		return 1
 	}
@@ -121,6 +127,18 @@ func verifiesFinal(key, final []byte, witness note.Verifier) error {
 		return fmt.Errorf("does not verify the cosigned final: %w", err)
 	}
 	return nil
+}
+
+// logCap is the log's cap: host_log_cap_gib, or the range's lower one (ADR 0036, point 5). A higher one would
+// let the log grow past the number the host was sized for, so it is refused.
+func logCap(flagged uint64) (uint64, error) {
+	switch {
+	case flagged == 0:
+		return capBytes, nil
+	case flagged > capBytes:
+		return 0, fmt.Errorf("-cap-bytes %d is over host_log_cap_gib (%d bytes)", flagged, uint64(capBytes))
+	}
+	return flagged, nil
 }
 
 // countSet counts the non-empty values.
@@ -176,7 +194,7 @@ func ask(control, announce, final, dir, logKey string, relay anchor.Relay) error
 
 // rolloverFrom starts dir, empty, as the yearly log after the one in previous, whose saved verifier key
 // and the witness's verify its cosigned final entry (ADR 0030, point 6).
-func rolloverFrom(dir, previous, keyPath, witnessKey string) error {
+func rolloverFrom(dir, previous, keyPath, witnessKey string, logLimit uint64) error {
 	// Root would own the new log, which the ledger's uid then cannot write (ADR 0030, point 5).
 	if os.Getuid() == 0 {
 		return errors.New("-rollover-from runs as the ledger's uid, not root")
@@ -189,7 +207,7 @@ func rolloverFrom(dir, previous, keyPath, witnessKey string) error {
 	if err != nil {
 		return err //nolint:wrapcheck // cosign errors carry their context
 	}
-	return anchor.Rollover(context.Background(), anchor.Config{Dir: dir, Signer: signer, CapBytes: capBytes, //nolint:wrapcheck // as above
+	return anchor.Rollover(context.Background(), anchor.Config{Dir: dir, Signer: signer, CapBytes: logLimit, //nolint:wrapcheck // as above
 		CheckpointInterval: checkpointEvery, Now: time.Now}, previous, keys)
 }
 
@@ -205,7 +223,7 @@ func signerFrom(keyPath string) (note.Signer, error) {
 	return readSigner(keyPath, creds)
 }
 
-func serve(dir, sock, control, keyPath, witnessKey string, relay anchor.Relay, log *slog.Logger) error {
+func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, relay anchor.Relay, log *slog.Logger) error {
 	signer, err := signerFrom(keyPath)
 	if err != nil {
 		return err
@@ -216,7 +234,7 @@ func serve(dir, sock, control, keyPath, witnessKey string, relay anchor.Relay, l
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	l, err := anchor.Open(ctx, anchor.Config{Dir: dir, Signer: signer, CapBytes: capBytes,
+	l, err := anchor.Open(ctx, anchor.Config{Dir: dir, Signer: signer, CapBytes: logLimit,
 		CheckpointInterval: checkpointEvery, Now: time.Now})
 	if err != nil {
 		return err //nolint:wrapcheck // anchor errors carry their context

@@ -30,10 +30,8 @@ const (
 	CutEvery = 800 * time.Millisecond
 	// tailBundles bounds how far back Open looks for the last batch (ADR 0027, point 4).
 	tailBundles = 64
-	// entryBytes bounds one entry on disk: its encoding, the bundle's length prefix and its share of
-	// the hash tiles (32 bytes at level 0, a 255th of that per level above).
-	entryBytes = entry.MaxBytes + 2 + 33
-	lockName   = "ledger.lock"
+	entryBytes  = entry.LogBytes
+	lockName    = "ledger.lock"
 )
 
 // ErrStream marks a message the collector should not have sent; the log is unharmed.
@@ -43,8 +41,9 @@ var ErrStream = errors.New("anchor: out of stream order")
 // nothing more; the collector's store keeps the records for the next yearly log.
 var ErrFinal = errors.New("anchor: the log ended with its final entry")
 
-// ErrFull marks an append at the cap (host_log_cap_gib): the log takes only its final entry now, in the
-// slot the cap keeps for it (ADR 0030, point 5); the collector's store keeps the records for the next log.
+// ErrFull marks an append at the cap (host_log_cap_gib): the log took its UNKNOWN for the cap and takes only its
+// final entry now, in the slots the cap keeps for them (ADR 0036, point 5); the collector's store keeps the records
+// for the next log.
 var ErrFull = errors.New("anchor: the log is at its cap and takes only its final entry")
 
 // Config opens a log.
@@ -85,6 +84,7 @@ type Log struct {
 	lock       *os.File
 	now        func() time.Time
 	maxSize    uint64
+	capped     bool // the log holds its cap's UNKNOWN: only the final entry follows
 	size       uint64
 	resume     Resume
 	tailLoss   map[lossKey]entry.Loss // loss entries logged after the last batch
@@ -102,8 +102,8 @@ type Log struct {
 // Open locks dir for the process's lifetime, opens its log and reads back where the stream resumes.
 // Close it before cancelling ctx's parent: Tessera finishes its work only on Close.
 func Open(ctx context.Context, cfg Config) (*Log, error) {
-	// The cap keeps its last slot for the final entry, so at least one other must fit.
-	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < 2*entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
+	// The cap keeps its last two slots, for its UNKNOWN and the final entry, so at least one other must fit.
+	if !filepath.IsAbs(cfg.Dir) || cfg.Signer == nil || cfg.CapBytes < 3*entryBytes || cfg.CheckpointInterval <= 0 || cfg.Now == nil {
 		return nil, errors.New("anchor: incomplete config")
 	}
 	lock, err := lockDir(cfg.Dir)
@@ -131,10 +131,39 @@ func Open(ctx context.Context, cfg Config) (*Log, error) {
 	if l.size, err = reader.IntegratedSize(ctx); err == nil {
 		err = l.recover(ctx, reader)
 	}
+	if err == nil {
+		err = l.withinCap(ctx, reader)
+	}
 	if err != nil {
 		return fail(errors.Join(fmt.Errorf("anchor: %w", err), shutdown(ctx)))
 	}
 	return l, nil
+}
+
+// withinCap refuses a log already past the cap it is opened with (a lowered -cap-bytes): its cap entry could
+// not be logged and its final entry might find no slot, so the ledger stops and the Pi's silence alarm runs.
+// At the cap's UNKNOWN slot the entry there must be the cap's own.
+func (l *Log) withinCap(ctx context.Context, r tessera.LogReader) error {
+	switch {
+	case l.final != nil || l.size+2 <= l.maxSize:
+		return nil
+	case l.size >= l.maxSize:
+		return fmt.Errorf("the log of %d entries is past its cap of %d: no slot for the final entry", l.size, l.maxSize)
+	}
+	idx := (l.size - 1) / layout.EntryBundleWidth
+	b, err := client.GetEntryBundle(ctx, r.ReadEntryBundle, idx, l.size)
+	if err != nil {
+		return fmt.Errorf("read the log's last entry: %w", err)
+	}
+	last := b.Entries[len(b.Entries)-1]
+	e, err := entry.Decode(last)
+	if err != nil {
+		return fmt.Errorf("log entry %d: %w", l.size-1, err)
+	}
+	if e.Body != entry.Body(capHealth) {
+		return fmt.Errorf("the log of %d entries holds %T where its cap of %d keeps its UNKNOWN", l.size, e.Body, l.maxSize)
+	}
+	return nil
 }
 
 func lockDir(dir string) (*os.File, error) {
@@ -195,6 +224,10 @@ func (l *Log) tail(after []entry.Entry) error {
 				return fmt.Errorf("loss of record %d after the batch through %d", body.Seq, l.resume.Last)
 			}
 			l.tailLoss[lossKey{body.Seq, body.Stage}] = body
+		case entry.Health:
+			if body == capHealth { // the log reached a cap once: it stays there, whatever cap it is opened with
+				l.capped = true
+			}
 		case entry.Seal:
 			if body.Last != l.resume.Last || l.tailSeal != nil {
 				return fmt.Errorf("seal through %d after the batch through %d", body.Last, l.resume.Last)
@@ -223,7 +256,7 @@ func (l *Log) Broken() error {
 func (l *Log) Full() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return l.final == nil && l.size >= l.maxSize-1
+	return l.final == nil && (l.capped || l.size >= l.maxSize-1)
 }
 
 // Ended reports whether the log holds its final entry.
@@ -240,7 +273,7 @@ func (l *Log) stopped() error {
 		return l.broken
 	case l.final != nil:
 		return ErrFinal
-	case l.size >= l.maxSize-1:
+	case l.capped || l.size >= l.maxSize-1:
 		return ErrFull
 	}
 	return nil
@@ -348,6 +381,9 @@ func (l *Log) Health(ctx context.Context, h entry.Health) error {
 	if h == l.health {
 		return nil
 	}
+	if h.Reason == entry.ReasonLogCap { // the ledger's own, at its cap: a collector claiming it lies
+		return fmt.Errorf("%w: the collector's health claims the log's cap", ErrStream)
+	}
 	if err := l.append(ctx, h); err != nil {
 		return err
 	}
@@ -444,14 +480,22 @@ func (l *Log) cut(ctx context.Context) error {
 	return nil
 }
 
+// capHealth is what the log logs in the first of the two slots its cap keeps: the Pi alarms on it at once.
+var capHealth = entry.Health{State: entry.StateUnknown, Reason: entry.ReasonLogCap}
+
 // append logs one entry and waits until Tessera has integrated it, so entries land in call order and a
-// failure is never followed by a later entry (R6). Only the final entry takes the cap's last slot.
+// failure is never followed by a later entry (R6). The cap keeps its last two slots (ADR 0036, point 5): an
+// entry that reaches the first is refused and capHealth takes it instead, once; the last is the final entry's.
 func (l *Log) append(ctx context.Context, body entry.Body) error {
-	limit := l.maxSize - 1
-	if _, final := body.(entry.Final); final {
-		limit = l.maxSize
-	}
-	if l.size >= limit {
+	_, final := body.(entry.Final)
+	switch {
+	case final && l.size >= l.maxSize, !final && (l.capped || body != entry.Body(capHealth) && l.size > l.maxSize-2):
+		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
+	case !final && body != entry.Body(capHealth) && l.size == l.maxSize-2:
+		if err := l.append(ctx, capHealth); err != nil {
+			return err
+		}
+		l.capped = true
 		return fmt.Errorf("%w: %d entries", ErrFull, l.maxSize)
 	}
 	b, err := entry.Entry{At: l.now().UnixNano(), Body: body}.Encode()
