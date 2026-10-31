@@ -130,10 +130,39 @@ func Open(ctx context.Context, cfg Config) (*Log, error) {
 	if l.size, err = reader.IntegratedSize(ctx); err == nil {
 		err = l.recover(ctx, reader)
 	}
+	if err == nil {
+		err = l.withinCap(ctx, reader)
+	}
 	if err != nil {
 		return fail(errors.Join(fmt.Errorf("anchor: %w", err), shutdown(ctx)))
 	}
 	return l, nil
+}
+
+// withinCap refuses a log already past the cap it is opened with (a lowered -cap-bytes): its cap entry could
+// not be logged and its final entry might find no slot, so the ledger stops and the Pi's silence alarm runs.
+// At the cap's UNKNOWN slot the entry there must be the cap's own.
+func (l *Log) withinCap(ctx context.Context, r tessera.LogReader) error {
+	switch {
+	case l.final != nil || l.size+2 <= l.maxSize:
+		return nil
+	case l.size >= l.maxSize:
+		return fmt.Errorf("the log of %d entries is past its cap of %d: no slot for the final entry", l.size, l.maxSize)
+	}
+	idx := (l.size - 1) / layout.EntryBundleWidth
+	b, err := client.GetEntryBundle(ctx, r.ReadEntryBundle, idx, l.size)
+	if err != nil {
+		return fmt.Errorf("read the log's last entry: %w", err)
+	}
+	last := b.Entries[len(b.Entries)-1]
+	e, err := entry.Decode(last)
+	if err != nil {
+		return fmt.Errorf("log entry %d: %w", l.size-1, err)
+	}
+	if e.Body != entry.Body(capHealth) {
+		return fmt.Errorf("the log of %d entries holds %T where its cap of %d keeps its UNKNOWN", l.size, e.Body, l.maxSize)
+	}
+	return nil
 }
 
 func lockDir(dir string) (*os.File, error) {
