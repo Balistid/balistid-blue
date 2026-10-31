@@ -129,7 +129,8 @@ func capEntry(ctx context.Context, cp cosign.Checkpoint, entries uint64) string 
 }
 
 // fullBundleBytes is how many full entry bundles the log of size holds and their bytes on disk with their
-// level-0 hash tiles: what the cap counts per entry, without the right edge's partial tiles.
+// level-0 hash tiles, and the partial copies (.p/) of both that Tessera keeps until its GC: what the cap counts
+// per entry, without the right edge, whose partials belong to the bundle still filling.
 func fullBundleBytes(dir string, size uint64) (bundles, bytes uint64) {
 	for i := range size / layout.EntryBundleWidth {
 		for _, p := range []string{layout.EntriesPath(i, 0), layout.TilePath(0, i, 0)} {
@@ -138,6 +139,12 @@ func fullBundleBytes(dir string, size uint64) (bundles, bytes uint64) {
 				return 0, 0 // a full bundle without its file measures nothing
 			}
 			bytes += uint64(st.Blocks) * 512 //nolint:gosec // st_blocks is never negative
+			partials, _ := os.ReadDir(filepath.Join(dir, p+".p"))
+			for _, e := range partials {
+				if err := syscall.Lstat(filepath.Join(dir, p+".p", e.Name()), &st); err == nil {
+					bytes += uint64(st.Blocks) * 512 //nolint:gosec // as above
+				}
+			}
 		}
 		bundles++
 	}
