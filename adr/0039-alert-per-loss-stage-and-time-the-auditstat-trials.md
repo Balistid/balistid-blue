@@ -22,16 +22,17 @@ collector's 64 MiB queue fills. auditd writes its state file every 5 s, so a fli
    that decode stages 7-8 and reasons 8-10 are installed before hosts that emit them (ADR 0027 point 6).
 2. `balistid-collector -queue-bytes` only lowers the 64 MiB queue, to at least one largest record. Only the range
    sets it, so Laurel's real stream fills a small queue under a frozen store before the dispatcher overflows.
-3. A trial counts only the alert of its cause: its stage's key, or `unknown` when the ledger shows UNKNOWN with the
-   trial's reason and no other reason within its window.
-4. A trial's clock starts at the latest moment the guest can show came before the loss: the end of the injection for
-   queue, filesystem and store (ADR 0036); its last read of `lost` before the rise (root, every 100 ms); for the flag,
-   the mtime of the last state file that read no, as the guest never signals auditd. A pass is its key at the sink
-   within 65 s of that, so detection, push and 55 s of delivery stay within the 120 s from the loss.
+3. A trial counts only the alert of its cause: its stage's key, or `unknown` when the ledger's first UNKNOWN after the
+   bracket's start names a reason the trial allows (store: 2; auditd killed: 3 or 10, with a 10 for its new pid).
+4. A loss falls in a bracket the guest shows: injection start to end for queue, filesystem and store (ADR 0036, as
+   now); for `lost`, its last read before the rise to the first after (`AUDIT_GET` every 100 ms, no exec); for the
+   flag, the mtime of the last state file that read no to that of the first that read yes (the guest never signals
+   auditd). An alert within 65 s of the bracket's start passes, one more than 65 s after its end misses, and between
+   is INVALID, so a pass keeps detection, push and 55 s of delivery within 120 s of the loss.
 5. `loss_alarm_s`, 10 trials each: kernel loss transient (auditd stopped, then resumed: its key, then OK within 65 s
    of the resume) and sustained (auditd kept stopped; `lost` rises only after the 60 s backlog wait), and dispatcher
-   overflow, INVALID when the flag reads yes before injection. Four trials kill auditd for systemd to restart it,
-   passing on `unknown` with reason 10. The control without injection must not alert.
+   overflow, INVALID when the flag reads yes before injection. Four trials kill auditd right after an overflow for
+   systemd to restart it (Laurel ends with it). The control without injection must not alert.
 
 ## Alternatives considered
 
@@ -45,8 +46,9 @@ collector's 64 MiB queue fills. auditd writes its state file every 5 s, so a fli
 
 - Amends ADR 0031 points 3 and 6 (keys, the dispatcher condition), ADR 0036 point 4 and the `loss_alarm_s` method.
   Judges move from `loss` to one key, so a check fires less often: its review weighs that (ENGINEERING.md).
-- Residuals: delivery to the phone waits for L12; the clock for the flag can start up to 5 s early, which only
-  makes a trial stricter.
+- Residuals: delivery to the phone waits for L12; the flag's bracket is up to 5 s wide, which can make a run
+  INVALID, never a false pass.
 - Tests: a stage-2 entry raises `lossqueue` and no other key; unstored records raise `lossunstored`; reason 9
   alerts again after 6 h and clears with the flag; the queue judge refuses a `lossstore` post and the store judge an
-  `unknown` with reason 8; each clock's MISS at 65.1 s; no deploy unit carries `-queue-bytes`.
+  `unknown` with reason 8, a killed auditd without a 10 misses; each bracket's PASS, INVALID and MISS edges; no deploy
+  unit carries `-queue-bytes`.

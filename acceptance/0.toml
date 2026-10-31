@@ -206,7 +206,7 @@ max = 120
 unit = "s from injected kernel, dispatcher or collector loss, or a health failure, to a phone alert"
 rows = ["T4", "T25"]
 adr = "0006"
-method = "A full collector queue, a full filesystem and a failing store (ADR 0016), four trials each: each alerts at the range's ntfy sink within 65 s, delivery within the 55 s left shown on the Pi (L12, ADR 0036). Transient kernel loss followed by OK, sustained loss and dispatcher overflow, 10 trials each, and four auditd crashes alert under their own key within 65 s of the last moment the guest shows was before the loss (ADR 0039); balistid-auditstat polls every 5 s (ADR 0038)."
+method = "A full collector queue, a full filesystem and a failing store (ADR 0016), four trials each: each alerts at the range's ntfy sink within 65 s, delivery within the 55 s left shown on the Pi (L12, ADR 0036). Transient kernel loss followed by OK, sustained loss and dispatcher overflow, 10 trials each, and four auditd crashes raise their cause's alert within 65 s of the start of the bracket the guest shows around the loss (ADR 0039); balistid-auditstat polls every 5 s (ADR 0038)."
 
 [[metric]]
 id = "silence_alarm_s"
