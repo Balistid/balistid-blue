@@ -96,6 +96,11 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricReady, Inject: InjectLedger}, ""},
 		{Trial{Metric: MetricSilence, Inject: InjectLedger, Failure: FailKill}, ""},
 		{Trial{Metric: MetricSilence, Inject: InjectLedger, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricLoss, Inject: InjectQueue}, MethodLoss},
+		{Trial{Metric: MetricLoss, Inject: InjectNone}, MethodLoss},
+		{Trial{Metric: MetricLoss, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricSilence, Inject: InjectQueue}, ""},
+		{Trial{Metric: MetricLoss}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -147,6 +152,33 @@ func TestAlarmTrialsAreTheADRs(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("injection %s measures %q, want %q", k, got[k], v)
 		}
+	}
+}
+
+// loss_alarm_s (ADR 0036, point 4): four runs of each collector case, at least the ten the method asks for in
+// all, one each of the undetected cases and the control that must not alert.
+func TestLossTrialsAreTheADRs(t *testing.T) {
+	want := map[string]int{InjectQueue: 4, InjectFullFS: 4, InjectStore: 4, InjectKernel: 1, InjectDispatcher: 1, InjectNone: 1}
+	got, collector := map[string]int{}, 0
+	for _, tr := range Trials() {
+		if tr.Method() != MethodLoss {
+			continue
+		}
+		got[tr.Inject] += tr.Count
+		if (tr.Inject == InjectNone) != (tr.Expect == ExpectPass) || tr.Trend {
+			t.Errorf("%s: only the control expects, and none is a trend", tr.Name)
+		}
+		if tr.Inject == InjectQueue || tr.Inject == InjectFullFS || tr.Inject == InjectStore {
+			collector += tr.Count
+		}
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("injection %s: %d runs, want %d", k, got[k], v)
+		}
+	}
+	if collector < 10 {
+		t.Errorf("%d collector-loss runs; loss_alarm_s asks 10", collector)
 	}
 }
 
