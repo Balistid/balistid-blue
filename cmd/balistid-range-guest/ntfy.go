@@ -21,6 +21,8 @@ const (
 	ntfySinkArg   = "ntfy-sink"
 	ntfySinkAddr  = "127.0.0.1:7382"
 	ntfySinkTopic = "/balistid-range"
+	// sinkHeader opens the sink's file: its schema and the rule each line's ok or bad decides (ENGINEERING.md §3).
+	sinkHeader = "balistid-range-ntfy 1 token=bearer-range-only"
 	ntfyPosts     = "/run/balistid-range-ntfy/posts"
 	// ntfyToken is the token range/balistid-pi-range.conf gives the watcher (SetCredential).
 	ntfyToken    = "range-only"
@@ -99,6 +101,9 @@ func ntfySinkMain(args []string) error {
 	defer f.Close() //nolint:errcheck // the process ends
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", ntfySinkAddr)
 	if err != nil {
+		return fmt.Errorf("ntfy sink: %w", err)
+	}
+	if _, err := fmt.Fprintln(f, sinkHeader); err != nil {
 		return fmt.Errorf("ntfy sink: %w", err)
 	}
 	srv := &http.Server{Handler: &sink{w: f, max: sinkMaxLines, now: uptime}, ReadHeaderTimeout: sinkTimeout,
