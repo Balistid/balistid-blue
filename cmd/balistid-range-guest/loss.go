@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/sys/unix"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
@@ -75,6 +76,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
 	}
 	lostBefore, restartsBefore := auditLost(), restarts()
+	fromNs := time.Now().UnixNano() // the ledger stamps entries with this clock (internal/anchor)
 	from, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
@@ -113,7 +115,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
-	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, base))
+	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, base, fromNs))
 	return r.send(r.facts)
 }
 
@@ -168,21 +170,31 @@ func lossMatch(inject string) func(entry.Body) bool {
 }
 
 // firstUnknown is the reason of the log's first health UNKNOWN after index base, "none" without one, which tells
-// whether a store trial's unknown alert is the store's (ADR 0039, point 3).
-func firstUnknown(ctx context.Context, base int64) string {
+// whether a store trial's unknown alert is the store's (ADR 0039, point 3). base comes from a checkpoint that lags
+// the log, so that UNKNOWN may predate the injection: the ledger's stamp then says "before N", which the judge
+// takes as no attribution.
+func firstUnknown(ctx context.Context, base, fromNs int64) string {
 	keys, err := rangeKeys()
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	at, reason := int64(-1), "none"
-	_, err = lastEntry(ctx, ledgerLog, keys.Log, func(b entry.Body) bool {
-		at++ // lastEntry offers every entry once, in index order
-		if h, ok := b.(entry.Health); ok && at > base && h.State == entry.StateUnknown && reason == "none" {
-			reason = strconv.Itoa(int(h.Reason))
+	return firstUnknownIn(ctx, ledgerLog, keys.Log, base, fromNs)
+}
+
+// firstUnknownIn is firstUnknown for the log at root under v.
+func firstUnknownIn(ctx context.Context, root string, v note.Verifier, base, fromNs int64) string {
+	reason := "none"
+	_, err := eachEntry(ctx, root, v, func(i uint64, e entry.Entry) {
+		h, ok := e.Body.(entry.Health)
+		if !ok || int64(i) <= base || h.State != entry.StateUnknown || reason != "none" { //nolint:gosec // a log index is far below 2^63
+			return
 		}
-		return false
+		reason = strconv.Itoa(int(h.Reason))
+		if e.At < fromNs {
+			reason = "before " + reason
+		}
 	})
-	if err != nil && !errors.Is(err, errNoAnnouncement) {
+	if err != nil {
 		return "error: " + err.Error()
 	}
 	return reason

@@ -385,12 +385,29 @@ func lastAnnouncement(ctx context.Context, root string, v note.Verifier, kind en
 // lastEntry is the index of the last entry match takes in the log at root, under its signed checkpoint, or
 // errNoAnnouncement when none does.
 func lastEntry(ctx context.Context, root string, v note.Verifier, match func(entry.Body) bool) (uint64, error) {
+	found, at := false, uint64(0)
+	size, err := eachEntry(ctx, root, v, func(i uint64, e entry.Entry) {
+		if match(e.Body) {
+			found, at = true, i
+		}
+	})
+	switch {
+	case err != nil:
+		return 0, err
+	case !found:
+		return 0, fmt.Errorf("%w in %d entries", errNoAnnouncement, size)
+	}
+	return at, nil
+}
+
+// eachEntry hands each entry of the log at root, under its signed checkpoint, to fn in index order and returns the
+// checkpoint's size.
+func eachEntry(ctx context.Context, root string, v note.Verifier, fn func(uint64, entry.Entry)) (uint64, error) {
 	f := client.FileFetcher{Root: root}
 	cp, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, v, ledgerOrigin)
 	if err != nil {
 		return 0, fmt.Errorf("checkpoint: %w", err)
 	}
-	found, at := false, uint64(0)
 	for idx := uint64(0); idx*layout.EntryBundleWidth < cp.Size; idx++ {
 		b, err := client.GetEntryBundle(ctx, f.ReadEntryBundle, idx, cp.Size)
 		if err != nil {
@@ -401,15 +418,10 @@ func lastEntry(ctx context.Context, root string, v note.Verifier, match func(ent
 			if err != nil {
 				return 0, fmt.Errorf("bundle %d: %w", idx, err)
 			}
-			if match(e.Body) {
-				found, at = true, idx*layout.EntryBundleWidth+uint64(i)
-			}
+			fn(idx*layout.EntryBundleWidth+uint64(i), e)
 		}
 	}
-	if !found {
-		return 0, fmt.Errorf("%w in %d entries", errNoAnnouncement, cp.Size)
-	}
-	return at, nil
+	return cp.Size, nil
 }
 
 // shardCosigned is "yes" once a shard the collector sealed carries a witness time in its index: the relay's

@@ -17,7 +17,7 @@ import (
 const FactLossEntry = "loss_entry"
 
 // FactFirstUnknown of a loss trial is the reason of the ledger's first health UNKNOWN after the injection began,
-// "none" without one: a store trial's unknown alert is its cause's only when that reason is the store's (ADR 0039,
+// "none" without one, "before N" when the ledger logged it before the injection: a store trial's unknown alert is its cause's only when that reason is the store's (ADR 0039,
 // point 3), not another UNKNOWN that came first.
 const FactFirstUnknown = "first_unknown"
 
@@ -67,8 +67,13 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, "the sink saw no start of the watcher before the injection"
 	case n[FactLostAfter] != n[FactLostBefore] || f[FactOverflowAfter] != "no":
 		return Invalid, "the kernel or the dispatcher lost records too: " + lost
-	case strings.HasPrefix(f[FactLossEntry], "error") || strings.HasPrefix(f[FactFirstUnknown], "error"):
+	case strings.HasPrefix(f[FactLossEntry], "error"):
 		return Invalid, fmt.Sprintf("the ledger could not be read: \"%s\"", Printable(f[FactLossEntry], 256))
+	case tr.Inject == rangejob.InjectStore && strings.HasPrefix(f[FactFirstUnknown], "before"):
+		// an UNKNOWN the ledger logged before the injection came first: no later alert can be shown to be the store's
+		return Invalid, fmt.Sprintf("the ledger's first UNKNOWN after the checkpoint is from %s the injection", Printable(f[FactFirstUnknown], 32))
+	case strings.HasPrefix(f[FactFirstUnknown], "error"):
+		return Invalid, fmt.Sprintf("the ledger's UNKNOWNs could not be read: \"%s\"", Printable(f[FactFirstUnknown], 256))
 	case tr.Inject == rangejob.InjectQueue && !sameRestarts(f[FactCollectorRestarts]):
 		// a restarted collector takes its queued losses with it: the queue's loss was never shown
 		return Invalid, fmt.Sprintf("the collector restarted during the queue's injection: %s", Printable(f[FactCollectorRestarts], 64))

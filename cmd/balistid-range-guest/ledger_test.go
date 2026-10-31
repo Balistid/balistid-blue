@@ -141,3 +141,29 @@ func TestLastAnnouncementIsTheNewestOfItsKind(t *testing.T) {
 		t.Fatalf("an announcement found at %d in a log without one", at)
 	}
 }
+
+// A store trial's first UNKNOWN after the checkpoint index is the store's only when the ledger logged it after the
+// injection began; one logged before is "before N", which the judge does not attribute (ADR 0039, point 3).
+func TestFirstUnknownByTheLedgersTime(t *testing.T) {
+	health := func(r entry.Reason) func(*anchor.Log) {
+		return func(l *anchor.Log) {
+			if err := l.Health(t.Context(), entry.Health{State: entry.StateUnknown, Reason: r}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var fromNs int64
+	mark := func(*anchor.Log) { time.Sleep(time.Millisecond); fromNs = time.Now().UnixNano() }
+	// batch 1-3 (entry 0), the store's UNKNOWN (1), the injection, auditstat's (2)
+	root, v := writeLog(t, 3, health(entry.ReasonStoreDown), mark, health(entry.ReasonAuditStale))
+	for _, c := range []struct {
+		base, from int64
+		want       string
+	}{
+		{0, fromNs, "before 2"}, {1, fromNs, "8"}, {0, 0, "2"}, {2, fromNs, "none"},
+	} {
+		if got := firstUnknownIn(t.Context(), root, v, c.base, c.from); got != c.want {
+			t.Errorf("after %d from %d: %q, want %q", c.base, c.from, got, c.want)
+		}
+	}
+}
