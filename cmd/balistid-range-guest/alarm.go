@@ -103,6 +103,9 @@ func sinkPosts(r io.Reader) ([]rangevm.Post, int, error) {
 	var posts []rangevm.Post
 	refused := 0
 	sc := bufio.NewScanner(bytes.NewReader(data))
+	if !sc.Scan() || sc.Text() != sinkHeader { // another schema or rule is no evidence this judge reads
+		return nil, 0, fmt.Errorf("posts: header %q, want %q", sc.Text(), sinkHeader)
+	}
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
 		if len(f) != 3 {

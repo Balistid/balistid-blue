@@ -47,6 +47,8 @@ const (
 	quietFrom   = RangeQuiet - 5*time.Second
 	quietTo     = RangeQuiet + time.Minute
 	againAfter  = 2 * time.Minute
+	// proofMax bounds an announcement's stop to its cosignature proven: the client's 20 s and the guest's proof.
+	proofMax = 65 * time.Second
 	// SettleAfter is how long after the injection a cosign already on its way may still land; growth after it
 	// is growth the injection did not stop (grown_after).
 	SettleAfter = 30 * time.Second
@@ -104,7 +106,8 @@ func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the injection is not proven: \"%s\"", Printable(f[FactInject], 256))
 	case f[FactGrownAfter] != "no":
 		return Invalid, fmt.Sprintf("the cosigned size grew after the injection: \"%s\"", Printable(f[FactGrownAfter], 64))
-	case n[FactInjectEndMS] < n[FactInjectMS] || tr.Metric == rangejob.MetricSilence && n[FactInjectEndMS] != n[FactInjectMS]:
+	case n[FactInjectEndMS] < n[FactInjectMS] || tr.Metric == rangejob.MetricSilence && n[FactInjectEndMS] != n[FactInjectMS] ||
+		msDuration(n[FactInjectEndMS]-min(n[FactInjectEndMS], n[FactInjectMS])) > proofMax:
 		return Invalid, fmt.Sprintf("the injection's bracket %d to %d ms does not fit its trial", n[FactInjectMS], n[FactInjectEndMS])
 	case f[FactPiActive] == "missing":
 		return Invalid, "the watcher's state could not be read"
@@ -127,18 +130,19 @@ func judgeAlarm(tr rangejob.Trial, o Outcome) (string, string) {
 	case alarm == nil:
 		return Miss, "no silence alert reached the sink"
 	}
-	// Silence counts from the last cosigned growth; the quiet cap from the first announcement, which the Pi saw
-	// between its stop (inject_ms) and its cosignature proven (inject_end_ms).
-	lo, hi := msDuration(alarm.MS-min(alarm.MS, n[FactCosignedMS])), msDuration(alarm.MS-min(alarm.MS, n[FactCosignedMS]))
-	from, to := silenceFrom, silenceTo
+	// Silence counts from the last cosigned growth. The quiet cap counts from the first announcement, which the Pi
+	// saw somewhere between its stop (inject_ms) and its cosignature proven (inject_end_ms): the alert must be in
+	// the window for every moment of that bracket, its youngest age (from the end) and its oldest (from the stop).
+	young := msDuration(alarm.MS - min(alarm.MS, n[FactCosignedMS]))
+	old, from, to := young, silenceFrom, silenceTo
 	if tr.Metric == rangejob.MetricQuiet {
-		lo, hi = msDuration(alarm.MS-n[FactInjectMS]), msDuration(alarm.MS-min(alarm.MS, n[FactInjectEndMS]))
+		young, old = msDuration(alarm.MS-min(alarm.MS, n[FactInjectEndMS])), msDuration(alarm.MS-n[FactInjectMS])
 		from, to = quietFrom, quietTo
 	}
-	if lo < from || hi > to {
-		return Miss, fmt.Sprintf("silence alert %s to %s after its start, outside %s to %s%s", hi, lo, from, to, again)
+	if young < from || old > to {
+		return Miss, fmt.Sprintf("silence alert %s to %s after its start, outside %s to %s%s", young, old, from, to, again)
 	}
-	return Pass, fmt.Sprintf("silence alert %s to %s after its start%s", hi, lo, again)
+	return Pass, fmt.Sprintf("silence alert %s to %s after its start%s", young, old, again)
 }
 
 // againMS checks quiet-again's second announcement: after the first by at least againAfter, so a cap it
@@ -177,16 +181,16 @@ func firstPost(posts []Post, tag string, after uint64) *Post {
 
 // alarmMeasures are an alarm run's largest cosign gap and, when it came, the alert's delay.
 func alarmMeasures(tr rangejob.Trial, o Outcome, m map[string]uint64) {
-	f, n, why := probeFacts(tr, o, alarmFacts, []string{FactInjectMS, FactCosignedMS, FactCosignGapMS})
+	f, n, why := probeFacts(tr, o, alarmFacts, []string{FactInjectMS, FactInjectEndMS, FactCosignedMS, FactCosignGapMS})
 	if why != "" {
 		return
 	}
 	m[FactCosignGapMS] = n[FactCosignGapMS]
 	posts, err := ParsePosts(f[FactPosts])
-	alarm := firstPost(posts, "silence", n[FactInjectMS]+1)
+	alarm := firstPost(posts, "silence", 0)
 	from := n[FactCosignedMS]
 	if tr.Metric == rangejob.MetricQuiet {
-		from = n[FactInjectMS]
+		from = n[FactInjectEndMS]
 	}
 	if err == nil && alarm != nil && alarm.MS >= from {
 		m[MeasureAlarmMS] = alarm.MS - from
