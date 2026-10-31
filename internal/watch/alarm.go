@@ -131,7 +131,7 @@ func (w *Watchdog) Grew(now time.Time, f Findings, r Rules) []Event {
 		out = append(out, Event{KeyUnknown, fmt.Sprintf("%d new health entries report UNKNOWN", f.Unknown)})
 	}
 	if f.LogCap > 0 {
-		out = append(out, Event{KeyLogCap, "the host's log reached host_log_cap_gib: roll it over to a new origin"})
+		out = append(out, Event{KeyLogCap, "the host's log reports it reached host_log_cap_gib: only its final entry may follow"})
 	}
 	if f.Final {
 		out = append(out, Event{KeyFinal, "the log ended with a cosigned final: add the next origin by hand"})
