@@ -67,20 +67,16 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	base, err := priorEntry(ctx, func(entry.Body) bool { return true })
-	if err != nil {
-		return r.fail(err.Error())
-	}
 	auditLost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	restarts := func() string {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
 	}
 	lostBefore, restartsBefore := auditLost(), restarts()
-	fromNs := time.Now().UnixNano() // the ledger stamps entries with this clock (internal/anchor)
 	from, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
 	}
+	fromNs := time.Now().UnixNano() // after the bracket's start, in the clock the ledger stamps entries with (internal/anchor)
 	proof, end := injectLoss(ctx, tr.Inject)
 	if end == 0 {
 		if end, err = uptime(); err != nil {
@@ -115,7 +111,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
-	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, base, fromNs))
+	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, fromNs))
 	return r.send(r.facts)
 }
 
@@ -169,35 +165,37 @@ func lossMatch(inject string) func(entry.Body) bool {
 	return func(entry.Body) bool { return false }
 }
 
-// firstUnknown is the reason of the log's first health UNKNOWN after index base, "none" without one, which tells
-// whether a store trial's unknown alert is the store's (ADR 0039, point 3). base comes from a checkpoint that lags
-// the log, so that UNKNOWN may predate the injection: the ledger's stamp then says "before N", which the judge
-// takes as no attribution.
-func firstUnknown(ctx context.Context, base, fromNs int64) string {
+// firstUnknown attributes a store trial's unknown alert by the ledger's own stamps (ADR 0039, point 3): "before N"
+// when the ledger logged an UNKNOWN within rangevm.LossAlarm before fromNs, whose alert may land after the
+// injection, else the reason of its first UNKNOWN from fromNs on, "none" without one.
+func firstUnknown(ctx context.Context, fromNs int64) string {
 	keys, err := rangeKeys()
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	return firstUnknownIn(ctx, ledgerLog, keys.Log, base, fromNs)
+	return firstUnknownIn(ctx, ledgerLog, keys.Log, fromNs)
 }
 
 // firstUnknownIn is firstUnknown for the log at root under v.
-func firstUnknownIn(ctx context.Context, root string, v note.Verifier, base, fromNs int64) string {
-	reason := "none"
-	_, err := eachEntry(ctx, root, v, func(i uint64, e entry.Entry) {
+func firstUnknownIn(ctx context.Context, root string, v note.Verifier, fromNs int64) string {
+	before, after := "", "none"
+	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
 		h, ok := e.Body.(entry.Health)
-		if !ok || int64(i) <= base || h.State != entry.StateUnknown || reason != "none" { //nolint:gosec // a log index is far below 2^63
-			return
-		}
-		reason = strconv.Itoa(int(h.Reason))
-		if e.At < fromNs {
-			reason = "before " + reason
+		switch {
+		case !ok || h.State != entry.StateUnknown:
+		case e.At < fromNs && e.At >= fromNs-rangevm.LossAlarm.Nanoseconds():
+			before = "before " + strconv.Itoa(int(h.Reason))
+		case e.At >= fromNs && after == "none":
+			after = strconv.Itoa(int(h.Reason))
 		}
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		return "error: " + err.Error()
+	case before != "":
+		return before
 	}
-	return reason
+	return after
 }
 
 // priorEntry is the index of the log's last entry match takes, -1 when none does.
