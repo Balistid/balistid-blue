@@ -96,7 +96,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactInjectMS, ms(from))
 	r.add(rangevm.FactInjectEndMS, ms(end))
 	r.add(rangevm.FactLossEntry, entryFact)
-	r.add(rangevm.FactPosts, postsFact(posts, uint64(from.Milliseconds()))) //nolint:gosec // uptime is positive
+	r.add(rangevm.FactPosts, lossPostsFact(tr, posts, from))
 	r.add(rangevm.FactRefused, strconv.Itoa(refused))
 	r.add(rangevm.FactPiActive, valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit))))
 	r.add(rangevm.FactLostBefore, lostBefore)
@@ -104,6 +104,15 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	return r.send(r.facts)
+}
+
+// lossPostsFact is loss trial tr's posts after its injection at from; the control's are all since the watcher's
+// start, as an alert while it warms up is a false alarm too.
+func lossPostsFact(tr rangejob.Trial, posts []rangevm.Post, from time.Duration) string {
+	if tr.Inject == rangejob.InjectNone {
+		return postsFact(posts, 0)
+	}
+	return postsFact(posts, uint64(from.Milliseconds())) //nolint:gosec // uptime is positive
 }
 
 // waitLoss waits until the alert the judge takes for tr's loss reached the sink and a checkpoint more has been

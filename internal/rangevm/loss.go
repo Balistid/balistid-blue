@@ -17,8 +17,8 @@ const FactLossEntry = "loss_entry"
 // FactCollectorRestarts is the collector's NRestarts before and after a loss trial, "before after".
 const FactCollectorRestarts = "collector_restarts"
 
-// lossAlarm bounds the alert at the sink after the injection ends: loss_alarm_s's 120 s less the minute that
-// delivery has (ADR 0036, point 1), with a poll's slack.
+// lossAlarm bounds the alert at the sink after the loss, somewhere in the injection's bracket: loss_alarm_s's
+// 120 s less the minute that delivery has (ADR 0036, point 1), with a poll's slack.
 const lossAlarm = 65 * time.Second
 
 var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjectMS, FactInjectEndMS, FactLossEntry, FactPosts,
@@ -27,7 +27,8 @@ var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjec
 // judgeLoss: the closed facts, a proven injection, a readable watcher and its start through the sink, else
 // INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
 // lost counter spoils a collector case or the control. With those, a refused token, a watcher not running, no
-// entry of the cause in the ledger or no alert within lossAlarm is a MISS; the control MISSes on any alert.
+// entry of the cause in the ledger or no alert within lossAlarm is a MISS, and a bracket too wide to prove
+// lossAlarm INVALID; the control MISSes on any alert since the watcher started.
 func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, lossFacts, []string{FactInjectMS, FactInjectEndMS, FactRefused, FactLostBefore, FactLostAfter})
 	if why != "" {
@@ -61,24 +62,30 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	case f[FactPiActive] != "active":
 		return Miss, fmt.Sprintf("the watcher is %s at the end", Printable(f[FactPiActive], 64))
 	}
-	alarm := lossPost(tr, posts, n[FactInjectMS])
 	if tr.Inject == rangejob.InjectNone {
-		if alarm != nil {
+		// an alert while the watcher warms up, before the control's moment of injection, is a false alarm too
+		if alarm := lossPost(tr, posts, 0); alarm != nil {
 			return Miss, fmt.Sprintf("a %s alert at %d ms without a loss", alarm.Tag, alarm.MS)
 		}
 		return Pass, "no loss alert without a loss"
 	}
+	alarm := lossPost(tr, posts, n[FactInjectMS])
 	switch {
 	case f[FactLossEntry] != "yes":
 		return Miss, fmt.Sprintf("no entry of the loss in the ledger: \"%s\"", Printable(f[FactLossEntry], 256))
 	case alarm == nil:
 		return Miss, "no loss alert reached the sink"
 	}
-	at := msDuration(alarm.MS - min(alarm.MS, n[FactInjectEndMS]))
-	if at > lossAlarm {
-		return Miss, fmt.Sprintf("%s alert %s after the injection, over %s", alarm.Tag, at, lossAlarm)
+	// the loss fell somewhere in the bracket: the alert's youngest delay counts from its end, its oldest from its start
+	young, old := msDuration(alarm.MS-min(alarm.MS, n[FactInjectEndMS])), msDuration(alarm.MS-n[FactInjectMS])
+	switch {
+	case young > lossAlarm:
+		return Miss, fmt.Sprintf("%s alert %s after the injection, over %s", alarm.Tag, young, lossAlarm)
+	case old > lossAlarm:
+		return Invalid, fmt.Sprintf("%s alert %s to %s after the injection: its bracket is too wide to prove %s", alarm.Tag,
+			young, old, lossAlarm)
 	}
-	return Pass, fmt.Sprintf("%s alert %s after the injection", alarm.Tag, at)
+	return Pass, fmt.Sprintf("%s alert %s to %s after the injection", alarm.Tag, young, old)
 }
 
 // sameRestarts is "n n": the collector's restart count did not move.
@@ -100,7 +107,7 @@ func lossPost(tr rangejob.Trial, posts []Post, ms uint64) *Post {
 	return nil
 }
 
-// lossMeasures is a loss run's alert delay after its injection, when it came.
+// lossMeasures is a loss run's alert delay after its injection began, the bound a PASS proves, when it came.
 func lossMeasures(tr rangejob.Trial, o Outcome, m map[string]uint64) {
 	f, n, why := probeFacts(tr, o, lossFacts, []string{FactInjectMS, FactInjectEndMS})
 	if why != "" {
@@ -108,6 +115,6 @@ func lossMeasures(tr rangejob.Trial, o Outcome, m map[string]uint64) {
 	}
 	posts, err := ParsePosts(f[FactPosts])
 	if alarm := lossPost(tr, posts, n[FactInjectMS]); err == nil && alarm != nil {
-		m[MeasureAlarmMS] = alarm.MS - min(alarm.MS, n[FactInjectEndMS])
+		m[MeasureAlarmMS] = alarm.MS - n[FactInjectMS]
 	}
 }
