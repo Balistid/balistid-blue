@@ -103,7 +103,7 @@ class FailsClosed(unittest.TestCase):
         return code, rec
 
     def test_a_bad_trial_name_fails_before_anything_runs(self) -> None:
-        for name in ("Silence", "a b", "x" * 33, "../x", "$(id)", "a;b"):
+        for name in ("", "Silence", "a b", "x" * 33, "../x", "$(id)", "a;b"):
             rec = Recorder()
             with contextlib.redirect_stderr(io.StringIO()):
                 code = range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work), "--trial", name],
@@ -187,6 +187,16 @@ class FailsClosed(unittest.TestCase):
         os.mkfifo(fifo / "result.json")
         self.assertIn("could not be read", range_kvm.verdict_annotation(state))
 
+    def test_an_expected_verdict_gets_no_annotation(self) -> None:
+        # The launcher exits 0 when a control gives its expected MISS: no error for the run (ADR 0037).
+        self.result('{"verdict": "MISS", "reason": "control missed as required"}')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work), "--trial", "rate-control-drop"],
+                                  env=HOSTED, run=Recorder(exit=0), kvm=Path("/dev/null"), sysctl=self.work / "no-sysctl")
+        self.assertEqual(code, 0)
+        self.assertNotIn("::error", out.getvalue())
+
     def test_a_failed_run_without_result_is_annotated(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -222,13 +232,20 @@ class Workflow(unittest.TestCase):
 
 
 class TrialWorkflow(unittest.TestCase):
-    def test_dispatch_runs_one_trial_with_the_input_from_env(self) -> None:
+    def test_dispatch_runs_one_trial_with_the_payload_from_env(self) -> None:
+        # repository_dispatch runs main's definition, so the dispatched commit cannot rewrite it (ADR 0037).
         text = TRIAL_WORKFLOW.read_text(encoding="utf-8")
+        self.assertRegex(text, r"(?m)^on:\n  repository_dispatch:\n    types: \[range-trial\]\n\n")
+        self.assertNotIn("workflow_dispatch", text)
         runs = re.findall(r"(?m)^\s+(?:- )?run: (.*)$", text)
-        self.assertEqual(runs, ['python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range" --trial "$TRIAL"'])
-        self.assertEqual(re.findall(r"\$\{\{.*?\}\}", text), ["${{ inputs.trial }}"])
-        self.assertIn("          TRIAL: ${{ inputs.trial }}\n", text)
-        self.assertRegex(text, r"(?m)^on:\n  workflow_dispatch:\n")
+        self.assertEqual(runs, ["""'[[ "$SHA" =~ ^[0-9a-f]{40}$ && "$TRIAL" =~ ^[a-z0-9-]{1,32}$ ]]'""",
+                                'python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range" --trial "$TRIAL"'])
+        payload = "${{ github.event.client_payload.sha }}", "${{ github.event.client_payload.trial }}"
+        self.assertEqual(re.findall(r"\$\{\{.*?\}\}", text), [payload[0], payload[1], payload[0], payload[1]])
+        self.assertIn(f"          ref: {payload[0]}\n", text)
+        # The check runs before the checkout, and only env and the checkout's ref take the payload.
+        self.assertLess(text.index("=~ ^[0-9a-f]{40}$"), text.index("actions/checkout@"))
+        self.assertEqual(len(re.findall(r"(?m)^          (?:SHA|TRIAL|ref): \$\{\{", text)), 4)
         self.assertRegex(text, r"(?m)^permissions:\n  contents: read\n")
         self.assertIn("persist-credentials: false", text)
         for needle in ("secrets.", "github.token", "pull_request", "continue-on-error", "|| true", "actions/upload-artifact@"):
