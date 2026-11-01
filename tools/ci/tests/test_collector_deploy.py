@@ -56,6 +56,7 @@ SERVICE = {
     "RestartSec": "1s",
     "User": "balistid-collector",
     "Group": "balistid-collector",
+    "SupplementaryGroups": "balistid-auditreport balistid-auditlog",  # ADR 0038, point 2
     "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v2",
     "StateDirectory": "balistid/collector",
     "StateDirectoryMode": "0700",
@@ -69,6 +70,7 @@ SERVICE = {
     "DevicePolicy": "closed",
     "ProtectSystem": "strict",
     "ProtectHome": "yes",
+    "InaccessiblePaths": "/var/log/audit",  # the log group also owns audit.log (ADR 0038, point 2)
     "PrivateTmp": "disconnected",
     "PrivateDevices": "yes",
     "PrivateIPC": "yes",
@@ -94,8 +96,9 @@ SERVICE = {
     "SystemCallErrorNumber": "EPERM",
 }
 # Directives that would give the collector root, capabilities, the network, a shared or a dynamic uid,
-# or a way to run another program. Checked in every section of both units, whatever their value.
-FORBIDDEN = {"AmbientCapabilities", "DynamicUser", "SetUID", "SetGID", "SupplementaryGroups",
+# or a way to run another program. Checked in every section of both units, whatever their value; its two
+# supplementary groups are pinned by the exact comparison and test_audit_groups_agree.
+FORBIDDEN = {"AmbientCapabilities", "DynamicUser", "SetUID", "SetGID",
              "ExecStartPre", "ExecStartPost", "ExecStop", "ExecReload", "ReadWritePaths", "BindPaths",
              "JoinsNamespaceOf", "OnFailure", "OnSuccess", "PermissionsStartOnly"}
 
@@ -105,7 +108,7 @@ TMPFILES = [
     ("d", f"{STATE}/store", "0700", "balistid-collector", "balistid-collector", "-"),
     ("d", f"{STATE}/canary", "0700", "balistid-collector", "balistid-collector", "-"),
 ]
-SYSUSERS = [("u", "balistid-collector", "-", "Balistid Blue collector")]
+SYSUSERS = [("u", "balistid-collector", "-", "Balistid Blue collector"), ("g", "balistid-auditlog", "-")]
 
 
 def unit_problems(name: str, text: str) -> list[str]:
@@ -224,6 +227,16 @@ class CollectorDeployTest(unittest.TestCase):
         section = config.split("[auditlog]\n", 1)[1].split("\n[", 1)[0]
         self.assertEqual([l for l in section.splitlines() if l.strip()], [f'file = "unix:{SOCKET_PATH}"'])
 
+    def test_audit_groups_agree(self):
+        # ADR 0038, point 2: the collector reads auditstat's report through the auditstat unit's group and auditd's
+        # state file, rewritten every 5 s, through auditd's log_group, which its sysusers creates.
+        conf = dict(tuple(p.strip() for p in l.split("=", 1)) for l in
+                    (REPO / "deploy" / "auditd" / "auditd.conf").read_text().splitlines() if "=" in l and not l.startswith("#"))
+        auditstat = parse_unit((REPO / "deploy" / "auditstat" / "balistid-auditstat.service").read_text())["Service"]
+        self.assertEqual(deployed_service()["SupplementaryGroups"], [f"{auditstat['Group'][0]} {conf['log_group']}"])
+        self.assertEqual(conf["report_interval"], "5")
+        self.assertIn(("g", conf["log_group"], "-"), lines("sysusers.conf"))
+
     def test_tmpfiles(self):
         self.assertEqual(lines("tmpfiles.conf"), TMPFILES)
 
@@ -266,6 +279,11 @@ class UnitCheckTest(unittest.TestCase):
             ("[Service]", "OnFailure=x.service\n[Service]"),
             ("WantedBy=sysinit.target", "WantedBy=multi-user.target"),
             ("Before=auditd.service shutdown.target", "Before=shutdown.target"),
+            ("SupplementaryGroups=balistid-auditreport balistid-auditlog",
+             "SupplementaryGroups=balistid-auditreport balistid-auditlog systemd-journal"),
+            ("SupplementaryGroups=balistid-auditreport balistid-auditlog", "SupplementaryGroups=adm"),
+            ("InaccessiblePaths=/var/log/audit", "InaccessiblePaths="),
+            ("InaccessiblePaths=/var/log/audit", "InaccessiblePaths=-/var/log/audit"),
         ):
             with self.subTest(new=new):
                 self.assertIn(old, self.text(name))
