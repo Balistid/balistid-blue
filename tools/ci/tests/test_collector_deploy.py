@@ -170,6 +170,12 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertRegex(main, r'flag\.Int64\("headroom", headroom, ')
         self.assertRegex(main, r'rawCap, headroom, shardMax = 150 << 30, 2 << 30, 512 << 20\n')
         self.assertRegex(main, r'flag\.Bool\("log-commits", false, ')
+        # ADR 0039, point 2: only the range lowers the queue; no installed unit sets it.
+        self.assertRegex(main, r'flag\.Int\("queue-bytes", collector\.QueueBytes, ')
+        for unit in sorted((REPO / "deploy").rglob("*")):
+            if unit.is_file():
+                with self.subTest(unit=unit.relative_to(REPO).as_posix()):
+                    self.assertNotIn("queue-bytes", unit.read_text(encoding="utf-8", errors="replace"))
 
     def test_range_drop_in_changes_only_the_store_and_the_range_flags(self):
         # ADR 0022, point 2: the image's drop-in moves the store to the scratch disk and adds the two range

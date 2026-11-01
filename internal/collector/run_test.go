@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
@@ -45,7 +47,7 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 			OpenStore: func(context.Context) (Store, error) { return st, nil },
 			Notify:    func(s string) error { notified.Store(s, true); return nil },
 			Log:       slog.New(slog.NewTextHandler(log, nil)), LogCommits: true,
-			Audit: newAuditFake().audit(seenPath(t), "boot"),
+			Audit: newAuditFake().audit(seenPath(t), "boot"), QueueBytes: QueueBytes,
 		})
 	}()
 	return ln, st, &notified, func() error {
@@ -208,5 +210,27 @@ func TestReadOneCountsHowTheConnectionEnded(t *testing.T) {
 		if c := links.take(time.Now()); fmt.Sprint(c.causes) != want {
 			t.Fatalf("%s: causes %v, want %s", name, c.causes, want)
 		}
+	}
+}
+
+// The range may only lower the queue, and never below the largest record the reader queues (ADR 0039, point 2).
+func TestRunRefusesAQueueItCannotUse(t *testing.T) {
+	for _, n := range []int{0, largestRecord() - 1, QueueBytes + 1} {
+		err := Run(t.Context(), Config{Audit: newAuditFake().audit(seenPath(t), "boot"), QueueBytes: n})
+		if err == nil || !strings.Contains(err.Error(), "queue of") {
+			t.Errorf("a queue of %d bytes: %v", n, err)
+		}
+	}
+}
+
+// A queue of one largest record holds one and counts the next as lost.
+func TestSmallestQueueHoldsOneLargestRecord(t *testing.T) {
+	loss := &Losses{}
+	q := NewQueue(largestRecord(), loss)
+	r := rawrecord.New(0, store.SensorProvider, 1, 0, make([]byte, rawrecord.MaxBytes))
+	q.Push(r)
+	q.Push(r)
+	if got := loss.Take()[StageQueue].Count; got != 1 {
+		t.Fatalf("lost %d records, want the second", got)
 	}
 }

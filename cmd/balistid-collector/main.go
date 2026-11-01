@@ -49,6 +49,8 @@ func run() int {
 	// The range image alone sets these two (ADR 0022): its root has no room for the host's reserve.
 	headroomBytes := flag.Int64("headroom", headroom, "bytes the store reserves for its own records")
 	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
+	// Only the range lowers it, so Laurel's stream fills the queue before auditd's dispatcher overflows (ADR 0039).
+	queueBytes := flag.Int("queue-bytes", collector.QueueBytes, "bytes the queue holds, at most the default")
 	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
 	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
 	flag.Parse()
@@ -80,7 +82,7 @@ func run() int {
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": *ruleVersion},
 		Audit:      audit,
-		LogCommits: *logCommits, Cosign: keys, Retention: retention,
+		LogCommits: *logCommits, QueueBytes: *queueBytes, Cosign: keys, Retention: retention,
 	})
 	if err != nil {
 		log.Error("collector stopped", "err", err)
