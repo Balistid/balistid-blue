@@ -81,7 +81,7 @@ func auditSetMain(args []string) error {
 	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
 		return fmt.Errorf("receive timeout: %w", err)
 	}
-	asks := auditAsks(&auditAsker{fd: fd})
+	asks := auditAsks(netlinkAsker(fd))
 	ops := rangevm.AuditSetOps()
 	results := make([]string, 0, len(ops))
 	for _, op := range ops {
@@ -121,10 +121,23 @@ func auditAsks(a *auditAsker) map[string]func() string {
 	}
 }
 
-// auditAsker sends audit requests with NLM_F_ACK and reads the kernel's answer to each by its seq.
+// auditAsker sends audit requests with NLM_F_ACK and reads the kernel's answer to each by its seq; send and recv
+// are the socket's, a test's fake kernel in tests.
 type auditAsker struct {
-	fd  int
-	seq uint32
+	send func(msg []byte) error
+	recv func(buf []byte) (int, error)
+	seq  uint32
+}
+
+// netlinkAsker asks over the audit netlink socket fd.
+func netlinkAsker(fd int) *auditAsker {
+	return &auditAsker{
+		send: func(msg []byte) error { return unix.Sendto(fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}) },
+		recv: func(buf []byte) (int, error) {
+			n, _, err := unix.Recvfrom(fd, buf, 0)
+			return n, err //nolint:wrapcheck // read only as "timeout"
+		},
+	}
 }
 
 // ask is the kernel's answer to one request: ok for an acknowledgement of zero or more, else the errno's
@@ -149,12 +162,12 @@ func (a *auditAsker) exchange(typ uint16, payload []byte, reply bool) (string, [
 	binary.NativeEndian.PutUint16(msg[6:], flags)
 	binary.NativeEndian.PutUint32(msg[8:], a.seq)
 	copy(msg[unix.SizeofNlMsghdr:], payload)
-	if err := unix.Sendto(a.fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
+	if err := a.send(msg); err != nil {
 		return "unsent", nil // not a kernel answer: the judge refuses it
 	}
 	buf := make([]byte, 8192)
 	for range 16 {
-		n, _, err := unix.Recvfrom(a.fd, buf, 0)
+		n, err := a.recv(buf)
 		if err != nil {
 			return "timeout", nil
 		}
