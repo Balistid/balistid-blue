@@ -225,7 +225,8 @@ func sealEntry(s store.Seal) entry.Seal {
 
 var lossStages = map[Stage]entry.Stage{
 	StageCap: entry.StageCap, StageQueue: entry.StageQueue, StageFraming: entry.StageFraming,
-	StageStore: entry.StageStore, StageShutdown: entry.StageShutdown,
+	StageStore: entry.StageStore, StageShutdown: entry.StageShutdown, StageKernel: entry.StageKernel,
+	StageDispatcher: entry.StageDispatcher,
 }
 
 // lossOf is the loss a stored record carries: a truncated sensor record, the store's loss record, or
@@ -278,6 +279,9 @@ func lossOf(l shard.Leaf) (*entry.Loss, error) {
 			return nil, fmt.Errorf("collector: lost record %d: %w", l.Seq, errors.Join(err, errors.New("unexpected fields")))
 		}
 		loss.Stage, loss.Records = stage, r.Count
+		if stage == entry.StageDispatcher { // flips merged while the store was down: Records is a lower bound (ADR 0038)
+			loss.Records = 1
+		}
 	default:
 		return nil, fmt.Errorf("collector: record %d of unknown provider", l.Seq)
 	}
@@ -315,6 +319,12 @@ func healthEntry(h string, unstored uint64) (entry.Health, error) {
 		e.Reason = entry.ReasonCanaryPending
 	case h == streamUnknown:
 		e.Reason = entry.ReasonStream
+	case h == auditStale:
+		e.Reason = entry.ReasonAuditStale
+	case h == auditOverflow:
+		e.Reason = entry.ReasonDispatcher
+	case h == auditdDown || h == auditdRestarted:
+		e.Reason = entry.ReasonAuditd
 	default:
 		return entry.Health{}, fmt.Errorf("collector: no health entry for %q", h)
 	}
