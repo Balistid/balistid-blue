@@ -1,6 +1,7 @@
 # Changes to the gates, the rules and the agents' cage need the maintainer's approval (ADR 0002, 0015).
 # Store, shard and collector are owned again before root installs the collector, after their whole-source
-# review (ADR 0015, point 3); the normalizer merges when CI is green until installed.
+# review (ADR 0015, point 3); the normalizer merges when CI is green until installed. ADRs merge without
+# the maintainer (ADR 0044): a decision takes effect only through the owned files below.
 /tools/ci/ @Jvc0n
 /.github/ @Jvc0n
 /githooks/ @Jvc0n
@@ -10,7 +11,6 @@
 /ENGINEERING.md @Jvc0n
 /CLAUDE.md @Jvc0n
 /AGENTS.md @Jvc0n
-/adr/ @Jvc0n
 /acceptance/ @Jvc0n
 /THREAT_MODEL.md @Jvc0n
 /go.mod @Jvc0n
