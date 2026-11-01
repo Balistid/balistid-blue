@@ -137,7 +137,8 @@ func (a *Audit) check(now time.Time, log *slog.Logger) (kernel, dispatcher uint6
 		a.base.Lost = s.Lost
 		if s.PID != 0 {
 			if a.base.PID != 0 && s.PID != a.base.PID {
-				a.restartAt = now // a restart may take an unseen overflow with it
+				a.restartAt = now       // a restart may take an unseen overflow with it
+				a.base.Overflow = false // a new auditd starts at no, so its first yes is a loss of its own
 			}
 			a.base.PID = s.PID
 		}
@@ -207,9 +208,10 @@ func (a *Audit) persist(waiting bool, log *slog.Logger) {
 	journalRead(log, &a.seenErr, "audit report not stored, a restart counts its losses again", err)
 }
 
-// readSeen reads the seen file: not through a symlink, a regular file of at most maxSeenBytes.
+// readSeen reads the seen file: not through a symlink, a regular file of the collector's own uid, at most
+// maxSeenBytes.
 func readSeen(path string) (seen, error) {
-	b, _, err := readSmall(path, maxSeenBytes, -1)
+	b, _, err := readSmall(path, maxSeenBytes, os.Getuid())
 	if err != nil {
 		return seen{}, err
 	}
@@ -241,7 +243,7 @@ func readAuditdState(path string) (bool, int64, error) {
 	return ov, mtime, err
 }
 
-// readSmall reads the regular file at path, owned by uid unless uid is -1, of at most limit bytes, not through a
+// readSmall reads the regular file at path, owned by uid, of at most limit bytes, not through a
 // symlink and without waiting on a FIFO; it returns the bytes and the mtime in nanoseconds.
 func readSmall(path string, limit int64, uid int) ([]byte, int64, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // main's fixed paths
@@ -257,7 +259,7 @@ func readSmall(path string, limit int64, uid int) ([]byte, int64, error) {
 	switch {
 	case !fi.Mode().IsRegular():
 		return nil, 0, fmt.Errorf("collector: %s is not a regular file", path)
-	case !ok || uid != -1 && int64(st.Uid) != int64(uid):
+	case !ok || int64(st.Uid) != int64(uid):
 		return nil, 0, fmt.Errorf("collector: %s is not of uid %d", path, uid)
 	case fi.Size() > limit:
 		return nil, 0, fmt.Errorf("collector: %s is over %d bytes", path, limit)
