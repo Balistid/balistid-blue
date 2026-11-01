@@ -20,6 +20,9 @@ Restart=always
 RestartSec=1s
 User=balistid-collector
 Group=balistid-collector
+# auditstat's report and auditd's state file, each readable only by its group (ADR 0038 point 2); auditd's
+# log_group also owns audit.log, hidden below.
+SupplementaryGroups=balistid-auditreport balistid-auditlog
 ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v2
 # Open and the canary refuse a directory anyone but the collector could write.
 StateDirectory=balistid/collector
@@ -39,6 +42,7 @@ RestrictAddressFamilies=AF_UNIX
 DevicePolicy=closed
 ProtectSystem=strict
 ProtectHome=yes
+InaccessiblePaths=/var/log/audit
 # What PrivateTmp=yes becomes without the default dependencies; said so it is not a surprise.
 PrivateTmp=disconnected
 PrivateDevices=yes
