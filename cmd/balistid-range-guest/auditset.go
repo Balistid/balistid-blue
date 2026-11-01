@@ -20,7 +20,7 @@ import (
 
 const (
 	auditSetArg = "audit-set"
-	// auditSetWait bounds the child: fifteen requests of at most a second each, and its start.
+	// auditSetWait bounds the child; a kernel that keeps it longer makes the run INVALID.
 	auditSetWait = 30 * time.Second
 	// auditFeatureVersion and loginuidImmutable are linux/audit.h's AUDIT_FEATURE_VERSION and the mask of
 	// AUDIT_FEATURE_LOGINUID_IMMUTABLE, which x/sys does not name.
@@ -93,7 +93,7 @@ func auditSetMain(args []string) error {
 }
 
 // auditAsks are the requests of rangevm.AuditSetOps through a, by name: each gate with a valid value, so that
-// only the lock can refuse it, and the rules and equiv with the least payload the kernel parses before the lock.
+// only the lock can refuse it, and the rules at the size the kernel checks before the lock.
 func auditAsks(a *auditAsker) map[string]func() string {
 	status := func(mask uint32, field int, value uint32) []byte {
 		b := make([]byte, 11*4) // struct audit_status
@@ -150,7 +150,7 @@ func (a *auditAsker) exchange(typ uint16, payload []byte, reply bool) (string, [
 	binary.NativeEndian.PutUint32(msg[8:], a.seq)
 	copy(msg[unix.SizeofNlMsghdr:], payload)
 	if err := unix.Sendto(a.fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
-		return errnoResult(err), nil
+		return "unsent", nil // not a kernel answer: the judge refuses it
 	}
 	buf := make([]byte, 8192)
 	for range 16 {
@@ -170,7 +170,7 @@ func (a *auditAsker) exchange(typ uint16, payload []byte, reply bool) (string, [
 		code := int32(binary.NativeEndian.Uint32(buf[unix.SizeofNlMsghdr:])) //nolint:gosec // the kernel's signed errno
 		switch {
 		case code < 0:
-			return errnoResult(syscall.Errno(-code)), nil
+			return errnoName(syscall.Errno(-code)), nil
 		case !reply:
 			return "ok", nil
 		}
@@ -178,36 +178,25 @@ func (a *auditAsker) exchange(typ uint16, payload []byte, reply bool) (string, [
 	return "timeout", nil
 }
 
-// toggleLoginuid reads the audit features and asks to flip loginuid_immutable, then flips it back: the
-// first answer is whether -e 2 still lets the capability change a feature without its own lock.
+// toggleLoginuid reads the audit features and asks to flip loginuid_immutable, left flipped in the trial's one
+// boot: the answer is whether -e 2 still lets the capability change a feature without its own lock.
 func (a *auditAsker) toggleLoginuid() string {
 	res, reply := a.exchange(unix.AUDIT_GET_FEATURE, nil, true)
 	if res != "ok" {
 		return res
 	}
 	if len(reply) < 16 {
-		return "ENODATA"
+		return "short-reply" // not a kernel answer: the judge refuses it
 	}
-	features := binary.NativeEndian.Uint32(reply[8:]) ^ loginuidImmutable
-	set := func(f uint32) string {
-		b := make([]byte, 16)
-		binary.NativeEndian.PutUint32(b[0:], auditFeatureVersion)
-		binary.NativeEndian.PutUint32(b[4:], loginuidImmutable)
-		binary.NativeEndian.PutUint32(b[8:], f)
-		return a.ask(unix.AUDIT_SET_FEATURE, b)
-	}
-	res = set(features)
-	if res == "ok" {
-		set(features ^ loginuidImmutable)
-	}
-	return res
+	b := make([]byte, 16) // struct audit_features
+	binary.NativeEndian.PutUint32(b[0:], auditFeatureVersion)
+	binary.NativeEndian.PutUint32(b[4:], loginuidImmutable)
+	binary.NativeEndian.PutUint32(b[8:], binary.NativeEndian.Uint32(reply[8:])^loginuidImmutable)
+	return a.ask(unix.AUDIT_SET_FEATURE, b)
 }
 
-func errnoResult(err error) string {
-	var e syscall.Errno
-	if !errors.As(err, &e) {
-		return "EIO"
-	}
+// errnoName is the kernel's errno e by name, or E and its number for one x/sys does not name.
+func errnoName(e syscall.Errno) string {
 	if name := unix.ErrnoName(e); name != "" {
 		return name
 	}

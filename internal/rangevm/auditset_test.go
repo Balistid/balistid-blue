@@ -35,6 +35,8 @@ func TestJudgeAuditSet(t *testing.T) {
 		{want: Pass},
 		{want: Pass, ops: map[string]string{"lost": "EPERM", "wait_actual": "EPERM", "feature": "EPERM"}},
 		{want: Invalid, ops: map[string]string{"pid": "EINVAL"}},
+		{want: Invalid, ops: map[string]string{"trim": "unsent"}},
+		{want: Invalid, ops: map[string]string{"feature": "short-reply"}},
 		{want: Invalid, ops: map[string]string{"pid": "EUNKNOWN"}},
 		{want: Invalid, ops: map[string]string{"user": "E0"}},
 		{want: Invalid, ops: map[string]string{"user": "EINVAL"}},
