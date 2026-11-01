@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +50,39 @@ func sampleUnit(ctx context.Context, unit string) unitSample {
 	return unitSample{usec: usec, memPeak: readTrim("/sys/fs/cgroup" + cg + "/memory.peak"), invocation: inv}
 }
 
+// sampleLaurel reads Laurel's CPU inside auditd's cgroup, so the cgroup's cost can be split between
+// them: the invocation is Laurel's pid and start time, which a Laurel that auditd restarted changes.
+func sampleLaurel() unitSample {
+	pid := laurelPID()
+	if pid == "" {
+		return unitSample{err: errors.New("no laurel process")}
+	}
+	usec, start, err := procCPU(readTrim("/proc/" + pid + "/stat"))
+	if err != nil {
+		return unitSample{err: fmt.Errorf("laurel: %w", err)}
+	}
+	return unitSample{usec: usec, invocation: pid + "@" + start}
+}
+
+// procCPU is the utime and stime of a /proc/<pid>/stat line in µs, every thread's, at Linux's fixed
+// USER_HZ of 100, and the process's start time. The command name may hold spaces and parentheses.
+func procCPU(stat string) (uint64, string, error) {
+	end := strings.LastIndexByte(stat, ')')
+	if end < 0 {
+		return 0, "", errors.New("no command name in stat")
+	}
+	f := strings.Fields(stat[end+1:]) // f[0] is field 3, the state
+	if len(f) < 20 {
+		return 0, "", fmt.Errorf("stat has %d fields after the name", len(f))
+	}
+	utime, errU := strconv.ParseUint(f[11], 10, 64)
+	stime, errS := strconv.ParseUint(f[12], 10, 64)
+	if errU != nil || errS != nil || utime > math.MaxUint64/20_000 || stime > math.MaxUint64/20_000 {
+		return 0, "", fmt.Errorf("utime %q, stime %q", f[11], f[12])
+	}
+	return (utime + stime) * 10_000, f[19], nil
+}
+
 // usageUsec is usage_usec of a cgroup's cpu.stat.
 func usageUsec(stat string) (uint64, error) {
 	for _, line := range strings.Split(stat, "\n") {
@@ -89,8 +123,8 @@ func collectorMeasures(before, after unitSample) (cpu, mem string) {
 }
 
 // runCPU execs numbered events at the trial's rate and reports the CPU of the collector's and of
-// auditd's cgroups from before the load until it drained, with the load's counts and steal
-// (cpu_cores, ADR 0023 point 5).
+// auditd's cgroups, and Laurel's share of the latter, from before the load until it drained, with the
+// load's counts and steal (cpu_cores, ADR 0023 point 5).
 func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	w, err := watchCommits(commitFollower(watchCtx), time.Now)
@@ -99,7 +133,7 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail("commit line: " + err.Error())
 	}
 	defer func() { stopWatch(); w.wait() }()
-	collector0, auditd0 := sampleUnit(ctx, collectorUnitName), sampleUnit(ctx, auditdUnitName)
+	collector0, auditd0, laurel0 := sampleUnit(ctx, collectorUnitName), sampleUnit(ctx, auditdUnitName), sampleLaurel()
 	statBefore := readTrim("/proc/stat")
 	execs := rangeguest.NewExecs(maxChildren)
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, execs.Emit, rangeguest.WallClock)
@@ -117,6 +151,7 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	collectorUS, whyC := used(collector0, sampleUnit(ctx, collectorUnitName))
 	auditdUS, whyA := used(auditd0, sampleUnit(ctx, auditdUnitName))
+	laurelUS, whyL := used(laurel0, sampleLaurel())
 	counter, err := rangeguest.NewCounter(rangejob.LoadExec, 0)
 	if err != nil {
 		return r.fail(err.Error())
@@ -137,6 +172,10 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactStealTicks, u(steal))
 	r.add(rangevm.FactCollectorUS, u(collectorUS))
 	r.add(rangevm.FactAuditdUS, u(auditdUS))
+	if whyL == "" {
+		whyL = u(laurelUS) // informational: auditd_usec already holds it
+	}
+	r.add(rangevm.FactLaurelUS, whyL)
 	r.add(rangevm.FactUnits, unitsState(whyC, whyA))
 	r.add(rangevm.FactStored, u(stored))
 	r.add(rangevm.FactMissing, u(missing))

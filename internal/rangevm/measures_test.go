@@ -86,6 +86,24 @@ func TestMeasuresOfAFailureTrialTimeTheMarks(t *testing.T) {
 	}
 }
 
+// A CPU trial measures Laurel's share of auditd's cgroup when the guest read it over one Laurel, so
+// the cost can be split; a Laurel that restarted leaves only the units' numbers.
+func TestMeasuresOfACPUTrialSplitLaurel(t *testing.T) {
+	tr := trial(t, "cpu-1000")
+	base := map[string]string{FactGenerated: "600000", FactWindowMin: "10000", FactCPUTicks: "1", FactStealTicks: "0",
+		FactCollectorUS: "150000000", FactAuditdUS: "250000000", FactLaurelUS: "170000000", FactUnits: "same",
+		FactStored: "600000", FactMissing: "0"}
+	want := map[string]uint64{FactGenerated: 600000, FactWindowMin: 10000, FactCollectorUS: 150000000,
+		FactAuditdUS: 250000000, FactLaurelUS: 170000000}
+	if m := Measures(tr, probeRun(tr.Name, cpuFacts, base)); !maps.Equal(m, want) {
+		t.Errorf("measures %v, want %v", m, want)
+	}
+	delete(want, FactLaurelUS)
+	if m := Measures(tr, probeRun(tr.Name, cpuFacts, base, FactLaurelUS+"=restarted")); !maps.Equal(m, want) {
+		t.Errorf("restarted Laurel: measures %v, want %v", m, want)
+	}
+}
+
 // A self-test stores no measures key at all.
 func TestResultWithoutMeasuresHasNoKey(t *testing.T) {
 	data, err := json.Marshal(Result{SchemaVersion: resultSchema})

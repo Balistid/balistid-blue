@@ -146,7 +146,7 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	case rangejob.MethodReady:
 		names = []string{FactReadyMS}
 	case rangejob.MethodCPU:
-		names = []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS}
+		names = []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS, FactLaurelUS}
 	case rangejob.MethodLogCap:
 		names = []string{FactCapEntries, FactFullBundles, FactFullBytes}
 	}

@@ -151,12 +151,14 @@ func judgeRefusal(tr rangejob.Trial, o Outcome) (string, string) {
 // record OK, or "none". Of an exposure trial (systemd_exposure): each service's overall exposure as
 // systemd-analyze prints it, "unit=N.N" joined by commas. Of a CPU trial (cpu_cores), besides the load's counts and
 // ticks: CPU µs of the collector's and of auditd's cgroup (auditd and Laurel) from before the load to
-// its drain, and "same" when neither unit restarted in between, else what did.
+// its drain, and "same" when neither unit restarted in between, else what did; Laurel's own µs within
+// auditd's, or why not, only measured: the cgroup already counts it.
 const (
 	FactReadyMS      = "ready_ms"
 	FactExposure     = "exposure"
 	FactCollectorUS  = "collector_usec"
 	FactAuditdUS     = "auditd_usec"
+	FactLaurelUS     = "laurel_usec"
 	FactCollectorMem = "collector_memory_peak"
 	FactUnits        = "units"
 
@@ -172,7 +174,7 @@ var (
 	readyFacts    = []string{FactTrial, FactPhase, FactKernel, FactReadyMS}
 	exposureFacts = []string{FactTrial, FactPhase, FactKernel, FactExposure}
 	cpuFacts      = []string{FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
-		FactCollectorUS, FactAuditdUS, FactUnits, FactStored, FactMissing}
+		FactCollectorUS, FactAuditdUS, FactLaurelUS, FactUnits, FactStored, FactMissing}
 	exposureValue = regexp.MustCompile(`^(balistid-[a-z0-9-]{1,64}\.service)=([0-9]{1,2})\.([0-9])$`)
 )
 

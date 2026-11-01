@@ -148,7 +148,8 @@ func TestJudgeExposure(t *testing.T) {
 func TestJudgeCPU(t *testing.T) {
 	base := map[string]string{
 		FactGenerated: "600000", FactWindowMin: "10000", FactCPUTicks: "120000", FactStealTicks: "1200",
-		FactCollectorUS: "150000000", FactAuditdUS: "150000000", FactUnits: "same", FactStored: "600000", FactMissing: "0",
+		FactCollectorUS: "150000000", FactAuditdUS: "150000000", FactLaurelUS: "90000000", FactUnits: "same",
+		FactStored: "600000", FactMissing: "0",
 	}
 	run := func(change ...string) Outcome { return probeRun("cpu-1000", cpuFacts, base, change...) }
 	judgeCases(t, "cpu-1000", run, map[string][]string{
@@ -157,7 +158,11 @@ func TestJudgeCPU(t *testing.T) {
 			"generated=599999,stored=599999", "window_min=9999", "steal_ticks=1201", "cpu_ticks=0", "units=collector restarted",
 			"missing=1,stored=599999", "stored=599999", "auditd_usec=x", "collector_usec", "kernel=6.0.0",
 			"collector_usec=18446744073709551615,auditd_usec=1", "window_min=600001", "auditd_usec=614400000001",
+			"laurel_usec",
 		},
-		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=299999999,auditd_usec=1", "auditd_usec=300000000,collector_usec=0"},
+		// Laurel's share is inside auditd's cgroup: it is never added again, and a Laurel that restarted
+		// leaves the units' total as it was.
+		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=299999999,auditd_usec=1", "auditd_usec=300000000,collector_usec=0",
+			"auditd_usec=300000000,collector_usec=0,laurel_usec=300000000", "laurel_usec=restarted"},
 	})
 }
