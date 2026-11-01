@@ -189,6 +189,11 @@ func TestStateFileChecks(t *testing.T) {
 			t.Errorf("%s read", name)
 		}
 	}
+	for _, uid := range []int{-1, os.Getuid() + 1} {
+		if _, _, err := readSmall(good, maxStateBytes, uid); err == nil {
+			t.Errorf("a file of uid %d read as of another owner", os.Getuid())
+		}
+	}
 }
 
 func TestDecodeSeen(t *testing.T) {
@@ -200,7 +205,10 @@ func TestDecodeSeen(t *testing.T) {
 		`{"schema_version":1,"boot_id":"b","lost":4294967296}`:                       false,
 		`{"schema_version":1,"boot_id":"b","extra":1}`:                               false,
 		`{"schema_version":1,"boot_id":"b"} {}`:                                      false,
-		`[]`:                                                                         false,
+		`{"schema_version":1,"boot_id":"b"}]`:                                        false,
+		`{"schema_version":1,"boot_id":"b"}}`:                                        false,
+		`{"schema_version":1,"boot_id":"b"}` + "\n":                                  true,
+		`[]`: false,
 	} {
 		if _, err := decodeSeen([]byte(b)); (err == nil) != ok {
 			t.Errorf("%s: %v", b, err)
@@ -541,5 +549,79 @@ func TestFirstPIDIsNoRestart(t *testing.T) {
 	healthy(r)
 	if health(r) != "OK" {
 		t.Fatalf("health %q with the boot's first auditd", health(r))
+	}
+}
+
+// A new auditd starts with its flag at no: its own overflow is a loss even when the last auditd's read yes.
+func TestNewAuditdOverflowIsItsOwnLoss(t *testing.T) {
+	f := newAuditFake()
+	r := auditRig(t, f, seenPath(t), "boot")
+	healthy(r)
+	f.set(func(f *auditFake) { f.overflow = true })
+	stepFresh(r, f, 6*time.Second)
+	r.step(0)
+	f.set(func(f *auditFake) { f.report.Seq++; f.report.Status.PID = 0; f.stateErr = os.ErrNotExist })
+	r.step(time.Second)
+	f.set(func(f *auditFake) { f.report.Seq++; f.report.Status.PID = 200 })
+	r.step(time.Second)
+	f.set(func(f *auditFake) { f.stateErr = nil })
+	stepFresh(r, f, 10*time.Second)
+	r.step(0)
+	if got := losses(r, StageDispatcher); len(got) != 2 {
+		t.Fatalf("dispatcher losses %v, want one per auditd", got)
+	}
+}
+
+// The same across a collector restart: the seen file's yes was auditd 100's, auditd 200 now reads yes.
+func TestNewAuditdOverflowAcrossACollectorRestart(t *testing.T) {
+	f := newAuditFake()
+	path := seenPath(t)
+	f.set(func(f *auditFake) { f.overflow = true })
+	r := auditRig(t, f, path, "boot")
+	stepFresh(r, f, 6*time.Second)
+	r.step(0)
+	if err := stopRig(r); err != nil {
+		t.Fatal(err)
+	}
+	f.set(func(f *auditFake) { f.report.Status.PID = 200 })
+	r = auditRig(t, f, path, "boot")
+	stepFresh(r, f, 10*time.Second)
+	r.step(0)
+	if got := losses(r, StageDispatcher); len(got) != 1 {
+		t.Fatalf("dispatcher losses %v after the restart, want auditd 200's", got)
+	}
+}
+
+// A loss record the store refused waits among notes, and stays out of the seen file until it is stored.
+func TestSeenFileWaitsForARefusedLossNote(t *testing.T) {
+	f := newAuditFake()
+	path := seenPath(t)
+	r := auditRig(t, f, path, "boot")
+	healthy(r)
+	stepFresh(r, f, time.Second)
+	r.st.set(func(s *fakeStore) { s.rejectNote = true })
+	f.set(func(f *auditFake) { f.report.Status.Lost = 4 })
+	for range 4 {
+		stepFresh(r, f, time.Second)
+	}
+	if s, err := readSeen(path); err != nil || s.Lost != 0 {
+		t.Fatalf("seen holds a loss whose record waits among notes: %+v, %v", s, err)
+	}
+}
+
+// 10 needs a fresh report: a stale one that last showed no auditd is 8.
+func TestStaleReportWithoutAuditdIsStale(t *testing.T) {
+	f := newAuditFake()
+	r := auditRig(t, f, seenPath(t), "boot")
+	healthy(r)
+	stepFresh(r, f, 15*time.Second)
+	f.set(func(f *auditFake) { f.report.Seq++; f.report.Status.PID = 0 })
+	r.step(time.Second)
+	for range 4 {
+		f.set(func(f *auditFake) { f.mtime++ })
+		r.step(5 * time.Second)
+	}
+	if health(r) != auditStale {
+		t.Fatalf("health %q with a stale report of pid 0", health(r))
 	}
 }

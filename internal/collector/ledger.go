@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"slices"
@@ -295,7 +296,8 @@ func strict(b []byte, v any) error {
 	if err := d.Decode(v); err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	if d.More() {
+	// More reports false before a stray ] or }, so only the end of input proves nothing follows.
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
 		return errors.New("decode: data after the object")
 	}
 	return nil
