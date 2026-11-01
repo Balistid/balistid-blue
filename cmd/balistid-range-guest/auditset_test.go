@@ -17,17 +17,11 @@ func TestAuditAsksAreTheJudgedOps(t *testing.T) {
 	}
 }
 
-func errnoOf(n int) error { return syscall.Errno(n) }
-
-type errPlain struct{}
-
-func (errPlain) Error() string { return "not an errno" }
-
 // An errno the kernel returns is reported by its name, one x/sys does not name by its number.
-func TestErrnoResult(t *testing.T) {
-	for err, want := range map[error]string{errnoOf(1): "EPERM", errnoOf(17): "EEXIST", errnoOf(4095): "E4095", errPlain{}: "EIO"} {
-		if got := errnoResult(err); got != want {
-			t.Errorf("%v: %q, want %q", err, got, want)
+func TestErrnoName(t *testing.T) {
+	for e, want := range map[syscall.Errno]string{1: "EPERM", 17: "EEXIST", 4095: "E4095"} {
+		if got := errnoName(e); got != want {
+			t.Errorf("%d: %q, want %q", int(e), got, want)
 		}
 	}
 }
