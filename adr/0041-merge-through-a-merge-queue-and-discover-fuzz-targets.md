@@ -4,6 +4,7 @@
 - Date: 2026-11-01
 - Decided-by: alex
 - Agent: claude/opus-5.5
+- Amends ADR 0002 point 3 and ADR 0015 point 2 (the up-to-date rule gives way to the queue)
 
 ## Context
 
@@ -27,8 +28,7 @@ quotes GitHub support as "you should not combine" them), or whether `main` ends 
    limits of one pull request, only non-failing pull requests, a 60-minute check timeout) and turns the
    up-to-date rule off: the group commit carries every change queued ahead, so it is the tree that lands, which is
    what that rule gave. Required checks, code owner review and dismissal of stale approvals stay. The bot queues
-   a pull request under the conditions it merges one under today (ADR 0002, 0015); owned paths still wait for the
-   maintainer's approval.
+   (`gh pr merge <n>`) under its merge conditions of today (ADR 0002, 0015); owned paths wait for approval.
 3. Until the queue is on, the bot may rebase an approved pull request on GitHub only when
    `git patch-id --verbatim` of `origin/main...head` equals the approved diff's (plain patch-id ignores
    whitespace, which changes Python) and every commit carries `Agent:`, then merges with that head as the
@@ -36,9 +36,9 @@ quotes GitHub support as "you should not combine" them), or whether `main` ends 
 4. `fuzz.yml` takes its matrix at run time from `tools/ci/fuzz_matrix.py`, code-owned: every top-level
    `func FuzzXxx(*testing.F)` in the tracked `*_test.go` files, outside the directories `./...` skips; the
    minutes rule (ADR 0016) lives there. It reads source and runs no project code, so a package cannot write the
-   job's output or another package's rows. An unusable package path, a duplicate or an empty list fails the
-   run, and so does a row that fuzzes nothing: a job passes only when go passed and printed the fuzzer's
-   progress. Values reach the shell only through `env`; selftest runs the script on every pull request.
+   job's output or another package's rows. An unusable path, a duplicate, over 200 rows (GitHub caps a matrix at
+   256 jobs) or none fails the run, and so does a row that fuzzes nothing: a job passes only when go passed and
+   printed the fuzzer's progress. Values reach the shell only through `env`; selftest runs the script on each PR.
 
 ## Alternatives considered
 
@@ -51,10 +51,10 @@ quotes GitHub support as "you should not combine" them), or whether `main` ends 
 ## Consequences
 
 - A `Fuzz` declaration the scan cannot read stops the run; a false row (a raw string) fails its job. A package's
-  own test code (`TestMain`, an empty fuzz body) decides what its own job proves, never another package's rows.
+  test code and what it imports (`TestMain`, `init`, an empty body) decide what its job proves, not other rows.
 - CI runs on the group commit and again on `main`; a queued merge waits for the slowest job (`range-kvm`, 0028).
-- The first merges through the queue, one alone and two queued together, check what the docs do not say: that a
-  pull request enters without a branch update, that the group's commits are its own rebased (commit-lint refuses a
-  merge commit), and that `main`'s new head is the group's `head_sha` or has its tree (`git diff` empty). Any
-  one false: the queue goes off, the up-to-date rule back on, and this ADR is reopened (also the rollback).
+- The first merges through the queue, one alone and two queued together, check what the docs do not say: the
+  bot's direct `PUT .../merge` is refused, a pull request enters without a branch update, the group's commits are
+  its own rebased (commit-lint refuses a merge commit), and `main`'s new head is the group's `head_sha` or has its
+  tree. Any one false: the queue goes off, the up-to-date rule back on, this ADR reopened (also the rollback).
 - T29 is unchanged: Go gates run on the head tree, and the group's head is the tree that lands.

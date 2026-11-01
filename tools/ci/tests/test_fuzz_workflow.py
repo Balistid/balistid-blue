@@ -76,6 +76,8 @@ class Matrix(unittest.TestCase):
             "module root": {"root_test.go": fuzz},
             "upper-case package": {"internal/Store/a_test.go": fuzz},
             "dot in a package": {"internal/st.ore/a_test.go": fuzz},
+            "over the row cap": {"internal/store/a_test.go": TEST + "".join(
+                f"func Fuzz{i}(f *testing.F) {{}}\n" for i in range(fuzz_matrix.MAX_ROWS + 1))},
         }
         for case, files in cases.items():
             with self.subTest(case=case), self.assertRaises(ValueError):
