@@ -27,7 +27,8 @@ policy here. Global personal rules (language, tone, confidence lines) still appl
   If the helper or the key is missing, stop and tell the maintainer; never use their credentials,
   and follow `ENGINEERING.md` §4 for work done without the maintainer's machine.
 - Merge with `gh api -X PUT repos/Balistid/balistid-blue/pulls/<n>/merge -F merge_method=rebase` only
-  after all required checks are green. A pull request that touches owned paths (`.github/CODEOWNERS`)
+  after all required checks are green; once the `main` ruleset requires the merge queue, queue with
+  `gh pr merge <n>` instead, never with `--admin` (ADR 0041). A pull request that touches owned paths (`.github/CODEOWNERS`)
   waits for the maintainer's approval; tell them what to review and why, in two sentences. Product
   code merges without it only under ADR 0015: verdicts in the body, then report what merged.
 - Codex review runs only through the review queue on the maintainer's machine; never call Codex

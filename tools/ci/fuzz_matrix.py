@@ -19,6 +19,7 @@ from pathlib import Path, PurePosixPath
 # Code that only the range guest runs on its own output; everything else reads input on the host or the Pi.
 GUEST_ONLY = {"./cmd/balistid-range-guest", "./internal/rangeguest"}
 GUEST_MINUTES, HOST_MINUTES = 10, 60
+MAX_ROWS = 200  # under GitHub's 256 jobs per matrix, so one package's many targets fail here, on the PR
 # Every top-level func whose name starts with Fuzz; go test takes it when Fuzz ends the name or is followed by a
 # character that is not lower case, and then it must read as one *testing.F parameter, or the scan stops.
 DECL = re.compile(r"^func[ \t]+(Fuzz\w*)", re.M)
@@ -52,6 +53,8 @@ def rows(files: dict[str, str]) -> list[dict[str, str | int]]:
             found.add((pkg, name))
     if not found:
         raise ValueError("no fuzz target found")
+    if len(found) > MAX_ROWS:
+        raise ValueError(f"{len(found)} fuzz targets, over the {MAX_ROWS} this matrix takes")
     return [{"pkg": pkg, "target": name, "minutes": GUEST_MINUTES if pkg in GUEST_ONLY else HOST_MINUTES}
             for pkg, name in sorted(found)]
 
