@@ -22,6 +22,8 @@ import release  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[3]
 TRIGGER = ("name: ci\n\non:\n  pull_request:\n    branches: [main]\n  push:\n    branches: [main]\n"
+           "  # The merge queue's group commit runs every job before it lands (ADR 0041).\n"
+           "  merge_group:\n    types: [checks_requested]\n"
            "  # Weekly on main, so govulncheck sees advisories published without a new commit.\n"
            "  schedule:\n    - cron: \"17 5 * * 1\"\n")
 
