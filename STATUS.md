@@ -16,7 +16,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- This PR (ADR 0041): CI on `merge_group`, fuzz matrix from `go test -list`; the queue is the maintainer's switch.
+- This PR (ADR 0041): CI on `merge_group`, fuzz matrix from the test source; the queue is the maintainer's switch.
 - #175 balistid-auditstat on `main` (2a2fac7); audit-set (#180, fff816a): under -e 2 auditstat's uid gets EPERM for every
   lock gate, EEXIST for the pid, EPERM for user messages, and may still reset lost and flip loginuid (KVM PASS).
 - #168 L11c: the log at its cap logs reason 7 before final, alerted as `logcap`; `-cap-bytes` range-only; log-cap
