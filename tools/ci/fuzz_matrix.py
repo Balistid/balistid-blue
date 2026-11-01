@@ -3,8 +3,9 @@
 
 Every `func FuzzXxx(*testing.F)` in a tracked `*_test.go` is one row (ADR 0041): an hour each for code that reads
 input on the host or the Pi, ten minutes for the range guest's own (fuzz_hours, ADR 0016). It reads source and
-runs no project code, so no package can change another's rows. A package path or name it cannot use, a duplicate
-or an empty list is an error; a row that is not a real target fails its job, which must show the fuzzer running.
+runs no project code, so no package can change another's rows. A declaration it cannot read, a package path it
+cannot use, a duplicate or an empty list is an error; a row that is not a real target fails its job, which must
+show the fuzzer running.
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ from pathlib import Path, PurePosixPath
 # Code that only the range guest runs on its own output; everything else reads input on the host or the Pi.
 GUEST_ONLY = {"./cmd/balistid-range-guest", "./internal/rangeguest"}
 GUEST_MINUTES, HOST_MINUTES = 10, 60
-# go test's rule: Fuzz alone, or followed by anything but a lower-case letter; one *testing.F parameter.
-FUNC = re.compile(r"^func (Fuzz(?:[^a-z\W]\w*)?)\(\s*(?:\w+\s+)?\*testing\.F\s*,?\s*\)", re.M | re.ASCII)
+# Every top-level func whose name starts with Fuzz; go test takes it when Fuzz ends the name or is followed by a
+# character that is not lower case, and then it must read as one *testing.F parameter, or the scan stops.
+DECL = re.compile(r"^func[ \t]+(Fuzz\w*)", re.M)
+SIGNATURE = re.compile(r"\(\s*(?:\w+\s+)?\*testing\.F\s*,?\s*\)\s*\{")
 PKG = re.compile(r"\./[a-z0-9/_-]+")
 
 
@@ -36,7 +39,12 @@ def rows(files: dict[str, str]) -> list[dict[str, str | int]]:
         if ignored(directory):
             continue
         pkg = "./" + directory.as_posix()
-        for name in FUNC.findall(text):
+        for decl in DECL.finditer(text):
+            name = decl.group(1)
+            if len(name) > 4 and name[4].islower():
+                continue
+            if not SIGNATURE.match(text, decl.end()):
+                raise ValueError(f"{path}: {name} is not written as func {name}(f *testing.F) {{, which the scan reads")
             if not PKG.fullmatch(pkg):
                 raise ValueError(f"not a package path the matrix can use: {pkg!r}")
             if (pkg, name) in found:
