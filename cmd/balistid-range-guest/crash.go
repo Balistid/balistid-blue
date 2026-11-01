@@ -45,7 +45,7 @@ func guestCrashEnv(ctx context.Context) crashEnv {
 	execs := rangeguest.NewExecs(maxChildren)
 	return crashEnv{
 		fail:    guestEnv,
-		mainPID: collectorPID,
+		mainPID: func(ctx context.Context) string { return mainPID(ctx, "balistid-collector.service") },
 		watch: func(ctx context.Context) (*commitWatch, error) {
 			return watchCommits(commitFollower(ctx), time.Now)
 		},

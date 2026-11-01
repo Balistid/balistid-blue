@@ -113,12 +113,19 @@ func run() error {
 	add("laurel_cap_prm", prm)
 	add("laurel_cap_eff", eff)
 	add("laurel_cap_amb", amb)
-	collector := collectorPID(ctx)
+	collector := mainPID(ctx, "balistid-collector.service")
 	add("collector_user", procUser(collector, "no collector process"))
 	prm, eff, amb = threadCaps(collector, "no collector process")
 	add("collector_cap_prm", prm)
 	add("collector_cap_eff", eff)
 	add("collector_cap_amb", amb)
+	auditstatPID := mainPID(ctx, "balistid-auditstat.service")
+	add("auditstat_user", procUser(auditstatPID, "no auditstat process"))
+	prm, eff, amb = threadCaps(auditstatPID, "no auditstat process")
+	add("auditstat_cap_prm", prm)
+	add("auditstat_cap_eff", eff)
+	add("auditstat_cap_amb", amb)
+	add("auditstat_report", auditstatReport(ctx))
 
 	// The canary and the disable come back in one read of the store: each read restarts the collector.
 	canaryToken, err := token("balistid-canary-")
@@ -473,9 +480,9 @@ func laurelPID() string {
 	return ""
 }
 
-// collectorPID is the main pid systemd started balistid-collector.service with, or "".
-func collectorPID(ctx context.Context) string {
-	pid := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "--property=MainPID", "--value", "balistid-collector.service"))
+// mainPID is the main pid systemd started unit with, or "".
+func mainPID(ctx context.Context, unit string) string {
+	pid := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "--property=MainPID", "--value", unit))
 	if n, err := strconv.Atoi(pid); err != nil || n <= 0 {
 		return ""
 	}

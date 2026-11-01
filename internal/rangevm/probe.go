@@ -163,8 +163,9 @@ const (
 	readyLimitMS = 30_000
 	// maxCores bounds what a CPU trial's counts may claim, so a report cannot overflow their sum.
 	maxCores = 1024
-	// exposureLimit is systemd_exposure's 2.5 in tenths.
-	exposureLimit = 25
+	// exposureLimit is systemd_exposure's 2.5 in tenths, exposureAuditstatLimit systemd_exposure_auditstat's 4.0.
+	exposureLimit          = 25
+	exposureAuditstatLimit = 40
 )
 
 var (
@@ -206,8 +207,10 @@ func ExposureUnits() map[string]bool {
 	}
 }
 
-// UnscoredUnits are the range's own services, which no host or Pi installs. balistid-auditstat, scored by its
-// own metric, is not in the image yet; there it would be in neither set, and its trial INVALID until it has one.
+// AuditstatUnits are the units systemd_exposure_auditstat scores: auditstat keeps a capability (ADR 0007).
+func AuditstatUnits() map[string]bool { return map[string]bool{"balistid-auditstat.service": true} }
+
+// UnscoredUnits are the range's own services, which no host or Pi installs.
 func UnscoredUnits() map[string]bool {
 	return map[string]bool{
 		"balistid-range-guest.service": true, "balistid-range-store.service": true,
@@ -218,12 +221,17 @@ func UnscoredUnits() map[string]bool {
 	}
 }
 
-// judgeExposure: exactly the ExposureUnits scored, each at most 2.5; a report not of the form
-// "unit=N.N,..." or of another set of units is INVALID.
+// judgeExposure: exactly the ExposureUnits and AuditstatUnits scored, and the trial's own set at most its limit,
+// 2.5 or 4.0; a report not of the form "unit=N.N,..." or of another set of units is INVALID.
 func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 	f, _, why := probeFacts(tr, o, exposureFacts, nil)
 	if why != "" {
 		return Invalid, why
+	}
+	judged, limit, all := ExposureUnits(), exposureLimit, ExposureUnits()
+	maps.Copy(all, AuditstatUnits())
+	if tr.Metric == rangejob.MetricExposureAuditstat {
+		judged, limit = AuditstatUnits(), exposureAuditstatLimit
 	}
 	worst, worstUnit, seen := -1, "", map[string]bool{}
 	for _, score := range strings.Split(f[FactExposure], ",") {
@@ -235,16 +243,16 @@ func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 			return Invalid, fmt.Sprintf("exposure of %s reported twice", m[1])
 		}
 		whole, _ := strconv.Atoi(m[2])
-		if tenths := whole*10 + int(m[3][0]-'0'); tenths > worst {
+		if tenths := whole*10 + int(m[3][0]-'0'); judged[m[1]] && tenths > worst {
 			worst, worstUnit = tenths, m[1]
 		}
 		seen[m[1]] = true
 	}
 	switch {
-	case !maps.Equal(seen, ExposureUnits()):
-		return Invalid, fmt.Sprintf("exposure of %d units, want exactly %v", len(seen), slices.Sorted(maps.Keys(ExposureUnits())))
-	case worst > exposureLimit:
-		return Miss, fmt.Sprintf("%s has exposure %d.%d, over 2.5", worstUnit, worst/10, worst%10)
+	case !maps.Equal(seen, all):
+		return Invalid, fmt.Sprintf("exposure of %d units, want exactly %v", len(seen), slices.Sorted(maps.Keys(all)))
+	case worst > limit:
+		return Miss, fmt.Sprintf("%s has exposure %d.%d, over %d.%d", worstUnit, worst/10, worst%10, limit/10, limit%10)
 	}
 	return Pass, fmt.Sprintf("the worst unit, %s, has exposure %d.%d", worstUnit, worst/10, worst%10)
 }

@@ -103,7 +103,8 @@ func TestJudgeReady(t *testing.T) {
 func TestJudgeExposure(t *testing.T) {
 	const c = "balistid-collector.service="
 	const rest = ",balistid-ledger.service=0.8,balistid-relay.service=1.3,balistid-announce.service=0.8," +
-		"balistid-announce-suspend.service=0.8,balistid-pi.service=1.5,balistid-pi-failed.service=1.5,balistid-net.service=1.5"
+		"balistid-announce-suspend.service=0.8,balistid-pi.service=1.5,balistid-pi-failed.service=1.5,balistid-net.service=1.5," +
+		"balistid-auditstat.service=3.9"
 	run := func(change ...string) Outcome {
 		return probeRun("exposure", exposureFacts, map[string]string{FactExposure: c + "0.8" + rest}, change...)
 	}
@@ -127,6 +128,21 @@ func TestJudgeExposure(t *testing.T) {
 		}
 	}
 	judgeCases(t, "exposure", run, map[string][]string{Invalid: {"exposure", "kernel=6.0.0"}})
+	// auditstat is scored by its own metric, at most 4.0 (ADR 0007); the recorder's 2.5 does not judge it.
+	auditstat := trial(t, "exposure-auditstat")
+	for want, reports := range map[string][]string{
+		Pass: {c + "0.8" + rest, c + "2.6" + rest, c + "0.8" + strings.Replace(rest, "auditstat.service=3.9", "auditstat.service=4.0", 1)},
+		Miss: {c + "0.8" + strings.Replace(rest, "auditstat.service=3.9", "auditstat.service=4.1", 1)},
+		Invalid: {c + "0.8" + strings.Replace(rest, ",balistid-auditstat.service=3.9", "", 1),
+			c + "0.8" + rest + ",balistid-auditstat.service=0.8"},
+	} {
+		for _, rep := range reports {
+			o := probeRun("exposure-auditstat", exposureFacts, map[string]string{FactExposure: rep})
+			if v, r := JudgeTrial(auditstat, o, cleanBuild, cleanBuild); v != want {
+				t.Errorf("auditstat %q: %s (%s); want %s", rep, v, r, want)
+			}
+		}
+	}
 }
 
 func TestJudgeCPU(t *testing.T) {
