@@ -24,9 +24,10 @@ starts at 571 $/month for up to 100 agents (wazuh.com/cloud); LimaCharlie charge
    Apache-2.0 for everyone; paid are a read-only view across hosts, signed detection packs with updates, support.
    The non-goal in `README.md` ("fleet management ... or a hosted service") stays until an ADR before the paid layer.
 3. **Difference, stated honestly.** Detections proven by an attack (little noise), explained verdicts, a fraction
-   of the footprint (our agent against their agent and server, not against a price list). Verifiable history: "an
-   attacker cannot erase it" holds only with the witness off the host; in local mode only against an attacker
-   without root. The local-mode ADR (9.5) weighs a cheap off-host anchor in the free tier.
+   of the footprint (our agent against their agent and server, not against a price list). Verifiable history, as far
+   as ADR 0006 claims it: only a witness off the host refuses a rewrite or rollback of what it cosigned (T12);
+   records not yet cosigned and deletion passed off as retention stay open (T13, T15). In local mode the history
+   holds only against an attacker without root. The local-mode ADR (9.5) weighs a cheap off-host anchor for free.
 4. **Floor-0 product bar.** On a clean Arch or Ubuntu LTS machine: install within 10 min and 3 manual steps,
    including the reboot that `-e 2` needs, after showing that io_uring goes off for the whole host; uninstall
    leaves nothing; typical and stress CPU each at most 0.5 cores; RSS at most 256 MiB; at most 10 GiB of disk by
@@ -52,8 +53,8 @@ would have no commercial premise. A hosted witness as the paid offer: no commerc
 - CPU decides before more Pi work: a time-boxed attempt to fit auditd and Laurel; if they cannot, an ADR on the
   data source, which reopens ADR 0004. L12 on a real Pi and the witness end to end move after 9.5.
 - The default caps (raw, reserve, derived, log tiles) must sum to at most 10 GiB; today's values stay the ceilings
-  a user can raise to. How the install ADR splits them, and how `capacity_margin` holds on a host with a large
-  baseline, is decided there.
-- The collector's heap limit (192 MiB) leaves little for the other services; it is re-cut when `rss_mib` is first
-  measured (B6).
+  a user can raise to. `capacity_margin` is measured against the raw cap installed, not the ceiling; the install
+  ADR splits the default and says what a host whose baseline misses the margin gets (a raised cap or a warning).
+- The collector's soft Go memory target (192 MiB, not a bound on RSS) leaves little for the other services; it
+  is re-cut when `rss_mib` is first measured (B6).
 - Every floor from 9.5 carries a product bar in its acceptance file next to the technical numbers.
