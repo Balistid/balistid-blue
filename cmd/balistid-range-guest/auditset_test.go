@@ -12,7 +12,7 @@ import (
 // The child asks exactly the requests the host judges, so none is missing and none goes unjudged.
 func TestAuditAsksAreTheJudgedOps(t *testing.T) {
 	got := slices.Sorted(maps.Keys(auditAsks(&auditAsker{fd: -1})))
-	if want := slices.Sorted(slices.Values(rangevm.AuditSetOps)); !slices.Equal(got, want) {
+	if want := slices.Sorted(slices.Values(rangevm.AuditSetOps())); !slices.Equal(got, want) {
 		t.Errorf("child asks %v, host judges %v", got, want)
 	}
 }

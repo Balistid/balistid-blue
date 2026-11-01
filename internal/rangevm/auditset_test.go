@@ -15,8 +15,8 @@ func auditSetRun(ops map[string]string, facts ...string) Outcome {
 	for op, r := range ops {
 		res[op] = r
 	}
-	line := make([]string, 0, len(AuditSetOps))
-	for _, op := range AuditSetOps {
+	line := make([]string, 0, len(auditSetOps))
+	for _, op := range auditSetOps {
 		line = append(line, op+"="+res[op])
 	}
 	caps := capsAuditControl + "," + capsAuditControl + "," + capsAuditControl

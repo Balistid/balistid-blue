@@ -22,10 +22,11 @@ const (
 // needs CAP_AUDIT_WRITE, its absence; auditGates are what -e 2 must refuse, auditResiduals what the kernel
 // leaves to the capability under -e 2 (kernel/audit.c: counter resets, features with their own lock), and pid
 // what only a running auditd's ownership refuses.
-var AuditSetOps = []string{"get", "enabled", "failure", "rate", "backlog", "wait", "pid", "lost", "wait_actual",
-	"rule_add", "rule_del", "trim", "equiv", "feature", "user"}
+func AuditSetOps() []string { return slices.Clone(auditSetOps) }
 
 var (
+	auditSetOps = []string{"get", "enabled", "failure", "rate", "backlog", "wait", "pid", "lost", "wait_actual",
+		"rule_add", "rule_del", "trim", "equiv", "feature", "user"}
 	auditGates     = []string{"enabled", "failure", "rate", "backlog", "wait", "rule_add", "rule_del", "trim", "equiv"}
 	auditResiduals = []string{"lost", "wait_actual", "feature"}
 	auditSetFacts  = []string{FactTrial, FactPhase, FactKernel, FactAuditSet, FactAuditSetCaps, FactAuditSetUser,
@@ -89,14 +90,14 @@ func judgeAuditSet(tr rangejob.Trial, o Outcome) (string, string) {
 // upper-case errno name, ok or timeout.
 func auditSetResults(line string) (map[string]string, error) {
 	parts := strings.Split(line, ",")
-	if len(parts) != len(AuditSetOps) {
-		return nil, fmt.Errorf("audit-set reported %d requests, want %d", len(parts), len(AuditSetOps))
+	if len(parts) != len(auditSetOps) {
+		return nil, fmt.Errorf("audit-set reported %d requests, want %d", len(parts), len(auditSetOps))
 	}
 	res := map[string]string{}
 	for i, p := range parts {
 		op, result, ok := strings.Cut(p, "=")
-		if !ok || op != AuditSetOps[i] || !auditResult(result) {
-			return nil, fmt.Errorf("audit-set request %d is %q, want %s=<result>", i, Printable(p, 48), AuditSetOps[i])
+		if !ok || op != auditSetOps[i] || !auditResult(result) {
+			return nil, fmt.Errorf("audit-set request %d is %q, want %s=<result>", i, Printable(p, 48), auditSetOps[i])
 		}
 		res[op] = result
 	}

@@ -82,8 +82,9 @@ func auditSetMain(args []string) error {
 		return fmt.Errorf("receive timeout: %w", err)
 	}
 	asks := auditAsks(&auditAsker{fd: fd})
-	results := make([]string, 0, len(rangevm.AuditSetOps))
-	for _, op := range rangevm.AuditSetOps {
+	ops := rangevm.AuditSetOps()
+	results := make([]string, 0, len(ops))
+	for _, op := range ops {
 		results = append(results, op+"="+asks[op]())
 	}
 	fmt.Printf("caps=%s,%s,%s\nuser=%s\nops=%s\n", prm, eff, amb,
