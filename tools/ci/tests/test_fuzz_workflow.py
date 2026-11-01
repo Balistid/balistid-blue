@@ -49,11 +49,19 @@ class Matrix(unittest.TestCase):
 
     def test_only_what_go_test_takes_for_a_fuzz_test(self) -> None:
         body = TEST + "\n".join([
-            "func Fuzzer(f *testing.F) {}", "func FuzzT(t *testing.T) {}", "func (s) FuzzM(f *testing.F) {}",
+            "func Fuzzer(f *testing.F) {}", "func Fuzzé(f *testing.F) {}", "func (s) FuzzM(f *testing.F) {}",
             "\tfunc FuzzIndented(f *testing.F) {}", "// func FuzzComment(f *testing.F) {}",
-            "func FuzzTwo(f *testing.F, n int) {}", "func FuzzReal(f *testing.F) {}"])
+            "func FuzzΔ(f *testing.F) {}", "func FuzzReal(f *testing.F) {}"])
         rows = fuzz_matrix.rows({"internal/store/a_test.go": body})
-        self.assertEqual([r["target"] for r in rows], ["FuzzReal"])
+        self.assertEqual([r["target"] for r in rows], ["FuzzReal", "FuzzΔ"])
+
+    def test_a_fuzz_declaration_the_scan_cannot_read_stops_it(self) -> None:
+        """A miss would leave the target unfuzzed without a word; go test refuses most of these anyway."""
+        for decl in ("func FuzzT(t *testing.T) {}", "func FuzzTwo(f *testing.F, n int) {}",
+                     "func FuzzC(/* seeds */ f *testing.F) {}", "func FuzzA(f *tt.F) {}",
+                     "func FuzzG[T any](f *testing.F) {}", "func Fuzz_x(f *testing.F)"):
+            with self.subTest(decl=decl), self.assertRaises(ValueError):
+                fuzz_matrix.rows({"internal/store/a_test.go": TEST + decl + "\n"})
 
     def test_directories_go_skips_add_nothing(self) -> None:
         fuzz = TEST + "func FuzzX(f *testing.F) {}\n"

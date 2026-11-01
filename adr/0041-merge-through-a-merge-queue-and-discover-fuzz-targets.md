@@ -50,9 +50,9 @@ quotes GitHub support as "you should not combine" them), or whether `main` ends 
 
 ## Consequences
 
-- A fuzz function the scan misses (`testing` under another name) is not fuzzed; a false one fails its job loudly.
-- Each merge runs CI on the group commit and again on `main`; a queued merge waits about as long as the
-  slowest job. `range-kvm`, once required (ADR 0028), runs in the queue as well.
+- A `Fuzz` declaration the scan cannot read stops the run; a false row (a raw string) fails its job. A package's
+  own test code (`TestMain`, an empty fuzz body) decides what its own job proves, never another package's rows.
+- CI runs on the group commit and again on `main`; a queued merge waits for the slowest job (`range-kvm`, 0028).
 - The first merges through the queue, one alone and two queued together, check what the docs do not say: that a
   pull request enters without a branch update, that the group's commits are its own rebased (commit-lint refuses a
   merge commit), and that `main`'s new head is the group's `head_sha` or has its tree (`git diff` empty). Any
