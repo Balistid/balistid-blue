@@ -33,7 +33,14 @@ func TestJudgeAuditSet(t *testing.T) {
 		facts []string
 	}{
 		{want: Pass},
-		{want: Pass, ops: map[string]string{"lost": "EPERM", "wait_actual": "EPERM", "feature": "EPERM", "pid": "EINVAL"}},
+		{want: Pass, ops: map[string]string{"lost": "EPERM", "wait_actual": "EPERM", "feature": "EPERM"}},
+		{want: Invalid, ops: map[string]string{"pid": "EINVAL"}},
+		{want: Invalid, ops: map[string]string{"pid": "EUNKNOWN"}},
+		{want: Invalid, ops: map[string]string{"user": "E0"}},
+		{want: Invalid, ops: map[string]string{"user": "EINVAL"}},
+		{want: Invalid, facts: []string{FactAuditSetEnabled + "=2,3"}},
+		{want: Invalid, facts: []string{FactAuditSetEnabled + "=2,9"}},
+		{want: Miss, facts: []string{FactAuditSetEnabled + "=2,0"}},
 		{want: Miss, ops: map[string]string{"enabled": "ok"}},
 		{want: Miss, ops: map[string]string{"rule_add": "ok"}},
 		{want: Miss, ops: map[string]string{"equiv": "ok"}},
