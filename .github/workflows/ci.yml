@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # The merge queue's group commit runs every job before it lands (ADR 0041).
+  merge_group:
+    types: [checks_requested]
   # Weekly on main, so govulncheck sees advisories published without a new commit.
   schedule:
     - cron: "17 5 * * 1"
@@ -242,6 +245,8 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
           range="$(python3 tools/ci/change_range.py)"
           python3 tools/ci/docs_budget.py
@@ -289,10 +294,13 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # A group's and a push's commits passed this lint on their pull request, author checked there.
         run: |
           range="$(python3 tools/ci/change_range.py)"
           set -- --range "$range"
-          if [ "$EVENT" = "push" ] || [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+          if [ "$EVENT" = "push" ] || [ "$EVENT" = "merge_group" ] || [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
             set -- "$@" --dependabot-pr
           fi
           python3 tools/ci/commit_lint.py "$@"

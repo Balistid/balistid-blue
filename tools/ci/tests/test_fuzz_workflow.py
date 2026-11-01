@@ -1,68 +1,89 @@
-"""The nightly fuzz workflow runs every fuzz target of the repository, long enough for fuzz_hours."""
+"""The nightly fuzz workflow runs every fuzz target the compiler lists, long enough for fuzz_hours."""
 
 from __future__ import annotations
 
+import json
 import re
+import sys
 import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO / "tools" / "ci"))
+
+import fuzz_matrix  # noqa: E402
+
 FUZZ = REPO / ".github" / "workflows" / "fuzz.yml"
 CI = REPO / ".github" / "workflows" / "ci.yml"
-ROW = re.compile(r"^          - \{ pkg: (\./[a-z0-9/_-]+), target: (Fuzz\w+), minutes: (\d+) \}$")
-# Any spelling gofmt keeps: another parameter name, a comment after the brace.
-FUNC = re.compile(r"^func (Fuzz\w*)\(\s*\w+\s+\*testing\.F\s*\)", re.M)
-# Code that only the range guest runs on its own output; everything else reads input on the host or the Pi.
-GUEST_ONLY = {"./cmd/balistid-range-guest", "./internal/rangeguest"}
+LIST = "go test -list '^Fuzz' -json ./... > \"$RUNNER_TEMP/list.json\""
+MATRIX = "python3 tools/ci/fuzz_matrix.py < \"$RUNNER_TEMP/list.json\" >> \"$GITHUB_OUTPUT\""
 RUN = "go test -run '^$' -fuzz \"^${TARGET}\\$\" -fuzztime \"${MINUTES}m\" \"$PKG\" || rc=$?"
+MOD = "github.com/Balistid/balistid-blue/"
 
 
 def text() -> str:
     return FUZZ.read_text(encoding="utf-8")
 
 
-def repository_targets() -> set[tuple[str, str]]:
-    targets = set()
-    for path in REPO.glob("**/*_test.go"):
-        pkg = "./" + path.parent.relative_to(REPO).as_posix()
-        targets.update((pkg, name) for name in FUNC.findall(path.read_text(encoding="utf-8")))
-    return targets
+def event(action: str, package: str = MOD + "internal/store", output: str | None = None) -> str:
+    e = {"Action": action, "Package": package}
+    if output is not None:
+        e["Output"] = output
+    return json.dumps(e)
 
 
-def matrix() -> list[tuple[str, str, int]]:
-    """The rows between include: and the job's env:, every line of which must be a row."""
-    block = re.search(r"(?ms)^        include:\n(.*?)^    env:\n", text())
-    if block is None:
-        raise AssertionError("fuzz.yml has no matrix include block before the job's env")
-    rows = []
-    for line in block.group(1).splitlines():
-        m = ROW.match(line)
-        if m is None:
-            raise AssertionError(f"not a matrix row: {line!r}")
-        rows.append((m.group(1), m.group(2), int(m.group(3))))
-    return rows
+def listing(*names: tuple[str, str]) -> list[str]:
+    """A built package listing as go test -json prints it: start, one output per name, the ok line, pass."""
+    lines = []
+    for package, name in names:
+        lines += [event("start", MOD + package), event("output", MOD + package, name + "\n"),
+                  event("output", MOD + package, f"ok  \t{MOD}{package}\t0.004s\n"), event("pass", MOD + package)]
+    return lines
 
 
 class Matrix(unittest.TestCase):
-    def test_every_fuzz_target_runs_once(self) -> None:
-        listed = [(pkg, target) for pkg, target, _ in matrix()]
-        self.assertEqual(len(listed), len(set(listed)), "a target listed twice")
-        self.assertEqual(set(listed), repository_targets())
+    def test_every_listed_target_is_one_row_with_its_minutes(self) -> None:
+        rows = fuzz_matrix.rows(listing(("internal/store", "FuzzReadSeals"), ("internal/rangeguest", "FuzzParsers"),
+                                        ("cmd/balistid-range-guest", "FuzzHealthKind")))
+        self.assertEqual(rows, [
+            {"pkg": "./cmd/balistid-range-guest", "target": "FuzzHealthKind", "minutes": 10},
+            {"pkg": "./internal/rangeguest", "target": "FuzzParsers", "minutes": 10},
+            {"pkg": "./internal/store", "target": "FuzzReadSeals", "minutes": 60},
+        ])
 
-    def test_no_row_outside_the_matrix(self) -> None:
-        self.assertEqual(text().count("{ pkg:"), len(matrix()))
+    def test_packages_without_tests_or_targets_add_nothing(self) -> None:
+        lines = listing(("internal/store", "FuzzReadSeals"))
+        lines += [event("start", MOD + "cmd/balistid"), event("skip", MOD + "cmd/balistid"),
+                  event("output", MOD + "cmd/balistid", f"?   \t{MOD}cmd/balistid\t[no test files]\n")]
+        self.assertEqual(len(fuzz_matrix.rows(lines)), 1)
 
-    def test_host_and_pi_parsers_fuzz_an_hour(self) -> None:
-        timeout = int(re.search(r"(?m)^    timeout-minutes: (\d+)$", text()).group(1))
-        for pkg, target, minutes in matrix():
-            with self.subTest(target=target):
-                self.assertEqual(minutes, 10 if pkg in GUEST_ONLY else 60)
-                self.assertLess(minutes + 10, timeout)
+    def test_a_listing_that_cannot_tell_its_targets_fails(self) -> None:
+        good = listing(("internal/store", "FuzzReadSeals"))
+        cases = {
+            "build failed": good + [event("build-fail", MOD + "internal/watch")],
+            "test binary failed": good + [event("fail", MOD + "internal/watch")],
+            "nothing listed": [event("start"), event("pass")],
+            "listed twice": good + listing(("internal/store", "FuzzReadSeals")),
+            "another module": good + [event("output", "example.com/x", "FuzzX\n")],
+            "module root": good + [event("output", MOD.rstrip("/"), "FuzzX\n")],
+            "name with a newline inside": good + [event("output", output="FuzzX\nFuzzY\n")],
+            "name with a space": good + [event("output", output="FuzzX y\n")],
+            "upper-case package": good + [event("output", MOD + "internal/Store", "FuzzX\n")],
+            "not json": good + ["Fuzz"],
+        }
+        for case, lines in cases.items():
+            with self.subTest(case=case), self.assertRaises((ValueError, json.JSONDecodeError)):
+                fuzz_matrix.rows(lines)
+
+    def test_host_and_pi_parsers_fuzz_an_hour_within_the_job_timeout(self) -> None:
+        self.assertEqual((fuzz_matrix.GUEST_MINUTES, fuzz_matrix.HOST_MINUTES), (10, 60))
+        timeout = int(re.search(r"(?ms)^  fuzz:\n.*?^    timeout-minutes: (\d+)$", text()).group(1))
+        self.assertLess(fuzz_matrix.HOST_MINUTES + 10, timeout)
 
     def test_guest_only_packages_are_imported_only_by_the_guest(self) -> None:
         for path in REPO.glob("**/*.go"):
             rel = path.relative_to(REPO).as_posix()
-            if rel.startswith(("cmd/balistid-range-guest/", "internal/rangeguest/")):
+            if rel.startswith(tuple(p.removeprefix("./") + "/" for p in fuzz_matrix.GUEST_ONLY)):
                 continue
             with self.subTest(file=rel):
                 self.assertNotIn('balistid-blue/internal/rangeguest"', path.read_text(encoding="utf-8"))
@@ -73,23 +94,33 @@ class Workflow(unittest.TestCase):
         t = text()
         self.assertRegex(t, r"(?m)^on:\n  schedule:\n    - cron: \"23 1 \* \* \*\"\n  workflow_dispatch:\n\n")
         self.assertRegex(t, r"(?m)^permissions:\n  contents: read\n\n")
-        self.assertIn("persist-credentials: false", t)
+        self.assertEqual(t.count("persist-credentials: false"), 2)
         for needle in ("secrets.", "github.token", "pull_request", "actions/upload-artifact@", "continue-on-error",
-                       "ref:", "max-parallel", "|| true", "fail-fast: true"):
+                       "ref:", "max-parallel", "|| true", "fail-fast: true", "{ pkg:"):
             self.assertNotIn(needle, t)
         self.assertNotRegex(t, r"\btimeout \d")
+
+    def test_the_matrix_is_the_compilers_listing(self) -> None:
+        t = text()
+        for line in (f"          {LIST}\n", f"          {MATRIX}\n", "      matrix: ${{ steps.list.outputs.matrix }}\n",
+                     "    needs: targets\n", "        include: ${{ fromJSON(needs.targets.outputs.matrix) }}\n"):
+            self.assertIn(line, t)
+        self.assertEqual(t.count("go test"), 2)
 
     def test_each_job_fuzzes_its_row_for_its_minutes(self) -> None:
         t = text()
         for line in ("      PKG: ${{ matrix.pkg }}\n", "      TARGET: ${{ matrix.target }}\n",
                      "      MINUTES: ${{ matrix.minutes }}\n", f"          {RUN}\n", '          exit "$rc"\n'):
             self.assertIn(line, t)
-        self.assertEqual(t.count("go test"), 1)
         self.assertEqual(re.findall(r"(?m)^\s+if: (.*)$", t), ["failure() || cancelled()"])
 
-    def test_matrix_values_reach_the_shell_only_through_the_environment(self) -> None:
-        steps = text().split("    steps:\n", 1)[1]
-        self.assertNotIn("${{", steps)
+    def test_expressions_stay_out_of_steps(self) -> None:
+        """Matrix values reach the shell only through the environment."""
+        lines = sorted(ln.strip() for ln in text().splitlines() if "${{" in ln)
+        self.assertEqual(lines, sorted([
+            "matrix: ${{ steps.list.outputs.matrix }}", "include: ${{ fromJSON(needs.targets.outputs.matrix) }}",
+            "PKG: ${{ matrix.pkg }}", "TARGET: ${{ matrix.target }}", "MINUTES: ${{ matrix.minutes }}",
+        ]))
 
     def test_go_is_the_one_ci_pins(self) -> None:
         for key in ("GO_VERSION", "GO_SHA256"):

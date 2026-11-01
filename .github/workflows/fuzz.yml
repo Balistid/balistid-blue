@@ -3,7 +3,7 @@ name: fuzz
 # The hours of fuzz_hours (acceptance/0.toml, ADR 0016): every fuzz target nightly on main, an hour each for
 # code that reads input on the host or the Pi, ten minutes for the range guest's own. A crasher fails its job
 # and its input is printed base64, to be committed as a seed. Installing only a fuzzed commit is 9.5's part.
-# tools/ci/tests/test_fuzz_workflow.py keeps the matrix equal to the repository's Fuzz functions.
+# The matrix is every Fuzz function the compiler lists (ADR 0041); a new target needs no change here.
 on:
   schedule:
     - cron: "23 1 * * *"
@@ -17,45 +17,42 @@ env:
   GO_SHA256: "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
 
 jobs:
+  targets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: List every fuzz target
+        id: list
+        run: |
+          go test -list '^Fuzz' -json ./... > "$RUNNER_TEMP/list.json"
+          python3 tools/ci/fuzz_matrix.py < "$RUNNER_TEMP/list.json" >> "$GITHUB_OUTPUT"
+
   fuzz:
+    needs: targets
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { pkg: ./internal/anchor, target: FuzzControlRequest, minutes: 60 }
-          - { pkg: ./internal/auditstat, target: FuzzDecodeReply, minutes: 60 }
-          - { pkg: ./internal/auditstat, target: FuzzDecodeReport, minutes: 60 }
-          - { pkg: ./internal/collector, target: FuzzFraming, minutes: 60 }
-          - { pkg: ./internal/collector, target: FuzzLossOf, minutes: 60 }
-          - { pkg: ./internal/cosign, target: FuzzOpen, minutes: 60 }
-          - { pkg: ./internal/entry, target: FuzzDecodeEntry, minutes: 60 }
-          - { pkg: ./internal/link, target: FuzzDecodeMessage, minutes: 60 }
-          - { pkg: ./internal/rangejob, target: FuzzDecodeDisk, minutes: 60 }
-          - { pkg: ./internal/rangejob, target: FuzzParseRequest, minutes: 60 }
-          - { pkg: ./internal/rangerun, target: FuzzLoadLedger, minutes: 60 }
-          - { pkg: ./internal/rangerun, target: FuzzMemAvailable, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzChunks, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzExecReport, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzJudgeTrial, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzMarkWriter, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzParse, minutes: 60 }
-          - { pkg: ./internal/rangevm, target: FuzzPrintable, minutes: 60 }
-          - { pkg: ./internal/rawrecord, target: FuzzFromParts, minutes: 60 }
-          - { pkg: ./internal/rawrecord, target: FuzzNew, minutes: 60 }
-          - { pkg: ./internal/relay, target: FuzzServePath, minutes: 60 }
-          - { pkg: ./internal/relay, target: FuzzWitnessResponse, minutes: 60 }
-          - { pkg: ./internal/store, target: FuzzParseSeal, minutes: 60 }
-          - { pkg: ./internal/store, target: FuzzReadSeals, minutes: 60 }
-          - { pkg: ./internal/watch, target: FuzzStateParse, minutes: 60 }
-          - { pkg: ./internal/watch, target: FuzzTileParse, minutes: 60 }
-          - { pkg: ./internal/watch, target: FuzzWitnessIndex, minutes: 60 }
-          - { pkg: ./cmd/balistid-range-guest, target: FuzzHealthKind, minutes: 10 }
-          - { pkg: ./cmd/balistid-range-guest, target: FuzzKeepsWindow, minutes: 10 }
-          - { pkg: ./internal/rangeguest, target: FuzzParsers, minutes: 10 }
-          - { pkg: ./internal/rangeguest, target: FuzzStoredPrefix, minutes: 10 }
-          - { pkg: ./internal/rangeguest, target: FuzzSuperblock, minutes: 10 }
+        include: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
       GOFLAGS: -mod=readonly
       GOWORK: "off"
