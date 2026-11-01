@@ -3,7 +3,7 @@ name: fuzz
 # The hours of fuzz_hours (acceptance/0.toml, ADR 0016): every fuzz target nightly on main, an hour each for
 # code that reads input on the host or the Pi, ten minutes for the range guest's own. A crasher fails its job
 # and its input is printed base64, to be committed as a seed. Installing only a fuzzed commit is 9.5's part.
-# The matrix is every Fuzz function the compiler lists (ADR 0041); a new target needs no change here.
+# The matrix is every Fuzz function in the tracked test files (ADR 0041); a new target needs no change here.
 on:
   schedule:
     - cron: "23 1 * * *"
@@ -19,31 +19,17 @@ env:
 jobs:
   targets:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      GOFLAGS: -mod=readonly
-      GOWORK: "off"
-      GOTOOLCHAIN: local
-      CGO_ENABLED: "0"
+    timeout-minutes: 5
     outputs:
       matrix: ${{ steps.list.outputs.matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Go (pinned by sha256) and check it against go.mod
-        run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
-          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
-          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
-            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      # From the source alone: running a test binary here would let any package write this job's output.
       - name: List every fuzz target
         id: list
-        run: |
-          go test -list '^Fuzz' -json ./... > "$RUNNER_TEMP/list.json"
-          python3 tools/ci/fuzz_matrix.py < "$RUNNER_TEMP/list.json" >> "$GITHUB_OUTPUT"
+        run: python3 tools/ci/fuzz_matrix.py >> "$GITHUB_OUTPUT"
 
   fuzz:
     needs: targets
@@ -74,13 +60,19 @@ jobs:
           python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
             --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
       - name: Fuzz one target
-        # A panic's text is fuzzer-made: no line of it may become a workflow command.
+        # A panic's text is fuzzer-made: no line of it may become a workflow command. A target that matches
+        # nothing passes without fuzzing, so a passing run must show the fuzzer's progress line.
         run: |
           token=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
           echo "::stop-commands::$token"
-          rc=0
-          go test -run '^$' -fuzz "^${TARGET}\$" -fuzztime "${MINUTES}m" "$PKG" || rc=$?
+          set +e
+          go test -run '^$' -fuzz "^${TARGET}\$" -fuzztime "${MINUTES}m" "$PKG" | tee "$RUNNER_TEMP/fuzz.log"
+          rc=${PIPESTATUS[0]}
+          set -e
           printf '\n::%s::\n' "$token"
+          if [ "$rc" -eq 0 ] && ! grep -q '^fuzz: elapsed: ' "$RUNNER_TEMP/fuzz.log"; then
+            echo "no fuzzing ran for $TARGET"; rc=1
+          fi
           exit "$rc"
       - name: Print the crasher as a seed to commit
         if: failure() || cancelled()

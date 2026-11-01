@@ -167,6 +167,20 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(ci.count("github.event_name != 'schedule'"), 2)
         self.assertIn("docs-budget", RELEASE_JOB.split("needs:")[1].splitlines()[0])
 
+    # A merge group's range is its own, and only a push or a group lifts the Agent trailer for Dependabot (ADR 0041).
+    def test_merge_group_checks_the_groups_range(self):
+        ci = (REPO / ".github/workflows/ci.yml").read_text()
+        for job in ("docs-budget", "commit-lint"):
+            body = ci[ci.index(f"\n  {job}:\n"):]
+            body = body[:body.index("\n\n  ")]
+            for line in ("          GROUP_BASE: ${{ github.event.merge_group.base_sha }}\n",
+                         "          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}\n"):
+                with self.subTest(job=job, line=line):
+                    self.assertIn(line, body)
+        self.assertEqual(ci.count("--dependabot-pr"), 1)
+        self.assertIn('          if [ "$EVENT" = "push" ] || [ "$EVENT" = "merge_group" ] || '
+                      '[ "$PR_AUTHOR" = "dependabot[bot]" ]; then\n            set -- "$@" --dependabot-pr\n', ci)
+
     # The bundle is uploaded only after every other check of the same run passed, a job added later included.
     # range-kvm alone is advisory until the maintainer makes it required (ADR 0028, point 4).
     def test_release_needs_every_other_job(self):
