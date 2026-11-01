@@ -76,6 +76,11 @@ func judgeAuditSet(tr rangejob.Trial, o Outcome) (string, string) {
 			return Invalid, fmt.Sprintf("residual %s gave %s, neither ok nor EPERM", op, res[op])
 		}
 	}
+	for _, op := range []string{"pid", "user"} {
+		if res[op] == "timeout" {
+			return Invalid, op + " gave no answer: whether it went through is unknown"
+		}
+	}
 	return Pass, fmt.Sprintf("every gate EPERM, pid %s, user %s; residuals lost %s, wait_actual %s, feature %s",
 		res["pid"], res["user"], res["lost"], res["wait_actual"], res["feature"])
 }

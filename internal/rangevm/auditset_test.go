@@ -46,6 +46,8 @@ func TestJudgeAuditSet(t *testing.T) {
 		{want: Invalid, ops: map[string]string{"backlog": "timeout"}},
 		{want: Invalid, ops: map[string]string{"lost": "timeout"}},
 		{want: Invalid, ops: map[string]string{"feature": "EINVAL"}},
+		{want: Invalid, ops: map[string]string{"pid": "timeout"}},
+		{want: Invalid, ops: map[string]string{"user": "timeout"}},
 		{want: Invalid, ops: map[string]string{"trim": "eperm"}},
 		{want: Invalid, ops: map[string]string{"trim": "E"}},
 		{want: Invalid, ops: map[string]string{"trim": "EPERM;x"}},
