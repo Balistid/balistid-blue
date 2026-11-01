@@ -26,14 +26,14 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 1. balistid-auditstat (ADR 0038, 0039): the daemon, unit and range checks in this PR; next its -e 2 trial (CP3b),
    the collector reading it (CP4), `-queue-bytes` and the 10-run shapes (CP5); then L12 the Pi.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
-3. 2026-11-10 C3 = B4.9: runner reinstall, the suite, metric verdicts; 2026-11-15: witness end to end, 9.5 needs.
-4. Host install (9.5) only when every metric the range decides passes, with balistid-install (its ADR sets the install
-   numbers), R2 keys, an own filesystem for the store, x32 and io_uring, alarms and a build unit with a syscall filter.
+3. CPU first (ADR 0040, product bar: this PR): cpu_cores 0.70 of 0.5, auditd with Laurel 0.46; a time-boxed fit, else
+   an ADR on the data source (reopens 0004); then the local-mode ADR. 2026-11-10 C3 = B4.9 (reinstall, suite, verdicts).
+4. Host install (9.5) when every range metric and the product bar pass: balistid-install, R2 keys, the store on the
+   existing fs with its reserve, x32, io_uring, alarms, a syscall-filtered build unit; L12 and the witness e2e after it.
 ## Open decisions (maintainer)
 - #142: seal continuity left to the Pi; appends wait each (about 45 ms on btrfs). #148: `-final` ends anchoring until rollover.
 - #142: the ledger socket is 0666 and serves one connection; a local flood can delay the collector's reconnect.
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
-- cpu_cores: ADR 0025 (#138); 0.70 of 0.5 on 4 vCPU, auditd with Laurel 0.46: a host MISS is likely.
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #170: another writer filling the store's fs past its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
 - #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
