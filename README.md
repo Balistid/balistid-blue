@@ -1,8 +1,8 @@
 # Balistid Blue
 
-Balistid Blue is a local-first security control plane for a single Linux host on x86-64. It does not ship its own
-sensors. It runs maintained open-source security tools under one command layer and turns their
-output into a small number of cases a single person can understand and act on.
+Balistid Blue is a light, local-first security control plane for Linux hosts on x86-64. It ships no sensor of its
+own: it runs maintained open-source security tools under one command layer, keeps a history whose tampering a
+witness off the host can prove (an optional higher level), and explains each verdict to the person who acts on it.
 
 Status: pre-alpha. Nothing here is ready to protect a machine yet. See `STATUS.md`.
 
