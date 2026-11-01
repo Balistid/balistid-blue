@@ -3,7 +3,14 @@ package auditstat
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
+	"os"
+	"syscall"
 )
+
+// ReportPath is where auditstat writes its report: its unit's runtime directory, 0750 to the report's group.
+const ReportPath = "/run/balistid-auditstat/report"
 
 // Label names the report's encoding; a change of the layout needs a new label.
 const Label = "balistid/auditstat/v1"
@@ -42,4 +49,33 @@ func DecodeReport(b []byte) (Report, error) {
 		*f = binary.BigEndian.Uint32(b[8+4*i:])
 	}
 	return r, nil
+}
+
+// ReadReport is the report at path, read only as a regular file of uid, exactly ReportBytes long and not through a
+// symlink (ADR 0038 point 2): the one way to read it. auditstat replaces it whole, so a read never sees half of one.
+func ReadReport(path string, uid int) (Report, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the caller names auditstat's report
+	if err != nil {
+		return Report{}, fmt.Errorf("auditstat: report: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	fi, err := f.Stat()
+	if err != nil {
+		return Report{}, fmt.Errorf("auditstat: report: %w", err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.Mode().IsRegular():
+		return Report{}, errors.New("auditstat: the report is not a regular file")
+	case !ok || int64(st.Uid) != int64(uid):
+		return Report{}, errors.New("auditstat: the report is not auditstat's")
+	case fi.Size() != int64(ReportBytes):
+		return Report{}, errors.New("auditstat: a report of the wrong size")
+	}
+	b := make([]byte, ReportBytes+1)
+	n, err := io.ReadFull(f, b)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		return Report{}, errors.New("auditstat: the report changed size while read")
+	}
+	return DecodeReport(b[:n])
 }

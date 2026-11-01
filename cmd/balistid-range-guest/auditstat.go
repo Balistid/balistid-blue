@@ -3,43 +3,45 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/auditstat"
+	"github.com/Balistid/balistid-blue/internal/rangeguest"
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
-const auditstatReportPath = "/run/balistid-auditstat/report"
-
-// auditstatReport is "yes" when auditstat's report moves on over one poll and agrees with the kernel, audit locked
-// and auditd's pid (ADR 0038 point 1), else what differs.
+// auditstatReport is "yes" when auditstat's report, read as the collector will read it, moves on over one poll and
+// agrees with the kernel: audit locked, auditd's pid and the loaded settings (ADR 0038 point 1); else what differs.
 func auditstatReport(ctx context.Context) string {
-	read := func() (auditstat.Report, error) {
-		b, err := os.ReadFile(auditstatReportPath)
-		if err != nil {
-			return auditstat.Report{}, err //nolint:wrapcheck // the fact names the read
-		}
-		return auditstat.DecodeReport(b)
+	uid, err := unixsock.LookupUID("balistid-auditstat")
+	if err != nil {
+		return err.Error()
 	}
-	first, err := read()
+	first, err := auditstat.ReadReport(auditstat.ReportPath, uid)
 	if err != nil {
 		return "first read: " + err.Error()
 	}
 	if !pause(ctx, auditstat.Interval+time.Second) {
 		return "stopped before the second read"
 	}
-	second, err := read()
-	auditd := mainPID(ctx, "auditd.service")
-	switch {
-	case err != nil:
+	second, err := auditstat.ReadReport(auditstat.ReportPath, uid)
+	if err != nil {
 		return "second read: " + err.Error()
-	case second.Seq <= first.Seq:
-		return fmt.Sprintf("seq %d, then %d", first.Seq, second.Seq)
-	case second.Status.Enabled != 2:
-		return fmt.Sprintf("enabled %d", second.Status.Enabled)
-	case strconv.FormatUint(uint64(second.Status.PID), 10) != auditd:
-		return fmt.Sprintf("pid %d, auditd's %q", second.Status.PID, auditd)
+	}
+	if second.Seq == first.Seq {
+		return fmt.Sprintf("seq %d twice", second.Seq)
+	}
+	kernel := rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))
+	s := second.Status
+	for name, got := range map[string]uint32{"enabled": s.Enabled, "failure": s.Failure, "pid": s.PID,
+		"backlog_limit": s.BacklogLimit, "rate_limit": s.RateLimit} {
+		if want := kernel[name]; strconv.FormatUint(uint64(got), 10) != want {
+			return fmt.Sprintf("%s %d, the kernel's %q", name, got, want)
+		}
+	}
+	if s.Enabled != 2 {
+		return fmt.Sprintf("enabled %d", s.Enabled)
 	}
 	return "yes"
 }
