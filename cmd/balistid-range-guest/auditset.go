@@ -129,51 +129,58 @@ type auditAsker struct {
 // ask is the kernel's answer to one request: ok for an acknowledgement of zero or more, else the errno's
 // name, or timeout when no acknowledgement came within the socket's second.
 func (a *auditAsker) ask(typ uint16, payload []byte) string {
-	res, _ := a.exchange(typ, payload)
+	res, _ := a.exchange(typ, payload, false)
 	return res
 }
 
-// exchange sends a request and returns its answer, and the first other message of its seq, the reply.
-func (a *auditAsker) exchange(typ uint16, payload []byte) (string, []byte) {
+// exchange sends a request and returns its answer. With reply it asks for no acknowledgement and waits for the
+// first other message of its seq, which the kernel sends from a thread of its own, so it may come after an
+// acknowledgement; it returns ok and that message's payload.
+func (a *auditAsker) exchange(typ uint16, payload []byte, reply bool) (string, []byte) {
 	a.seq++
 	msg := make([]byte, unix.SizeofNlMsghdr+len(payload))
+	flags := uint16(unix.NLM_F_REQUEST | unix.NLM_F_ACK)
+	if reply {
+		flags = unix.NLM_F_REQUEST
+	}
 	binary.NativeEndian.PutUint32(msg[0:], uint32(len(msg))) //nolint:gosec // at most a rule's size
 	binary.NativeEndian.PutUint16(msg[4:], typ)
-	binary.NativeEndian.PutUint16(msg[6:], unix.NLM_F_REQUEST|unix.NLM_F_ACK)
+	binary.NativeEndian.PutUint16(msg[6:], flags)
 	binary.NativeEndian.PutUint32(msg[8:], a.seq)
 	copy(msg[unix.SizeofNlMsghdr:], payload)
 	if err := unix.Sendto(a.fd, msg, 0, &unix.SockaddrNetlink{Family: unix.AF_NETLINK}); err != nil {
 		return errnoResult(err), nil
 	}
-	var reply []byte
 	buf := make([]byte, 8192)
 	for range 16 {
 		n, _, err := unix.Recvfrom(a.fd, buf, 0)
 		if err != nil {
-			return "timeout", reply
+			return "timeout", nil
 		}
 		if n < unix.SizeofNlMsghdr+4 || binary.NativeEndian.Uint32(buf[8:]) != a.seq {
 			continue
 		}
 		if binary.NativeEndian.Uint16(buf[4:]) != unix.NLMSG_ERROR {
-			if reply == nil {
-				reply = append([]byte(nil), buf[unix.SizeofNlMsghdr:n]...)
+			if reply {
+				return "ok", append([]byte(nil), buf[unix.SizeofNlMsghdr:n]...)
 			}
 			continue
 		}
 		code := int32(binary.NativeEndian.Uint32(buf[unix.SizeofNlMsghdr:])) //nolint:gosec // the kernel's signed errno
-		if code >= 0 {
-			return "ok", reply
+		switch {
+		case code < 0:
+			return errnoResult(syscall.Errno(-code)), nil
+		case !reply:
+			return "ok", nil
 		}
-		return errnoResult(syscall.Errno(-code)), reply
 	}
-	return "timeout", reply
+	return "timeout", nil
 }
 
 // toggleLoginuid reads the audit features and asks to flip loginuid_immutable, then flips it back: the
 // first answer is whether -e 2 still lets the capability change a feature without its own lock.
 func (a *auditAsker) toggleLoginuid() string {
-	res, reply := a.exchange(unix.AUDIT_GET_FEATURE, nil)
+	res, reply := a.exchange(unix.AUDIT_GET_FEATURE, nil, true)
 	if res != "ok" {
 		return res
 	}
