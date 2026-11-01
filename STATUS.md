@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-01 by claude/opus-5.5 (the merge queue and the listed fuzz targets: this PR, ADR 0041)
+Updated: 2026-11-01 by claude/opus-5.5 (#184 the merge queue and the listed fuzz targets, ADR 0041; CP4: this PR)
 
 ## Where we are
 
@@ -16,15 +16,15 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- This PR (ADR 0041): CI on `merge_group`, fuzz matrix from the test source; the queue is the maintainer's switch.
+- #184 (ADR 0041): CI on `merge_group`, fuzz matrix from the test source; the queue is the maintainer's switch.
 - #175 balistid-auditstat on `main` (2a2fac7); audit-set (#180, fff816a): under -e 2 auditstat's uid gets EPERM for every
   lock gate, EEXIST for the pid, EPERM for user messages, and may still reset lost and flip loginuid (KVM PASS).
 - #168 L11c: the log at its cap logs reason 7 before final, alerted as `logcap`; `-cap-bytes` range-only; log-cap
   PASS 2/2. #170 L11b (f79ff99, 3fbdb72): full-fs PASS 30/30 at 4.1-6.3 s (a WAL left), store 3/3 at 5.3-6.3 s,
   control PASS; kernel and dispatcher INVALID (no detector); queue INVALID (the dispatcher overflows first).
 ## Next step
-1. auditstat (ADR 0038, 0039): the collector reading its report (CP4), `-queue-bytes` and the 10-run shapes (CP5);
-   `loss_alarm_s` is floor 0's, so it closes before 9.5 (ADR 0040).
+1. auditstat (ADR 0038, 0039): CP4 here (the collector logs stages 7-8, reasons 8-10; awaits review); CP5 the
+   guest's lost and flag brackets, the 10-run shapes, `-queue-bytes`; `loss_alarm_s` closes before 9.5 (ADR 0040).
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
 3. Before L12, CPU (ADR 0040): cpu_cores 0.70 of 0.5, auditd with Laurel 0.46; a time-boxed fit, else
    an ADR on the data source (reopens 0004); then the local-mode ADR. 2026-11-10 C3 = B4.9 (reinstall, suite, verdicts).
