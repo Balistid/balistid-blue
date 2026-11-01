@@ -42,7 +42,8 @@ var lossFacts = []string{FactTrial, FactPhase, FactKernel, FactInject, FactInjec
 	FactRefused, FactPiActive, FactLostBefore, FactLostAfter, FactOverflowAfter, FactCollectorRestarts, FactFirstUnknown}
 
 // judgeLoss: the closed facts, a proven injection, a readable watcher and its start through the sink, else
-// INVALID; kernel and dispatcher cases are INVALID until balistid-auditstat detects them, and a moved kernel
+// INVALID; kernel and dispatcher cases are INVALID until the guest brackets lost and the flag (ADR 0039, point
+// 4), saying what the ledger and the sink got meanwhile, and a moved kernel
 // lost counter spoils a collector case or the control. With those, a refused token, a watcher not running, no
 // entry of the cause in the ledger or no alert within lossAlarm is a MISS, and a bracket too wide to prove
 // lossAlarm INVALID; the control MISSes on any alert since the watcher started.
@@ -64,7 +65,8 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	case f[FactPiActive] == "missing":
 		return Invalid, "the watcher's state could not be read"
 	case tr.Inject == rangejob.InjectKernel || tr.Inject == rangejob.InjectDispatcher:
-		return Invalid, "no detector: balistid-auditstat reports kernel and dispatcher loss (ADR 0036, point 4); " + lost
+		return Invalid, fmt.Sprintf("no bracket yet for the loss (ADR 0039, point 4); %s; entry \"%s\"; posts \"%s\"", lost,
+			Printable(f[FactLossEntry], 160), Printable(f[FactPosts], 240))
 	case (start == nil || start.MS > n[FactInjectMS]) && n[FactRefused] > 0:
 		return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
 	case start == nil || start.MS > n[FactInjectMS]:

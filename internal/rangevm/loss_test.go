@@ -126,12 +126,15 @@ func TestJudgeLoss(t *testing.T) {
 	}
 }
 
-// Kernel and dispatcher loss have no detector until balistid-auditstat: INVALID however they ran.
-func TestKernelCasesInvalidWithoutDetector(t *testing.T) {
+// Kernel and dispatcher loss have no bracket until the guest takes it (ADR 0039, point 4): INVALID however they ran,
+// with what the ledger and the sink got in the reason.
+func TestKernelCasesInvalidWithoutBracket(t *testing.T) {
 	for _, name := range []string{"loss-kernel", "loss-dispatcher"} {
-		for _, c := range []map[string]string{nil, {FactLostAfter: "7"}, {FactPosts: "60000:start"}} {
-			if v, _ := JudgeTrial(trial(t, name), lossRun(name, c), cleanBuild, cleanBuild); v != Invalid {
-				t.Errorf("%s with %v: %s", name, c, v)
+		for _, c := range []map[string]string{nil, {FactLostAfter: "7"}, {FactPosts: "60000:start"},
+			{FactPosts: "60000:start,120000:losskernel,121000:lossdispatcher"}} {
+			v, why := JudgeTrial(trial(t, name), lossRun(name, c), cleanBuild, cleanBuild)
+			if v != Invalid || !strings.Contains(why, `entry "yes"`) || !strings.Contains(why, `posts "60000:start`) {
+				t.Errorf("%s with %v: %s (%s)", name, c, v, why)
 			}
 		}
 	}
