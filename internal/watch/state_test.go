@@ -138,7 +138,7 @@ func TestStateFromBeforeTheOverflowLoads(t *testing.T) {
 	if err := s.Save(verified(t, enc(t, batches(300)...)), nil); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(filepath.Join(s.dir, stateName)) //nolint:gosec // the test's own file
+	b, err := os.ReadFile(filepath.Join(s.dir, stateName))
 	if err != nil {
 		t.Fatal(err)
 	}
