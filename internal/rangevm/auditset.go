@@ -35,8 +35,8 @@ var (
 
 // judgeAuditSet: the child ran as balistid-auditstat with CAP_AUDIT_CONTROL alone (prm, eff and amb) on a locked
 // kernel, else INVALID. A gate, pid or user that went through, or audit unlocked after the child, is a MISS; then
-// a get that failed, or a gate refused with anything but EPERM, never reached the lock and is INVALID. Residuals
-// are recorded, ok or EPERM, and decide nothing.
+// a get that failed, a gate refused with anything but EPERM, a pid without EEXIST or a user without EPERM is
+// INVALID: no recognised refusal. Residuals are recorded, ok or EPERM, and decide nothing.
 func judgeAuditSet(tr rangejob.Trial, o Outcome) (string, string) {
 	f, _, why := probeFacts(tr, o, auditSetFacts, nil)
 	if why != "" {
@@ -49,7 +49,7 @@ func judgeAuditSet(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the child's capabilities %q are not CAP_AUDIT_CONTROL alone", Printable(f[FactAuditSetCaps], 64))
 	case f[FactAuditSetUser] != "balistid-auditstat":
 		return Invalid, fmt.Sprintf("the child ran as %q", Printable(f[FactAuditSetUser], 64))
-	case before != "2" || len(after) != 1 || after[0] < '0' || after[0] > '9':
+	case before != "2" || after != "0" && after != "1" && after != "2":
 		return Invalid, fmt.Sprintf("audit enabled %q: not locked before the child, or unread", Printable(f[FactAuditSetEnabled], 32))
 	}
 	res, err := auditSetResults(f[FactAuditSet])
@@ -77,13 +77,12 @@ func judgeAuditSet(tr rangejob.Trial, o Outcome) (string, string) {
 			return Invalid, fmt.Sprintf("residual %s gave %s, neither ok nor EPERM", op, res[op])
 		}
 	}
-	for _, op := range []string{"pid", "user"} {
-		if res[op] == "timeout" {
-			return Invalid, op + " gave no answer: whether it went through is unknown"
-		}
+	if res["pid"] != "EEXIST" || res["user"] != "EPERM" {
+		return Invalid, fmt.Sprintf("pid gave %s and user %s, not the running auditd's EEXIST and the missing capability's EPERM",
+			res["pid"], res["user"])
 	}
-	return Pass, fmt.Sprintf("every gate EPERM, pid %s, user %s; residuals lost %s, wait_actual %s, feature %s",
-		res["pid"], res["user"], res["lost"], res["wait_actual"], res["feature"])
+	return Pass, fmt.Sprintf("every gate EPERM, pid EEXIST, user EPERM; residuals lost %s, wait_actual %s, feature %s",
+		res["lost"], res["wait_actual"], res["feature"])
 }
 
 // auditSetResults maps the child's "op=result,..." line: exactly AuditSetOps in order, each result a short
