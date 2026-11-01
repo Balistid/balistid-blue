@@ -290,7 +290,7 @@ max = 4.0
 unit = "systemd-analyze security score for balistid-auditstat"
 rows = ["T5", "T18"]
 adr = "0007"
-method = "As above, and trial audit-set (ADR 0038): under -e 2 the kernel refuses auditstat's uid, holding only CAP_AUDIT_CONTROL, every change the lock covers, the audit pid while auditd runs, and user messages; the changes it still allows are recorded."
+method = "As above, and trial audit-set (ADR 0038): under -e 2 the kernel refuses auditstat's uid, holding only CAP_AUDIT_CONTROL, every change the lock covers, the audit pid while auditd runs, and user messages; the counter resets and the loginuid feature flip it still allows are recorded."
 
 [[metric]]
 id = "ready_s"
