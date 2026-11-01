@@ -20,7 +20,8 @@ REPO = Path(__file__).resolve().parents[3]
 AUDITSTAT = REPO / "deploy" / "auditstat"
 BINARY = "/usr/local/lib/balistid/balistid-auditstat"
 FILES = {"sysusers.conf", "balistid-auditstat.service"}
-FORBIDDEN = COLLECTOR_FORBIDDEN - {"AmbientCapabilities"} | {"PrivateUsers", "PrivatePIDs", "PrivateNetwork"}
+FORBIDDEN = COLLECTOR_FORBIDDEN - {"AmbientCapabilities"} | {"PrivateUsers", "PrivatePIDs", "PrivateNetwork",
+                                                              "SupplementaryGroups"}
 
 SERVICE_UNIT = {
     "Description": ["Balistid Blue auditstat: the kernel's audit status for the collector"],
