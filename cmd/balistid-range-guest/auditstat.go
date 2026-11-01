@@ -40,8 +40,8 @@ func auditstatReport(ctx context.Context) string {
 			return fmt.Sprintf("%s %d, the kernel's %q", name, got, want)
 		}
 	}
-	if s.Enabled != 2 {
-		return fmt.Sprintf("enabled %d", s.Enabled)
+	if s.Enabled != 2 || s.PID == 0 {
+		return fmt.Sprintf("enabled %d, pid %d", s.Enabled, s.PID)
 	}
 	return "yes"
 }

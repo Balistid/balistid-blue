@@ -45,7 +45,7 @@ func loop(ctx context.Context, ask exchange, path string, interval time.Duration
 	for seq := uint64(1); ; seq++ {
 		err := poll(ctx, ask, seq, path)
 		switch {
-		case err != nil && (!failing || seq == 1):
+		case err != nil && !failing:
 			slog.ErrorContext(ctx, "auditstat: no report", "seq", seq, "err", err)
 		case err == nil && (failing || seq == 1):
 			slog.InfoContext(ctx, "auditstat: reporting", "path", path, "seq", seq)
