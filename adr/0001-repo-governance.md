@@ -45,8 +45,8 @@ them; a server-side gate binds every contributor.
 - A gate that is wrong blocks work until fixed in its own pull request.
 - The read-only token is readable by agents by design; leaking it exposes the private code, not `main`.
 - Changes to `tools/ci/`, `.github/`, `githooks/`, `.gitleaks.toml` and `.gitattributes` weaken or
-  strengthen the gates themselves; the maintainer reviews them line by line before merging. The
-  gates stop drift and careless agents; a determined author of gate code is stopped by that review.
+  strengthen the gates themselves; the maintainer approves them on the summary and the verdicts, and an
+  independent critic reviews them (amended by ADR 0042: the maintainer does not read them line by line).
 - Action pinning is audited by zizmor, which reads the parsed YAML; our own regex checker was
   bypassed twice by YAML spellings and was removed (R7, R9). File names follow a strict grammar so
   that the gitleaks default path allowlist cannot exempt a tracked file.
