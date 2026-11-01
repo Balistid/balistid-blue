@@ -188,6 +188,9 @@ type Writer struct {
 	Notify   func(state string) error // sd_notify; the tick and each run at stop feed the watchdog
 	Log      *slog.Logger
 	Started  map[string]string // version, boot id, rule version for the started record
+	// Audit reads the kernel's and auditd's loss and health (ADR 0038); Run refuses to start without it, and
+	// only tests of the writer's other parts leave it nil.
+	Audit *Audit
 	// LogCommits journals each new Committed of the store: the range reads it as the barrier and
 	// the last durable seq (ADR 0022). Off on the host.
 	LogCommits bool
@@ -220,7 +223,8 @@ type Writer struct {
 	capped      Loss   // dropped at the cap by the store, its loss record not yet committed
 	noteSeq     uint64 // numbers every health record, so one sent twice after a failure is seen as one
 	// lost counts records the collector counted lost since start (ADR 0016), including cap drops whose
-	// store loss record a failed Close lost; cap drops the store committed are only in its own loss records.
+	// store loss record a failed Close lost and the kernel's and dispatcher's (ADR 0038); cap drops the store
+	// committed are only in its own loss records.
 	lost          uint64
 	lostNotes     uint64 // health records given way in the queue or too large for the store, since start
 	journaledLost uint64 // lostNotes when the journal last said so
@@ -291,7 +295,13 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 	w.pending, w.down, w.opened = map[Stage]Loss{}, "starting", make(chan openResult, 1)
 	now := w.Now()
 	w.lastStats, w.lastJournal, w.lastRound, w.health = now, now, now, "UNKNOWN starting"
-	w.note(map[string]any{"kind": "started", "info": w.Started})
+	started := map[string]any{"kind": "started", "info": w.Started}
+	if w.Audit != nil {
+		w.Audit.begin(now, w.Log)
+		w.audit(now)
+		started["audit"] = w.Audit.started()
+	}
+	w.note(started)
 	w.startOpen(ctx)
 	// First stop, which comes after the reader returned (shutdown stores the rest in runs), then a due
 	// tick, then the rest of a burst one run at a time, so neither waits behind appends. A store that
@@ -367,6 +377,7 @@ func (w *Writer) step(ctx context.Context) {
 	now := w.Now()
 	w.appendQueued(ctx)
 	w.flush(ctx)
+	w.audit(now)           // after the flush: what it committed is what the seen file may say
 	w.connections(w.Now()) // after the appends, which can open the store and send its probe
 	w.canary(now)
 	w.losses(false)
@@ -550,6 +561,34 @@ func (w *Writer) canary(now time.Time) {
 	}
 }
 
+// audit stores in the seen file what the store committed of the kernel's and auditd's losses, then reads auditstat's
+// report and auditd's state and counts their new losses (ADR 0038, point 3).
+func (w *Writer) audit(now time.Time) {
+	if w.Audit == nil {
+		return
+	}
+	w.Audit.persist(w.auditWaiting(), w.Log)
+	kernel, dispatcher := w.Audit.check(now, w.Log)
+	at := now.UnixNano()
+	if kernel > 0 {
+		w.addPending(StageKernel, Loss{Count: kernel, FirstAt: at, LastAt: at})
+	}
+	if dispatcher > 0 {
+		w.addPending(StageDispatcher, Loss{Count: dispatcher, FirstAt: at, LastAt: at})
+	}
+}
+
+// auditWaiting reports whether a kernel or dispatcher loss waits for the store's commit.
+func (w *Writer) auditWaiting() bool {
+	audit := func(s Stage) bool { return s == StageKernel || s == StageDispatcher }
+	for s := range w.pending {
+		if audit(s) {
+			return true
+		}
+	}
+	return slices.ContainsFunc(slices.Concat(w.inflight, w.notes), func(n note) bool { return n.kind == "lost" && audit(n.stage) })
+}
+
 // losses moves the counted losses into pending and, while the store is up, into one record per stage.
 // While an earlier loss record waits for its commit, pending keeps adding up instead, so loss records
 // in the queue stay a few and none ever has to give way (requeue). At stop every stage gets its record,
@@ -655,11 +694,19 @@ func (w *Writer) refusals() {
 }
 
 // setHealth is UNKNOWN until the store is open, Laurel connected, the probe over this connection stored
-// and fewer than two probes missed; a change is a record (ADR 0017).
+// and fewer than two probes missed, then for the audit's and the stream's reasons; a new auditd pid comes
+// before all (ADR 0038, point 4). A change is a record (ADR 0017).
 func (w *Writer) setHealth() {
-	failing := w.Canary.Due(w.Now())
+	now := w.Now()
+	failing := w.Canary.Due(now)
+	audit := ""
+	if w.Audit != nil {
+		audit = w.Audit.reason(now)
+	}
 	h := "OK"
 	switch {
+	case w.Audit != nil && w.Audit.restarting(now):
+		h = auditdRestarted
 	case w.st == nil:
 		h = "UNKNOWN store: " + w.down
 	case w.connectedAt.IsZero():
@@ -668,6 +715,8 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
+	case audit != "": // ADR 0038, point 4: 9, 10, 8, then the stream's 6
+		h = audit
 	case w.streamFault(): // last: every other reason stays recorded as it changes (ADR 0017, point 5)
 		h = streamUnknown
 	}
@@ -808,6 +857,10 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		counts, losses := w.backlog(w.inflight)
 		w.Log.Error("store close failed at stop: these may be lost", "lost_records", losses, "health_records", counts, "err", err)
 		return fmt.Errorf("collector: close store: %w", err)
+	}
+	w.inflight = nil // the Close committed them
+	if w.Audit != nil {
+		w.Audit.persist(w.auditWaiting(), w.Log)
 	}
 	return nil
 }

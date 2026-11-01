@@ -85,11 +85,15 @@ func TestLossOfEachProducer(t *testing.T) {
 		{"stats record", shard.Leaf{Seq: 9, Provider: store.HealthProvider, Data: []byte(`{"kind":"stats","records":5}`)}, nil},
 	}
 	for stage, want := range lossStages {
+		records := uint64(3)
+		if stage == StageDispatcher { // a lower bound of one record (ADR 0038, point 3)
+			records = 1
+		}
 		cases = append(cases, struct {
 			name string
 			leaf shard.Leaf
 			want *entry.Loss
-		}{"lost " + string(stage), shard.Leaf{Seq: 9, Provider: store.HealthProvider, Data: lostRecord(t, stage, 3)}, &entry.Loss{Seq: 9, Stage: want, Records: 3}})
+		}{"lost " + string(stage), shard.Leaf{Seq: 9, Provider: store.HealthProvider, Data: lostRecord(t, stage, 3)}, &entry.Loss{Seq: 9, Stage: want, Records: records}})
 	}
 	for _, c := range cases {
 		got, err := lossOf(c.leaf)
@@ -107,7 +111,7 @@ func TestLossOfRefusesRecordsItCannotRead(t *testing.T) {
 		"store loss, schema 2":      {Seq: 1, Provider: store.LossProvider, Data: []byte(`{"schema_version":2,"dropped":4,"first_received":1,"last_received":2}`)},
 		"store loss, none dropped":  {Seq: 1, Provider: store.LossProvider, Data: []byte(`{"schema_version":1,"dropped":0,"first_received":1,"last_received":2}`)},
 		"store loss, trailing":      {Seq: 1, Provider: store.LossProvider, Data: []byte(`{"schema_version":1,"dropped":4,"first_received":1,"last_received":2}{}`)},
-		"lost, unknown stage":       {Seq: 1, Provider: store.HealthProvider, Data: bytes.Replace(lost, []byte(`"queue"`), []byte(`"kernel"`), 1)},
+		"lost, unknown stage":       {Seq: 1, Provider: store.HealthProvider, Data: bytes.Replace(lost, []byte(`"queue"`), []byte(`"auditd"`), 1)},
 		"lost, unknown field":       {Seq: 1, Provider: store.HealthProvider, Data: bytes.Replace(lost, []byte(`"kind"`), []byte(`"extra":1,"kind"`), 1)},
 		"lost, count zero":          {Seq: 1, Provider: store.HealthProvider, Data: bytes.Replace(lost, []byte(`"count":3`), []byte(`"count":0`), 1)},
 		"health record not JSON":    {Seq: 1, Provider: store.HealthProvider, Data: []byte(`not json`)},
