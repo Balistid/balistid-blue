@@ -25,6 +25,8 @@ jobs:
       matrix:
         include:
           - { pkg: ./internal/anchor, target: FuzzControlRequest, minutes: 60 }
+          - { pkg: ./internal/auditstat, target: FuzzDecodeReply, minutes: 60 }
+          - { pkg: ./internal/auditstat, target: FuzzDecodeReport, minutes: 60 }
           - { pkg: ./internal/collector, target: FuzzFraming, minutes: 60 }
           - { pkg: ./internal/collector, target: FuzzLossOf, minutes: 60 }
           - { pkg: ./internal/cosign, target: FuzzOpen, minutes: 60 }

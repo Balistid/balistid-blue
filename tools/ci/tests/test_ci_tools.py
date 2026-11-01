@@ -578,7 +578,7 @@ class OwnedDepsTest(unittest.TestCase):
     OWNERS = ("# owned\n\n/range/ @Jvc0n\n/deploy/ @Jvc0n\n/packaging/ @Jvc0n\n/cmd/balistid-range/ @Jvc0n\n"
               "/cmd/balistid-range-guest/ @Jvc0n\n/cmd/balistid-runner/ @Jvc0n\n/cmd/balistid/ @Jvc0n\n"
               "/cmd/balistid-collector/ @Jvc0n\n/cmd/balistid-ledger/ @Jvc0n\n/cmd/balistid-relay/ @Jvc0n\n"
-              "/cmd/balistid-pi/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
+              "/cmd/balistid-pi/ @Jvc0n\n/cmd/balistid-auditstat/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
     MOD = "module example.com/balistid\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 
     def pkg(self, rel, **extra):
@@ -588,7 +588,8 @@ class OwnedDepsTest(unittest.TestCase):
         pkgs = [{"ImportPath": "os", "Standard": True}, self.pkg("internal/rangevm"),
                 self.pkg("cmd/balistid-range"), self.pkg("cmd/balistid-range-guest"),
                 self.pkg("cmd/balistid-runner"), self.pkg("cmd/balistid"), self.pkg("cmd/balistid-collector"),
-                self.pkg("cmd/balistid-ledger"), self.pkg("cmd/balistid-relay"), self.pkg("cmd/balistid-pi"), *extra]
+                self.pkg("cmd/balistid-ledger"), self.pkg("cmd/balistid-relay"), self.pkg("cmd/balistid-pi"),
+                self.pkg("cmd/balistid-auditstat"), *extra]
         return "\n".join(json.dumps(p, indent=1) for p in pkgs)
 
     def problems(self, deps=None, owners=None, mod=None):
