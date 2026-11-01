@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/auditstat"
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/collector"
 	"github.com/Balistid/balistid-blue/internal/cosign"
@@ -33,6 +34,10 @@ const (
 	// retention is raw_retention_days (acceptance/0.toml): both the witness's and the store's clock must
 	// be this far past a shard's seal before it is retired (ADR 0029).
 	retention = 30 * 24 * time.Hour
+	// auditdState is auditd's state file, which the collector reads through auditd's log_group; auditSeen is its
+	// own file of the last audit report it stored, in its StateDirectory (ADR 0038, points 2 and 3).
+	auditdState = "/run/audit/auditd.state"
+	auditSeen   = "/var/lib/balistid/collector/audit-seen"
 )
 
 func main() { os.Exit(run()) }
@@ -67,10 +72,14 @@ func run() int {
 	} else {
 		keys = &k
 	}
+	boot := bootID()
+	audit := collector.NewAudit(collector.AuditConfig{ReportPath: auditstat.ReportPath,
+		ReportUID: uidOf("balistid-auditstat", log), StatePath: auditdState, SeenPath: auditSeen, BootID: boot})
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: uidOf("_laurel", log), CanaryDir: *canaryDir, Ledger: ledger,
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
-		Started:    map[string]string{"version": buildinfo.String(), "boot_id": bootID(), "rule_version": *ruleVersion},
+		Started:    map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": *ruleVersion},
+		Audit:      audit,
 		LogCommits: *logCommits, Cosign: keys, Retention: retention,
 	})
 	if err != nil {
@@ -80,11 +89,11 @@ func run() int {
 	return 0
 }
 
-// uidOf resolves a peer's account; -1 when it cannot, so every peer is refused (R6).
+// uidOf resolves an account; -1 when it cannot, so every peer or report of it is refused (R6).
 func uidOf(name string, log *slog.Logger) int {
 	uid, err := unixsock.LookupUID(name)
 	if err != nil {
-		log.Error("account not resolved, refusing every peer", "account", name, "err", err)
+		log.Error("account not resolved, refusing it", "account", name, "err", err)
 	}
 	return uid
 }

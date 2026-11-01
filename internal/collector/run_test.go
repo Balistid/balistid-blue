@@ -45,6 +45,7 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 			OpenStore: func(context.Context) (Store, error) { return st, nil },
 			Notify:    func(s string) error { notified.Store(s, true); return nil },
 			Log:       slog.New(slog.NewTextHandler(log, nil)), LogCommits: true,
+			Audit: newAuditFake().audit(seenPath(t), "boot"),
 		})
 	}()
 	return ln, st, &notified, func() error {

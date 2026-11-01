@@ -36,6 +36,8 @@ type Config struct {
 	Notify    func(state string) error
 	Log       *slog.Logger
 	Started   map[string]string
+	// Audit reads the kernel's and auditd's loss and health (ADR 0038); Run refuses to start without it (R6).
+	Audit *Audit
 	// LogCommits journals the store's last durable seq on every change (Writer.LogCommits).
 	LogCommits bool
 	// Ledger streams to the ledger (ADR 0027); nil runs without one.
@@ -49,6 +51,9 @@ type Config struct {
 // out once the reader runs, and on stop the reader gets shutdownRead for what Laurel already sent
 // before the writer stores it and closes the store.
 func Run(ctx context.Context, cfg Config) error {
+	if cfg.Audit == nil {
+		return errors.New("collector: no audit source, so no kernel or dispatcher loss would show")
+	}
 	loss := &Losses{}
 	q := NewQueue(QueueBytes, loss)
 	reader := NewReader(q, time.Now)
@@ -60,7 +65,7 @@ func Run(ctx context.Context, cfg Config) error {
 	acc := NewAcceptor(cfg.Listener, cfg.LaurelUID, refused, time.Now)
 	w := &Writer{
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
-		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started,
+		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started, Audit: cfg.Audit,
 		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger, Cosign: cfg.Cosign, Retention: cfg.Retention,
 	}
 
