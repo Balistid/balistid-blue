@@ -105,6 +105,15 @@ class AuditstatDeployTest(unittest.TestCase):
         self.assertEqual(shlex.split(service["ExecStart"][0]), [BINARY])
         self.assertEqual(path, ["/run/" + service["RuntimeDirectory"][0] + "/report"])
 
+    def test_threads_stay_under_tasks_max(self):
+        # Go's runtime threads grow with GOMAXPROCS, its default the host's CPUs; past TasksMax a new thread
+        # aborts the process (runtime throw "newosproc"), so main pins it far below the unit's limit.
+        main = (REPO / "cmd" / "balistid-auditstat" / "main.go").read_text()
+        procs = [int(n) for n in re.findall(r"runtime\.GOMAXPROCS\((\d+)\)", main)]
+        tasks = int(parse_unit(service_text())["Service"]["TasksMax"][0])
+        self.assertEqual(len(procs), 1)
+        self.assertLessEqual(procs[0] * 4, tasks)
+
     def test_sysusers(self):
         self.assertEqual(collector_lines("sysusers.conf", (AUDITSTAT / "sysusers.conf").read_text()), SYSUSERS)
 
