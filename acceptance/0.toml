@@ -102,7 +102,7 @@ method = "go test -fuzz in a scheduled CI workflow on main (ADR 0016); only a co
 
 [[metric]]
 id = "rss_mib"
-max = 512
+max = 256                    # lowered from 512 by ADR 0040 (product bar)
 unit = "MiB, all Balistid Blue processes at 1000 records/s, at burst_rate with 64 KiB records, and at 50 execs/s with 2048 KiB records"
 rows = ["T20"]
 adr = "0007"
@@ -299,6 +299,57 @@ unit = "s from boot to health OK on a smoke-tested kernel"
 rows = ["T26"]
 adr = "0007"
 method = "Range VM boot, 10 trials; UNKNOWN is a miss unless the kernel is untested, and then it must name that reason."
+
+# --- Product bar (ADR 0040): a clean Arch or Ubuntu LTS machine, the documentation only. No threat rows: these
+# numbers measure whether the floor is light and easy enough to be used, not a control. ---
+
+[[metric]]
+id = "install_min"
+max = 10
+unit = "minutes from the first documented command to health OK on a clean machine, the reboot that -e 2 needs included"
+rows = []
+adr = "0040"
+method = "Fresh VM of each distribution, the documented install timed by its log; a health UNKNOWN or a step outside the documentation is a miss."
+
+[[metric]]
+id = "install_steps"
+max = 3
+unit = "manual steps of the install (each command, confirmation or reboot the user performs)"
+rows = []
+adr = "0040"
+method = "Counted on the same runs as install_min; before it changes the host, the installer must show that io_uring goes off for the whole host and that audit rules lock until the next reboot."
+
+[[metric]]
+id = "uninstall_leftovers"
+max = 0
+unit = "files, units, users, groups, sysctl settings and audit rules of Balistid Blue left after the documented uninstall and one reboot"
+rows = []
+adr = "0040"
+method = "Install, uninstall, reboot on a fresh VM of each distribution, then compare /etc, /usr, /var, the systemd units, passwd, group, sysctl -a and auditctl -l with the clean image; the store stays only when the user chose to keep it."
+
+[[metric]]
+id = "cpu_cores_typical"
+max = 0.5
+unit = "cores, the units of cpu_cores, mean over each day of normal use"
+rows = []
+adr = "0040"
+method = "The seven days of loss_per_day on the reference host: each day's CPU time of the units cpu_cores counts divided by the day's wall time; every day must pass. Who computes the binding result is decided in 9.5, as for healthy_ok (T33)."
+
+[[metric]]
+id = "disk_default_gib"
+max = 10
+unit = "GiB on disk of everything Balistid Blue writes on the host in its default configuration (raw shards, reserve, derived database, log tiles and state)"
+rows = []
+adr = "0040"
+method = "Fill test with the default caps: the allocated bytes (st_blocks) of all of it stay under the limit; a larger store is a configuration the user raises, up to raw_cap_gib."
+
+[[metric]]
+id = "status_false_ok"
+max = 0
+unit = "runs of the unprivileged balistid status that show OK while a floor-0 unit is stopped or health is UNKNOWN"
+rows = []
+adr = "0040"
+method = "Range VM: stop each floor-0 unit in turn and inject UNKNOWN; each run must show the part that is not OK. A healthy run must show OK."
 
 # --- Range runner (ADR 0011; proposed with it, approved by the maintainer when it merges) ---
 
