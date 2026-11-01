@@ -15,7 +15,8 @@ with Claude Code", robot emoji lines) from the message file, then lints what is 
 rewrites; it rejects.
 --dependabot-pr exempts commits authored by Dependabot from the Agent trailer only. On pull requests
 CI sets it only when GitHub reports the author as dependabot[bot]; the author email alone is not
-trusted. On pushes to main it is always set, because those commits already passed the PR gate.
+trusted. On pushes to main and on merge queue groups it is always set, because those commits already passed
+the PR gate.
 """
 
 from __future__ import annotations

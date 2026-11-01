@@ -752,6 +752,16 @@ class ChangeRangeTest(unittest.TestCase):
         self.assertEqual(change_range.change_range("push", "", "", A_SHA, B_SHA), f"{A_SHA}..{B_SHA}")
         self.assertEqual(change_range.change_range("push", "", "", ZERO_SHA, B_SHA), B_SHA)
 
+    def test_merge_group_range_is_the_groups_own(self):
+        self.assertEqual(change_range.change_range("merge_group", "", "", "", "", A_SHA, B_SHA), f"{A_SHA}..{B_SHA}")
+        for args in (("merge_group", A_SHA, B_SHA, A_SHA, B_SHA, "", ""),
+                     ("merge_group", "", "", "", "", ZERO_SHA, B_SHA),
+                     ("merge_group", "", "", "", "", A_SHA, ZERO_SHA),
+                     ("merge_group", "", "", "", "", A_SHA[:7], B_SHA),
+                     ("pull_request", "", "", "", "", A_SHA, B_SHA)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                change_range.change_range(*args)
+
     def test_unknown_or_missing_values_fail(self):
         for args in (("workflow_dispatch", A_SHA, B_SHA, A_SHA, B_SHA),
                      ("pull_request", "", B_SHA, "", ""), ("pull_request", A_SHA, "main", "", ""),

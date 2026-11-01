@@ -2,6 +2,7 @@
 """Print the git revision range a CI run must check, from the GitHub event in the environment.
 
 pull_request: base..head of the pull request.
+merge_group:  base..head of the merge queue group (ADR 0041).
 push:         before..after; a new branch (before is all zeros) checks all history up to after.
 Anything else, or a missing value, is an error: a gate that cannot tell what changed must not pass.
 """
@@ -16,9 +17,12 @@ SHA = re.compile(r"[0-9a-f]{40}")
 ZERO = "0" * 40
 
 
-def change_range(event: str, pr_base: str, pr_head: str, push_before: str, push_after: str) -> str:
+def change_range(event: str, pr_base: str, pr_head: str, push_before: str, push_after: str,
+                 group_base: str = "", group_head: str = "") -> str:
     if event == "pull_request":
         shas = (pr_base, pr_head)
+    elif event == "merge_group":
+        shas = (group_base, group_head)
     elif event == "push":
         shas = (push_before, push_after)
     else:
@@ -31,7 +35,7 @@ def change_range(event: str, pr_base: str, pr_head: str, push_before: str, push_
     if event == "push" and push_before == ZERO:
         return push_after
     if shas[0] == ZERO:
-        raise ValueError("pull request base is all zeros")
+        raise ValueError(f"{event} base is all zeros")
     return f"{shas[0]}..{shas[1]}"
 
 
@@ -39,7 +43,8 @@ def main() -> int:
     env = os.environ
     try:
         print(change_range(env.get("EVENT", ""), env.get("PR_BASE", ""), env.get("PR_HEAD", ""),
-                           env.get("PUSH_BEFORE", ""), env.get("PUSH_AFTER", "")))
+                           env.get("PUSH_BEFORE", ""), env.get("PUSH_AFTER", ""),
+                           env.get("GROUP_BASE", ""), env.get("GROUP_HEAD", "")))
     except ValueError as err:
         print(f"change-range: {err}", file=sys.stderr)
         return 1
