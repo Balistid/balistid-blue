@@ -26,7 +26,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 1. balistid-auditstat (ADR 0038, 0039): the daemon, unit and range checks in this PR; next its -e 2 trial (CP3b),
    the collector reading it (CP4), `-queue-bytes` and the 10-run shapes (CP5); then L12 the Pi.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
-3. CPU first (ADR 0040, product bar: this PR): cpu_cores 0.70 of 0.5, auditd with Laurel 0.46; a time-boxed fit, else
+3. Before L12, CPU (ADR 0040, this PR): cpu_cores 0.70 of 0.5, auditd with Laurel 0.46; a time-boxed fit, else
    an ADR on the data source (reopens 0004); then the local-mode ADR. 2026-11-10 C3 = B4.9 (reinstall, suite, verdicts).
 4. Host install (9.5) when every range metric and the product bar pass: balistid-install, R2 keys, the store on the
    existing fs with its reserve, x32, io_uring, alarms, a syscall-filtered build unit; L12 and the witness e2e after it.

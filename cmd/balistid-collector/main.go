@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	// memLimit bounds the heap. rss_mib is 256 MiB for all of floor 0 (ADR 0040), so this share is
-	// re-cut when rss_mib is first measured.
+	// memLimit is a soft Go runtime memory target, not a bound on RSS. rss_mib is 256 MiB for all of
+	// floor 0 (ADR 0040), so this share is re-cut when rss_mib is first measured.
 	memLimit = 192 << 20
 	// The raw store's caps: raw_cap_gib 150, headroom_gib 2, and shards of 512 MiB so that sealing
 	// one stays within crash_loss_ms (ADR 0016, point 6).

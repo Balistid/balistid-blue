@@ -137,10 +137,10 @@ method = "Fill test. Stored shards are never evicted; the maintainer can expire 
 [[metric]]
 id = "capacity_margin"
 min = 3
-unit = "raw_cap_gib divided by (raw_retention_days x measured baseline GiB per day)"
+unit = "the raw cap installed on the host (at most raw_cap_gib; ADR 0040) divided by (raw_retention_days x measured baseline GiB per day)"
 rows = ["T4"]
 adr = "0005"
-method = "Baseline bytes per day measured over seven days of normal use; below the margin the numbers must be revised before deployment."
+method = "Baseline bytes per day measured over seven days of normal use, against the configuration installed; below the margin the numbers must be revised before deployment."
 
 [[metric]]
 id = "headroom_gib"
