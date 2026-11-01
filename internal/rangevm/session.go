@@ -64,6 +64,8 @@ var imageFiles = []struct {
 	{"range/balistid-ledger-range.conf", "usr/lib/systemd/system/balistid-ledger.service.d/range.conf", 0o644},
 	{"deploy/relay/balistid-relay.service", "usr/lib/systemd/system/balistid-relay.service", 0o644},
 	{"deploy/relay/sysusers.conf", "usr/lib/sysusers.d/balistid-relay.conf", 0o644},
+	{"deploy/auditstat/balistid-auditstat.service", "usr/lib/systemd/system/balistid-auditstat.service", 0o644},
+	{"deploy/auditstat/sysusers.conf", "usr/lib/sysusers.d/balistid-auditstat.conf", 0o644},
 	{"range/balistid-relay-range.conf", "usr/lib/systemd/system/balistid-relay.service.d/range.conf", 0o644},
 	{"deploy/pi/balistid-pi.service", "usr/lib/systemd/system/balistid-pi.service", 0o644},
 	{"deploy/pi/balistid-pi-failed.service", "usr/lib/systemd/system/balistid-pi-failed.service", 0o644},
@@ -99,6 +101,7 @@ var guestPrograms = []imageProgram{
 	{"collector program", ".", "./cmd/balistid-collector", "usr/local/lib/balistid/balistid-collector"},
 	{"ledger program", ".", "./cmd/balistid-ledger", "usr/local/lib/balistid/balistid-ledger"},
 	{"relay program", ".", "./cmd/balistid-relay", "usr/local/lib/balistid/balistid-relay"},
+	{"auditstat program", ".", "./cmd/balistid-auditstat", "usr/local/lib/balistid/balistid-auditstat"},
 	{"Pi watcher program", ".", "./cmd/balistid-pi", "usr/local/lib/balistid/balistid-pi"},
 }
 

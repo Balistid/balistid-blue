@@ -50,6 +50,9 @@ const capsLaurel = "0000000000080004"
 // capsNone is no capability: the collector runs as its own uid without privilege (ADR 0007, T18).
 const capsNone = "0000000000000000"
 
+// capsAuditControl is CAP_AUDIT_CONTROL (bit 30), auditstat's one capability (ADR 0007, ADR 0038).
+const capsAuditControl = "0000000040000000"
+
 // expected is every fact the guest reports besides the kernel, with the one value that passes.
 // Isolation: no interface but loopback and the range's two links to its stand-in for the Pi, a veth and the
 // tunnel over it (ADR 0032), and no network-class PCI device (present before any driver binds, so a slow
@@ -76,6 +79,11 @@ var expected = map[string]string{
 	"collector_cap_prm":   capsNone,
 	"collector_cap_eff":   capsNone,
 	"collector_cap_amb":   capsNone,
+	"auditstat_user":      "balistid-auditstat",
+	"auditstat_cap_prm":   capsAuditControl,
+	"auditstat_cap_eff":   capsAuditControl,
+	"auditstat_cap_amb":   capsAuditControl,
+	"auditstat_report":    "yes",
 	"collector_canary":    "yes",
 	"ledger_anchored":     "yes",
 	"ledger_cosigned":     "yes",

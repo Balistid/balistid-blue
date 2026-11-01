@@ -33,11 +33,13 @@ const (
 	MetricRefusal   = "refusal_summary_s"
 	MetricReady     = "ready_s"
 	MetricExposure  = "systemd_exposure"
-	MetricCPU       = "cpu_cores"
-	MetricSilence   = "silence_alarm_s"
-	MetricQuiet     = "announced_quiet_max_h"
-	MetricLogCap    = "host_log_cap_gib"
-	MetricLoss      = "loss_alarm_s"
+	// MetricExposureAuditstat is balistid-auditstat's own exposure: it alone keeps a capability (ADR 0007).
+	MetricExposureAuditstat = "systemd_exposure_auditstat"
+	MetricCPU               = "cpu_cores"
+	MetricSilence           = "silence_alarm_s"
+	MetricQuiet             = "announced_quiet_max_h"
+	MetricLogCap            = "host_log_cap_gib"
+	MetricLoss              = "loss_alarm_s"
 )
 
 // Injections of an alarm trial (ADR 0036): the host side of the tunnel down, the ledger killed and kept
@@ -109,7 +111,7 @@ func (tr Trial) Method() string {
 		return MethodRefusal
 	case tr.Metric == MetricReady && tr.Load == (Load{}):
 		return MethodReady
-	case tr.Metric == MetricExposure && tr.Load == (Load{}):
+	case (tr.Metric == MetricExposure || tr.Metric == MetricExposureAuditstat) && tr.Load == (Load{}):
 		return MethodExposure
 	case tr.Metric == MetricCPU && tr.Load.Kind == LoadExec && !tr.Load.Drop:
 		return MethodCPU
@@ -227,6 +229,8 @@ var trials = slices.Concat([]Trial{
 	repeated(Trial{Name: "ready", Metric: MetricReady, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 3}, 4),
 	[]Trial{
 		{Name: "exposure", Metric: MetricExposure, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1},
+		{Name: "exposure-auditstat", Metric: MetricExposureAuditstat, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+			Scratch: StoreScratch, Count: 1},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
 	},

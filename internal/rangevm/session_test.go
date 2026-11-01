@@ -1297,6 +1297,7 @@ func replacingRepo(t *testing.T, goSum, replace string, files map[string]string)
 		"cmd/balistid-collector/main.go":   "package main\n\nfunc main() {}\n",
 		"cmd/balistid-ledger/main.go":      "package main\n\nfunc main() {}\n",
 		"cmd/balistid-relay/main.go":       "package main\n\nfunc main() {}\n",
+		"cmd/balistid-auditstat/main.go":   "package main\n\nfunc main() {}\n",
 		"cmd/balistid-pi/main.go":          "package main\n\nfunc main() {}\n",
 	}
 	maps.Copy(all, files)
@@ -1476,11 +1477,15 @@ func TestImageServicesAreScoredOrUnscored(t *testing.T) {
 		if strings.HasPrefix(src, "deploy/runner/") {
 			continue
 		}
-		if !sources[src] || !ExposureUnits()[filepath.Base(src)] {
-			t.Errorf("%s: in the image %v, scored %v", src, sources[src], ExposureUnits()[filepath.Base(src)])
+		scored := ExposureUnits()[filepath.Base(src)] != AuditstatUnits()[filepath.Base(src)]
+		if !sources[src] || !scored {
+			t.Errorf("%s: in the image %v, scored once %v", src, sources[src], scored)
 		}
 	}
 	placed := ExposureUnits()
+	for unit := range AuditstatUnits() {
+		placed[unit] = true
+	}
 	for unit := range UnscoredUnits() {
 		if placed[unit] {
 			t.Errorf("%s is scored and unscored", unit)

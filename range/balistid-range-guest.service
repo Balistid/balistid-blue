@@ -11,6 +11,8 @@ After=balistid-collector.service
 After=balistid-ledger.service
 # The tunnel and the Pi's namespace, so the guest's interfaces are all there when it lists them (ADR 0032).
 After=balistid-net.service balistid-range-pi-net.service
+# auditstat, whose report the guest checks against the kernel (ADR 0038).
+After=balistid-auditstat.service
 SuccessAction=poweroff-force
 FailureAction=poweroff-force
 
