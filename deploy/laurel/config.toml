@@ -2,6 +2,8 @@
 # labels. Laurel drops root to _laurel and keeps only CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, and writes
 # its records to the collector's socket (ADR 0016), not a log: v0.8.2 rotates only a file, so size and
 # generations are gone. Installed only by balistid-install.
+# Experiment (exp/cpu-path): no environment, cgroup or group lookups per event; pid, spawned-by and
+# script stay for the process tree and interpreters.
 directory = "/var/log/laurel"
 user = "_laurel"
 statusreport-period = 0
@@ -27,12 +29,12 @@ drop-raw = false
 pid = true
 ppid-verbose = false
 spawned-by = true
-execve-env = [ "LD_PRELOAD", "LD_LIBRARY_PATH" ]
-container = true
+execve-env = [ ]
+container = false
 container_info = false
-systemd = true
+systemd = false
 script = true
-user-groups = true
+user-groups = false
 
 [filter]
 filter-null-keys = false
