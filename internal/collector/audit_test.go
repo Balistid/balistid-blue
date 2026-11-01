@@ -189,6 +189,10 @@ func TestStateFileChecks(t *testing.T) {
 			t.Errorf("%s read", name)
 		}
 	}
+	// A file whose stat size understates what a read returns, as one auditd grows after the stat.
+	if _, _, err := readSmall("/proc/self/status", 64, os.Getuid()); err == nil {
+		t.Error("a file over the limit read because its stat said 0 bytes")
+	}
 	for _, uid := range []int{-1, os.Getuid() + 1} {
 		if _, _, err := readSmall(good, maxStateBytes, uid); err == nil {
 			t.Errorf("a file of uid %d read as of another owner", os.Getuid())
