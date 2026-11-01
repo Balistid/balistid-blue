@@ -54,7 +54,7 @@ func main() {
 	}
 	for arg, sub := range map[string]func([]string) error{injectArg: injectMain, floodArg: floodMain, ledgerKeyArg: ledgerKeyMain,
 		witnessKeyArg: witnessKeyMain, witnessAgentArg: witnessAgentMain, witnessPostArg: witnessPostMain, netKeyArg: netKeyMain,
-		reachArg: reachMain, ntfySinkArg: ntfySinkMain} {
+		reachArg: reachMain, ntfySinkArg: ntfySinkMain, auditSetArg: auditSetMain} {
 		if len(os.Args) > 1 && os.Args[1] == arg {
 			if err := sub(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "balistid-range-guest %s: %v\n", arg, err)
