@@ -72,10 +72,9 @@ func ReadReport(path string, uid int) (Report, error) {
 	case fi.Size() != int64(ReportBytes):
 		return Report{}, errors.New("auditstat: a report of the wrong size")
 	}
-	b := make([]byte, ReportBytes+1)
-	n, err := io.ReadFull(f, b)
-	if !errors.Is(err, io.ErrUnexpectedEOF) {
-		return Report{}, errors.New("auditstat: the report changed size while read")
+	b := make([]byte, ReportBytes)
+	if _, err := io.ReadFull(f, b); err != nil {
+		return Report{}, fmt.Errorf("auditstat: report: %w", err)
 	}
-	return DecodeReport(b[:n])
+	return DecodeReport(b)
 }
