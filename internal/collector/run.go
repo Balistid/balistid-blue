@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -38,6 +39,9 @@ type Config struct {
 	Started   map[string]string
 	// Audit reads the kernel's and auditd's loss and health (ADR 0038); Run refuses to start without it (R6).
 	Audit *Audit
+	// QueueBytes bounds the queue: QueueBytes, or less in the range (ADR 0039, point 2); Run refuses more, or
+	// less than one largest record.
+	QueueBytes int
 	// LogCommits journals the store's last durable seq on every change (Writer.LogCommits).
 	LogCommits bool
 	// Ledger streams to the ledger (ADR 0027); nil runs without one.
@@ -54,8 +58,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.Audit == nil {
 		return errors.New("collector: no audit source, so no kernel or dispatcher loss would show")
 	}
+	if least := largestRecord(); cfg.QueueBytes < least || cfg.QueueBytes > QueueBytes {
+		return fmt.Errorf("collector: a queue of %d bytes, not between one largest record (%d) and %d",
+			cfg.QueueBytes, least, QueueBytes)
+	}
 	loss := &Losses{}
-	q := NewQueue(QueueBytes, loss)
+	q := NewQueue(cfg.QueueBytes, loss)
 	reader := NewReader(q, time.Now)
 	canary, err := NewCanary(cfg.CanaryDir, os.Getuid(), os.Getpid())
 	if err != nil {
@@ -139,4 +147,10 @@ func readOne(ctx context.Context, r *Reader, links *Links, c Conn, log *slog.Log
 		log.Error("connection close failed", "err", fmt.Errorf("collector: %w", err))
 	}
 	links.Disconnected(err)
+}
+
+// largestRecord is the encoded size of the largest record the reader queues: a sensor line kept whole up to
+// rawrecord.MaxBytes.
+func largestRecord() int {
+	return rawrecord.New(0, store.SensorProvider, 0, 0, make([]byte, rawrecord.MaxBytes)).EncodedLen()
 }
