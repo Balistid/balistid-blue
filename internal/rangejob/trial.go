@@ -66,13 +66,18 @@ const (
 	InjectNone       = "none"
 )
 
+// InjectAuditSet asks the kernel, as balistid-auditstat's uid with its one capability, for every audit change
+// under -e 2; the trial records which the kernel still allows (ADR 0038, Consequences).
+const InjectAuditSet = "audit-set"
+
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
 // numbered events in the store; a writer failure kills or resets the measured writer of a control; a
 // collector failure kills or resets the collector under load; a record trial stores oversized and
 // malformed records, a refusal trial floods the socket from refused peers, a ready trial times a boot to
 // health OK, an exposure trial scores the recorder's units and a CPU trial times the collector's processes under
 // exec load (ADR 0023), an alarm trial times the Pi's alert at the range's ntfy sink after an injection
-// (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5).
+// (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5), an
+// audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -85,12 +90,15 @@ const (
 	MethodAlarm            = "alarm"
 	MethodLogCap           = "log-cap"
 	MethodLoss             = "loss"
+	MethodAuditSet         = "audit-set"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
 // judges the run INVALID.
 func (tr Trial) Method() string {
 	switch {
+	case tr.Inject == InjectAuditSet && tr.Metric == MetricExposureAuditstat && tr.Load == (Load{}) && tr.Failure == "":
+		return MethodAuditSet
 	case tr.Inject != "":
 		return alarmMethod(tr)
 	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
@@ -231,6 +239,8 @@ var trials = slices.Concat([]Trial{
 		{Name: "exposure", Metric: MetricExposure, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 1},
 		{Name: "exposure-auditstat", Metric: MetricExposureAuditstat, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1},
+		{Name: "audit-set", Metric: MetricExposureAuditstat, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+			Scratch: StoreScratch, Count: 1, Inject: InjectAuditSet},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
 	},
