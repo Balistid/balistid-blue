@@ -108,8 +108,11 @@ func TestLossMatch(t *testing.T) {
 		rangejob.InjectStore: {entry.Loss{Seq: 1, Stage: entry.StageStore, Records: 3}: true,
 			entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStoreDown}: true,
 			entry.Health{State: entry.StateUnknown, Reason: entry.ReasonStream}:    false},
-		rangejob.InjectKernel: {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false},
-		rangejob.InjectNone:   {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false},
+		rangejob.InjectKernel: {entry.Loss{Seq: 1, Stage: entry.StageKernel, Records: 3}: true,
+			entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false, entry.Loss{Seq: 1, Stage: entry.StageDispatcher, Records: 1}: false},
+		rangejob.InjectDispatcher: {entry.Loss{Seq: 1, Stage: entry.StageDispatcher, Records: 1}: true,
+			entry.Loss{Seq: 1, Stage: entry.StageKernel, Records: 3}: false},
+		rangejob.InjectNone: {entry.Loss{Seq: 1, Stage: entry.StageQueue, Records: 3}: false},
 	} {
 		match := lossMatch(inject)
 		for b, want := range cases {

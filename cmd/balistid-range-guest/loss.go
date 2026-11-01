@@ -146,7 +146,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 }
 
 // lossMatch is which ledger entries an injection's loss makes: a loss of the queue's stage, of the cap's (a
-// full filesystem), of the store's or the store's UNKNOWN; nil for a case whose loss no detector reports.
+// full filesystem), of the store's or the store's UNKNOWN, of the kernel's or of the dispatcher's (ADR 0038); none
+// for the control.
 func lossMatch(inject string) func(entry.Body) bool {
 	stage := func(s entry.Stage) func(entry.Body) bool {
 		return func(b entry.Body) bool { l, ok := b.(entry.Loss); return ok && l.Stage == s }
@@ -161,6 +162,10 @@ func lossMatch(inject string) func(entry.Body) bool {
 			h, ok := b.(entry.Health)
 			return stage(entry.StageStore)(b) || ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
 		}
+	case rangejob.InjectKernel:
+		return stage(entry.StageKernel)
+	case rangejob.InjectDispatcher:
+		return stage(entry.StageDispatcher)
 	}
 	return func(entry.Body) bool { return false }
 }
