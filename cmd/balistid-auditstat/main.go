@@ -4,10 +4,10 @@ package main
 
 import (
 	"context"
-	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"syscall"
 
@@ -19,16 +19,15 @@ const memLimit = 8 << 20
 func main() { os.Exit(run()) }
 
 func run() int {
-	report := flag.String("report", "/run/balistid-auditstat/report", "the report file, in the unit's runtime directory")
-	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	slog.SetDefault(log)
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(memLimit)
 	}
+	runtime.GOMAXPROCS(2) // the runtime's threads grow with it, and the unit's TasksMax=16 would abort the process
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	if err := auditstat.Run(ctx, *report); err != nil {
+	if err := auditstat.Run(ctx, auditstat.ReportPath); err != nil {
 		log.Error("auditstat stopped", "err", err)
 		return 1
 	}

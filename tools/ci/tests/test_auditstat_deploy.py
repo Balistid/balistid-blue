@@ -99,11 +99,11 @@ class AuditstatDeployTest(unittest.TestCase):
         self.assertEqual(unit_problems(service_text()), [])
 
     def test_report_lands_in_the_runtime_directory(self):
-        main = (REPO / "cmd" / "balistid-auditstat" / "main.go").read_text()
-        defaults = dict(re.findall(r'flag\.String\("([a-z-]+)", "([^"]*)"', main))
+        report = (REPO / "internal" / "auditstat" / "report.go").read_text()
+        path = re.findall(r'const ReportPath = "([^"]*)"', report)
         service = parse_unit(service_text())["Service"]
         self.assertEqual(shlex.split(service["ExecStart"][0]), [BINARY])
-        self.assertEqual(defaults["report"], "/run/" + service["RuntimeDirectory"][0] + "/report")
+        self.assertEqual(path, ["/run/" + service["RuntimeDirectory"][0] + "/report"])
 
     def test_sysusers(self):
         self.assertEqual(collector_lines("sysusers.conf", (AUDITSTAT / "sysusers.conf").read_text()), SYSUSERS)

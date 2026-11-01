@@ -42,7 +42,8 @@ func request(seq uint32) []byte {
 }
 
 // decodeReply is the status in b, the one datagram that came from netlink port port, as the answer to request
-// seq: from the kernel (port 0), AUDIT_GET, no flags, exactly one header and one status. Errors never quote b.
+// seq: from the kernel (port 0, which audit_make_reply also puts in the header), AUDIT_GET, no flags, exactly one
+// header and one status. Errors never quote b.
 func decodeReply(b []byte, port, seq uint32) (Status, error) {
 	if port != 0 {
 		return Status{}, errors.New("auditstat: a reply not from the kernel")
@@ -65,6 +66,8 @@ func decodeReply(b []byte, port, seq uint32) (Status, error) {
 		return Status{}, errors.New("auditstat: a reply with flags")
 	case binary.NativeEndian.Uint32(b[8:]) != seq:
 		return Status{}, errors.New("auditstat: a reply to another request")
+	case binary.NativeEndian.Uint32(b[12:]) != 0:
+		return Status{}, errors.New("auditstat: a reply whose header names a port")
 	}
 	var s Status
 	for i, f := range s.fields() {
