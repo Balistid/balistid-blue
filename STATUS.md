@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-02 by claude/opus-5.5 (CP5a, ADR 0045 and the collector's CPU profile in the range: this PR)
+Updated: 2026-11-02 by claude/opus-5.5 (#191 CP5a on `main`; the CPU budget, ADR 0046: this PR)
 
 ## Where we are
 
@@ -21,9 +21,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   KVM: kernel 4/4 PASS at 719d52c and e769c81, dispatcher 2/2 at its redesign e769c81, alerts 1-25 s after. Collector profile in the range (exp branch): per-record
   stat ~11 %, re-prepared insert ~10 %, JSON Unmarshal for the id ~10 %, goroutine handoff ~20 % of 0.195 cores.
 ## Next step
-1. CPU: the collector's cheap fixes (stat cache, one prepared insert, the id without Unmarshal) in their own
-   pull request; then an own audit netlink reader measured against auditd with Laurel, and an ADR on the data
-   source (reopens 0004) if it wins: auditd with Laurel alone is 0.39-0.46 of the 0.5.
+1. CPU (ADR 0046, this PR): stress 1.0 core at 1000/s, typical 0.05; auditd with Laurel stays for floor 0. The
+   collector's cheap fixes (stat cache, one prepared insert, the id without Unmarshal) are optional margin.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
 3. CP5b: the queue trial is still INVALID with an 8 MiB queue (the dispatcher overflowed too, 1 KVM run): try
    smaller records, then four auditd crashes, 10 runs per shape and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
