@@ -18,6 +18,8 @@ const (
 	FactStatusUID      = "status_uid"
 	FactUnitsInstalled = "units_installed"
 	FactStatusRun      = "status_"
+	// FactStatusPolls is every CLI call of the trial, waits included, as "<run index>:<exit>:<store health>,...".
+	FactStatusPolls = "status_polls"
 )
 
 // How a status run breaks the floor: not at all, a unit masked and stopped, or a process frozen by SIGSTOP.
@@ -89,7 +91,7 @@ type statusResult struct {
 // run not shown not OK with its part not OK, or a healthy run not OK, is a MISS: what status_false_ok counts.
 func judgeStatus(tr rangejob.Trial, o Outcome) (string, string) {
 	runs := StatusRuns()
-	names := []string{FactTrial, FactPhase, FactKernel, FactStatusUID, FactUnitsInstalled}
+	names := []string{FactTrial, FactPhase, FactKernel, FactStatusUID, FactUnitsInstalled, FactStatusPolls}
 	for _, r := range runs {
 		names = append(names, FactStatusRun+r.Name)
 	}
@@ -109,17 +111,23 @@ func judgeStatus(tr rangejob.Trial, o Outcome) (string, string) {
 	if why := unitsUnbroken(f[FactUnitsInstalled]); why != "" {
 		return Invalid, why
 	}
-	var misses []string
+	misses, err := pollMisses(f[FactStatusPolls], runs)
+	if err != nil {
+		return Invalid, err.Error()
+	}
 	for _, r := range runs {
-		res, exit, health, err := statusOf(f[FactStatusRun+r.Name])
+		exit, health, out, err := statusOf(f[FactStatusRun+r.Name])
 		if err != nil {
 			return Invalid, fmt.Sprintf("run %s: %s", r.Name, err)
 		}
+		res, bad := resultOf(out)
 		why, invalid := storeShows(r, res, exit, health)
-		if invalid {
+		switch {
+		case invalid:
 			return Invalid, fmt.Sprintf("run %s: %s", r.Name, why)
-		}
-		if why == "" {
+		case bad != "":
+			why = bad
+		case why == "":
 			why = statusMiss(r, res, exit)
 		}
 		if why != "" {
@@ -161,32 +169,67 @@ const (
 
 // statusOf decodes one run's value: "<exit> <store health> <base64 output> <proof>", the proof "yes" or the
 // guest's reason.
-func statusOf(v string) (statusResult, int, string, error) {
+func statusOf(v string) (int, string, []byte, error) {
 	parts := strings.SplitN(v, " ", 4)
 	if len(parts) != 4 {
-		return statusResult{}, 0, "", fmt.Errorf("not an exit, store health, output and proof")
+		return 0, "", nil, fmt.Errorf("not an exit, store health, output and proof")
 	}
 	if parts[3] != "yes" {
-		return statusResult{}, 0, "", fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[3], 256))
+		return 0, "", nil, fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[3], 256))
 	}
 	exit, err := strconv.Atoi(parts[0])
 	if err != nil || strconv.Itoa(exit) != parts[0] {
-		return statusResult{}, 0, "", fmt.Errorf("the exit is not a plain number")
+		return 0, "", nil, fmt.Errorf("the exit is not a plain number")
 	}
-	if !slices.Contains([]string{StoreOK, StoreUnknown, StoreMixed, StoreNone, StoreUnread}, parts[1]) {
-		return statusResult{}, 0, "", fmt.Errorf("the store health is not one the guest reports")
+	if !slices.Contains(storeStates, parts[1]) && parts[1] != StoreUnread {
+		return 0, "", nil, fmt.Errorf("the store health is not one the guest reports")
 	}
 	out, err := base64.StdEncoding.DecodeString(parts[2])
 	if err != nil || base64.StdEncoding.EncodeToString(out) != parts[2] || len(out) > MaxStatusOut {
-		return statusResult{}, 0, "", fmt.Errorf("the output is not canonical base64 within %d bytes", MaxStatusOut)
+		return 0, "", nil, fmt.Errorf("the output is not canonical base64 within %d bytes", MaxStatusOut)
 	}
+	return exit, parts[1], out, nil
+}
+
+// storeStates are the store's health over a CLI call the guest computes.
+var storeStates = []string{StoreOK, StoreUnknown, StoreMixed, StoreNone}
+
+// resultOf is the CLI's result in out, or why out is not exactly the canonical encoding of one: the CLI's own
+// encoder writes one object and a newline, so a missing or repeated key, trailing bytes or any other spelling
+// differ from it.
+func resultOf(out []byte) (statusResult, string) {
 	var res statusResult
 	d := json.NewDecoder(bytes.NewReader(out))
 	d.DisallowUnknownFields()
-	if err := d.Decode(&res); err != nil || d.More() || res.SchemaVersion != 1 {
-		return statusResult{}, 0, "", fmt.Errorf("the output is not one status result of schema 1")
+	if err := d.Decode(&res); err != nil || res.SchemaVersion != 1 {
+		return statusResult{}, "the output is not a status result of schema 1"
 	}
-	return res, exit, parts[1], nil
+	canonical, err := json.Marshal(res)
+	if err != nil || !bytes.Equal(append(canonical, '\n'), out) {
+		return statusResult{}, "the output is not exactly one canonical status result"
+	}
+	return res, ""
+}
+
+// pollMisses checks every CLI call of the trial: one that exited 0 while the store was UNKNOWN throughout is a false
+// OK, whichever wait it was in. Anything but well-formed entries of known runs is an error.
+func pollMisses(polls string, runs []StatusRun) ([]string, error) {
+	var misses []string
+	for _, entry := range strings.Split(polls, ",") {
+		fields := strings.Split(entry, ":")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("a poll \"%s\" is not run, exit and store health", Printable(entry, 64))
+		}
+		i, errI := plainNumber(fields[0])
+		exit, errE := plainNumber(fields[1])
+		switch {
+		case errI != nil || i >= uint64(len(runs)) || errE != nil || !slices.Contains(storeStates, fields[2]):
+			return nil, fmt.Errorf("a poll \"%s\" of no known run, exit or store health", Printable(entry, 64))
+		case exit == 0 && fields[2] == StoreUnknown:
+			misses = append(misses, runs[i].Name+": false OK in a poll while the store was UNKNOWN throughout")
+		}
+	}
+	return misses, nil
 }
 
 // storeShows judges run r by the store's health over it: why it is a false OK (a MISS), or why the run proves
@@ -225,6 +268,11 @@ func statusMiss(r StatusRun, res statusResult, exit int) string {
 	}
 	if len(state) != len(statusUnits)+1 {
 		return "a part the judge does not know"
+	}
+	for name, s := range state {
+		if s != "OK" && s != "FAIL" && s != "UNKNOWN" {
+			return fmt.Sprintf("part %s in a state of no known kind \"%s\"", name, Printable(s, 32))
+		}
 	}
 	if r.Kind == StatusHealthy {
 		for name, s := range state {
