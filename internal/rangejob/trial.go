@@ -241,7 +241,7 @@ var trials = slices.Concat([]Trial{
 			Scratch: StoreScratch, Count: 1},
 		{Name: "audit-set", Metric: MetricExposureAuditstat, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1, Inject: InjectAuditSet},
-		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
+		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
 	},
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min

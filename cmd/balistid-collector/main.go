@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"runtime/pprof"
 	"strings"
 	"syscall"
 	"time"
@@ -51,8 +52,21 @@ func run() int {
 	logCommits := flag.Bool("log-commits", false, "journal the store's last durable seq on every change")
 	logKey := flag.String("log-key", "/etc/balistid/ledger-key.pub", "the ledger's checkpoint verifier key")
 	witnessKey := flag.String("witness-key", "/etc/balistid/witness.vkey", "the witness's cosignature/v1 verifier key")
+	cpuProfile := flag.String("cpuprofile", "", "exp only: write a CPU profile here until exit")
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			log.Error("cpu profile", "err", err)
+			return 1
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			log.Error("cpu profile", "err", err)
+			return 1
+		}
+		defer func() { pprof.StopCPUProfile(); _ = f.Close() }()
+	}
 	if os.Getenv("GOMEMLIMIT") == "" {
 		debug.SetMemoryLimit(memLimit)
 	}

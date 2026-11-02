@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -130,6 +132,7 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail("store: " + err.Error())
 	}
 	stored, missing, _, _ := counter.Numbers().Count(generated)
+	dumpProfile(ctx)
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	r.add(rangevm.FactGenerated, u(generated))
 	r.add(rangevm.FactWindowMin, u(windowMin))
@@ -141,6 +144,29 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactStored, u(stored))
 	r.add(rangevm.FactMissing, u(missing))
 	return r.send(r.facts)
+}
+
+// dumpProfile (exp only, never merged) prints both units' cpu.stat, stops the collector so its CPU
+// profile is flushed, and prints the profile as numbered base64 lines on the console.
+func dumpProfile(ctx context.Context) {
+	for _, unit := range []string{collectorUnitName, auditdUnitName} {
+		cg := strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "--property=ControlGroup", "--value", unit))
+		for _, line := range strings.Split(readTrim("/sys/fs/cgroup"+cg+"/cpu.stat"), "\n") {
+			fmt.Printf("PROFSTAT %s %s\n", strings.TrimSuffix(unit, ".service"), strings.ReplaceAll(line, " ", "="))
+		}
+	}
+	output(ctx, "/usr/bin/systemctl", "stop", collectorUnitName)
+	data, err := os.ReadFile("/var/lib/balistid/collector/cpu.prof")
+	if err != nil {
+		fmt.Printf("PROFERR %s\n", strings.ReplaceAll(err.Error(), " ", "_"))
+		return
+	}
+	enc := base64.StdEncoding.EncodeToString(data)
+	fmt.Printf("PROFLEN %d %d\n", len(data), len(enc))
+	for i := 0; i*96 < len(enc); i++ {
+		fmt.Printf("PROF %d %s\n", i, enc[i*96:min((i+1)*96, len(enc))])
+	}
+	fmt.Printf("PROFEND %d\n", (len(enc)+95)/96)
 }
 
 // unitsState is "same" when both units' CPU was read over one invocation each, else why not.
