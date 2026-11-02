@@ -243,6 +243,10 @@ var trials = slices.Concat([]Trial{
 			Scratch: StoreScratch, Count: 1, Inject: InjectAuditSet},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 16 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
+		{Name: "cpu-50", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 16 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
+			Load: Load{Kind: LoadExec, Rate: 50, Seconds: 600}, Trend: true},
+		{Name: "cpu-200", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 16 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
+			Load: Load{Kind: LoadExec, Rate: 200, Seconds: 600}, Trend: true},
 	},
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).
