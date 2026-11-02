@@ -178,14 +178,14 @@ class CollectorDeployTest(unittest.TestCase):
                     self.assertNotIn("queue-bytes", unit.read_text(encoding="utf-8", errors="replace"))
 
     def test_range_drop_in_changes_only_the_store_and_the_range_flags(self):
-        # ADR 0022, point 2: the image's drop-in moves the store to the scratch disk and adds the two range
-        # flags; everything else is the installed argv, and nothing but the store becomes writable.
-        drop_in = parse_unit((REPO / "range" / "balistid-collector-range.conf").read_text())
+        # ADR 0022, point 2: the image's drop-in moves the store to the scratch disk and adds the range flags,
+        # the queue's from ADR 0039 point 2; everything else is the installed argv, and only the store is writable.
+        drop_in = parse_unit((REPO / "range" / "balistid-collector-range.conf").read_text(), "range/balistid-collector-range.conf")
         installed = shlex.split(deployed_service()["ExecStart"][0])
         store = "/var/lib/balistid-range/scratch/store"
         want = installed[:]
         want[want.index("-store") + 1] = store
-        want += ["-headroom", "67108864", "-log-commits"]
+        want += ["-headroom", "67108864", "-log-commits", "-queue-bytes", "8388608"]
         self.assertEqual(set(drop_in), {"Unit", "Service"})
         keys = "balistid-range-store.service balistid-range-witness-key.service"
         self.assertEqual(drop_in["Unit"], {"Requires": [keys], "After": [keys]})

@@ -444,12 +444,20 @@ class GoLayoutTest(unittest.TestCase):
     def test_line_outside_the_allowlist_in_a_root_installed_file_fails(self):
         for name in ("deploy/collector/tmpfiles.conf", "deploy/runner/balistid-runner-tick.service",
                      "deploy/audit/balistid.rules", "range/mkosi.conf", "packaging/laurel/PKGBUILD"):
+            too_long = "# " + "x" * (299 if name.startswith("range/") else 199)
             for line in ("# x\x00User=root", "# x\rUser=root", "# x\x1bUser=root", "# c\u2028NoNewPrivileges=yes",
-                         "# c\x85NoNewPrivileges=yes", "NoNewPrivileges=yes\u00a0", "\ufeff[Service]", "# " + "x" * 199,
+                         "# c\x85NoNewPrivileges=yes", "NoNewPrivileges=yes\u00a0", "\ufeff[Service]", too_long,
                          "-k balistid-exec\tx"):
                 with self.subTest(name=name, line=line[:12]):
                     self.assert_budget({name: line + "\n"}, 1)
         self.assert_budget({"deploy/collector/tmpfiles.conf": "# x dirs " + "x" * 190 + "\n"}, 0)
+
+    # Only the range image's files get 300 bytes a line; the installed ones keep 200 (docs_budget.line_cap).
+    def test_range_lines_may_run_to_300_bytes_installed_ones_to_200(self):
+        self.assert_budget({"range/balistid-collector-range.conf": "# " + "x" * 298 + "\n"}, 0)
+        for name in ("deploy/collector/balistid-collector.service", "packaging/laurel/PKGBUILD"):
+            with self.subTest(name=name):
+                self.assert_budget({name: "# " + "x" * 199 + "\n"}, 1)
 
     def test_non_ascii_go_mod_fails(self):
         self.assert_budget({"go.mod": GO_MOD + "​\n"}, 1)
