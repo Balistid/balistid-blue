@@ -52,3 +52,22 @@ func TestKernelBracket(t *testing.T) {
 		t.Error("a bracket before boot")
 	}
 }
+
+// The dispatcher's bracket maps wall-clock mtimes to uptime with the offsets seen during the injection: its start
+// with the largest, its end with the least, and a spread over clockSpread fails it.
+func TestStateBracketOnlyWidens(t *testing.T) {
+	base := time.Unix(1_800_000_000, 0)
+	o := offsets{lo: time.Duration(base.UnixNano()) - 100*time.Second, hi: time.Duration(base.UnixNano()) - 99*time.Second}
+	from, to, err := o.bracket(base.Add(5*time.Second), base.Add(10*time.Second))
+	if err != nil || from != 104*time.Second || to != 110*time.Second {
+		t.Errorf("bracket %s..%s %v", from, to, err)
+	}
+	o.lo -= time.Millisecond
+	if _, _, err := o.bracket(base.Add(5*time.Second), base.Add(10*time.Second)); err == nil {
+		t.Error("a clock spread over clockSpread gave a bracket")
+	}
+	var fresh offsets
+	if err := fresh.read(); err != nil || fresh.lo != fresh.hi || fresh.lo <= 0 {
+		t.Errorf("first read %+v %v", fresh, err)
+	}
+}

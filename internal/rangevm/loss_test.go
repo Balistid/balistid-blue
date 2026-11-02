@@ -68,7 +68,7 @@ func TestJudgeLoss(t *testing.T) {
 				{FactInjectEndMS: "200000", FactLossToMS: "200000", FactPosts: "60000:start,200001:loss"},
 				{FactKernel: "6.0.0"}, {"-": FactLossEntry}, {"extra": "1"},
 				{FactLossToMS: "99999", FactLossFromMS: "99000"}, {FactLossToMS: "99999", FactLossFromMS: "100000"},
-				{FactLossFromMS: "106001"}, {FactOverflowBefore: "yes"},
+				{FactLossFromMS: "106001"}, {FactLossFromMS: "101000"}, {FactLossToMS: "105000"}, {FactOverflowBefore: "yes"},
 				{FactOKAfterResume: "0"},
 			},
 		} {
@@ -164,7 +164,7 @@ func TestKernelAndDispatcherBrackets(t *testing.T) {
 			Invalid: {
 				{FactPosts: "60000:start,215050:loss"}, // within 65 s of the end, not of the start
 				{FactPosts: "60000:start,140000:loss"}, // after the injection, before the loss
-				{FactLossFromMS: "99999"}, {FactLossToMS: "149999"}, {FactOverflowBefore: "yes"}, {FactOverflowBefore: "missing"},
+				{FactLossToMS: "149999"}, {FactOverflowBefore: "yes"}, {FactOverflowBefore: "missing"},
 				{FactInject: "error: kernel lost \"3\" before, \"3\" after"},
 			},
 		}
@@ -177,11 +177,15 @@ func TestKernelAndDispatcherBrackets(t *testing.T) {
 		case strings.HasPrefix(name, "loss-kernel"):
 			cases[Invalid] = append(cases[Invalid], map[string]string{FactOKAfterResume: "0"})
 		}
+		cases[Invalid] = append(cases[Invalid], map[string]string{FactLossToMS: "160001"})
 		if strings.HasPrefix(name, "loss-dispatcher") {
-			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "3"})
-			cases[Pass] = append(cases[Pass], map[string]string{FactLostAfter: "0", FactLostBefore: "0"})
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "3"}, map[string]string{FactOverflowAfter: "no"},
+				map[string]string{FactOverflowAfter: "missing"})
+			// the last "no" can be written before the injection; a bracket that starts there is the guest's to show
+			cases[Pass] = append(cases[Pass], map[string]string{FactLossFromMS: "98000", FactPosts: "60000:start,150000:loss"})
 		} else {
-			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "0"}, map[string]string{FactOverflowAfter: "yes"})
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "0"}, map[string]string{FactOverflowAfter: "yes"},
+				map[string]string{FactLostBefore: "9", FactLostAfter: "5"}, map[string]string{FactLossFromMS: "99999"})
 		}
 		for want, changes := range cases {
 			for _, c := range changes {

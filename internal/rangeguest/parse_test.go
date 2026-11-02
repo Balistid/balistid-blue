@@ -116,7 +116,7 @@ func TestParseKmsg(t *testing.T) {
 		t.Errorf("lost %d %v", n, ok)
 	}
 	for _, bad := range []string{"", "audit_lost=1", "4,1,2;x", "4,x,2,-;x", "4,1,-2,-;x", "4,1,99999999999999999999,-;x",
-		"4,1,9223372036854776,-;x"} {
+		"4,1,9223372036854776,-;x", "x,1,2,-;x", "4,1,2,;x"} {
 		if r, err := ParseKmsg(bad); err == nil {
 			t.Errorf("%q parsed as %+v", bad, r)
 		}

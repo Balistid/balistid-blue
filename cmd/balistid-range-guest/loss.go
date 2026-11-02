@@ -58,13 +58,20 @@ const (
 // injected is what an injection did: its proof, "ok" or why not; its end when it knows that better than its
 // return, else 0; the loss's bracket when the guest saw the loss itself, else zero (the injection's own); and a
 // transient kernel trial's resume, in uptime and in the ledger's clock. finish ends what the injection left
-// running (a stopped auditd) before the trial reads the ledger, nil without.
+// running (a stopped auditd) before the trial reads the ledger, nil without; release runs it.
 type injected struct {
 	proof         string
 	end, from, to time.Duration
 	resumeAt      time.Duration
 	resumeNs      int64
-	finish        func()
+	finish        func() error
+}
+
+func (i injected) release() error {
+	if i.finish == nil {
+		return nil
+	}
+	return i.finish()
 }
 
 // runLoss runs loss trial tr (ADR 0036, point 4): with the watcher started through the sink and the log growing,
@@ -103,17 +110,13 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	inj := injectLoss(ctx, tr.Inject)
 	if inj.end == 0 {
 		if inj.end, err = uptime(); err != nil {
-			return r.fail(err.Error())
+			return r.fail(errors.Join(err, inj.release()).Error())
 		}
 	}
 	if inj.to == 0 {
 		inj.from, inj.to = from, inj.end
 	}
-	err = waitLoss(ctx, tr, from, inj.to)
-	if inj.finish != nil {
-		inj.finish()
-	}
-	if err != nil {
+	if err := errors.Join(waitLoss(ctx, tr, from, inj.to), inj.release()); err != nil {
 		return r.fail(err.Error())
 	}
 	okAfter := "-"
@@ -178,32 +181,30 @@ func okAfterResume(ctx context.Context, resumeNs int64) string {
 	if err != nil {
 		return "error: " + err.Error()
 	}
-	return okAfterIn(ctx, ledgerLog, keys.Log, resumeNs)
+	return okAfterIn(ctx, ledgerLog, keys.Log, resumeNs, rangevm.LossAlarm.Nanoseconds())
 }
 
-// okAfterIn is okAfterResume for the log at root under v: "0" when the last health before resumeNs was OK, else
-// the ms to the first health OK from resumeNs on, "none" without one.
-func okAfterIn(ctx context.Context, root string, v note.Verifier, resumeNs int64) string {
-	okAtResume, first := false, int64(-1)
+// okAfterIn is okAfterResume for the log at root under v: the ms from resumeNs to the start of the health OK in
+// force window after it, "0" when that OK began before, "none" when the health then is not OK.
+func okAfterIn(ctx context.Context, root string, v note.Verifier, resumeNs, window int64) string {
+	state, start := entry.State(0), int64(0)
 	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
 		h, ok := e.Body.(entry.Health)
-		switch {
-		case !ok:
-		case e.At < resumeNs:
-			okAtResume = h.State == entry.StateOK
-		case h.State == entry.StateOK && first < 0:
-			first = e.At - resumeNs
+		if !ok || e.At > resumeNs+window {
+			return
 		}
+		if h.State == entry.StateOK && state != entry.StateOK {
+			start = e.At
+		}
+		state = h.State
 	})
 	switch {
 	case err != nil:
 		return "error: " + err.Error()
-	case okAtResume:
-		return "0"
-	case first < 0:
+	case state != entry.StateOK:
 		return "none"
 	}
-	return strconv.FormatInt(first/int64(time.Millisecond), 10)
+	return strconv.FormatInt(max(0, start-resumeNs)/int64(time.Millisecond), 10)
 }
 
 // lossPostsFact is loss trial tr's posts after its injection at from; the control's are all since the watcher's
@@ -529,14 +530,19 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 			}
 		})
 	}
-	resume := func() error {
+	var resumedAt time.Duration
+	var resumedNs int64
+	resume := func() error { // the resume's time is taken before the signal: the OK window starts no later
 		stopFlood()
+		resumedNs = time.Now().UnixNano()
+		at, uerr := uptime()
+		resumedAt = at
 		err := syscall.Kill(pid, syscall.SIGCONT)
 		wg.Wait()
 		if err != nil {
-			return fmt.Errorf("SIGCONT auditd: %w", err)
+			err = fmt.Errorf("SIGCONT auditd: %w", err)
 		}
-		return nil
+		return errors.Join(uerr, err)
 	}
 	var rise time.Duration
 	var exact bool
@@ -553,27 +559,26 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 	var rerr error
 	if sustained {
 		stopFlood()
-		inj.finish = func() { _ = resume() } // the lost counter after it, read by exec, shows a failed resume
+		inj.finish = resume
 	} else {
 		rerr = resume()
-		inj.resumeNs = time.Now().UnixNano()
-		if inj.resumeAt, err = uptime(); err != nil {
-			return injected{}, errors.Join(err, rerr)
-		}
+		inj.resumeNs, inj.resumeAt = resumedNs, resumedAt
 	}
 	second, err := klog.mark("after")
 	if err == nil {
 		err = klog.awaitMark(ctx, second)
 	}
-	if err != nil {
-		return injected{}, errors.Join(err, rerr)
+	if err == nil {
+		inj.from, inj.to, err = kernelBracket(rise, first, second)
 	}
-	inj.from, inj.to, err = kernelBracket(rise, first, second)
+	if err != nil {
+		return injected{}, errors.Join(err, rerr, inj.release())
+	}
 	if !exact {
 		inj.from = baseAt
 	}
 	inj.end = inj.to
-	return inj, errors.Join(err, rerr)
+	return inj, rerr
 }
 
 // kmsgMark is a mark the guest wrote to the kernel's log: the uptime just before and just after the write, and
@@ -610,7 +615,12 @@ type kmsgReader struct {
 	marks []*kmsgMark
 }
 
-const kmsgMarkPrefix = "balistid-range-guest: mark "
+// kmsgMarkPrefix starts the guest's marks; kmsgBatch bounds the records one scan reads, so a busy log cannot hold
+// a caller past its deadline.
+const (
+	kmsgMarkPrefix = "balistid-range-guest: mark "
+	kmsgBatch      = 4096
+)
 
 func openKmsg() (*kmsgReader, error) {
 	fd, err := unix.Open("/dev/kmsg", unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
@@ -642,10 +652,10 @@ func (k *kmsgReader) mark(tag string) (*kmsgMark, error) {
 	return m, nil
 }
 
-// scan reads every waiting record: it stamps the marks it meets, and returns the kernel's time of the first record
-// that counts lost above base, 0 before one came, and whether it counts base+1, the rise itself.
+// scan reads the waiting records, at most kmsgBatch: it stamps the marks it meets, and returns the kernel's time of
+// the first record that counts lost above base, 0 before one came, and whether it counts base+1, the rise itself.
 func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, bool, error) {
-	for {
+	for range kmsgBatch {
 		n, err := unix.Read(k.fd, k.buf)
 		switch {
 		case errors.Is(err, unix.EAGAIN):
@@ -663,6 +673,7 @@ func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, bool, err
 			return at, exact, err
 		}
 	}
+	return 0, false, nil
 }
 
 // takeRecord stamps the mark r is, or returns the kernel's time of r when it counts lost above base, and whether it
@@ -698,13 +709,18 @@ func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 
 // overflowDispatcher stops Laurel and execs until auditd's state file, read and never signalled, says its plugin
 // queue overflowed, then resumes Laurel. It waits for a fresh "no" first, so the bracket, from the mtime of the
-// last state file that read no to that of the first that read yes, starts near the injection.
+// last state file that read no to that of the first that read yes, starts near the injection. The mtimes are wall
+// clock: the offset to uptime is read at every poll, and a spread over clockSpread fails the run.
 func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
+	var off offsets
+	if err := off.read(); err != nil {
+		return 0, 0, err
+	}
 	first, err := readState()
 	if err != nil {
 		return 0, 0, err
 	}
-	no, err := freshState(ctx, first.at)
+	no, err := freshState(ctx, first.mtime)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -725,17 +741,20 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 			_ = exec.CommandContext(flood, "/usr/bin/true").Run()
 		}
 	})
-	var yes time.Duration
-	for yes == 0 && err == nil && pause(flood, stateEvery) {
+	var yes time.Time
+	for yes.IsZero() && err == nil && pause(flood, stateEvery) {
+		if err = off.read(); err != nil {
+			continue
+		}
 		var st stateRead
-		if st, err = readState(); err != nil || st.value == stateChanged || st.at == no.at {
+		if st, err = readState(); err != nil || st.value == stateChanged || st.mtime.Equal(no.mtime) {
 			continue
 		}
 		switch st.value {
 		case "no":
 			no = st
 		case "yes":
-			yes = st.at
+			yes = st.mtime
 		default:
 			err = fmt.Errorf("the state file reads overflow %q", st.value)
 		}
@@ -748,30 +767,62 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 	switch {
 	case err != nil:
 		return 0, 0, err
-	case yes == 0:
+	case yes.IsZero():
 		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
 	}
-	return no.at, yes, nil
+	return off.bracket(no.mtime, yes)
 }
 
-// freshState waits for a whole state file other than the one of mtime at.
-func freshState(ctx context.Context, at time.Duration) (stateRead, error) {
+// clockSpread bounds how far the wall clock may move against uptime during a dispatcher injection.
+const clockSpread = time.Second
+
+// offsets are the least and most of the wall clock less uptime seen so far.
+type offsets struct{ lo, hi time.Duration }
+
+func (o *offsets) read() error {
+	wall := time.Now().UnixNano()
+	up, err := uptime()
+	if err != nil {
+		return err
+	}
+	d := time.Duration(wall) - up
+	if o.lo == 0 && o.hi == 0 {
+		o.lo, o.hi = d, d
+	}
+	o.lo, o.hi = min(o.lo, d), max(o.hi, d)
+	return nil
+}
+
+// bracket is from to to in uptime, from taken with the largest offset and to with the least, so it only widens.
+func (o *offsets) bracket(from, to time.Time) (time.Duration, time.Duration, error) {
+	if o.hi-o.lo > clockSpread {
+		return 0, 0, fmt.Errorf("the wall clock moved %s against uptime during the injection", o.hi-o.lo)
+	}
+	f, t := time.Duration(from.UnixNano())-o.hi, time.Duration(to.UnixNano())-o.lo
+	if f <= 0 || t < f {
+		return 0, 0, fmt.Errorf("the state files map to %s..%s of uptime", f, t)
+	}
+	return f, t, nil
+}
+
+// freshState waits for a whole state file of another mtime than mtime.
+func freshState(ctx context.Context, mtime time.Time) (stateRead, error) {
 	for deadline := time.Now().Add(freshStateWait); time.Now().Before(deadline) && pause(ctx, stateEvery); {
 		st, err := readState()
 		if err != nil {
 			return stateRead{}, err
 		}
-		if st.value != stateChanged && st.at != at {
+		if st.value != stateChanged && !st.mtime.Equal(mtime) {
 			return st, nil
 		}
 	}
 	return stateRead{}, errors.New("auditd wrote no fresh state file")
 }
 
-// stateRead is auditd's state file's overflow flag and its mtime in uptime.
+// stateRead is auditd's state file's overflow flag and its mtime.
 type stateRead struct {
 	value string
-	at    time.Duration
+	mtime time.Time
 }
 
 // readState reads the state file and its mtime through one descriptor; a read the file changed under is
@@ -797,13 +848,5 @@ func readState() (stateRead, error) {
 	case !after.ModTime().Equal(before.ModTime()):
 		return stateRead{value: stateChanged}, nil
 	}
-	up, err := uptime()
-	if err != nil {
-		return stateRead{}, err
-	}
-	age := time.Since(after.ModTime())
-	if age < 0 || age > up {
-		return stateRead{}, fmt.Errorf("state file mtime %s from now", age)
-	}
-	return stateRead{value: rangeguest.OverflowDetected(string(data)), at: up - age}, nil
+	return stateRead{value: rangeguest.OverflowDetected(string(data)), mtime: after.ModTime()}, nil
 }

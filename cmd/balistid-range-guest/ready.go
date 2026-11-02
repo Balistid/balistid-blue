@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 )
@@ -70,16 +72,11 @@ func readyMS(boot, ready int64) string {
 
 // uptime is the time since kernel start (/proc/uptime).
 func uptime() (time.Duration, error) {
-	return parseUptime(readTrim("/proc/uptime"))
-}
-
-func parseUptime(s string) (time.Duration, error) {
-	first, _, _ := strings.Cut(s, " ")
-	sec, err := strconv.ParseFloat(first, 64)
-	if err != nil || sec < 0 {
-		return 0, fmt.Errorf("uptime %q", s)
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &ts); err != nil {
+		return 0, fmt.Errorf("CLOCK_BOOTTIME: %w", err)
 	}
-	return time.Duration(sec * float64(time.Second)), nil
+	return time.Duration(ts.Nano()), nil
 }
 
 // runExposure reports systemd-analyze's overall exposure of every Balistid Blue service the image has

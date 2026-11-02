@@ -77,6 +77,7 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	start := firstPost(posts, "start", 0)
 	lost := fmt.Sprintf("kernel lost %d to %d, overflow %s", n[FactLostBefore], n[FactLostAfter], Printable(f[FactOverflowAfter], 16))
 	kernelMoved, flagSet := n[FactLostAfter] != n[FactLostBefore], f[FactOverflowAfter] != "no"
+	collector := !kernelLoss(tr.Inject) && tr.Inject != rangejob.InjectDispatcher
 	switch {
 	case err != nil:
 		return Invalid, err.Error()
@@ -88,6 +89,12 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		// a dispatcher's may start before the injection, at the last state file written before it
 		return Invalid, fmt.Sprintf("the loss's bracket %d to %d ms does not end after the injection's start at %d", n[FactLossFromMS],
 			n[FactLossToMS], n[FactInjectMS])
+	case collector && (n[FactLossFromMS] != n[FactInjectMS] || n[FactLossToMS] != n[FactInjectEndMS]),
+		kernelLoss(tr.Inject) && (n[FactLossFromMS] < n[FactInjectMS] || n[FactLossToMS] > n[FactInjectEndMS]),
+		tr.Inject == rangejob.InjectDispatcher && n[FactLossToMS] > n[FactInjectEndMS]:
+		// a collector's loss is its injection; the guest's own bracket lies inside it, a dispatcher's may start earlier
+		return Invalid, fmt.Sprintf("the loss's bracket %d to %d ms does not fit the injection's %d to %d", n[FactLossFromMS],
+			n[FactLossToMS], n[FactInjectMS], n[FactInjectEndMS])
 	case f[FactPiActive] == "missing":
 		return Invalid, "the watcher's state could not be read"
 	case (start == nil || start.MS > n[FactInjectMS]) && n[FactRefused] > 0:
@@ -96,11 +103,11 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, "the sink saw no start of the watcher before the injection"
 	case f[FactOverflowBefore] != "no":
 		return Invalid, fmt.Sprintf("the dispatcher's overflow flag read \"%s\" before the injection", Printable(f[FactOverflowBefore], 16))
-	case kernelLoss(tr.Inject) && (!kernelMoved || flagSet):
+	case kernelLoss(tr.Inject) && (n[FactLostAfter] <= n[FactLostBefore] || flagSet):
 		return Invalid, "the kernel did not lose, or the dispatcher lost too: " + lost
-	case tr.Inject == rangejob.InjectDispatcher && kernelMoved:
-		return Invalid, "the kernel lost records too: " + lost
-	case !kernelLoss(tr.Inject) && tr.Inject != rangejob.InjectDispatcher && (kernelMoved || flagSet):
+	case tr.Inject == rangejob.InjectDispatcher && (kernelMoved || f[FactOverflowAfter] != "yes"):
+		return Invalid, "the dispatcher's overflow is not shown, or the kernel lost records too: " + lost
+	case collector && (kernelMoved || flagSet):
 		return Invalid, "the kernel or the dispatcher lost records too: " + lost
 	case (tr.Inject == rangejob.InjectKernelTransient) == (f[FactOKAfterResume] == "-"):
 		return Invalid, fmt.Sprintf("health after a resume \"%s\" in a run that does not resume, or none in one that does",

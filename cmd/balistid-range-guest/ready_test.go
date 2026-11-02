@@ -7,14 +7,14 @@ import (
 	"time"
 )
 
-func TestParseUptime(t *testing.T) {
-	if d, err := parseUptime("31.57 60.10"); err != nil || d != 31570*time.Millisecond {
-		t.Errorf("31.57: %v, %v", d, err)
+// uptime is CLOCK_BOOTTIME to the nanosecond, the clock /proc/uptime shows in hundredths.
+func TestUptimeIsBoottime(t *testing.T) {
+	a, err := uptime()
+	if err != nil || a <= 0 {
+		t.Fatalf("%s %v", a, err)
 	}
-	for _, s := range []string{"", "x 1", "-1 2", "error: open /proc/uptime"} {
-		if _, err := parseUptime(s); err == nil {
-			t.Errorf("%q parsed", s)
-		}
+	if b, err := uptime(); err != nil || b < a {
+		t.Fatalf("uptime went back: %s then %s, %v", a, b, err)
 	}
 }
 
