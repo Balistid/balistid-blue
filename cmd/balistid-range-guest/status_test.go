@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
@@ -78,13 +79,26 @@ func TestEveryCLICallIsKept(t *testing.T) {
 	at = 3
 	_, _, _ = cli(t.Context())
 	_, _, _ = cli(t.Context())
-	if len(calls) != 2 || calls[0].run != 0 || calls[0].exit != 1 || calls[1].run != 3 || calls[1].exit != 0 || calls[1].start > calls[1].end {
+	if len(calls) != 2 || calls[0].run != 0 || calls[0].exit != 1 || calls[1].run != 3 || calls[1].exit != 0 ||
+		calls[1].start > calls[1].end || calls[0].shows != rangevm.ShowsBad {
 		t.Fatalf("%+v", calls)
 	}
 	tl := healthTimeline{{kind: "health", state: "UNKNOWN canary-missed", at: 1}}
 	calls[0].start, calls[0].end, calls[1].start, calls[1].end = 0, 5, 5, 9
-	if got := tl.polls(calls); got != "0:1:none,3:0:UNKNOWN" {
+	if got := tl.polls(calls); got != "0:1:bad:none,3:0:bad:UNKNOWN" {
 		t.Fatalf("%q", got)
+	}
+}
+
+// A wait of zero asks once and reports the floor not shown healthy, so a CLI that never shows it OK does not wait
+// out the trial's wall clock before each run; the run is still measured.
+func TestBreakAndRunWithoutWaitMeasuresAtOnce(t *testing.T) {
+	calls := 0
+	cli := func(context.Context) (int, []byte, error) { calls++; return 1, nil, nil }
+	start := time.Now()
+	res, healthy, err := breakAndRun(t.Context(), rangevm.StatusRun{Name: "healthy", Kind: rangevm.StatusHealthy}, cli, 0)
+	if err != nil || healthy || calls != 2 || res.exit != 1 || time.Since(start) > statusPoll {
+		t.Fatalf("healthy %v, %d calls, %+v, %v, %s", healthy, calls, res, err, time.Since(start))
 	}
 }
 
@@ -116,12 +130,12 @@ func TestUntilCLIStopsAtTheWantedExit(t *testing.T) {
 		n++
 		return map[bool]int{true: 0, false: 1}[n == 2], nil, nil
 	}
-	if err := untilCLI(t.Context(), cli, 0); err != nil || n != 2 {
+	if err := untilCLI(t.Context(), cli, 0, statusWait); err != nil || n != 2 {
 		t.Fatalf("%d calls, %v", n, err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := untilCLI(ctx, func(context.Context) (int, []byte, error) { return 1, nil, nil }, 0); err == nil {
+	if err := untilCLI(ctx, func(context.Context) (int, []byte, error) { return 1, nil, nil }, 0, statusWait); err == nil {
 		t.Fatal("waited on a cancelled context")
 	}
 }

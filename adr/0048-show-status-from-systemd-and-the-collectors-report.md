@@ -35,9 +35,10 @@ is not installed yet, so no host has a mode, local history or an alert path for 
    healthy, then after masking and stopping each unit in turn, after freezing auditd (it refuses a manual stop)
    and Laurel with SIGSTOP, and healthy again. Each run carries the guest's own proof, from before the CLI to after
    it (the unit inactive, the process stopped, every unit active), and for frozen and healthy runs the store's
-   health over the CLI's run. The judge keeps its own list of units and checks it against the image's; the store
-   decides frozen and healthy runs. The CLI showing OK over a store UNKNOWN throughout, a break not shown with its
-   part, or a healthy run not OK is a MISS; a run the store leaves open is INVALID.
+   health over the CLI's run and, for a freeze, when it began. The judge keeps its own list of units, checks every
+   CLI call, waits included, against the store, and lets a MISS outrank any INVALID: OK over a store UNKNOWN
+   throughout, a break not shown with its part or a healthy run not OK is a MISS; a run the store leaves open, or a
+   freeze that did not start from an OK store, is INVALID.
 
 ## Alternatives considered
 
@@ -52,9 +53,8 @@ is not installed yet, so no host has a mode, local history or an alert path for 
 - The report is world-readable: every local uid learns when the recorder is UNKNOWN, why, and how many losses wait
   to be stored. Any unprivileged status tells the uid running it the same, and A1 runs as the maintainer's uid, so
   a group-readable report would hide nothing from A1.
-- Residual: no run freezes the collector (its stale report is tested in-process); only `--json` runs in the range.
+- Residual: no run freezes the collector (tested in-process); only `--json` runs; local mode adds the Pi's units.
 - A collector that stops writing shows UNKNOWN within 5 s. A failed write removes the old report, so the CLI reads
   UNKNOWN at once; only if that fails too does it stand until 5 s. The collector never stops over its report.
-- In local mode the Pi's two units join the parts and the trial (they are excluded today as the Pi's).
 - Tests: the report's encoding, owner, age and reasons; each unit state; the parser's fuzz; a negative judge case
   for each way to a false PASS (unproven break, store against the CLI, part not shown, as root, an unbroken unit).
