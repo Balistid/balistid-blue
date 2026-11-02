@@ -1,9 +1,10 @@
 # 0049 — Raise the threat model cap for floor 0's residuals
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-11-03
+- Date: 2026-11-02
 - Decided-by: alex
 - Agent: claude/opus-5.5
+- Amends: ADR 0014 (the cap)
 
 ## Context
 
@@ -15,15 +16,16 @@ comes out of a mitigation or a gap, and said growth past 20 more lines needs the
 
 ## Decision
 
-`THREAT_MODEL.md` may hold 110 lines, 13200 bytes. The limits above go into the rows they belong to (T11, T12,
-T21, T27, T28), not into new rows; every other cap stays, and the file stays one table.
+`THREAT_MODEL.md` may hold 110 lines, 13200 bytes. The limits above go into the rows they belong to (T11, T21, T27,
+T28) and local mode into the scope paragraph, not into new rows; every other cap stays, and the file stays one table.
 
 ## Alternatives considered
 
 - Shorten other rows (T34's test list is the longest): it removes the test names R10 asks a row to carry.
 - New rows T38-T42: five rows for limits that already have a row each.
 - Keep them only in ADRs and issues: a reader of the threat model would not see them.
+- Rewrite the outdated scope paragraph to free room: it now also carries local mode, so it frees too little.
 
 ## Consequences
 
-About 1100 bytes stay for floor 0's remaining rows (9.5, L12). A limit that does not fit its row belongs in an ADR.
+About 600 bytes stay for floor 0's remaining rows (9.5, L12). A limit that does not fit its row belongs in an ADR.
