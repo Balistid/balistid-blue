@@ -63,11 +63,10 @@ func StatusRuns() []StatusRun {
 		StatusRun{Name: "end", Kind: StatusHealthy})
 }
 
-const (
-	statusHealth = "health"
-	// maxStatusOut caps one run's decoded output: the CLI prints well under 2 KiB.
-	maxStatusOut = 16 << 10
-)
+const statusHealth = "health"
+
+// MaxStatusOut caps one run's output, in the guest and the judge: the CLI prints well under 2 KiB.
+const MaxStatusOut = 16 << 10
 
 // statusResult is the CLI's JSON as the judge reads it, decoded strictly.
 type statusResult struct {
@@ -82,10 +81,12 @@ type statusResult struct {
 }
 
 // judgeStatus judges a run of status trial tr. The facts are closed, each run's value is its exit, its output as
-// canonical base64 and the guest's proof that the break held from before the CLI ran to after it: anything else,
-// a run as root, another kernel, a proof not "yes" or a floor-0 unit of the image the trial does not break is
-// INVALID. A broken run that does not show not OK with the broken part not OK, or a healthy run not OK, is a
-// MISS: that is what status_false_ok counts.
+// the store's health over the CLI's run, its output as canonical base64 and the guest's proof that the break held
+// from before the CLI ran to after it: anything else, a run as root, another kernel, a proof not "yes" or a
+// floor-0 unit of the image the trial does not break is INVALID. The store decides healthy and frozen runs: a
+// healthy run is one the store shows OK throughout, a freeze one it shows UNKNOWN throughout; a run the store
+// leaves open is INVALID, but the CLI showing OK over an UNKNOWN store is a false OK whatever the run. A broken
+// run not shown not OK with its part not OK, or a healthy run not OK, is a MISS: what status_false_ok counts.
 func judgeStatus(tr rangejob.Trial, o Outcome) (string, string) {
 	runs := StatusRuns()
 	names := []string{FactTrial, FactPhase, FactKernel, FactStatusUID, FactUnitsInstalled}
@@ -110,11 +111,18 @@ func judgeStatus(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	var misses []string
 	for _, r := range runs {
-		res, exit, err := statusOf(f[FactStatusRun+r.Name])
+		res, exit, health, err := statusOf(f[FactStatusRun+r.Name])
 		if err != nil {
 			return Invalid, fmt.Sprintf("run %s: %s", r.Name, err)
 		}
-		if why := statusMiss(r, res, exit); why != "" {
+		why, invalid := storeShows(r, res, exit, health)
+		if invalid {
+			return Invalid, fmt.Sprintf("run %s: %s", r.Name, why)
+		}
+		if why == "" {
+			why = statusMiss(r, res, exit)
+		}
+		if why != "" {
 			misses = append(misses, r.Name+": "+why)
 		}
 	}
@@ -141,30 +149,63 @@ func unitsUnbroken(installed string) string {
 	return ""
 }
 
-// statusOf decodes one run's value: "<exit> <base64 output> <proof>", the proof "yes" or the guest's reason.
-func statusOf(v string) (statusResult, int, error) {
-	parts := strings.SplitN(v, " ", 3)
-	if len(parts) != 3 {
-		return statusResult{}, 0, fmt.Errorf("not an exit, output and proof")
+// The store's health over a run as the guest reports it: OK or UNKNOWN throughout, both, no record before the
+// run, or not read for a stopped unit, whose collector may be the stopped one.
+const (
+	StoreOK      = "OK"
+	StoreUnknown = "UNKNOWN"
+	StoreMixed   = "mixed"
+	StoreNone    = "none"
+	StoreUnread  = "-"
+)
+
+// statusOf decodes one run's value: "<exit> <store health> <base64 output> <proof>", the proof "yes" or the
+// guest's reason.
+func statusOf(v string) (statusResult, int, string, error) {
+	parts := strings.SplitN(v, " ", 4)
+	if len(parts) != 4 {
+		return statusResult{}, 0, "", fmt.Errorf("not an exit, store health, output and proof")
 	}
-	if parts[2] != "yes" {
-		return statusResult{}, 0, fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[2], 256))
+	if parts[3] != "yes" {
+		return statusResult{}, 0, "", fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[3], 256))
 	}
 	exit, err := strconv.Atoi(parts[0])
 	if err != nil || strconv.Itoa(exit) != parts[0] {
-		return statusResult{}, 0, fmt.Errorf("the exit is not a plain number")
+		return statusResult{}, 0, "", fmt.Errorf("the exit is not a plain number")
 	}
-	out, err := base64.StdEncoding.DecodeString(parts[1])
-	if err != nil || base64.StdEncoding.EncodeToString(out) != parts[1] || len(out) > maxStatusOut {
-		return statusResult{}, 0, fmt.Errorf("the output is not canonical base64 within %d bytes", maxStatusOut)
+	if !slices.Contains([]string{StoreOK, StoreUnknown, StoreMixed, StoreNone, StoreUnread}, parts[1]) {
+		return statusResult{}, 0, "", fmt.Errorf("the store health is not one the guest reports")
+	}
+	out, err := base64.StdEncoding.DecodeString(parts[2])
+	if err != nil || base64.StdEncoding.EncodeToString(out) != parts[2] || len(out) > MaxStatusOut {
+		return statusResult{}, 0, "", fmt.Errorf("the output is not canonical base64 within %d bytes", MaxStatusOut)
 	}
 	var res statusResult
 	d := json.NewDecoder(bytes.NewReader(out))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&res); err != nil || d.More() || res.SchemaVersion != 1 {
-		return statusResult{}, 0, fmt.Errorf("the output is not one status result of schema 1")
+		return statusResult{}, 0, "", fmt.Errorf("the output is not one status result of schema 1")
 	}
-	return res, exit, nil
+	return res, exit, parts[1], nil
+}
+
+// storeShows judges run r by the store's health over it: why it is a false OK (a MISS), or why the run proves
+// nothing (invalid), or "" when the CLI's result decides.
+func storeShows(r StatusRun, res statusResult, exit int, health string) (string, bool) {
+	cliOK := res.OK || exit == 0
+	switch {
+	case r.Kind == StatusStopUnit && health != StoreUnread:
+		return "the store's health is read for a stopped unit", true
+	case r.Kind == StatusStopUnit:
+		return "", false
+	case health == StoreUnknown && cliOK:
+		return "false OK: the store's health was UNKNOWN throughout", false
+	case r.Kind == StatusHealthy && health == StoreUnknown:
+		return "the floor was not healthy: the store's health was UNKNOWN throughout", true
+	case r.Kind == StatusHealthy && health != StoreOK, r.Kind != StatusHealthy && health != StoreUnknown:
+		return fmt.Sprintf("the store's health over the run was %s", health), true
+	}
+	return "", false
 }
 
 // statusMiss is why run r's result is a false OK or a healthy run not shown OK, or "". The parts must be exactly

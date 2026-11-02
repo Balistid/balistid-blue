@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
+
+	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
 // The proof brackets the CLI: checked before it runs and after it returns, and a failure of either, or a CLI that
@@ -12,7 +15,7 @@ func TestMeasureBracketsTheCLI(t *testing.T) {
 	var order []string
 	cli := func(context.Context) (int, []byte, error) { order = append(order, "cli"); return 1, []byte("{}"), nil }
 	prove := func() string { order = append(order, "prove"); return "yes" }
-	res := measure(t.Context(), cli, prove, "UNKNOWN")
+	res := measure(t.Context(), cli, prove, true)
 	if len(order) != 3 || order[0] != "prove" || order[1] != "cli" || order[2] != "prove" || res.proof != "yes" || res.exit != 1 {
 		t.Fatalf("order %v, %+v", order, res)
 	}
@@ -24,33 +27,44 @@ func TestMeasureBracketsTheCLI(t *testing.T) {
 		}
 		return "yes"
 	}
-	if res := measure(t.Context(), cli, afterFails, ""); res.proof != "after: x is \"active\"" {
+	if res := measure(t.Context(), cli, afterFails, false); res.proof != "after: x is \"active\"" {
 		t.Fatalf("after: %+v", res)
 	}
-	if res := measure(t.Context(), cli, func() string { return "no" }, ""); res.proof != "before: no" {
+	if res := measure(t.Context(), cli, func() string { return "no" }, false); res.proof != "before: no" {
 		t.Fatalf("before: %+v", res)
 	}
 	noExit := func(context.Context) (int, []byte, error) { return 0, nil, errors.New("signal: killed") }
-	if res := measure(t.Context(), noExit, func() string { return "yes" }, ""); res.proof == "yes" {
+	if res := measure(t.Context(), noExit, func() string { return "yes" }, false); res.proof == "yes" {
 		t.Fatalf("a CLI that did not exit proved the run: %+v", res)
 	}
 }
 
-// The store's health at a run's end is its last record at or before the end; records without a time never count.
-func TestHealthTimelineProvesTheStateAtTheEnd(t *testing.T) {
+// The store's health over a run is its last record at or before the start and every record up to the end; records
+// without a time never count.
+func TestHealthTimelineOverTheRun(t *testing.T) {
 	tl := healthTimeline{{kind: "health", state: "UNKNOWN starting", at: 10}, {kind: "health", state: "OK", at: 20},
-		{kind: "health", state: "UNKNOWN canary-missed", at: 30}, {kind: "health", state: "OK", at: 0}, {kind: "health", state: "OK", at: 40}}
+		{kind: "health", state: "UNKNOWN canary-missed", at: 30}, {kind: "health", state: "OK", at: 0},
+		{kind: "health", state: "UNKNOWN audit-stale", at: 35}, {kind: "health", state: "OK", at: 40}}
 	for _, c := range []struct {
-		end        int64
-		want, does string
+		start, end int64
+		want       string
 	}{
-		{5, "OK", "no health stored before the run"}, {10, "UNKNOWN", "yes"}, {19, "OK", `the store's health was "UNKNOWN starting"`},
-		{25, "OK", "yes"}, {30, "UNKNOWN", "yes"}, {35, "OK", `the store's health was "UNKNOWN canary-missed"`},
-		{45, "OK", "yes"}, {45, "UNKNOWN", `the store's health was "OK"`},
+		{1, 5, rangevm.StoreNone}, {10, 15, rangevm.StoreUnknown}, {12, 19, rangevm.StoreUnknown},
+		{21, 29, rangevm.StoreOK}, {25, 30, rangevm.StoreMixed}, {31, 36, rangevm.StoreUnknown},
+		{36, 45, rangevm.StoreMixed}, {45, 50, rangevm.StoreOK}, {19, 21, rangevm.StoreMixed},
 	} {
-		if got := tl.proves(c.end, c.want); got != c.does {
-			t.Errorf("end %d want %s: %q, want %q", c.end, c.want, got, c.does)
+		if got := tl.over(c.start, c.end); got != c.want {
+			t.Errorf("over(%d, %d) = %s, want %s", c.start, c.end, got, c.want)
 		}
+	}
+}
+
+// A unit is stopped before it is masked, so its ExecStopPost runs, and stopped again after.
+func TestStopUnitStopsBeforeMasking(t *testing.T) {
+	got := stopUnit("balistid-net.service")
+	want := [][]string{{"stop", "balistid-net.service"}, {"mask", "--runtime", "balistid-net.service"}, {"stop", "balistid-net.service"}}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("%q", got)
 	}
 }
 
