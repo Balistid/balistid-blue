@@ -29,7 +29,7 @@ each log on a human request, suggests at most 24 checkpoints a day and lists pro
    so it rewrites or rolls back any history, starts a new origin and mutes every alert. A dead host: the dead-man only.
 4. `balistid status` names the mode first and never shows history OK in local mode: "history: local only, root
    can rewrite it"; at the higher level "history: cosigned by <witness> <age> ago, as this host sees it" (T11).
-   Alerts: on, off (no topic: the install still finishes) or failing. `status_false_ok` covers both lines.
+   Alerts: on, off (no topic: the install still finishes) or failing; `status_false_ok` covers both from 9.5 (0048).
 5. The higher level is any second Linux machine the user owns (the Pi, an old laptop, a team's server) running
    litewitness and `balistid-pi` per ADR 0031-0034, reached per ADR 0032. A move either way is a rollover (ADR 0030
    point 5): no witness vouches for history it did not see grow; what came before is only as good as local mode.
