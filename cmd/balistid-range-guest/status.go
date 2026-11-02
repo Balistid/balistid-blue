@@ -85,6 +85,7 @@ func runStatus(ctx context.Context, r *report) error {
 		if err != nil {
 			return r.fail(run.Name + ": " + err.Error())
 		}
+		wait = statusWait
 		if !healthy {
 			wait = 0 // a CLI that never shows the floor healthy would wait out the trial's wall clock
 		}
