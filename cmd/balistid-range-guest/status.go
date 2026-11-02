@@ -85,10 +85,10 @@ func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (status
 	case rangevm.StatusHealthy:
 		return measure(ctx, cli, func() string { return unitsActive(ctx) }, "OK"), nil
 	case rangevm.StatusStopUnit:
-		if err := systemctl(ctx, "mask", "--runtime", run.Name); err != nil {
-			return statusRun{}, err
-		}
-		stopErr := systemctl(ctx, "stop", run.Name)
+		// Stopped before it is masked: a masked unit has no ExecStopPost, which undoes what its start made. The
+		// second stop ends a start that came between, such as the collector's socket activation.
+		stopErr := errors.Join(systemctl(ctx, "stop", run.Name), systemctl(ctx, "mask", "--runtime", run.Name),
+			systemctl(ctx, "stop", run.Name))
 		res := measure(ctx, cli, func() string { return unitStopped(ctx, run.Name) }, "")
 		if err := errors.Join(stopErr, restoreUnits(ctx, run.Name)); err != nil {
 			return statusRun{}, err
