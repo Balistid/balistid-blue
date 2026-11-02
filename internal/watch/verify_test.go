@@ -287,7 +287,8 @@ func TestLogCapAlarms(t *testing.T) {
 
 // AlertsUnknown names exactly the reasons health counts as an UNKNOWN that alarms at once.
 func TestAlertsUnknownIsHealths(t *testing.T) {
-	for r := entry.ReasonStarting; r <= entry.ReasonAuditd; r++ {
+	for i := range 256 {
+		r := entry.Reason(i)
 		var f Findings
 		(&Rules{}).health(entry.Health{State: entry.StateUnknown, Reason: r}, &f)
 		if got := f.Unknown == 1; got != AlertsUnknown(r) {

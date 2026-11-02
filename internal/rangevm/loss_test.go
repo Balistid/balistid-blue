@@ -231,7 +231,7 @@ func TestAuditdCrash(t *testing.T) {
 			{FactInject: "error: the state file read overflow yes before the kill"},
 			{FactLostAfter: "1"}, {FactOverflowAfter: "yes"}, {FactOverflowAfter: "missing"}, {FactOverflowBefore: "yes"},
 			{FactLossFromMS: "99999"}, {FactLossToMS: "106001"}, {FactLossToMS: "103999"},
-			{FactOKAfterResume: "0"}, {FactOKAfterResume: "none"},
+			{FactOKAfterResume: "0"}, {FactOKAfterResume: "none"}, {FactCollectorRestarts: "0 1"},
 		},
 	} {
 		for _, c := range changes {

@@ -121,9 +121,9 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the ledger could not be read: \"%s\"", Printable(f[FactLossEntry], 256))
 	case strings.HasPrefix(f[FactFirstUnknown], "error"):
 		return Invalid, fmt.Sprintf("the ledger's UNKNOWNs could not be read: \"%s\"", Printable(f[FactFirstUnknown], 256))
-	case tr.Inject == rangejob.InjectQueue && !sameRestarts(f[FactCollectorRestarts]):
-		// a restarted collector takes its queued losses with it: the queue's loss was never shown
-		return Invalid, fmt.Sprintf("the collector restarted during the queue's injection: %s", Printable(f[FactCollectorRestarts], 64))
+	case (tr.Inject == rangejob.InjectQueue || crash) && !sameRestarts(f[FactCollectorRestarts]):
+		// a restarted collector takes its queued losses with it, and its own UNKNOWNs could pass as auditd's kill
+		return Invalid, fmt.Sprintf("the collector restarted during the injection: %s", Printable(f[FactCollectorRestarts], 64))
 	case f[FactPiActive] != "active":
 		return Miss, fmt.Sprintf("the watcher is %s at the end", Printable(f[FactPiActive], 64))
 	}
