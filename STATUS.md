@@ -18,7 +18,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - This PR (CP5a; ADR 0039 pts 2, 4, 5; ADR 0045): kernel (transient, sustained) and dispatcher loss judged against
   the guest's bracket, the kernel's by the printk time of `audit_lost` (AUDIT_GET sleeps while the backlog is full).
-  KVM at 719d52c: 6/6 PASS, alerts 0.4-25 s after the loss. Collector profile in the range (exp branch): per-record
+  KVM: kernel 4/4 PASS at 719d52c and e769c81, dispatcher 2/2 at its redesign e769c81, alerts 1-25 s after. Collector profile in the range (exp branch): per-record
   stat ~11 %, re-prepared insert ~10 %, JSON Unmarshal for the id ~10 %, goroutine handoff ~20 % of 0.195 cores.
 ## Next step
 1. CPU: the collector's cheap fixes (stat cache, one prepared insert, the id without Unmarshal) in their own

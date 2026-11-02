@@ -713,27 +713,23 @@ func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 // overflowDispatcher stops Laurel and execs until auditd's state file, read and never signalled, says its plugin
 // queue overflowed, then resumes Laurel. The bracket is the guest's own uptime, no wall clock: the overflow came
 // after the last "no" generation was written, so after the last read that still saw the one before it, and before
-// the read that first saw "yes" ended. It waits for a fresh "no" first, so the bracket starts near the injection.
+// the read that first saw "yes" ended. That holds as auditd 4.2.1 truncates the file before it reads the flag
+// (src/auditd.c:231, :249). It waits for a fresh "no" first, so the bracket starts near the injection.
 func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
 	w := stateWatch{read: readState, now: uptime}
 	if _, _, _, err := w.poll(); err != nil {
 		return 0, 0, err
 	}
-	var from time.Duration
-	for deadline := time.Now().Add(freshStateWait); from == 0; {
+	for deadline := time.Now().Add(freshStateWait); w.from == 0 && w.to == 0; {
 		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
 			return 0, 0, errors.New("auditd wrote no fresh state file")
 		}
-		fresh, prev, _, err := w.poll()
-		if err != nil {
+		if err := w.step(); err != nil {
 			return 0, 0, err
 		}
-		if fresh {
-			from = max(prev, time.Nanosecond)
-		}
 	}
-	if w.cur.value != "no" {
-		return 0, 0, fmt.Errorf("the state file reads overflow %q before the injection", w.cur.value)
+	if w.to != 0 {
+		return 0, 0, errors.New("the state file reads overflow yes before the injection")
 	}
 	pid, err := strconv.Atoi(laurelPID())
 	if err != nil {
@@ -749,20 +745,8 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 			_ = exec.CommandContext(flood, "/usr/bin/true").Run()
 		}
 	})
-	var to time.Duration
-	for to == 0 && err == nil && pause(flood, stateEvery) {
-		fresh, prev, after, perr := w.poll()
-		if err = perr; err != nil || !fresh {
-			continue
-		}
-		switch w.cur.value {
-		case "no":
-			from = prev
-		case "yes":
-			to = after
-		default:
-			err = fmt.Errorf("the state file reads overflow %q", w.cur.value)
-		}
+	for w.to == 0 && err == nil && pause(flood, stateEvery) {
+		err = w.step()
 	}
 	stopFlood()
 	wg.Wait()
@@ -772,19 +756,39 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 	switch {
 	case err != nil:
 		return 0, 0, err
-	case to == 0:
+	case w.to == 0:
 		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
 	}
-	return from, to, nil
+	return w.from, w.to, nil
 }
 
 // stateWatch follows auditd's state file by the guest's uptime. A generation is told apart by its mtime, which is
-// never turned into a time; seen is the uptime before the latest read that still returned the current one.
+// never turned into a time; seen is the uptime before the latest read that still returned the current one; from
+// and to are the bracket so far, 0 until set.
 type stateWatch struct {
-	read func() (stateRead, error)
-	now  func() (time.Duration, error)
-	cur  stateRead
-	seen time.Duration
+	read     func() (stateRead, error)
+	now      func() (time.Duration, error)
+	cur      stateRead
+	seen     time.Duration
+	from, to time.Duration
+}
+
+// step polls once and moves the bracket: a fresh "no" restarts it after the generation before it, which that "no"
+// was written after; the first "yes" ends it when this read ended. Any other flag fails.
+func (w *stateWatch) step() error {
+	fresh, prev, after, err := w.poll()
+	if err != nil || !fresh {
+		return err
+	}
+	switch w.cur.value {
+	case "no":
+		w.from = prev
+	case "yes":
+		w.to = after
+	default:
+		return fmt.Errorf("the state file reads overflow %q", w.cur.value)
+	}
+	return nil
 }
 
 // poll reads the state file once. fresh is true when it returned a new generation (never on the first read); prev
@@ -846,5 +850,9 @@ func readState() (stateRead, error) {
 	case !after.ModTime().Equal(before.ModTime()):
 		return stateRead{value: stateChanged}, nil
 	}
-	return stateRead{value: rangeguest.OverflowDetected(string(data)), mtime: after.ModTime()}, nil
+	value := rangeguest.OverflowDetected(string(data))
+	if value == "missing" { // truncated and not yet written: a read under a change
+		value = stateChanged
+	}
+	return stateRead{value: value, mtime: after.ModTime()}, nil
 }

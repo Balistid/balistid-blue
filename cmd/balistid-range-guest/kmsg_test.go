@@ -116,3 +116,43 @@ func TestKmsgReadsStopWithTheirContext(t *testing.T) {
 		t.Errorf("a live scan: %v, mark %+v", err, m)
 	}
 }
+
+// The bracket's moves: a fresh "no" restarts it after the generation before it, the first "yes" ends it with the
+// read that saw it; a missed "no", reads under a change and a "yes" under the current mtime only widen or wait.
+func TestStateWatchStepMovesTheBracket(t *testing.T) {
+	gen := func(sec int64, value string) stateRead { return stateRead{value: value, mtime: time.Unix(sec, 0)} }
+	changed := stateRead{value: stateChanged}
+	for name, c := range map[string]struct {
+		reads    []stateRead
+		from, to time.Duration // each read takes 2 s: before at 2i+1, after at 2i+2
+	}{
+		"no then yes":             {[]stateRead{gen(10, "no"), gen(10, "no"), gen(15, "no"), gen(20, "yes")}, 3 * time.Second, 8 * time.Second},
+		"a missed no":             {[]stateRead{gen(10, "no"), gen(20, "yes")}, 0, 4 * time.Second},
+		"changed reads between":   {[]stateRead{gen(10, "no"), gen(15, "no"), changed, changed, gen(20, "yes")}, time.Second, 10 * time.Second},
+		"yes under the old mtime": {[]stateRead{gen(10, "no"), gen(15, "no"), gen(15, "yes")}, time.Second, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reads, clock := c.reads, time.Duration(0)
+			w := stateWatch{
+				read: func() (stateRead, error) { r := reads[0]; reads = reads[1:]; return r, nil },
+				now:  func() (time.Duration, error) { clock += time.Second; return clock, nil },
+			}
+			if _, _, _, err := w.poll(); err != nil {
+				t.Fatal(err)
+			}
+			for len(reads) > 0 {
+				if err := w.step(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if w.from != c.from || w.to != c.to {
+				t.Errorf("bracket %s..%s, want %s..%s", w.from, w.to, c.from, c.to)
+			}
+		})
+	}
+	w := stateWatch{read: func() (stateRead, error) { return gen(30, "maybe"), nil }, now: func() (time.Duration, error) { return time.Second, nil },
+		cur: gen(25, "no")}
+	if err := w.step(); err == nil {
+		t.Error("an unknown flag moved the bracket")
+	}
+}

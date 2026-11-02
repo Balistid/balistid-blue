@@ -199,8 +199,6 @@ PINNED = {
 # The range image's drop-ins repeat the installed argv and add the range's flags on one ExecStart line (the unit
 # tests refuse continuation lines), so their lines may run to 300 bytes; they never reach a host (ADR 0022).
 ROOT_INSTALLED = ("deploy/", "range/", "packaging/")
-ROOT_INSTALLED_LINE = re.compile(rb"[\x20-\x7e]{0,200}")
-RANGE_LINE = re.compile(rb"[\x20-\x7e]{0,300}")
 
 
 def line_cap(path: str) -> int:
@@ -208,10 +206,10 @@ def line_cap(path: str) -> int:
     return 300 if path.startswith("range/") else 200
 
 
-def unreadable_line(data: bytes, path: str = "") -> int | None:
-    """The first line of a root-installed file outside its line allowlist (RANGE_LINE under range/, else
-    ROOT_INSTALLED_LINE), or None."""
-    pattern = RANGE_LINE if line_cap(path) == 300 else ROOT_INSTALLED_LINE
+def unreadable_line(data: bytes, path: str) -> int | None:
+    """The first line of the root-installed file at path that is not printable ASCII of at most line_cap(path)
+    bytes, or None; a path outside range/ (or none) gets 200."""
+    pattern = re.compile(rb"[\x20-\x7e]{0,%d}" % line_cap(path))
     for number, line in enumerate(data.split(b"\n"), 1):
         if not pattern.fullmatch(line):
             return number
