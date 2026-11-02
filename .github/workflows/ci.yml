@@ -26,6 +26,8 @@ env:
   ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
   ZIZMOR_VERSION: "1.30.1"
   ZIZMOR_SHA256: "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a"
+  SHELLCHECK_VERSION: "0.11.0"
+  SHELLCHECK_SHA256: "b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6"
   GO_VERSION: "1.27.3"
   GO_SHA256: "65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40"
   GOLANGCI_VERSION: "2.14.0"
@@ -348,7 +350,14 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
       - run: '"$RUNNER_TEMP/actionlint" -color'
-      - run: shellcheck githooks/*
+      - name: Install shellcheck (pinned by sha256)
+        run: |
+          tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
+          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
+      - run: '"$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" githooks/*'
 
   # Advisory, not a required check (ADR 0028): evidence comes only from the local runner (ADR 0011).
   range-kvm:

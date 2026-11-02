@@ -36,5 +36,5 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #170: another writer filling the store's fs past its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
-- #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
-  unpinned shellcheck: as before (git log of this file).
+- #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial:
+  as before (git log of this file).
