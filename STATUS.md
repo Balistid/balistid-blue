@@ -25,8 +25,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
    pull request; then an own audit netlink reader measured against auditd with Laurel, and an ADR on the data
    source (reopens 0004) if it wins: auditd with Laurel alone is 0.39-0.46 of the 0.5.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
-3. CP5b: the queue trial with `-queue-bytes` (range lines may run to 300 bytes, the maintainer's choice 2.11.),
-   four auditd crashes, 10 runs per shape and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
+3. CP5b: the queue trial is still INVALID with an 8 MiB queue (the dispatcher overflowed too, 1 KVM run): try
+   smaller records, then four auditd crashes, 10 runs per shape and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
 4. Host install (9.5) when every range metric and the product bar pass: balistid-install, R2 keys, the store on the
    existing fs with its reserve, x32, io_uring, alarms, a syscall-filtered build unit; L12 and the witness e2e after it.
 ## Open decisions (maintainer)
