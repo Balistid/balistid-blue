@@ -2,8 +2,9 @@
 
 Scope: an Arch Linux host recording via auditd and Laurel (ADR 0004), raw SQLite shards (0005),
 a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007), and the attack
-range VM that tests them (0009) and its runner (0011). Detection and
-response start on floor 1. Each row names its control and proof in `acceptance/0.toml` or a test.
+range VM that tests them (0009) and its runner (0011). Rows assume the higher level with a witness off the host; in
+local mode, the 9.5 default, no witness or Pi exists, A2 is unopposed and a dead host alarms only through the opt-in
+dead-man (0043). Detection and response start on floor 1. Each row names its control and proof in `acceptance/0.toml` or a test.
 Status: **designed** (control decided, test not passing yet), **partial** (a stated hole), **gap** (no
 control; the floor to close it, or "open"), **assumption**. No row is
 "covered" until its test passes in CI or the range.
@@ -34,7 +35,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T9 | A1 | Tamper with the Laurel or Balistid Blue build before install | Builds in CI or range; installer takes rules and binaries from a root-owned checkout, checks sha256 | test install_hash | partial: no R2 hardware key yet; sha256 proves CI provenance, not review, of unowned source (0015) |
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom, free space a second cap (0013); auditd `disk_full_action` set, `-f 1` | test reserve | partial: a writer that keeps filling a shared filesystem takes the freed reserve; btrfs frees no part of it (UNKNOWN at once) |
 | T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie; the health report is world-readable, and one the collector can neither rewrite nor remove stays OK up to 5 s (0048) |
-| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006, 0031) | fork_refused (range); Pi tests (0031) | partial: Pi only in tests (L11, L12); local mode has no off-host witness, so T12, T17 and T22 are gaps there (0043) |
+| T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006, 0031) | fork_refused (range); Pi tests (0031) | partial: Pi only in tests (L11, L12) |
 | T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
 | T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped | announced_quiet_max_h | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
@@ -43,13 +44,13 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T18 | A3 | Parser bug in collector, normalizer, auditstat gains privilege | No caps but auditstat's AUDIT_CONTROL, kernel's fixed reply only; sandboxed (0007, 0038) | caps, fuzz_hours, exposure, audit-set | partial: under `-e 2` its cap resets counters, flips loginuid, takes the pid without auditd; collector's group reads audit.log |
 | T19 | A3 | Parser bug in the ledger misuses its signing key | No network; key only signs checkpoints; only the collector's and own uid connect (0027, 0030) | fuzz_hours, FuzzDecodeMessage | partial: a compromised ledger signs, steers retention (0029), announces, ends the log (0030) |
 | T20 | A3 | Crafted records exhaust memory, disk or the refused-request log | Truncated oversize records, store caps, refusal summaries, ledger link and log caps (0027) | record-max, refusal-flood (0023); rss_mib; cpu_cores (0025) | designed |
-| T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid nftables (0032); relay: Pi /32 (0031) | test_net_deploy, test_relay_deploy; pi_reach | partial: Pi side, IPv6 (L12); A2 flushes the table (0032) |
+| T21 | A4 | Reach the witness, relay or Pi | WireGuard, relay-uid nftables (0032); relay: Pi /32 (0031) | test_net_deploy, test_relay_deploy; pi_reach | partial: Pi side, IPv6 (L12); A2 can flush the table (0032) |
 | T22 | A4 | Shift the host clock so retention deletes early | Age by the witness's clock and the host's (0029) | TestRetention* | partial: root sets both |
 | T23 | A5 | Malicious dependency or toolchain | Pins, sha256, reproducible build, govulncheck | CI | partial: Laurel trusted |
 | T24 | A6 | Crash or power loss loses committed records | WAL `FULL`, a commit at every Flush (250 ms) or 2 MiB, sealing barrier (0005, 0013); the ledger logs a prefix, a re-issued seq fails its handshake (0027) | crash_loss_ms: kill -9 and reset of the collector, every seq it journaled committed survives (0018, 0023) | designed; hole: a device's volatile write cache is not modelled |
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day | partial: unread bytes at a collector restart or of a dead Laurel stay uncounted (0016); range trials read sealed shards to a barrier 7 s after the job (Laurel holds unended events 5 s) and keep an exec window whole only when all health to the run's end is known safe and `lost` and the overflow flag held; a guest clock step back (root or hypervisor) undoes it (0022); a health record dropped under load is unseen |
 | T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test; ready-1..4 (0023) | designed |
-| T27 | A6 | Pi or its alarms die | Dead-man ping (0034) | dead_site_alarm_s | partial (0034): A1 or A2 holding a channel's credentials or the ping URL silences it; a revoked topic is not probed |
+| T27 | A6 | Pi or its alarms die | Dead-man ping (0034) | dead_site_alarm_s | partial (0034): A2 on the Pi's path, or whoever holds a channel's credentials or the ping URL, silences it; a revoked topic is not probed; an accepted push does not prove the phone showed it |
 | T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |
 | T28 | A6 | Host offline: outage looks like attack | Cosigned shutdown, suspend announcements (0030); silence alarm | silence_alarm_s | partial: outages and missed announcements alarm too; a dead disk alarms only by the Pi's silence (900 s, 0017) |
 | T30 | A3 | Hostile guest output (results disk, serial) attacks the host reader or QEMU tools | Read as bytes: length-prefixed, capped, unknown JSON fields refused, zero padding after the end; `format=` on every drive; serial budget; no guest filesystem opened (0009) | TestParse*, TestQemuArgv, TestRunCommand, TestPlantedQcow2HeaderIsData, TestExecReport, Fuzz* | designed |
