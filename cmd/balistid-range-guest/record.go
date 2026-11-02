@@ -75,7 +75,8 @@ func malformedMarkers(token string) []string {
 // runRecord has a child with Laurel's uid send the malformed lines while Laurel's connection is ended
 // by SIGHUP, then execs the three argv cases, waits for the next stats record and reports what the
 // store holds (ADR 0023, point 3). The SIGHUP comes first: Laurel 0.8.2 writes its state before it
-// flushes, so an event in flight at the re-exec is stored twice, a cut head then whole (#219).
+// flushes, so an event in flight at the re-exec is stored twice, a partial event then the whole (#219).
+// inject returns only once the collector read the child's lines, so Laurel's old connection is closed.
 func runRecord(ctx context.Context, r *report) error {
 	token, err := token("balistid-record")
 	if err != nil {
@@ -307,8 +308,8 @@ func (s *recordScan) argvStored(c argvCase, a []string, x rawrecord.Record) stri
 	switch {
 	case s.cases[c.fact] != "":
 		return "twice"
-	case x.ProviderSeq == 0:
-		return "malformed" // every argument may be there, but the collector could not read it as Laurel's
+	case x.ProviderSeq == 0 || !x.Truncated() && !json.Valid(x.Data):
+		return "malformed" // every argument may be there, but not as a line of Laurel's
 	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0 && len(x.Data) == rawrecord.MaxBytes &&
 		bytes.Contains(x.Data[:rawrecord.MaxBytes/2], []byte(`"`+a[0]+`"`)) &&
 		bytes.Contains(x.Data[rawrecord.MaxBytes/2:], []byte(`"`+a[len(a)-1]+`"`)):
