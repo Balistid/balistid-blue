@@ -67,6 +67,8 @@ func kernelLoss(inject string) bool {
 // not running, no entry of the cause in the ledger or no alert within lossAlarm of the bracket's end is a MISS, an
 // alert before the bracket or one whose bracket is too wide to prove lossAlarm INVALID, and a transient kernel run
 // without health OK within lossAlarm of the resume a MISS; the control MISSes on any alert since the watcher started.
+// A killed auditd's loss is its UNKNOWN: an unknown alert whose first UNKNOWN is Laurel's or auditd's, and an entry
+// of auditd's (ADR 0039, points 3 and 5).
 func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, lossFacts, []string{FactInjectMS, FactInjectEndMS, FactLossFromMS, FactLossToMS, FactRefused,
 		FactLostBefore, FactLostAfter})
@@ -77,7 +79,8 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 	start := firstPost(posts, "start", 0)
 	lost := fmt.Sprintf("kernel lost %d to %d, overflow %s", n[FactLostBefore], n[FactLostAfter], Printable(f[FactOverflowAfter], 16))
 	kernelMoved, flagSet := n[FactLostAfter] != n[FactLostBefore], f[FactOverflowAfter] != "no"
-	collector := !kernelLoss(tr.Inject) && tr.Inject != rangejob.InjectDispatcher
+	crash := tr.Inject == rangejob.InjectAuditdCrash
+	collector := !kernelLoss(tr.Inject) && tr.Inject != rangejob.InjectDispatcher && !crash
 	switch {
 	case err != nil:
 		return Invalid, err.Error()
@@ -90,7 +93,7 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("the loss's bracket %d to %d ms does not end after the injection's start at %d", n[FactLossFromMS],
 			n[FactLossToMS], n[FactInjectMS])
 	case collector && (n[FactLossFromMS] != n[FactInjectMS] || n[FactLossToMS] != n[FactInjectEndMS]),
-		kernelLoss(tr.Inject) && (n[FactLossFromMS] < n[FactInjectMS] || n[FactLossToMS] > n[FactInjectEndMS]),
+		(kernelLoss(tr.Inject) || crash) && (n[FactLossFromMS] < n[FactInjectMS] || n[FactLossToMS] > n[FactInjectEndMS]),
 		tr.Inject == rangejob.InjectDispatcher && n[FactLossToMS] > n[FactInjectEndMS]:
 		// a collector's loss is its injection; the guest's own bracket lies inside it, a dispatcher's may start earlier
 		return Invalid, fmt.Sprintf("the loss's bracket %d to %d ms does not fit the injection's %d to %d", n[FactLossFromMS],
@@ -107,6 +110,8 @@ func judgeLoss(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, "the kernel did not lose, or the dispatcher lost too: " + lost
 	case tr.Inject == rangejob.InjectDispatcher && (kernelMoved || f[FactOverflowAfter] != "yes"):
 		return Invalid, "the dispatcher's overflow is not shown, or the kernel lost records too: " + lost
+	case crash && (kernelMoved || flagSet):
+		return Invalid, "the kernel or the dispatcher reported a loss of auditd's kill: " + lost
 	case collector && (kernelMoved || flagSet):
 		return Invalid, "the kernel or the dispatcher lost records too: " + lost
 	case (tr.Inject == rangejob.InjectKernelTransient) == (f[FactOKAfterResume] == "-"):
@@ -170,10 +175,11 @@ func sameRestarts(v string) bool {
 }
 
 // lossPost is the first alert of tr's cause after ms (ADR 0039, point 3): its stage's key, for the store also an
-// unknown when firstUnknown, the ledger's first UNKNOWN after the injection, is the store's; for the control any
-// loss or unknown alert.
+// unknown when firstUnknown, the ledger's first UNKNOWN after the injection, is the store's, for a killed auditd an
+// unknown when it is Laurel's or auditd's; for the control any loss or unknown alert.
 func lossPost(tr rangejob.Trial, posts []Post, ms uint64, firstUnknown string) *Post {
 	storeDown := strconv.Itoa(int(logentry.ReasonStoreDown))
+	killed := firstUnknown == strconv.Itoa(int(logentry.ReasonLaurelDisconnected)) || firstUnknown == strconv.Itoa(int(logentry.ReasonAuditd))
 	for i := range posts {
 		p := &posts[i]
 		var cause bool
@@ -182,6 +188,8 @@ func lossPost(tr rangejob.Trial, posts []Post, ms uint64, firstUnknown string) *
 			cause = strings.HasPrefix(p.Tag, "loss") || p.Tag == "unknown"
 		case rangejob.InjectStore:
 			cause = p.Tag == LossTag(tr.Inject) || p.Tag == "unknown" && (firstUnknown == storeDown || strings.HasPrefix(firstUnknown, "before"))
+		case rangejob.InjectAuditdCrash:
+			cause = p.Tag == "unknown" && (killed || strings.HasPrefix(firstUnknown, "before"))
 		default:
 			cause = p.Tag != "" && p.Tag == LossTag(tr.Inject)
 		}
