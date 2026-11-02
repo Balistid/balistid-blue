@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAuditStatus(t *testing.T) {
@@ -100,7 +101,32 @@ func FuzzParsers(f *testing.F) {
 		_ = HasRefusedDisable(bytes.NewReader(data))
 		_ = HasRuleKey(bytes.NewReader(data), "t")
 		_ = LastCommitted(s)
+		_, _ = ParseKmsg(s)
+		_, _ = AuditLost(s)
 	})
+}
+
+// A kmsg record gives its sequence, the kernel's time and its first line; the kernel's lost line its count.
+func TestParseKmsg(t *testing.T) {
+	r, err := ParseKmsg("4,1203,61234567,-;audit: audit_lost=1 audit_rate_limit=0 audit_backlog_limit=65536\n SUBSYSTEM=x\n")
+	if err != nil || r.Seq != 1203 || r.At != 61234567*time.Microsecond || r.Msg != "audit: audit_lost=1 audit_rate_limit=0 audit_backlog_limit=65536" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	if n, ok := AuditLost(r.Msg); !ok || n != 1 {
+		t.Errorf("lost %d %v", n, ok)
+	}
+	for _, bad := range []string{"", "audit_lost=1", "4,1,2;x", "4,x,2,-;x", "4,1,-2,-;x", "4,1,99999999999999999999,-;x",
+		"4,1,9223372036854776,-;x"} {
+		if r, err := ParseKmsg(bad); err == nil {
+			t.Errorf("%q parsed as %+v", bad, r)
+		}
+	}
+	for _, msg := range []string{"audit: backlog limit exceeded", "audit: audit_lost=", "audit: audit_lost=+1 x",
+		"audit: audit_lost=4294967296 x", "x audit: audit_lost=1"} {
+		if n, ok := AuditLost(msg); ok {
+			t.Errorf("%q read as lost %d", msg, n)
+		}
+	}
 }
 
 // The collector's canary record is found by its rule key, as a string with other keys joined by \x01

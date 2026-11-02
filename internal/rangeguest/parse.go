@@ -7,9 +7,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // maxLine caps one Laurel line; a longer line ends the scan, so a check that needs a later line fails.
@@ -143,4 +147,44 @@ func OverflowDetected(state string) string {
 		}
 	}
 	return "missing"
+}
+
+// KmsgRecord is one record of /dev/kmsg (Documentation/ABI/testing/dev-kmsg): its sequence number, the kernel's
+// timestamp of it and its message up to the first newline.
+type KmsgRecord struct {
+	Seq uint64
+	At  time.Duration
+	Msg string
+}
+
+// ParseKmsg parses one record read from /dev/kmsg, "prio,seq,ts_usec,flags[,...];message"; anything else is an
+// error.
+func ParseKmsg(rec string) (KmsgRecord, error) {
+	head, msg, ok := strings.Cut(rec, ";")
+	f := strings.Split(head, ",")
+	if !ok || len(f) < 4 {
+		return KmsgRecord{}, errors.New("kmsg: not prio,seq,ts_usec,flags;message")
+	}
+	seq, err := strconv.ParseUint(f[1], 10, 64)
+	if err != nil {
+		return KmsgRecord{}, errors.New("kmsg: sequence is not a number")
+	}
+	us, err := strconv.ParseUint(f[2], 10, 64)
+	if err != nil || us > math.MaxInt64/uint64(time.Microsecond) {
+		return KmsgRecord{}, errors.New("kmsg: timestamp is not a number of microseconds")
+	}
+	msg, _, _ = strings.Cut(msg, "\n")
+	return KmsgRecord{Seq: seq, At: time.Duration(us) * time.Microsecond, Msg: msg}, nil
+}
+
+// AuditLost is N of the kernel's "audit: audit_lost=N ..." line (kernel/audit.c, audit_log_lost), false for any
+// other message.
+func AuditLost(msg string) (uint32, bool) {
+	rest, ok := strings.CutPrefix(msg, "audit: audit_lost=")
+	if !ok {
+		return 0, false
+	}
+	n, _, _ := strings.Cut(rest, " ")
+	v, err := strconv.ParseUint(n, 10, 32)
+	return uint32(v), err == nil
 }
