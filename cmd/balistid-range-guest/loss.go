@@ -33,8 +33,8 @@ const (
 	// under record_max_kib (2 MiB, stored whole). queueExecs of them overfill the range's 8 MiB queue twice, in
 	// fewer kernel records than auditd's plugin queue holds, so the dispatcher cannot overflow even if Laurel
 	// took none of them during the freeze.
-	bigArg     = 100 << 10
-	bigArgs    = 12
+	bigArg     = 7000
+	bigArgs    = 175
 	queueExecs = 16
 	// crashExecs of them pass auditd's plugin queue at the fewest kernel records each, total bytes over
 	// execveChunk; crashFlood bounds the flood and kill after a fresh state write, under its 5 s report_interval.
