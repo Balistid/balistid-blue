@@ -62,6 +62,11 @@ func closeStore(t *testing.T, s *Store) {
 	}
 }
 
+// scratch is room for shard.Read's copy, outside the store's directory.
+func scratch(t *testing.T) shard.Scratch {
+	return shard.Scratch{Dir: t.TempDir(), Max: 1 << 30}
+}
+
 // readAll reads every indexed shard of dir through a fresh Open and checks seq runs gap-free from the
 // index's first line: 1 unless shards were retired.
 func readAll(t *testing.T, dir string) []rawrecord.Record {
@@ -71,7 +76,7 @@ func readAll(t *testing.T, dir string) []rawrecord.Record {
 	var got []rawrecord.Record
 	seals := s.Seals()
 	for _, l := range seals {
-		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
+		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, scratch(t), func(r rawrecord.Record) error {
 			if r.Seq != seals[0].First+uint64(len(got)) {
 				return fmt.Errorf("seq %d after %d records", r.Seq, len(got))
 			}
@@ -539,7 +544,7 @@ func TestPendingDropsGoIntoTheShardBeforeItIsSealed(t *testing.T) {
 		t.Fatalf("Append sealed %d shards, %v", len(sealed), err)
 	}
 	var last rawrecord.Record
-	if err := shard.Read(t.Context(), filepath.Join(s.dir, sealed[0].Name), sealed[0].SHA256, func(r rawrecord.Record) error {
+	if err := shard.Read(t.Context(), filepath.Join(s.dir, sealed[0].Name), sealed[0].SHA256, scratch(t), func(r rawrecord.Record) error {
 		last = r
 		return nil
 	}); err != nil {
@@ -1165,7 +1170,7 @@ func TestAppendKeepsCallerOrigLenAndSHA(t *testing.T) {
 	closeStore(t, s)
 	var got []rawrecord.Record
 	for _, l := range s.Seals() {
-		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
+		if err := shard.Read(t.Context(), filepath.Join(dir, l.Name), l.SHA256, scratch(t), func(r rawrecord.Record) error {
 			got = append(got, r)
 			return nil
 		}); err != nil {

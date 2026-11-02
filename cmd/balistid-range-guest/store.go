@@ -16,10 +16,19 @@ import (
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/shard"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 const collectorUnitName = "balistid-collector.service"
+
+// Where the guest copies each shard to read it (shard.Scratch, ADR 0050): /tmp, never the scratch disk a
+// full-fs trial fills. shardCopyMax is the collector's shardMax (cmd/balistid-collector/main.go) plus a
+// WAL: the store seals once its main file, WAL and pending records would pass ShardMax.
+const (
+	shardCopyDir = "/tmp"
+	shardCopyMax = 512<<20 + shard.WALMaxBytes
+)
 
 // collectorCanaryKey is collector.CanaryKey, the rule key of the collector's canary (ADR 0017, point 2);
 // a test keeps them equal without linking the collector into the guest.
@@ -140,7 +149,7 @@ func (collectorUnit) Stop(ctx context.Context) error {
 // of the run the read stopped (ADR 0022, point 3); after may be nil.
 func readStore(ctx context.Context, before, after func(rawrecord.Record) error) error {
 	sr := rangeguest.StoreRead{
-		Dir: storeDir, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
+		Dir: storeDir, Scratch: shard.Scratch{Dir: shardCopyDir, Max: shardCopyMax}, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},

@@ -36,7 +36,9 @@ type Collector interface {
 
 // StoreRead is one read of the collector's store at Dir.
 type StoreRead struct {
-	Dir       string
+	Dir string
+	// Scratch takes shard.Read's copy of each shard, never on the store's disk: a full-fs trial fills it.
+	Scratch   shard.Scratch
 	Collector Collector
 	// Mark execs /usr/bin/true with token as its one argument: the barrier.
 	Mark  func(ctx context.Context, token string) error
@@ -136,7 +138,7 @@ func (sr StoreRead) sealed(ctx context.Context, token string, before, after func
 		if l.First != next {
 			return false, fmt.Errorf("read store: seal %s starts at %d, want %d", l.Name, l.First, next)
 		}
-		err := shard.Read(ctx, filepath.Join(sr.Dir, l.Name), l.SHA256, func(r rawrecord.Record) error {
+		err := shard.Read(ctx, filepath.Join(sr.Dir, l.Name), l.SHA256, sr.Scratch, func(r rawrecord.Record) error {
 			switch {
 			case found:
 				return after(r)

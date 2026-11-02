@@ -45,9 +45,14 @@ func sealed(t *testing.T, records ...rawrecord.Record) (string, [32]byte) {
 	return path, sum
 }
 
+// scratch is room for Read's copy, in a directory of its own.
+func scratch(t *testing.T) Scratch {
+	return Scratch{Dir: t.TempDir(), Max: 1 << 30}
+}
+
 func readAll(t *testing.T, path string, sum [32]byte) ([]rawrecord.Record, error) {
 	var got []rawrecord.Record
-	err := Read(t.Context(), path, sum, func(r rawrecord.Record) error {
+	err := Read(t.Context(), path, sum, scratch(t), func(r rawrecord.Record) error {
 		got = append(got, r)
 		return nil
 	})
@@ -265,11 +270,122 @@ func TestReadRefusesDataThatDoesNotMatchItsHash(t *testing.T) {
 	}
 }
 
+// sealedOf seals n records whose data is size copies of fill, so two calls with the same n and size
+// give shards of one layout and length that differ only in their data.
+func sealedOf(t *testing.T, n, size int, fill byte) (string, [32]byte) {
+	t.Helper()
+	records := make([]rawrecord.Record, n)
+	for i := range records {
+		records[i] = record(uint64(i+1), strings.Repeat(string(fill), size))
+	}
+	return sealed(t, records...)
+}
+
+// The shard's owner rewrites the file in place while Read reads it, with another valid shard of the
+// same length: Read gives only the records it hashed, from its first page to its last (T18).
+func TestReadReadsOnlyTheBytesItHashed(t *testing.T) {
+	path, sum := sealedOf(t, 200, 1000, 'a')
+	other, _ := sealedOf(t, 200, 1000, 'b')
+	forged, err := os.ReadFile(other) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Size() != int64(len(forged)) {
+		t.Fatalf("the two shards differ in length: %v", err)
+	}
+	n := 0
+	err = Read(t.Context(), path, sum, scratch(t), func(r rawrecord.Record) error {
+		if n == 0 {
+			if err := os.Chmod(path, 0o600); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(path, os.O_WRONLY, 0) //nolint:gosec // test temp dir
+			if err != nil {
+				return err
+			}
+			if _, err := f.WriteAt(forged, 0); err != nil {
+				return errors.Join(err, f.Close())
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+		}
+		n++
+		if r.Data[0] != 'a' {
+			return fmt.Errorf("record %d holds the rewritten file's data", r.Seq)
+		}
+		return nil
+	})
+	if err != nil || n != 200 {
+		t.Fatalf("Read = %v after %d of 200 records", err, n)
+	}
+}
+
+// The copy has no name: the scratch directory is empty while Read reads and after it.
+func TestReadLeavesNothingInItsScratch(t *testing.T) {
+	path, sum := sealed(t, record(1, "a"), record(2, "b"))
+	sc := scratch(t)
+	empty := func() error {
+		if entries, err := os.ReadDir(sc.Dir); err != nil || len(entries) != 0 {
+			return fmt.Errorf("scratch holds %v (%w)", entries, err)
+		}
+		return nil
+	}
+	if err := Read(t.Context(), path, sum, sc, func(rawrecord.Record) error { return empty() }); err != nil {
+		t.Fatal(err)
+	}
+	if err := empty(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadRefusesAShardOverMaxAndAMissingScratch(t *testing.T) {
+	path, sum := sealed(t, record(1, "a"))
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(sc Scratch) error {
+		return Read(t.Context(), path, sum, sc, func(rawrecord.Record) error { return nil })
+	}
+	if err := read(Scratch{Dir: t.TempDir(), Max: st.Size()}); err != nil {
+		t.Fatalf("a shard of exactly Max bytes: %v", err)
+	}
+	if err := read(Scratch{Dir: t.TempDir(), Max: st.Size() - 1}); err == nil {
+		t.Error("Read copied a shard over Max")
+	}
+	if err := read(Scratch{Dir: filepath.Join(t.TempDir(), "gone"), Max: st.Size()}); err == nil {
+		t.Error("Read ran without its scratch directory")
+	}
+}
+
+// A shard that shrinks after its size was taken fails the copy instead of giving a shorter read.
+func TestCheckRefusesAFileShorterThanItsSize(t *testing.T) {
+	path, sum := sealed(t, record(1, "a"))
+	f, err := os.Open(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close() //nolint:errcheck // test
+	cp, err := os.CreateTemp(t.TempDir(), "copy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close() //nolint:errcheck // test
+	st, err := f.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check(f, cp, st.Size()+1, sum); err == nil {
+		t.Fatal("check accepted a file one byte short")
+	}
+}
+
 func TestReadStopsWhenTheCallbackFails(t *testing.T) {
 	path, sum := sealed(t, record(1, "a"), record(2, "b"))
 	stop := errors.New("stop")
 	calls := 0
-	err := Read(t.Context(), path, sum, func(rawrecord.Record) error {
+	err := Read(t.Context(), path, sum, scratch(t), func(rawrecord.Record) error {
 		calls++
 		return stop
 	})
