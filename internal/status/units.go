@@ -11,20 +11,24 @@ import (
 	"time"
 )
 
-// Unit is a floor-0 unit on the host and the SubState systemd shows while it does its job.
-type Unit struct{ Name, Sub string }
+// Unit is a floor-0 unit on the host and the SubStates systemd shows while it does its job.
+type Unit struct {
+	Name string
+	Subs []string
+}
 
 // Units are the floor-0 units status asks systemd about: the sensor, the collector and its socket, auditstat,
 // the ledger, the relay, the tunnel's oneshot and the unit whose stop announces a shutdown (ADR 0048).
 var Units = []Unit{
-	{"auditd.service", "running"},
-	{"balistid-collector.socket", "listening"},
-	{"balistid-collector.service", "running"},
-	{"balistid-auditstat.service", "running"},
-	{"balistid-ledger.service", "running"},
-	{"balistid-relay.service", "running"},
-	{"balistid-net.service", "exited"},
-	{"balistid-announce.service", "exited"},
+	{"auditd.service", []string{"running"}},
+	// Accept=no: once the service took the listening fd, systemd shows the socket running, not listening.
+	{"balistid-collector.socket", []string{"listening", "running"}},
+	{"balistid-collector.service", []string{"running"}},
+	{"balistid-auditstat.service", []string{"running"}},
+	{"balistid-ledger.service", []string{"running"}},
+	{"balistid-relay.service", []string{"running"}},
+	{"balistid-net.service", []string{"exited"}},
+	{"balistid-announce.service", []string{"exited"}},
 }
 
 // UnitState is what systemd reports of one unit.

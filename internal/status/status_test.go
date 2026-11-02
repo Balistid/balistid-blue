@@ -21,7 +21,7 @@ func healthy() Sources {
 		Units: func(_ context.Context, names []string) ([]UnitState, error) {
 			out := make([]UnitState, len(names))
 			for i, u := range Units {
-				out[i] = UnitState{ID: u.Name, Load: "loaded", Active: "active", Sub: u.Sub}
+				out[i] = UnitState{ID: u.Name, Load: "loaded", Active: "active", Sub: u.Subs[0]}
 			}
 			return out, nil
 		},
@@ -86,6 +86,14 @@ func TestEachUnitNotDoingItsJobFails(t *testing.T) {
 				t.Errorf("%s %+v: ok %v, part %+v", u.Name, s, res.OK, p)
 			}
 		}
+	}
+}
+
+// A socket whose service holds its fd is running, and that is its job.
+func TestSocketRunningIsOK(t *testing.T) {
+	name := "balistid-collector.socket"
+	if res := Check(t.Context(), withUnit(healthy(), name, UnitState{name, "loaded", "active", "running"})); !res.OK {
+		t.Fatalf("%+v", part(res, name))
 	}
 }
 
