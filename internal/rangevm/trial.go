@@ -231,6 +231,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeLoss(tr, o)
 	case rangejob.MethodAuditSet:
 		return judgeAuditSet(tr, o)
+	case rangejob.MethodStatus:
+		return judgeStatus(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

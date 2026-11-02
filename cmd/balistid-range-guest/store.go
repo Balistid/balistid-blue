@@ -354,10 +354,11 @@ func isStopping(r rawrecord.Record) bool {
 	return ok && h.kind == "stopping"
 }
 
-// health is what a window reads of a health record: its kind, a health record's state and a
-// connection record's counts per cause.
+// health is what a window reads of a health record: its kind, a health record's state and the collector's
+// time of it (0 when the record has none), and a connection record's counts per cause.
 type health struct {
 	kind, state      string
+	at               int64
 	causes           map[string]uint64
 	lost, lostHealth *uint64 // a stats record's counts since the collector started
 }
@@ -374,6 +375,7 @@ func decodeHealth(data []byte) (health, bool) {
 	}
 	switch {
 	case h.kind == "health" && json.Unmarshal(rec["state"], &h.state) != nil,
+		h.kind == "health" && rec["at"] != nil && json.Unmarshal(rec["at"], &h.at) != nil,
 		h.kind == "connection" && json.Unmarshal(rec["causes"], &h.causes) != nil,
 		h.kind == "stats" && (json.Unmarshal(rec["lost"], &h.lost) != nil || json.Unmarshal(rec["lost_health"], &h.lostHealth) != nil):
 		return health{}, false

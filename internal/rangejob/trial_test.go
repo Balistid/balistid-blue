@@ -109,6 +109,12 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricExposureAuditstat, Inject: InjectAuditSet, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
 		{Trial{Metric: MetricExposureAuditstat, Inject: InjectAuditSet, Failure: FailKill}, ""},
 		{Trial{Metric: MetricLoss, Inject: InjectAuditSet}, ""},
+		{Trial{Metric: MetricStatus, Inject: InjectStatus}, MethodStatus},
+		{Trial{Metric: MetricStatus}, ""},
+		{Trial{Metric: MetricLoss, Inject: InjectStatus}, ""},
+		{Trial{Metric: MetricStatus, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricStatus, Inject: InjectStatus, Failure: FailKill}, ""},
+		{Trial{Metric: MetricStatus, Inject: InjectStatus, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
