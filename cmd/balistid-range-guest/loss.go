@@ -29,10 +29,15 @@ const (
 	// does not restart it and turn the queue's loss into a shutdown's.
 	freezeFor = 6 * time.Second
 	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB); bigArgs of them make a record of about 1.2 MB,
-	// under record_max_kib (2 MiB, stored whole), so a few dozen execs fill the collector's 64 MiB queue.
-	bigArg   = 100 << 10
-	bigArgs  = 12
-	fillFile = scratchMount + "/fill"
+	// under record_max_kib (2 MiB, stored whole). queueExecs of them overfill the range's 8 MiB queue twice, in
+	// fewer kernel records than auditd's plugin queue holds, so the dispatcher cannot overflow even if Laurel
+	// took none of them during the freeze.
+	bigArg     = 100 << 10
+	bigArgs    = 12
+	queueExecs = 16
+	// execveChunk is the kernel's MAX_EXECVE_AUDIT_LEN: an argument longer than it spans records of at most it.
+	execveChunk = 7500
+	fillFile    = scratchMount + "/fill"
 	// fillSlack bounds what the fill leaves above a WAL: the store's admit slack (64 KiB), so the least a record
 	// needs, a WAL, twice its size and that slack, is more than is left.
 	fillSlack  = 64 << 10
@@ -378,28 +383,14 @@ func injectLoss(ctx context.Context, inject string) injected {
 	return inj
 }
 
-// freezeStore freezes the store's filesystem for freezeFor under execs with large arguments, so the collector's
-// writer blocks and its queue fills; the proof is the freeze and the thaw both done, and it returns the thaw's
-// uptime, where the injection ends.
+// freezeStore freezes the store's filesystem for freezeFor and execs queueExecs times with large arguments, one
+// at a time, so the collector's writer blocks and its queue fills; the proof is the freeze, every exec and the
+// thaw done, and it returns the thaw's uptime, where the injection ends.
 func freezeStore(ctx context.Context) (time.Duration, error) {
 	args := make([]string, bigArgs)
 	for i := range args {
 		args[i] = strings.Repeat("q", bigArg)
 	}
-	burst, stop := context.WithTimeout(ctx, freezeFor+2*time.Second)
-	defer stop()
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxChildren)
-	wg.Go(func() {
-		for burst.Err() == nil {
-			sem <- struct{}{}
-			wg.Go(func() {
-				defer func() { <-sem }()
-				_ = exec.CommandContext(burst, "/usr/bin/true", args...).Run() //nolint:gosec // our own fixed arguments
-			})
-		}
-	})
-	defer func() { stop(); wg.Wait() }()
 	if err := systemctl(ctx, "is-active", collectorUnitName); err != nil {
 		return 0, err
 	}
@@ -411,12 +402,23 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 	if err := unix.IoctlSetInt(int(d.Fd()), fiFreeze, 0); err != nil {
 		return 0, fmt.Errorf("FIFREEZE: %w", err)
 	}
-	pause(ctx, freezeFor)
+	thawAt := time.Now().Add(freezeFor)
+	burst, stop := context.WithDeadline(ctx, thawAt)
+	var execErr error
+	for i := 0; i < queueExecs && execErr == nil; i++ {
+		if err := exec.CommandContext(burst, "/usr/bin/true", args...).Run(); err != nil { //nolint:gosec // our own fixed arguments
+			execErr = fmt.Errorf("exec %d of %d: %w", i+1, queueExecs, err)
+		}
+	}
+	stop()
+	pause(ctx, time.Until(thawAt))
 	thawErr := unix.IoctlSetInt(int(d.Fd()), fiThaw, 0)
 	end, err := uptime()
 	switch {
 	case thawErr != nil:
-		return 0, fmt.Errorf("FITHAW: %w", thawErr)
+		return 0, errors.Join(execErr, fmt.Errorf("FITHAW: %w", thawErr))
+	case execErr != nil:
+		return 0, execErr
 	case err != nil:
 		return 0, err
 	}
