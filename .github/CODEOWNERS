@@ -35,6 +35,7 @@
 /internal/store/ @Jvc0n
 /internal/shard/ @Jvc0n
 /internal/collector/ @Jvc0n
+/internal/status/ @Jvc0n
 /internal/unixsock/ @Jvc0n
 /internal/relay/ @Jvc0n
 /internal/cosign/ @Jvc0n
