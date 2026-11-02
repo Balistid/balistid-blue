@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"os/exec"
 	"strconv"
@@ -43,7 +45,27 @@ const (
 	// so a thaw never waits on the backlog the burst filled, as an exec of fsfreeze would.
 	fiFreeze = 0xc0045877
 	fiThaw   = 0xc0045878
+	// lostPoll is how often a kernel trial reads the kernel's log; stateEvery how often a dispatcher trial reads
+	// auditd's state file, which auditd rewrites every report_interval (5 s).
+	lostPoll     = 100 * time.Millisecond
+	stateEvery   = 200 * time.Millisecond
+	overflowWait = 60 * time.Second
+	// freshStateWait covers two of auditd's state writes; stateChanged is a read the file changed under.
+	freshStateWait = 12 * time.Second
+	stateChanged   = "changed"
 )
+
+// injected is what an injection did: its proof, "ok" or why not; its end when it knows that better than its
+// return, else 0; the loss's bracket when the guest saw the loss itself, else zero (the injection's own); and a
+// transient kernel trial's resume, in uptime and in the ledger's clock. finish ends what the injection left
+// running (a stopped auditd) before the trial reads the ledger, nil without.
+type injected struct {
+	proof         string
+	end, from, to time.Duration
+	resumeAt      time.Duration
+	resumeNs      int64
+	finish        func()
+}
 
 // runLoss runs loss trial tr (ADR 0036, point 4): with the watcher started through the sink and the log growing,
 // it injects tr's cause, proves it, and reports the ledger's entry of it and the alert at the sink.
@@ -72,19 +94,34 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
 	}
 	lostBefore, restartsBefore := auditLost(), restarts()
+	overflowBefore := rangeguest.OverflowDetected(readTrim(auditdState))
 	from, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
 	}
 	fromNs := time.Now().UnixNano() // after the bracket's start, in the clock the ledger stamps entries with (internal/anchor)
-	proof, end := injectLoss(ctx, tr.Inject)
-	if end == 0 {
-		if end, err = uptime(); err != nil {
+	inj := injectLoss(ctx, tr.Inject)
+	if inj.end == 0 {
+		if inj.end, err = uptime(); err != nil {
 			return r.fail(err.Error())
 		}
 	}
-	if err := waitLoss(ctx, tr, from, end); err != nil {
+	if inj.to == 0 {
+		inj.from, inj.to = from, inj.end
+	}
+	err = waitLoss(ctx, tr, from, inj.to)
+	if inj.finish != nil {
+		inj.finish()
+	}
+	if err != nil {
 		return r.fail(err.Error())
+	}
+	okAfter := "-"
+	if tr.Inject == rangejob.InjectKernelTransient {
+		okAfter = "none"
+		if inj.resumeNs != 0 && waitUptime(ctx, inj.resumeAt+rangevm.LossAlarm+checkpointWait) {
+			okAfter = okAfterResume(ctx, inj.resumeNs)
+		}
 	}
 	stopLoad()
 	entryFact := "no new entry of the cause"
@@ -100,19 +137,73 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(err.Error())
 	}
 	ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
-	r.add(rangevm.FactInject, proof)
+	r.add(rangevm.FactInject, inj.proof)
 	r.add(rangevm.FactInjectMS, ms(from))
-	r.add(rangevm.FactInjectEndMS, ms(end))
+	r.add(rangevm.FactInjectEndMS, ms(inj.end))
+	r.add(rangevm.FactLossFromMS, ms(inj.from))
+	r.add(rangevm.FactLossToMS, ms(inj.to))
 	r.add(rangevm.FactLossEntry, entryFact)
 	r.add(rangevm.FactPosts, lossPostsFact(tr, posts, from))
 	r.add(rangevm.FactRefused, strconv.Itoa(refused))
 	r.add(rangevm.FactPiActive, valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit))))
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
+	r.add(rangevm.FactOverflowBefore, overflowBefore)
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, fromNs))
+	r.add(rangevm.FactOKAfterResume, okAfter)
 	return r.send(r.facts)
+}
+
+// waitUptime waits until uptime at, false when ctx ended or the clock could not be read first.
+func waitUptime(ctx context.Context, at time.Duration) bool {
+	for {
+		now, err := uptime()
+		switch {
+		case err != nil:
+			return false
+		case now >= at:
+			return true
+		case !pause(ctx, min(at-now, time.Second)):
+			return false
+		}
+	}
+}
+
+// okAfterResume is a transient kernel trial's FactOKAfterResume for auditd resumed at resumeNs, in the ledger's
+// clock.
+func okAfterResume(ctx context.Context, resumeNs int64) string {
+	keys, err := rangeKeys()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	return okAfterIn(ctx, ledgerLog, keys.Log, resumeNs)
+}
+
+// okAfterIn is okAfterResume for the log at root under v: "0" when the last health before resumeNs was OK, else
+// the ms to the first health OK from resumeNs on, "none" without one.
+func okAfterIn(ctx context.Context, root string, v note.Verifier, resumeNs int64) string {
+	okAtResume, first := false, int64(-1)
+	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
+		h, ok := e.Body.(entry.Health)
+		switch {
+		case !ok:
+		case e.At < resumeNs:
+			okAtResume = h.State == entry.StateOK
+		case h.State == entry.StateOK && first < 0:
+			first = e.At - resumeNs
+		}
+	})
+	switch {
+	case err != nil:
+		return "error: " + err.Error()
+	case okAtResume:
+		return "0"
+	case first < 0:
+		return "none"
+	}
+	return strconv.FormatInt(first/int64(time.Millisecond), 10)
 }
 
 // lossPostsFact is loss trial tr's posts after its injection at from; the control's are all since the watcher's
@@ -162,7 +253,7 @@ func lossMatch(inject string) func(entry.Body) bool {
 			h, ok := b.(entry.Health)
 			return stage(entry.StageStore)(b) || ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonStoreDown
 		}
-	case rangejob.InjectKernel:
+	case rangejob.InjectKernelTransient, rangejob.InjectKernelSustained:
 		return stage(entry.StageKernel)
 	case rangejob.InjectDispatcher:
 		return stage(entry.StageDispatcher)
@@ -260,32 +351,30 @@ func otherLoss(ctx context.Context, prior int64) string {
 		healthAt, health.State, health.Reason, health.Unstored, prior, failed)
 }
 
-// injectLoss injects a loss cause and returns "ok" with its proof held, else why not, and when it ended if the
-// injection knows that better than its return (the queue's thaw), else 0.
-func injectLoss(ctx context.Context, inject string) (string, time.Duration) {
+// injectLoss injects a loss cause; its proof is "ok" when held, else why not.
+func injectLoss(ctx context.Context, inject string) injected {
 	var err error
-	var end time.Duration
+	var inj injected
 	switch inject {
 	case rangejob.InjectQueue:
-		end, err = freezeStore(ctx)
+		inj.end, err = freezeStore(ctx)
 	case rangejob.InjectFullFS:
 		err = fillScratch()
 	case rangejob.InjectStore:
 		err = failStore()
-	case rangejob.InjectKernel:
-		err = stopAuditd(ctx)
+	case rangejob.InjectKernelTransient, rangejob.InjectKernelSustained:
+		inj, err = stopAuditd(ctx, inject == rangejob.InjectKernelSustained)
 	case rangejob.InjectDispatcher:
-		if _, after, _, _ := overflow(ctx, laurelPID()); after != "yes" {
-			err = fmt.Errorf("the plugin queue reports overflow %q", after)
-		}
+		inj.from, inj.to, err = overflowDispatcher(ctx)
 	case rangejob.InjectNone:
 	default:
 		err = fmt.Errorf("no injection %q", inject)
 	}
+	inj.proof = "ok"
 	if err != nil {
-		return "error: " + err.Error(), end
+		inj.proof = "error: " + err.Error()
 	}
-	return "ok", end
+	return inj
 }
 
 // freezeStore freezes the store's filesystem for freezeFor under execs with large arguments, so the collector's
@@ -397,21 +486,36 @@ func failStore() error {
 	return nil
 }
 
-// stopAuditd stops auditd and floods syscall records until the kernel counts a loss, then resumes it; the proof
-// is the lost counter moving. No exec while auditd stands: each would wait out the backlog.
-func stopAuditd(ctx context.Context) error {
-	before := rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]
+// stopAuditd stops auditd and floods syscall records until the kernel logs its first lost record (no exec while
+// auditd stands: each would wait out the backlog). The kernel's log, not AUDIT_GET, times it: audit_receive sleeps
+// the sender of any audit request up to backlog_wait_time while the backlog is full. Two marks the guest writes
+// there tie the kernel's clock to uptime. Transient resumes auditd at once; sustained leaves it stopped until
+// finish, as the alert must come while it stands (ADR 0039, point 5; ADR 0045).
+func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 	pid, err := strconv.Atoi(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "MainPID", "auditd.service")))
 	switch {
 	case err != nil:
-		return fmt.Errorf("auditd pid: %w", err)
+		return injected{}, fmt.Errorf("auditd pid: %w", err)
 	case pid <= 0:
-		return errors.New("auditd has no main pid")
+		return injected{}, errors.New("auditd has no main pid")
+	}
+	base, err := strconv.ParseUint(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"], 10, 32)
+	if err != nil {
+		return injected{}, fmt.Errorf("lost before: %w", err)
+	}
+	klog, err := openKmsg()
+	if err != nil {
+		return injected{}, err
+	}
+	defer klog.close()
+	first, err := klog.mark("before")
+	if err != nil {
+		return injected{}, err
 	}
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
-		return fmt.Errorf("SIGSTOP auditd: %w", err)
+		return injected{}, fmt.Errorf("SIGSTOP auditd: %w", err)
 	}
-	flood, stop := context.WithTimeout(ctx, kernelWait)
+	flood, stopFlood := context.WithTimeout(ctx, kernelWait)
 	var wg sync.WaitGroup
 	for range 16 {
 		wg.Go(func() {
@@ -420,15 +524,279 @@ func stopAuditd(ctx context.Context) error {
 			}
 		})
 	}
-	<-flood.Done()
-	stop()
-	err = syscall.Kill(pid, syscall.SIGCONT)
-	wg.Wait()
-	if err != nil {
-		return fmt.Errorf("SIGCONT auditd: %w", err)
+	resume := func() error {
+		stopFlood()
+		err := syscall.Kill(pid, syscall.SIGCONT)
+		wg.Wait()
+		if err != nil {
+			return fmt.Errorf("SIGCONT auditd: %w", err)
+		}
+		return nil
 	}
-	if after := rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]; after == before || after == "" {
-		return fmt.Errorf("kernel lost %q before, %q after", before, after)
+	var rise time.Duration
+	for rise == 0 && err == nil && pause(flood, lostPoll) {
+		rise, err = klog.scan(uint32(base), first)
+	}
+	if err == nil && rise == 0 {
+		err = fmt.Errorf("the kernel logged no lost record over %d within %s", base, kernelWait)
+	}
+	if err != nil {
+		return injected{}, errors.Join(err, resume())
+	}
+	var inj injected
+	var rerr error
+	if sustained {
+		stopFlood()
+		inj.finish = func() { _ = resume() } // the lost counter after it, read by exec, shows a failed resume
+	} else {
+		rerr = resume()
+		inj.resumeNs = time.Now().UnixNano()
+		if inj.resumeAt, err = uptime(); err != nil {
+			return injected{}, errors.Join(err, rerr)
+		}
+	}
+	second, err := klog.mark("after")
+	if err == nil {
+		err = klog.awaitMark(ctx, second)
+	}
+	if err != nil {
+		return injected{}, errors.Join(err, rerr)
+	}
+	inj.from, inj.to, err = kernelBracket(rise, first, second)
+	inj.end = inj.to
+	return inj, errors.Join(err, rerr)
+}
+
+// kmsgMark is a mark the guest wrote to the kernel's log: the uptime just before and just after the write, and
+// the kernel's timestamp of it once read back.
+type kmsgMark struct {
+	tag           string
+	before, after time.Duration
+	at            time.Duration
+	seen          bool
+}
+
+// kernelBracket turns the kernel's timestamp of the rise into uptime: each mark bounds the offset between the
+// two clocks by its write, and the bracket takes the widest offset either mark allows.
+func kernelBracket(rise time.Duration, marks ...*kmsgMark) (time.Duration, time.Duration, error) {
+	lo, hi := time.Duration(math.MaxInt64), time.Duration(math.MinInt64)
+	for _, m := range marks {
+		if !m.seen {
+			return 0, 0, fmt.Errorf("mark %s not read back from the kernel's log", m.tag)
+		}
+		lo, hi = min(lo, m.before-m.at), max(hi, m.after-m.at)
+	}
+	from, to := rise+lo, rise+hi
+	if from <= 0 || to < from {
+		return 0, 0, fmt.Errorf("the rise at %s maps to %s..%s of uptime", rise, from, to)
+	}
+	return from, to, nil
+}
+
+// kmsgReader reads /dev/kmsg from its end without blocking, through a raw descriptor: an *os.File would wait in
+// the poller instead of returning EAGAIN.
+type kmsgReader struct {
+	fd    int
+	buf   []byte
+	marks []*kmsgMark
+}
+
+const kmsgMarkPrefix = "balistid-range-guest: mark "
+
+func openKmsg() (*kmsgReader, error) {
+	fd, err := unix.Open("/dev/kmsg", unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open /dev/kmsg: %w", err)
+	}
+	if _, err := unix.Seek(fd, 0, io.SeekEnd); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("seek /dev/kmsg: %w", err)
+	}
+	return &kmsgReader{fd: fd, buf: make([]byte, 8192)}, nil
+}
+
+func (k *kmsgReader) close() { _ = unix.Close(k.fd) }
+
+// mark writes a mark tagged tag; scan reads its timestamp back.
+func (k *kmsgReader) mark(tag string) (*kmsgMark, error) {
+	before, err := uptime()
+	if err != nil {
+		return nil, err
+	}
+	_, werr := unix.Write(k.fd, []byte(kmsgMarkPrefix+tag+"\n"))
+	after, err := uptime()
+	if err = errors.Join(werr, err); err != nil {
+		return nil, fmt.Errorf("mark %s: %w", tag, err)
+	}
+	m := &kmsgMark{tag: tag, before: before, after: after}
+	k.marks = append(k.marks, m)
+	return m, nil
+}
+
+// scan reads every waiting record: it stamps the marks it meets, and returns the kernel's time of the record that
+// counts lost base+1, 0 before one came. A count above it first means the kernel's log skipped the rise.
+func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, error) {
+	for {
+		n, err := unix.Read(k.fd, k.buf)
+		switch {
+		case errors.Is(err, unix.EAGAIN):
+			return 0, nil
+		case errors.Is(err, unix.EPIPE): // overwritten before it was read: the next read resumes
+			continue
+		case err != nil:
+			return 0, fmt.Errorf("read /dev/kmsg: %w", err)
+		}
+		r, err := rangeguest.ParseKmsg(string(k.buf[:n]))
+		if err != nil {
+			return 0, fmt.Errorf("read /dev/kmsg: %w", err)
+		}
+		if rise, err := takeRecord(r, k.marks, base, need); rise != 0 || err != nil {
+			return rise, err
+		}
+	}
+}
+
+// takeRecord stamps the mark r is, or returns the kernel's time of r when it counts lost base+1; a count above
+// base+1 first means the kernel's log skipped the rise, and a count before need was stamped came before the stop.
+func takeRecord(r rangeguest.KmsgRecord, marks []*kmsgMark, base uint32, need *kmsgMark) (time.Duration, error) {
+	for _, m := range marks {
+		if r.Msg == kmsgMarkPrefix+m.tag {
+			m.at, m.seen = r.At, true
+		}
+	}
+	lost, ok := rangeguest.AuditLost(r.Msg)
+	switch {
+	case !ok || lost <= base:
+		return 0, nil
+	case !need.seen:
+		return 0, fmt.Errorf("lost %d logged before mark %s", lost, need.tag)
+	case lost != base+1:
+		return 0, fmt.Errorf("the kernel's log shows lost %d first, after %d", lost, base)
+	}
+	return max(r.At, time.Nanosecond), nil
+}
+
+// awaitMark reads the kernel's log until m is stamped, for at most a second.
+func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
+	for deadline := time.Now().Add(time.Second); !m.seen; {
+		if _, err := k.scan(math.MaxUint32, m); err != nil {
+			return err
+		}
+		if !m.seen && (time.Now().After(deadline) || !pause(ctx, 10*time.Millisecond)) {
+			return fmt.Errorf("mark %s not read back from the kernel's log", m.tag)
+		}
 	}
 	return nil
+}
+
+// overflowDispatcher stops Laurel and execs until auditd's state file, read and never signalled, says its plugin
+// queue overflowed, then resumes Laurel. It waits for a fresh "no" first, so the bracket, from the mtime of the
+// last state file that read no to that of the first that read yes, starts near the injection.
+func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
+	first, err := readState()
+	if err != nil {
+		return 0, 0, err
+	}
+	no, err := freshState(ctx, first.at)
+	if err != nil {
+		return 0, 0, err
+	}
+	if no.value != "no" {
+		return 0, 0, fmt.Errorf("the state file reads overflow %q before the injection", no.value)
+	}
+	pid, err := strconv.Atoi(laurelPID())
+	if err != nil {
+		return 0, 0, errors.New("no laurel process")
+	}
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		return 0, 0, fmt.Errorf("SIGSTOP laurel: %w", err)
+	}
+	flood, stopFlood := context.WithTimeout(ctx, overflowWait)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for i := 0; i < floodMax && flood.Err() == nil; i++ {
+			_ = exec.CommandContext(flood, "/usr/bin/true").Run()
+		}
+	})
+	var yes time.Duration
+	for yes == 0 && err == nil && pause(flood, stateEvery) {
+		var st stateRead
+		if st, err = readState(); err != nil || st.value == stateChanged || st.at == no.at {
+			continue
+		}
+		switch st.value {
+		case "no":
+			no = st
+		case "yes":
+			yes = st.at
+		default:
+			err = fmt.Errorf("the state file reads overflow %q", st.value)
+		}
+	}
+	stopFlood()
+	wg.Wait()
+	if cerr := syscall.Kill(pid, syscall.SIGCONT); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("SIGCONT laurel: %w", cerr))
+	}
+	switch {
+	case err != nil:
+		return 0, 0, err
+	case yes == 0:
+		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
+	}
+	return no.at, yes, nil
+}
+
+// freshState waits for a whole state file other than the one of mtime at.
+func freshState(ctx context.Context, at time.Duration) (stateRead, error) {
+	for deadline := time.Now().Add(freshStateWait); time.Now().Before(deadline) && pause(ctx, stateEvery); {
+		st, err := readState()
+		if err != nil {
+			return stateRead{}, err
+		}
+		if st.value != stateChanged && st.at != at {
+			return st, nil
+		}
+	}
+	return stateRead{}, errors.New("auditd wrote no fresh state file")
+}
+
+// stateRead is auditd's state file's overflow flag and its mtime in uptime.
+type stateRead struct {
+	value string
+	at    time.Duration
+}
+
+// readState reads the state file and its mtime through one descriptor; a read the file changed under is
+// stateChanged.
+func readState() (stateRead, error) {
+	f, err := os.OpenFile(auditdState, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return stateRead{}, fmt.Errorf("state file: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	before, err := f.Stat()
+	if err != nil {
+		return stateRead{}, fmt.Errorf("state file: %w", err)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return stateRead{}, fmt.Errorf("state file: %w", err)
+	}
+	after, err := f.Stat()
+	switch {
+	case err != nil:
+		return stateRead{}, fmt.Errorf("state file: %w", err)
+	case !after.ModTime().Equal(before.ModTime()):
+		return stateRead{value: stateChanged}, nil
+	}
+	up, err := uptime()
+	if err != nil {
+		return stateRead{}, err
+	}
+	age := time.Since(after.ModTime())
+	if age < 0 || age > up {
+		return stateRead{}, fmt.Errorf("state file mtime %s from now", age)
+	}
+	return stateRead{value: rangeguest.OverflowDetected(string(data)), at: up - age}, nil
 }

@@ -27,7 +27,7 @@ const counted = "acceptance"
 
 // runAll records every run the suite asks for with what verdict says for it, until it is done.
 func runAll(a Acceptance, verdict func(rangejob.Trial) (label, verdict string)) Acceptance {
-	for range 100 {
+	for range 4 * len(rangejob.Trials()) { // the table grows; a bound only stops a suite that never ends
 		tr, ok := a.Next()
 		if !ok {
 			return a

@@ -165,3 +165,31 @@ func TestFirstUnknownByTheLedgersTime(t *testing.T) {
 		}
 	}
 }
+
+// A transient kernel trial's health after the resume is read by the ledger's stamps: OK before the resume is "0",
+// else the ms to the first OK from it on, "none" without one (ADR 0039, point 5).
+func TestOKAfterResumeByTheLedgersTime(t *testing.T) {
+	health := func(s entry.State, r entry.Reason) func(*anchor.Log) {
+		return func(l *anchor.Log) {
+			if err := l.Health(t.Context(), entry.Health{State: s, Reason: r}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	var resumeNs int64
+	mark := func(*anchor.Log) { time.Sleep(time.Millisecond); resumeNs = time.Now().UnixNano() }
+	// batch 1-3, UNKNOWN, the resume, UNKNOWN, OK
+	root, v := writeLog(t, 3, health(entry.StateUnknown, entry.ReasonCanaryMissed), mark,
+		health(entry.StateUnknown, entry.ReasonAuditd), health(entry.StateOK, entry.ReasonNone))
+	got := okAfterIn(t.Context(), root, v, resumeNs)
+	if ms, err := strconv.ParseInt(got, 10, 64); err != nil || ms < 0 || ms > 60_000 {
+		t.Errorf("after the resume: %q", got)
+	}
+	if got := okAfterIn(t.Context(), root, v, time.Now().Add(time.Hour).UnixNano()); got != "0" {
+		t.Errorf("after the last OK: %q, want 0", got)
+	}
+	unknown, v := writeLog(t, 3, mark, health(entry.StateUnknown, entry.ReasonAuditd))
+	if got := okAfterIn(t.Context(), unknown, v, resumeNs); got != "none" {
+		t.Errorf("without an OK: %q, want none", got)
+	}
+}
