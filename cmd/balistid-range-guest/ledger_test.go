@@ -144,7 +144,8 @@ func TestLastAnnouncementIsTheNewestOfItsKind(t *testing.T) {
 }
 
 // A store trial's unknown alert is attributed by the ledger's stamps: an UNKNOWN logged within LossAlarm before
-// the injection makes it "before N", else the first UNKNOWN from the injection on names it (ADR 0039, point 3).
+// the injection makes it "before N", else the first UNKNOWN from the injection on names it (ADR 0039, point 3); an
+// UNKNOWN the Pi does not alert as unknown, as a pending canary, names neither.
 func TestFirstUnknownByTheLedgersTime(t *testing.T) {
 	health := func(r entry.Reason) func(*anchor.Log) {
 		return func(l *anchor.Log) {
@@ -156,7 +157,8 @@ func TestFirstUnknownByTheLedgersTime(t *testing.T) {
 	var fromNs int64
 	mark := func(*anchor.Log) { time.Sleep(time.Millisecond); fromNs = time.Now().UnixNano() }
 	// batch 1-3, the store's UNKNOWN, the injection, auditstat's UNKNOWN
-	root, v := writeLog(t, 3, health(entry.ReasonStoreDown), mark, health(entry.ReasonAuditStale))
+	root, v := writeLog(t, 3, health(entry.ReasonStoreDown), mark, health(entry.ReasonCanaryPending), health(entry.ReasonAuditStale),
+		health(entry.ReasonCanaryPending))
 	later := time.Now().Add(time.Hour).UnixNano()
 	for from, want := range map[int64]string{fromNs: "before 2", 1: "2", later: "none",
 		fromNs + rangevm.LossAlarm.Nanoseconds(): "before 8"} {

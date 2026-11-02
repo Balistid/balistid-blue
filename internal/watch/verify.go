@@ -216,6 +216,13 @@ func (r *Rules) check(raw []byte, f *Findings) {
 	}
 }
 
+// AlertsUnknown is whether the Pi alerts a health UNKNOWN of reason r at once under KeyUnknown, as health does: every
+// reason but starting and a pending canary, which the watchdog alarms only without an OK in time, the ledger's log
+// cap and the dispatcher's overflow, conditions of their own (ADR 0039, point 1).
+func AlertsUnknown(r entry.Reason) bool {
+	return r != entry.ReasonStarting && r != entry.ReasonCanaryPending && r != entry.ReasonLogCap && r != entry.ReasonDispatcher
+}
+
 // health: UNKNOWN alarms at once, except while starting or waiting for a canary, which the watchdog
 // alarms only when no OK follows in time (ADR 0031, point 3).
 func (r *Rules) health(h entry.Health, f *Findings) {
