@@ -21,28 +21,28 @@ import (
 // The CLI as the image installs it, the unprivileged account it runs as, like an agent at the maintainer's uid,
 // how long a break or a recovery may take to show, and how often the CLI is asked meanwhile.
 const (
-	statusCLI    = "/usr/local/bin/balistid"
-	statusUser   = "balistid-job"
-	statusWait   = 2 * time.Minute
-	statusPoll   = 2 * time.Second
-	maxStatusOut = 16 << 10
+	statusCLI  = "/usr/local/bin/balistid"
+	statusUser = "balistid-job"
+	statusWait = 2 * time.Minute
+	statusPoll = 2 * time.Second
 )
 
 // statusRun is one measured run of the CLI: its exit and output, the guest's proof that the break held from
-// before it to after it ("yes" or why not), when it returned, and the health the store must show then.
+// before it to after it ("yes" or why not), when it started and returned, and whether the store's health over
+// that window is read: not for a stopped unit, whose collector may be the stopped one.
 type statusRun struct {
-	exit  int
-	out   []byte
-	proof string
-	end   int64
-	want  string // "OK", "UNKNOWN" or "" for a stopped unit, whose collector may be the stopped one
+	exit       int
+	out        []byte
+	proof      string
+	start, end int64
+	store      bool
 }
 
 // cliRun runs the CLI once: its exit and output, or why it did not run to an exit.
 type cliRun func(ctx context.Context) (int, []byte, error)
 
 // runStatus breaks each floor-0 part in turn and runs the CLI unprivileged after each (status_false_ok, ADR 0048),
-// then reads the store once, which stops the collector, for the health at each run's end.
+// then reads the store once, which stops the collector, for the health over each run; the judge decides by it.
 func runStatus(ctx context.Context, r *report) error {
 	cred, err := credential(statusUser)
 	if err != nil {
@@ -65,31 +65,30 @@ func runStatus(ctx context.Context, r *report) error {
 		return r.fail("store: " + err.Error())
 	}
 	for i, run := range runs {
-		res := done[i]
-		if res.proof == "yes" && res.want != "" {
-			res.proof = timeline.proves(res.end, res.want)
+		res, health := done[i], rangevm.StoreUnread
+		if res.store {
+			health = timeline.over(res.start, res.end)
 		}
-		r.add(rangevm.FactStatusRun+run.Name, fmt.Sprintf("%d %s %s", res.exit, base64.StdEncoding.EncodeToString(res.out), res.proof))
+		r.add(rangevm.FactStatusRun+run.Name, fmt.Sprintf("%d %s %s %s", res.exit, health,
+			base64.StdEncoding.EncodeToString(res.out), res.proof))
 	}
 	return r.send(r.facts)
 }
 
-// breakAndRun waits for a healthy floor, breaks what run names, runs the CLI between two proofs of the break,
-// and undoes the break. A frozen process is shown only through the health, so the CLI is first asked until it
-// shows not OK, at most statusWait: one that never does is measured anyway, and the judge sees it OK.
+// breakAndRun waits for the floor to show healthy, breaks what run names, runs the CLI between two proofs of the
+// break, and undoes the break. Each wait is at most statusWait and never decides: a CLI that never shows healthy
+// or never shows the break is measured anyway, and the judge sees what it showed against the store.
 func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (statusRun, error) {
-	if err := untilCLI(ctx, cli, 0); err != nil {
-		return statusRun{}, fmt.Errorf("the floor did not show healthy before the run: %w", err)
-	}
+	_ = untilCLI(ctx, cli, 0)
 	switch run.Kind {
 	case rangevm.StatusHealthy:
-		return measure(ctx, cli, func() string { return unitsActive(ctx) }, "OK"), nil
+		return measure(ctx, cli, func() string { return unitsActive(ctx) }, true), nil
 	case rangevm.StatusStopUnit:
-		// Stopped before it is masked: a masked unit has no ExecStopPost, which undoes what its start made. The
-		// second stop ends a start that came between, such as the collector's socket activation.
-		stopErr := errors.Join(systemctl(ctx, "stop", run.Name), systemctl(ctx, "mask", "--runtime", run.Name),
-			systemctl(ctx, "stop", run.Name))
-		res := measure(ctx, cli, func() string { return unitStopped(ctx, run.Name) }, "")
+		var stopErr error
+		for _, args := range stopUnit(run.Name) {
+			stopErr = errors.Join(stopErr, systemctl(ctx, args...))
+		}
+		res := measure(ctx, cli, func() string { return unitStopped(ctx, run.Name) }, false)
 		if err := errors.Join(stopErr, restoreUnits(ctx, run.Name)); err != nil {
 			return statusRun{}, err
 		}
@@ -103,7 +102,7 @@ func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (status
 			return statusRun{}, fmt.Errorf("SIGSTOP %d: %w", pid, err)
 		}
 		_ = untilCLI(ctx, cli, 1) // a CLI that never shows the break is measured, not skipped
-		res := measure(ctx, cli, func() string { return processStopped(pid) }, "UNKNOWN")
+		res := measure(ctx, cli, func() string { return processStopped(pid) }, true)
 		if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
 			return statusRun{}, fmt.Errorf("SIGCONT %d: %w", pid, err)
 		}
@@ -112,11 +111,18 @@ func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (status
 	return statusRun{}, fmt.Errorf("no break of kind %s", run.Kind)
 }
 
+// stopUnit is how the trial stops unit: stopped before it is masked, as a masked unit has no ExecStopPost to undo
+// what its start made; the second stop ends a start that came between, such as the collector's socket activation.
+func stopUnit(unit string) [][]string {
+	return [][]string{{"stop", unit}, {"mask", "--runtime", unit}, {"stop", unit}}
+}
+
 // measure runs the CLI once between two proofs; a CLI that did not exit is a proof that fails.
-func measure(ctx context.Context, cli cliRun, prove func() string, want string) statusRun {
+func measure(ctx context.Context, cli cliRun, prove func() string, store bool) statusRun {
 	before := prove()
+	start := time.Now().UnixNano()
 	exit, out, err := cli(ctx)
-	res := statusRun{exit: exit, out: out, end: time.Now().UnixNano(), want: want}
+	res := statusRun{exit: exit, out: out, start: start, end: time.Now().UnixNano(), store: store}
 	after := prove()
 	switch {
 	case err != nil:
@@ -174,7 +180,7 @@ func runCLI(ctx context.Context, cred *syscall.Credential) (int, []byte, error) 
 	out, err := cmd.Output()
 	var exitErr *exec.ExitError
 	switch {
-	case len(out) > maxStatusOut:
+	case len(out) > rangevm.MaxStatusOut:
 		return 0, nil, fmt.Errorf("%d bytes of output", len(out))
 	case err == nil:
 		return 0, out, nil
@@ -257,19 +263,38 @@ func (t *healthTimeline) add(x rawrecord.Record) error {
 	return nil
 }
 
-// proves is "yes" when the last health the collector recorded at or before end is want (OK, or any UNKNOWN).
-func (t healthTimeline) proves(end int64, want string) string {
-	last := ""
+// over is the collector's health from start to end: the last record at or before start and every record after it
+// up to end, OK or UNKNOWN when all of them are, mixed when both, none without a record at or before start.
+// Records without a time never count.
+func (t healthTimeline) over(start, end int64) string {
+	var states []string
 	for _, h := range t {
-		if h.at > 0 && h.at <= end {
-			last = h.state
+		switch {
+		case h.at <= 0 || h.at > end:
+		case h.at <= start:
+			states = []string{h.state}
+		default:
+			states = append(states, h.state)
 		}
 	}
-	switch {
-	case last == "":
-		return "no health stored before the run"
-	case want == "OK" && last == "OK", want == "UNKNOWN" && strings.HasPrefix(last, "UNKNOWN"):
-		return "yes"
+	if len(states) == 0 {
+		return rangevm.StoreNone
 	}
-	return fmt.Sprintf("the store's health was %q", last)
+	seen := map[string]bool{}
+	for _, s := range states {
+		switch {
+		case s == "OK":
+			seen[rangevm.StoreOK] = true
+		case strings.HasPrefix(s, "UNKNOWN"):
+			seen[rangevm.StoreUnknown] = true
+		default:
+			seen[rangevm.StoreMixed] = true
+		}
+	}
+	if len(seen) == 1 {
+		for state := range seen {
+			return state
+		}
+	}
+	return rangevm.StoreMixed
 }

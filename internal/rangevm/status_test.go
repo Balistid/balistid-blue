@@ -35,12 +35,23 @@ func cliFor(run StatusRun) cliResult {
 	return res
 }
 
-func runValue(res cliResult, exit int, proof string) string {
+func runValue(res cliResult, exit int, health, proof string) string {
 	b, err := json.Marshal(res)
 	if err != nil {
 		panic(err)
 	}
-	return fmt.Sprintf("%d %s %s", exit, base64.StdEncoding.EncodeToString(b), proof)
+	return fmt.Sprintf("%d %s %s %s", exit, health, base64.StdEncoding.EncodeToString(b), proof)
+}
+
+// soundHealth is the store's health a sound run reports: OK while healthy, UNKNOWN while frozen, unread when stopped.
+func soundHealth(run StatusRun) string {
+	switch run.Kind {
+	case StatusHealthy:
+		return StoreOK
+	case StatusStopUnit:
+		return StoreUnread
+	}
+	return StoreUnknown
 }
 
 const installedUnits = "balistid-announce-suspend.service,balistid-announce.service,balistid-auditstat.service," +
@@ -50,6 +61,12 @@ const installedUnits = "balistid-announce-suspend.service,balistid-announce.serv
 
 // statusOutcome is a sound status report; edit changes the value of one run before it is encoded.
 func statusOutcome(t *testing.T, edit map[string]func(*cliResult, *int, *string)) Outcome {
+	t.Helper()
+	return statusOutcomeStore(t, edit, nil)
+}
+
+// statusOutcomeStore is statusOutcome with the store's health of some runs replaced.
+func statusOutcomeStore(t *testing.T, edit map[string]func(*cliResult, *int, *string), health map[string]string) Outcome {
 	t.Helper()
 	tr := trial(t, "status-1")
 	facts := []Record{{Name: FactTrial, Value: tr.Name}, {Name: FactPhase, Value: "1"}, {Name: FactKernel, Value: TargetKernel},
@@ -62,7 +79,11 @@ func statusOutcome(t *testing.T, edit map[string]func(*cliResult, *int, *string)
 		if e := edit[run.Name]; e != nil {
 			e(&res, &exit, &proof)
 		}
-		facts = append(facts, Record{Name: FactStatusRun + run.Name, Value: runValue(res, exit, proof)})
+		h, ok := health[run.Name]
+		if !ok {
+			h = soundHealth(run)
+		}
+		facts = append(facts, Record{Name: FactStatusRun + run.Name, Value: runValue(res, exit, h, proof)})
 	}
 	return Outcome{Facts: facts}
 }
@@ -157,17 +178,17 @@ func TestStatusUnprovenRunIsInvalid(t *testing.T) {
 		"an unbroken unit":   setFact(statusOutcome(t, nil), FactUnitsInstalled, installedUnits+",balistid-new.service"),
 		"a unit missing":     setFact(statusOutcome(t, nil), FactUnitsInstalled, strings.Replace(installedUnits, "balistid-net.service,", "", 1)),
 		"exit not plain":     setFact(statusOutcome(t, nil), FactStatusRun+"healthy", "+0 e30= yes"),
-		"no proof field":     setFact(statusOutcome(t, nil), FactStatusRun+"healthy", "0 e30="),
+		"no proof field":     setFact(statusOutcome(t, nil), FactStatusRun+"healthy", "0 OK e30="),
 		"base64 not canonical": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 "+strings.TrimRight(base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}`)), "=")+" yes"),
+			"0 OK "+strings.TrimRight(base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}`)), "=")+" yes"),
 		"unknown field": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[],"mode":"x"}`))+" yes"),
+			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[],"mode":"x"}`))+" yes"),
 		"another schema": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":2,"ok":true,"parts":[]}`))+" yes"),
+			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":2,"ok":true,"parts":[]}`))+" yes"),
 		"two objects": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}{}`))+" yes"),
+			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}{}`))+" yes"),
 		"over the cap": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 "+base64.StdEncoding.EncodeToString(make([]byte, maxStatusOut+1))+" yes"),
+			"0 OK "+base64.StdEncoding.EncodeToString(make([]byte, MaxStatusOut+1))+" yes"),
 	}
 	dup := statusOutcome(t, nil)
 	dup.Facts = append(dup.Facts, dup.Facts[len(dup.Facts)-1])
@@ -182,12 +203,47 @@ func TestStatusUnprovenRunIsInvalid(t *testing.T) {
 	}
 }
 
+// The store decides healthy and frozen runs: the CLI showing OK while the store was UNKNOWN throughout is a false OK,
+// whatever the run; a run the store leaves open, or a store read for a stopped unit, proves nothing.
+func TestStatusStoreDecidesHealthyAndFrozenRuns(t *testing.T) {
+	tr := trial(t, "status-1")
+	stopped := StatusRuns()[2].Name
+	cliOK := func(r *cliResult, e *int, _ *string) {
+		*e, r.OK = 0, true
+		for i := range r.Parts {
+			r.Parts[i].State = "OK"
+		}
+	}
+	for name, c := range map[string]struct {
+		edit   map[string]func(*cliResult, *int, *string)
+		health map[string]string
+		want   string
+	}{
+		"healthy OK over UNKNOWN":       {nil, map[string]string{"healthy": StoreUnknown}, Miss},
+		"end OK over UNKNOWN":           {nil, map[string]string{"end": StoreUnknown}, Miss},
+		"frozen Laurel OK over UNKNOWN": {map[string]func(*cliResult, *int, *string){"laurel": cliOK}, nil, Miss},
+		"healthy not OK over UNKNOWN": {map[string]func(*cliResult, *int, *string){"healthy": func(r *cliResult, e *int, _ *string) {
+			*e, r.OK = 1, false
+		}}, map[string]string{"healthy": StoreUnknown}, Invalid},
+		"healthy over a mixed store":       {nil, map[string]string{"healthy": StoreMixed}, Invalid},
+		"healthy with no store record":     {nil, map[string]string{"end": StoreNone}, Invalid},
+		"frozen auditd over an OK store":   {nil, map[string]string{"auditd.service": StoreOK}, Invalid},
+		"frozen Laurel over a mixed store": {nil, map[string]string{"laurel": StoreMixed}, Invalid},
+		"store read for a stopped unit":    {nil, map[string]string{stopped: StoreOK}, Invalid},
+		"a store health of another form":   {nil, map[string]string{"healthy": "ok"}, Invalid},
+	} {
+		if v, why := judgeStatus(tr, statusOutcomeStore(t, c.edit, c.health)); v != c.want {
+			t.Errorf("%s: %s (%s), want %s", name, v, why, c.want)
+		}
+	}
+}
+
 // Whatever value statusOf reads is a proven run of schema 1 within the cap.
 func FuzzStatusOf(f *testing.F) {
-	f.Add(runValue(cliFor(StatusRuns()[0]), 0, "yes"))
-	f.Add("0 e30= yes")
+	f.Add(runValue(cliFor(StatusRuns()[0]), 0, StoreOK, "yes"))
+	f.Add("0 OK e30= yes")
 	f.Fuzz(func(t *testing.T, v string) {
-		res, _, err := statusOf(v)
+		res, _, _, err := statusOf(v)
 		if err != nil {
 			return
 		}
