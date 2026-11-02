@@ -4,6 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/parser"
+	gotoken "go/token"
+	"go/types"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +23,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/shard"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -266,6 +272,37 @@ func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
 func TestCollectorCanaryKeyIsTheCollectors(t *testing.T) {
 	if collectorCanaryKey != collector.CanaryKey {
 		t.Errorf("guest looks for %q, the collector's canary uses %q", collectorCanaryKey, collector.CanaryKey)
+	}
+}
+
+// shardCopyMax copies the collector's shardMax, a constant of its package main: read it from the source.
+func TestShardCopyMaxIsTheCollectorsShardMaxAndAWAL(t *testing.T) {
+	fset := gotoken.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join("..", "balistid-collector", "main.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var expr ast.Expr
+	ast.Inspect(f, func(n ast.Node) bool {
+		if v, ok := n.(*ast.ValueSpec); ok {
+			for i, name := range v.Names {
+				if name.Name == "shardMax" {
+					expr = v.Values[i]
+				}
+			}
+		}
+		return expr == nil
+	})
+	if expr == nil {
+		t.Fatal("no shardMax in the collector's main.go")
+	}
+	tv, err := types.Eval(fset, nil, gotoken.NoPos, types.ExprString(expr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	max, ok := constant.Int64Val(tv.Value)
+	if !ok || shardCopyMax != max+shard.WALMaxBytes {
+		t.Errorf("shardCopyMax %d, the collector's shardMax %s plus a WAL is not it", int64(shardCopyMax), tv.Value)
 	}
 }
 

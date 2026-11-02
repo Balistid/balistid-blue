@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"os"
@@ -351,11 +352,36 @@ func TestReadRefusesAShardOverMaxAndAMissingScratch(t *testing.T) {
 	if err := read(Scratch{Dir: t.TempDir(), Max: st.Size()}); err != nil {
 		t.Fatalf("a shard of exactly Max bytes: %v", err)
 	}
-	if err := read(Scratch{Dir: t.TempDir(), Max: st.Size() - 1}); err == nil {
-		t.Error("Read copied a shard over Max")
+	// No directory to copy into: only a check before the copy can name the size.
+	if err := read(Scratch{Dir: filepath.Join(t.TempDir(), "gone"), Max: st.Size() - 1}); err == nil ||
+		!strings.Contains(err.Error(), "over the copy's") {
+		t.Errorf("Read of a shard over Max = %v, want the size refused before any copy", err)
 	}
 	if err := read(Scratch{Dir: filepath.Join(t.TempDir(), "gone"), Max: st.Size()}); err == nil {
 		t.Error("Read ran without its scratch directory")
+	}
+}
+
+// check reads its source once and the copy holds what the hash saw: a pipe cannot be read twice.
+func TestCheckCopiesTheBytesItHashes(t *testing.T) {
+	path, sum := sealed(t, record(1, "a"), record(2, "b"))
+	data, err := os.ReadFile(path) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, pw := io.Pipe()
+	go func() { _, err := pw.Write(data); pw.CloseWithError(err) }()
+	cp, err := os.CreateTemp(t.TempDir(), "copy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close() //nolint:errcheck // test
+	if err := check(pr, cp, int64(len(data)), sum); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(cp.Name())
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("the copy differs from the hashed bytes (%v)", err)
 	}
 }
 
