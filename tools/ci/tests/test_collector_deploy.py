@@ -185,7 +185,7 @@ class CollectorDeployTest(unittest.TestCase):
         store = "/var/lib/balistid-range/scratch/store"
         want = installed[:]
         want[want.index("-store") + 1] = store
-        want += ["-headroom", "67108864", "-log-commits", "-queue-bytes", "8388608"]
+        want += ["-headroom", "67108864", "-log-commits", "-queue-bytes", "3145728"]
         self.assertEqual(set(drop_in), {"Unit", "Service"})
         keys = "balistid-range-store.service balistid-range-witness-key.service"
         self.assertEqual(drop_in["Unit"], {"Requires": [keys], "After": [keys]})
