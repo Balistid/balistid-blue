@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -22,17 +23,30 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 	"github.com/Balistid/balistid-blue/internal/shard"
+	"github.com/Balistid/balistid-blue/internal/watch"
 )
 
 const (
 	// freezeFor holds the store's filesystem frozen: under the collector's WatchdogSec (10 s), so the watchdog
 	// does not restart it and turn the queue's loss into a shutdown's.
 	freezeFor = 6 * time.Second
-	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB); bigArgs of them make a record of about 1.2 MB,
-	// under record_max_kib (2 MiB, stored whole), so a few dozen execs fill the collector's 64 MiB queue.
-	bigArg   = 100 << 10
-	bigArgs  = 12
-	fillFile = scratchMount + "/fill"
+	// bigArgs exec arguments of bigArg bytes make a record of about 1.2 MB, under record_max_kib (2 MiB, stored
+	// whole). Each stays under execveChunk, the kernel's MAX_EXECVE_AUDIT_LEN, so it spans two records at most:
+	// Laurel took the same bytes as 100 KiB arguments at about 1 MB/s in the range, a thousand times slower.
+	// queueExecs of them overfill the range's 8 MiB queue twice in fewer kernel records than q_depth.
+	bigArg      = 7000
+	bigArgs     = 175
+	execveChunk = 7500
+	queueExecs  = 16
+	// crashExecs of them pass auditd's plugin queue at the fewest kernel records each, total bytes over
+	// execveChunk; crashFlood bounds the flood and kill after a fresh state write, under its 5 s report_interval.
+	crashExecs = 128
+	crashFlood = 3500 * time.Millisecond
+	// killSlack is how long after crashFlood the kill may still come: auditd's next write is 5 s after the fresh one.
+	killSlack = 700 * time.Millisecond
+	// auditdRestartWait covers systemd's restart of a killed auditd (Restart=on-failure, 100 ms) and its start.
+	auditdRestartWait = 15 * time.Second
+	fillFile          = scratchMount + "/fill"
 	// fillSlack bounds what the fill leaves above a WAL: the store's admit slack (64 KiB), so the least a record
 	// needs, a WAL, twice its size and that slack, is more than is left.
 	fillSlack  = 64 << 10
@@ -57,13 +71,15 @@ const (
 
 // injected is what an injection did: its proof, "ok" or why not; its end when it knows that better than its
 // return, else 0; the loss's bracket when the guest saw the loss itself, else zero (the injection's own); and a
-// transient kernel trial's resume, in uptime and in the ledger's clock. finish ends what the injection left
+// transient kernel trial's resume, in uptime and in the ledger's clock; originNs, in the ledger's clock, is where
+// first_unknown counts from when the bracket starts later than the injection, else 0. finish ends what the injection left
 // running (a stopped auditd) before the trial reads the ledger, nil without; release runs it.
 type injected struct {
 	proof         string
 	end, from, to time.Duration
 	resumeAt      time.Duration
 	resumeNs      int64
+	originNs      int64
 	finish        func() error
 }
 
@@ -154,6 +170,9 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactOverflowBefore, overflowBefore)
 	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
+	if inj.originNs != 0 {
+		fromNs = inj.originNs
+	}
 	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, fromNs))
 	r.add(rangevm.FactOKAfterResume, okAfter)
 	return r.send(r.facts)
@@ -224,7 +243,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 		posts, _, _ := readSink()
 		now, err := uptime()
 		tag := rangevm.LossTag(tr.Inject)
-		seen := tag != "" && firstAfter(posts, tag, from) || tr.Inject == rangejob.InjectStore && firstAfter(posts, "unknown", from)
+		unknown := tr.Inject == rangejob.InjectStore || tr.Inject == rangejob.InjectAuditdCrash
+		seen := tag != "" && firstAfter(posts, tag, from) || unknown && firstAfter(posts, "unknown", from)
 		switch {
 		case err != nil:
 			return err
@@ -238,8 +258,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 }
 
 // lossMatch is which ledger entries an injection's loss makes: a loss of the queue's stage, of the cap's (a
-// full filesystem), of the store's or the store's UNKNOWN, of the kernel's or of the dispatcher's (ADR 0038); none
-// for the control.
+// full filesystem), of the store's or the store's UNKNOWN, of the kernel's or of the dispatcher's (ADR 0038), the
+// UNKNOWN of a killed auditd (ADR 0039, point 3: a 10 for its new pid); none for the control.
 func lossMatch(inject string) func(entry.Body) bool {
 	stage := func(s entry.Stage) func(entry.Body) bool {
 		return func(b entry.Body) bool { l, ok := b.(entry.Loss); return ok && l.Stage == s }
@@ -258,13 +278,18 @@ func lossMatch(inject string) func(entry.Body) bool {
 		return stage(entry.StageKernel)
 	case rangejob.InjectDispatcher:
 		return stage(entry.StageDispatcher)
+	case rangejob.InjectAuditdCrash:
+		return func(b entry.Body) bool {
+			h, ok := b.(entry.Health)
+			return ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonAuditd
+		}
 	}
 	return func(entry.Body) bool { return false }
 }
 
-// firstUnknown attributes a store trial's unknown alert by the ledger's own stamps (ADR 0039, point 3): "before N"
-// when the ledger logged an UNKNOWN within rangevm.LossAlarm before fromNs, whose alert may land after the
-// injection, else the reason of its first UNKNOWN from fromNs on, "none" without one.
+// firstUnknown attributes an unknown alert by the ledger's own stamps (ADR 0039, point 3): "before N" when the
+// ledger logged an UNKNOWN within rangevm.LossAlarm before fromNs, whose alert may land after the injection, else
+// the reason of its first UNKNOWN from fromNs on, "none" without one. Only UNKNOWNs the Pi alerts as unknown count.
 func firstUnknown(ctx context.Context, fromNs int64) string {
 	keys, err := rangeKeys()
 	if err != nil {
@@ -279,7 +304,7 @@ func firstUnknownIn(ctx context.Context, root string, v note.Verifier, fromNs in
 	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
 		h, ok := e.Body.(entry.Health)
 		switch {
-		case !ok || h.State != entry.StateUnknown:
+		case !ok || h.State != entry.StateUnknown || !watch.AlertsUnknown(h.Reason):
 		case e.At < fromNs && e.At >= fromNs-rangevm.LossAlarm.Nanoseconds():
 			before = "before " + strconv.Itoa(int(h.Reason))
 		case e.At >= fromNs && after == "none":
@@ -367,6 +392,8 @@ func injectLoss(ctx context.Context, inject string) injected {
 		inj, err = stopAuditd(ctx, inject == rangejob.InjectKernelSustained)
 	case rangejob.InjectDispatcher:
 		inj.from, inj.to, err = overflowDispatcher(ctx)
+	case rangejob.InjectAuditdCrash:
+		inj, err = crashAuditd(ctx)
 	case rangejob.InjectNone:
 	default:
 		err = fmt.Errorf("no injection %q", inject)
@@ -378,28 +405,10 @@ func injectLoss(ctx context.Context, inject string) injected {
 	return inj
 }
 
-// freezeStore freezes the store's filesystem for freezeFor under execs with large arguments, so the collector's
-// writer blocks and its queue fills; the proof is the freeze and the thaw both done, and it returns the thaw's
-// uptime, where the injection ends.
+// freezeStore freezes the store's filesystem for freezeFor and execs queueExecs times with large arguments, one
+// at a time, so the collector's writer blocks and its queue fills; the proof is the freeze, every exec and the
+// thaw done, and it returns the thaw's uptime, where the injection ends.
 func freezeStore(ctx context.Context) (time.Duration, error) {
-	args := make([]string, bigArgs)
-	for i := range args {
-		args[i] = strings.Repeat("q", bigArg)
-	}
-	burst, stop := context.WithTimeout(ctx, freezeFor+2*time.Second)
-	defer stop()
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, maxChildren)
-	wg.Go(func() {
-		for burst.Err() == nil {
-			sem <- struct{}{}
-			wg.Go(func() {
-				defer func() { <-sem }()
-				_ = exec.CommandContext(burst, "/usr/bin/true", args...).Run() //nolint:gosec // our own fixed arguments
-			})
-		}
-	})
-	defer func() { stop(); wg.Wait() }()
 	if err := systemctl(ctx, "is-active", collectorUnitName); err != nil {
 		return 0, err
 	}
@@ -411,16 +420,53 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 	if err := unix.IoctlSetInt(int(d.Fd()), fiFreeze, 0); err != nil {
 		return 0, fmt.Errorf("FIFREEZE: %w", err)
 	}
-	pause(ctx, freezeFor)
+	thawAt := time.Now().Add(freezeFor)
+	burst, stop := context.WithDeadline(ctx, thawAt)
+	execErr := bigExecs(burst, queueExecs, 1)
+	stop()
+	if !pause(ctx, time.Until(thawAt)) {
+		execErr = errors.Join(execErr, errors.New("the freeze was cut short"))
+	}
 	thawErr := unix.IoctlSetInt(int(d.Fd()), fiThaw, 0)
 	end, err := uptime()
 	switch {
 	case thawErr != nil:
-		return 0, fmt.Errorf("FITHAW: %w", thawErr)
+		return 0, errors.Join(execErr, fmt.Errorf("FITHAW: %w", thawErr))
+	case execErr != nil:
+		return 0, execErr
 	case err != nil:
 		return 0, err
 	}
 	return end, nil
+}
+
+// bigExecs runs n execs of bigArgs arguments of bigArg bytes, at most parallel at once; an exec that fails, or one
+// that ctx's end stopped or kept from starting, is an error.
+func bigExecs(ctx context.Context, n, parallel int) error {
+	args := make([]string, bigArgs)
+	for i := range args {
+		args[i] = strings.Repeat("q", bigArg)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var first error
+	sem := make(chan struct{}, parallel)
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			if err := exec.CommandContext(ctx, "/usr/bin/true", args...).Run(); err != nil { //nolint:gosec // our own fixed arguments
+				mu.Lock()
+				first = cmp.Or(first, fmt.Errorf("exec %d of %d: %w", i+1, n, err))
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if first == nil && ctx.Err() != nil {
+		first = fmt.Errorf("%d execs: %w", n, ctx.Err())
+	}
+	return first
 }
 
 // fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem: no room for
@@ -716,20 +762,9 @@ func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 // the read that first saw "yes" ended. That holds as auditd 4.2.1 truncates the file before it reads the flag
 // (src/auditd.c:231, :249). It waits for a fresh "no" first, so the bracket starts near the injection.
 func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
-	w := stateWatch{read: readState, now: uptime}
-	if _, _, _, err := w.poll(); err != nil {
+	w, err := freshState(ctx)
+	if err != nil {
 		return 0, 0, err
-	}
-	for deadline := time.Now().Add(freshStateWait); w.from == 0 && w.to == 0; {
-		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
-			return 0, 0, errors.New("auditd wrote no fresh state file")
-		}
-		if err := w.step(); err != nil {
-			return 0, 0, err
-		}
-	}
-	if w.to != 0 {
-		return 0, 0, errors.New("the state file reads overflow yes before the injection")
 	}
 	pid, err := strconv.Atoi(laurelPID())
 	if err != nil {
@@ -760,6 +795,179 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
 	}
 	return w.from, w.to, nil
+}
+
+// freshState watches auditd's state file until it writes a fresh "no", so a bracket from it starts near the
+// injection and auditd's next write is report_interval away.
+func freshState(ctx context.Context) (*stateWatch, error) {
+	w := &stateWatch{read: readState, now: uptime}
+	if _, _, _, err := w.poll(); err != nil {
+		return nil, err
+	}
+	for deadline := time.Now().Add(freshStateWait); w.from == 0 && w.to == 0; {
+		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
+			return nil, errors.New("auditd wrote no fresh state file")
+		}
+		if err := w.step(); err != nil {
+			return nil, err
+		}
+	}
+	if w.to != 0 {
+		return nil, errors.New("the state file reads overflow yes before the injection")
+	}
+	return w, nil
+}
+
+// crashAuditd stops Laurel right after auditd's state write, floods past its plugin queue until auditd's journal
+// says it drops events, and SIGKILLs auditd before its next state write, for systemd to restart it (ADR 0039, point
+// 5; ADR 0047). The bracket runs from just before Laurel's stop, the earliest the queue can drop, to auditd's exit
+// seen through its pidfd; first_unknown counts from the same moment in the ledger's clock. No drop in the journal,
+// a pre-kill read that does not prove "no" in the fresh state, an auditd already gone or no new auditd within
+// auditdRestartWait fails the proof.
+func crashAuditd(ctx context.Context) (injected, error) {
+	w, err := freshState(ctx)
+	if err != nil {
+		return injected{}, err
+	}
+	killBy := time.Now().Add(crashFlood)
+	pid, err := strconv.Atoi(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "MainPID", auditdUnitName)))
+	switch {
+	case err != nil:
+		return injected{}, fmt.Errorf("auditd pid: %w", err)
+	case pid <= 0:
+		return injected{}, errors.New("auditd has no main pid")
+	}
+	pidfd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return injected{}, fmt.Errorf("pidfd of auditd: %w", err)
+	}
+	defer unix.Close(pidfd) //nolint:errcheck // a pidfd, nothing to flush
+	laurel, err := strconv.Atoi(laurelPID())
+	if err != nil {
+		return injected{}, errors.New("no laurel process")
+	}
+	cursor := journalCursor(output(ctx, "/usr/bin/journalctl", "-q", "-n", "0", "--show-cursor"))
+	if cursor == "" {
+		return injected{}, errors.New("no journal cursor before the flood")
+	}
+	inj := injected{originNs: time.Now().UnixNano()}
+	if inj.from, err = uptime(); err != nil {
+		return injected{}, err
+	}
+	if err := syscall.Kill(laurel, syscall.SIGSTOP); err != nil {
+		return injected{}, fmt.Errorf("SIGSTOP laurel: %w", err)
+	}
+	read := func(c context.Context) string {
+		return output(c, "/usr/bin/journalctl", overflowJournalArgs(cursor)...)
+	}
+	flood := func(c context.Context) { _ = bigExecs(c, crashExecs, maxChildren) } // the journal's drop is the proof
+	inj.to, err = floodAndKill(ctx, pidfd, flood, read, w.cur.mtime, killBy)
+	if cerr := syscall.Kill(laurel, syscall.SIGCONT); cerr != nil && !errors.Is(cerr, syscall.ESRCH) {
+		err = errors.Join(err, fmt.Errorf("SIGCONT laurel: %w", cerr))
+	}
+	if err == nil {
+		err = awaitAuditd(ctx, pid)
+	}
+	if err != nil {
+		return injected{}, err
+	}
+	return inj, nil
+}
+
+// floodAndKill runs flood until read, auditd's journal since the stop, names the plugin queue's drop or killBy
+// passes; then, the state file still "no" in the fresh generation, it SIGKILLs auditd through pidfd and returns
+// the uptime its exit was seen.
+func floodAndKill(ctx context.Context, pidfd int, flood func(context.Context), read func(context.Context) string,
+	fresh, killBy time.Time) (time.Duration, error) {
+	fctx, stop := context.WithDeadline(ctx, killBy)
+	done := make(chan struct{})
+	go func() { defer close(done); flood(fctx) }()
+	dropped := journalNames(fctx, read, lostPoll)
+	stop()
+	<-done
+	if dropped != "yes" {
+		return 0, fmt.Errorf("auditd logged no plugin queue drop within %s", crashFlood)
+	}
+	st, err := readState()
+	if err == nil {
+		err = preKill(st, fresh, time.Now(), killBy.Add(killSlack))
+	}
+	if err != nil {
+		return 0, err
+	}
+	return killAndWait(ctx, pidfd)
+}
+
+// preKill is nil when st, read just before the kill at now, shows auditd has not reported the overflow: a whole
+// read of "no" in the fresh generation, before deadline.
+func preKill(st stateRead, fresh, now, deadline time.Time) error {
+	switch {
+	case st.value != "no":
+		return fmt.Errorf("the state file reads %q before the kill", st.value)
+	case !st.mtime.Equal(fresh):
+		return errors.New("auditd wrote its state file again before the kill")
+	case !now.Before(deadline):
+		return fmt.Errorf("the kill came %s after its deadline", now.Sub(deadline))
+	}
+	return nil
+}
+
+// killAndWait SIGKILLs the live process behind pidfd and returns the uptime its exit was seen, within
+// auditdRestartWait; a process already gone before the signal, or ctx ended, is an error and sends nothing.
+func killAndWait(ctx context.Context, pidfd int) (time.Duration, error) {
+	if exited, err := pidfdExited(pidfd, 0); err != nil || exited {
+		return 0, errors.Join(err, errors.New("auditd exited before the kill"))
+	}
+	if err := ctx.Err(); err != nil { // a trial already ended kills nothing
+		return 0, fmt.Errorf("before the kill: %w", err)
+	}
+	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
+		return 0, fmt.Errorf("SIGKILL auditd: %w", err)
+	}
+	for deadline := time.Now().Add(auditdRestartWait); ctx.Err() == nil; {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return 0, fmt.Errorf("auditd did not exit within %s of SIGKILL", auditdRestartWait)
+		}
+		exited, err := pidfdExited(pidfd, min(left, time.Second))
+		switch {
+		case err != nil:
+			return 0, err
+		case exited:
+			return uptime()
+		}
+	}
+	return 0, fmt.Errorf("waiting for auditd's exit: %w", ctx.Err())
+}
+
+// pidfdExited polls pidfd for up to wait: true once its process exited; a signal's interruption is no answer yet.
+func pidfdExited(pidfd int, wait time.Duration) (bool, error) {
+	fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}} //nolint:gosec // a descriptor fits int32
+	n, err := unix.Poll(fds, int(wait.Milliseconds()))
+	switch {
+	case errors.Is(err, unix.EINTR):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("poll pidfd: %w", err)
+	}
+	return n > 0, nil
+}
+
+// awaitAuditd waits until systemd runs an auditd other than old, active, within auditdRestartWait.
+func awaitAuditd(ctx context.Context, old int) error {
+	wait, stop := context.WithTimeout(ctx, auditdRestartWait)
+	defer stop()
+	for {
+		pid := strings.TrimSpace(output(wait, "/usr/bin/systemctl", "show", "-P", "MainPID", auditdUnitName))
+		state := strings.TrimSpace(output(wait, "/usr/bin/systemctl", "show", "-P", "ActiveState", auditdUnitName))
+		if n, err := strconv.Atoi(pid); err == nil && n > 0 && n != old && state == "active" {
+			return nil
+		}
+		if !pause(wait, stateEvery) {
+			return fmt.Errorf("no new active auditd within %s: pid %q, %q", auditdRestartWait, rangevm.Printable(pid, 16),
+				rangevm.Printable(state, 32))
+		}
+	}
 }
 
 // stateWatch follows auditd's state file by the guest's uptime. A generation is told apart by its mtime, which is

@@ -56,8 +56,9 @@ const (
 
 // Injections of a loss trial (ADR 0036, point 4; ADR 0039, point 5): the store's filesystem frozen under load so
 // the collector's queue fills, filled, or its files made to refuse writes; auditd stopped until the kernel loses,
-// then resumed (transient) or kept stopped (sustained); Laurel stopped until the dispatcher overflows; none, the
-// control that must not alert.
+// then resumed (transient) or kept stopped (sustained); Laurel stopped until the dispatcher overflows; auditd killed
+// past its plugin queue before it writes the overflow, for systemd to restart it; none, the control that must not
+// alert.
 const (
 	InjectQueue           = "queue"
 	InjectFullFS          = "full-fs"
@@ -65,6 +66,7 @@ const (
 	InjectKernelTransient = "kernel-transient"
 	InjectKernelSustained = "kernel-sustained"
 	InjectDispatcher      = "dispatcher"
+	InjectAuditdCrash     = "auditd-crash"
 	InjectNone            = "none"
 )
 
@@ -136,7 +138,8 @@ func alarmMethod(tr Trial) string {
 	silence := tr.Inject == InjectWireGuard || tr.Inject == InjectLedger || tr.Inject == InjectHardStop
 	quiet := tr.Inject == InjectQuietOff || tr.Inject == InjectQuietMasked || tr.Inject == InjectQuietAgain
 	loss := tr.Inject == InjectQueue || tr.Inject == InjectFullFS || tr.Inject == InjectStore ||
-		tr.Inject == InjectKernelTransient || tr.Inject == InjectKernelSustained || tr.Inject == InjectDispatcher || tr.Inject == InjectNone
+		tr.Inject == InjectKernelTransient || tr.Inject == InjectKernelSustained || tr.Inject == InjectDispatcher || tr.Inject == InjectAuditdCrash ||
+		tr.Inject == InjectNone
 	switch {
 	case tr.Load != (Load{}) || tr.Failure != "":
 		return ""
@@ -265,7 +268,8 @@ var trials = slices.Concat([]Trial{
 		{Name: "log-cap", Metric: MetricLogCap, Wall: 12 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
 	},
 	// loss_alarm_s (ADR 0036, point 4): three collector cases, four runs each in rows of two; the kernel's two
-	// shapes and the dispatcher, ten runs each (ADR 0039, point 5); a control without injection must not alert.
+	// shapes and the dispatcher, ten runs each, and four of auditd killed (ADR 0039, point 5); a control without
+	// injection must not alert.
 	repeated(Trial{Name: "loss-queue", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
 		Count: 2, Inject: InjectQueue}, 2),
 	repeated(Trial{Name: "loss-full-fs", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
@@ -278,6 +282,8 @@ var trials = slices.Concat([]Trial{
 		Scratch: StoreScratch, Count: 2, Inject: InjectKernelSustained}, 5),
 	repeated(Trial{Name: "loss-dispatcher", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
 		Scratch: StoreScratch, Count: 2, Inject: InjectDispatcher}, 5),
+	repeated(Trial{Name: "loss-auditd-crash", Metric: MetricLoss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 2, Inject: InjectAuditdCrash}, 2),
 	[]Trial{
 		{Name: "loss-control-none", Metric: MetricLoss, Expect: ExpectPass, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1, Inject: InjectNone},

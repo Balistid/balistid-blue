@@ -200,6 +200,58 @@ func TestKernelAndDispatcherBrackets(t *testing.T) {
 	}
 }
 
+// auditdKillRun is a sound run of auditd killed: injected at 100 s, ending at 106 s, the kill at 104 s and its exit
+// 50 ms later, Laurel's UNKNOWN first, auditd's entry, and an unknown alert at 120 s.
+func auditdKillRun(change map[string]string) Outcome {
+	c := map[string]string{FactInjectEndMS: "106000", FactLossFromMS: "104000", FactLossToMS: "104050",
+		FactPosts: "60000:start,120000:unknown", FactFirstUnknown: "3"}
+	for k, v := range change {
+		c[k] = v
+	}
+	return lossRun("loss-auditd-crash-1", c)
+}
+
+// A killed auditd's loss is the unknown alert of Laurel's or auditd's UNKNOWN within 65 s of the kill, with auditd's
+// entry in the ledger (ADR 0039, points 3 and 5); every other alert, reason, counter or bracket fails the run.
+func TestAuditdCrash(t *testing.T) {
+	tr := trial(t, "loss-auditd-crash-1")
+	for want, changes := range map[string][]map[string]string{
+		Pass: {nil, {FactFirstUnknown: "10"}, {FactPosts: "60000:start,169000:unknown"}},
+		Miss: {
+			{FactPosts: "60000:start,169051:unknown"}, // over 65 s even after the exit
+			{FactPosts: "60000:start"}, {FactPosts: "60000:start,90000:unknown"},
+			{FactPosts: "60000:start,120000:lossdispatcher"}, {FactPosts: "60000:start,120000:losskernel"},
+			{FactFirstUnknown: "2"}, {FactFirstUnknown: "8"}, {FactFirstUnknown: "9"}, {FactFirstUnknown: "none"},
+			{FactLossEntry: "no new entry of the cause"}, {FactPiActive: "failed"},
+		},
+		Invalid: {
+			{FactPosts: "60000:start,169020:unknown"}, // within 65 s of the exit, not of the kill
+			{FactPosts: "60000:start,102000:unknown"}, // after the injection, before the kill
+			{FactFirstUnknown: "before 10"}, {FactFirstUnknown: "error: checkpoint: no such file"},
+			{FactInject: "error: the state file read overflow yes before the kill"},
+			{FactLostAfter: "1"}, {FactOverflowAfter: "yes"}, {FactOverflowAfter: "missing"}, {FactOverflowBefore: "yes"},
+			{FactLossFromMS: "99999"}, {FactLossToMS: "106001"}, {FactLossToMS: "103999"},
+			{FactOKAfterResume: "0"}, {FactOKAfterResume: "none"}, {FactCollectorRestarts: "0 1"},
+		},
+	} {
+		for _, c := range changes {
+			if v, r := JudgeTrial(tr, auditdKillRun(c), cleanBuild, cleanBuild); v != want {
+				t.Errorf("auditd crash with %v: %s (%s), want %s", c, v, r, want)
+			}
+		}
+	}
+	if m := Measures(tr, auditdKillRun(nil)); m[MeasureAlarmMS] != 16000 { // from the kill
+		t.Errorf("auditd crash measures %v", m)
+	}
+	// Laurel's or auditd's UNKNOWN is no cause of the store's or the queue's loss.
+	for _, name := range []string{"loss-store-1", "loss-queue-1"} {
+		run := lossRun(name, map[string]string{FactPosts: "60000:start,120000:unknown", FactFirstUnknown: "10"})
+		if v, r := JudgeTrial(trial(t, name), run, cleanBuild, cleanBuild); v != Miss {
+			t.Errorf("%s with auditd's unknown: %s (%s)", name, v, r)
+		}
+	}
+}
+
 // The control has no loss: any loss or unknown alert after the watcher's start is a MISS, also one before the
 // control's moment of injection, none a PASS.
 func TestLossControl(t *testing.T) {
@@ -236,7 +288,7 @@ func TestLossTagsAreThePis(t *testing.T) {
 			t.Errorf("%s: tag %q, the Pi's key %q", inject, LossTag(inject), key)
 		}
 	}
-	if LossTag(rangejob.InjectNone) != "" {
-		t.Error("the control has a tag")
+	if LossTag(rangejob.InjectNone) != "" || LossTag(rangejob.InjectAuditdCrash) != "" {
+		t.Error("the control or a killed auditd has a stage's tag")
 	}
 }
