@@ -165,6 +165,9 @@ func ParseKmsg(rec string) (KmsgRecord, error) {
 	if !ok || len(f) < 4 {
 		return KmsgRecord{}, errors.New("kmsg: not prio,seq,ts_usec,flags;message")
 	}
+	if _, err := strconv.ParseUint(f[0], 10, 32); err != nil || f[3] == "" {
+		return KmsgRecord{}, errors.New("kmsg: priority or flags malformed")
+	}
 	seq, err := strconv.ParseUint(f[1], 10, 64)
 	if err != nil {
 		return KmsgRecord{}, errors.New("kmsg: sequence is not a number")
