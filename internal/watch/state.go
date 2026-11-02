@@ -104,8 +104,12 @@ func parseState(b []byte, origin string) (Log, *time.Duration, error) {
 	var v saved
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
-	if err := d.Decode(&v); err != nil || d.More() {
+	if err := d.Decode(&v); err != nil {
 		return Log{}, nil, errors.Join(errors.New("watch: state does not parse"), err)
+	}
+	// More reports only a next value, not a stray ] or }: anything but the end after the object is refused.
+	if _, err := d.Token(); !errors.Is(err, io.EOF) {
+		return Log{}, nil, errors.New("watch: state has bytes after its object")
 	}
 	l, err := v.log(origin)
 	if err != nil {
