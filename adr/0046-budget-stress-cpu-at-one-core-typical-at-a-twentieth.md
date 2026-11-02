@@ -11,7 +11,8 @@
 ADR 0040 put both stress and typical CPU at 0.5 cores. `cpu_cores` runs 1000 execs a second for 600 s, a heavy
 parallel build. No host measurement exists yet (ADR 0025: it runs after the install). The range VM (4 vCPUs) on
 the reference host gave 0.63-0.70 for the collector and auditd with Laurel, auditd with Laurel alone 0.39-0.46; the
-host will add litewitness and balistid-pi (ADR 0043) and more CPUs, which raised the VM's figure 36 % from 2 to 4.
+host adds every other floor-0 unit (auditstat, ledger, relay, litewitness, balistid-pi) and more CPUs, which raised
+the VM's figure 36 % from 2 to 4.
 So the next step under 0.5 was an own audit netlink reader (weeks). On GitHub's KVM (exp commit 3da7f84 with a CPU
 profiler on, one run each) the cost follows the rate: 0.046 cores at 50 a second, 0.133 at 200, 0.725 at 1000.
 
