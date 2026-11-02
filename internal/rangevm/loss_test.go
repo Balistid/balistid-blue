@@ -10,7 +10,8 @@ import (
 
 // lossTag is the key a loss case's alert carries, spelled out here so a change of LossTag fails these tests.
 func lossTag(name string) string {
-	for prefix, tag := range map[string]string{"loss-queue": "lossqueue", "loss-full-fs": "losscap", "loss-store": "lossstore"} {
+	for prefix, tag := range map[string]string{"loss-queue": "lossqueue", "loss-full-fs": "losscap", "loss-store": "lossstore",
+		"loss-kernel": "losskernel", "loss-dispatcher": "lossdispatcher"} {
 		if strings.HasPrefix(name, prefix) {
 			return tag
 		}
@@ -22,9 +23,10 @@ func lossTag(name string) string {
 // it and its stage's alert at 120 s; ":loss" in a change's posts is that stage's key.
 func lossRun(name string, change map[string]string) Outcome {
 	base := map[string]string{FactFirstUnknown: "none",
-		FactInject: "ok", FactInjectMS: "100000", FactInjectEndMS: "106000", FactLossEntry: "yes",
-		FactPosts: "60000:start,120000:loss", FactRefused: "0", FactPiActive: "active",
-		FactLostBefore: "0", FactLostAfter: "0", FactOverflowAfter: "no", FactCollectorRestarts: "0 0",
+		FactInject: "ok", FactInjectMS: "100000", FactInjectEndMS: "106000", FactLossFromMS: "100000", FactLossToMS: "106000",
+		FactLossEntry: "yes", FactPosts: "60000:start,120000:loss", FactRefused: "0", FactPiActive: "active",
+		FactLostBefore: "0", FactLostAfter: "0", FactOverflowBefore: "no", FactOverflowAfter: "no", FactCollectorRestarts: "0 0",
+		FactOKAfterResume: "-",
 	}
 	base[FactPosts] = strings.ReplaceAll(base[FactPosts], ":loss", ":"+lossTag(name))
 	var changes []string
@@ -63,8 +65,11 @@ func TestJudgeLoss(t *testing.T) {
 				{FactPosts: "120000:loss"},
 				// within 65 s of the end, not of the start: the loss may have come at the start
 				{FactPosts: "60000:start,171000:loss"},
-				{FactInjectEndMS: "200000", FactPosts: "60000:start,200001:loss"},
+				{FactInjectEndMS: "200000", FactLossToMS: "200000", FactPosts: "60000:start,200001:loss"},
 				{FactKernel: "6.0.0"}, {"-": FactLossEntry}, {"extra": "1"},
+				{FactLossToMS: "99999", FactLossFromMS: "99000"}, {FactLossToMS: "99999", FactLossFromMS: "100000"},
+				{FactLossFromMS: "106001"}, {FactOverflowBefore: "yes"},
+				{FactOKAfterResume: "0"},
 			},
 		} {
 			for _, c := range changes {
@@ -107,9 +112,10 @@ func TestJudgeLoss(t *testing.T) {
 	// Another stage's alert is not the cause's (ADR 0039, point 3).
 	for name, post := range map[string]string{"loss-queue-1": "lossstore", "loss-full-fs-1": "lossqueue", "loss-store-1": "losscap"} {
 		run := probeRun(name, lossFacts, map[string]string{
-			FactInject: "ok", FactInjectMS: "100000", FactInjectEndMS: "106000", FactLossEntry: "yes", FactFirstUnknown: "none",
-			FactPosts: "60000:start,120000:" + post + ",121000:lossunstored", FactRefused: "0", FactPiActive: "active",
-			FactLostBefore: "0", FactLostAfter: "0", FactOverflowAfter: "no", FactCollectorRestarts: "0 0",
+			FactInject: "ok", FactInjectMS: "100000", FactInjectEndMS: "106000", FactLossFromMS: "100000", FactLossToMS: "106000",
+			FactLossEntry: "yes", FactFirstUnknown: "none", FactPosts: "60000:start,120000:" + post + ",121000:lossunstored",
+			FactRefused: "0", FactPiActive: "active", FactLostBefore: "0", FactLostAfter: "0", FactOverflowBefore: "no",
+			FactOverflowAfter: "no", FactCollectorRestarts: "0 0", FactOKAfterResume: "-",
 		})
 		if v, r := JudgeTrial(trial(t, name), run, cleanBuild, cleanBuild); v != Miss {
 			t.Errorf("%s with a %s alert: %s (%s)", name, post, v, r)
@@ -126,16 +132,66 @@ func TestJudgeLoss(t *testing.T) {
 	}
 }
 
-// Kernel and dispatcher loss have no bracket until the guest takes it (ADR 0039, point 4): INVALID however they ran,
-// with what the ledger and the sink got in the reason.
-func TestKernelCasesInvalidWithoutBracket(t *testing.T) {
-	for _, name := range []string{"loss-kernel", "loss-dispatcher"} {
-		for _, c := range []map[string]string{nil, {FactLostAfter: "7"}, {FactPosts: "60000:start"},
-			{FactPosts: "60000:start,120000:losskernel,121000:lossdispatcher"}} {
-			v, why := JudgeTrial(trial(t, name), lossRun(name, c), cleanBuild, cleanBuild)
-			if v != Invalid || !strings.Contains(why, `entry "yes"`) || !strings.Contains(why, `posts "60000:start`) {
-				t.Errorf("%s with %v: %s (%s)", name, c, v, why)
+// kernelRun is a sound run of a kernel or dispatcher case: injected at 100 s, ending at 160 s, its loss bracketed
+// from 150 s to 150.1 s, the kernel's lost moved (the dispatcher's flag set) and its key's alert at 200 s.
+func kernelRun(name string, change map[string]string) Outcome {
+	c := map[string]string{FactInjectEndMS: "160000", FactLossFromMS: "150000", FactLossToMS: "150100",
+		FactPosts: "60000:start,200000:loss", FactLostAfter: "5"}
+	switch {
+	case strings.HasPrefix(name, "loss-kernel-transient"):
+		c[FactOKAfterResume] = "20000"
+	case strings.HasPrefix(name, "loss-dispatcher"):
+		c[FactLostAfter], c[FactOverflowAfter] = "0", "yes"
+	}
+	for k, v := range change {
+		c[k] = v
+	}
+	return lossRun(name, c)
+}
+
+// The kernel's and the dispatcher's loss fall in the bracket the guest shows (ADR 0039, point 4): an alert within
+// 65 s of its start passes, more than 65 s after its end misses, between is INVALID; a transient run also needs
+// health OK within 65 s of the resume, and a moved counter or flag of the other spoils the run.
+func TestKernelAndDispatcherBrackets(t *testing.T) {
+	for _, name := range []string{"loss-kernel-transient-1", "loss-kernel-sustained-3", "loss-dispatcher-5"} {
+		tr := trial(t, name)
+		cases := map[string][]map[string]string{
+			Pass: {nil, {FactPosts: "60000:start,215000:loss"}},
+			Miss: {
+				{FactPosts: "60000:start,215101:loss"}, {FactPosts: "60000:start"},
+				{FactPosts: "60000:start,200000:unknown"}, {FactLossEntry: "no new entry of the cause"},
+			},
+			Invalid: {
+				{FactPosts: "60000:start,215050:loss"}, // within 65 s of the end, not of the start
+				{FactPosts: "60000:start,140000:loss"}, // after the injection, before the loss
+				{FactLossFromMS: "99999"}, {FactLossToMS: "149999"}, {FactOverflowBefore: "yes"}, {FactOverflowBefore: "missing"},
+				{FactInject: "error: kernel lost \"3\" before, \"3\" after"},
+			},
+		}
+		switch {
+		case strings.HasPrefix(name, "loss-kernel-transient"):
+			cases[Miss] = append(cases[Miss], map[string]string{FactOKAfterResume: "65001"}, map[string]string{FactOKAfterResume: "none"})
+			cases[Pass] = append(cases[Pass], map[string]string{FactOKAfterResume: "65000"}, map[string]string{FactOKAfterResume: "0"})
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactOKAfterResume: "-"},
+				map[string]string{FactOKAfterResume: "error: checkpoint: no such file"})
+		case strings.HasPrefix(name, "loss-kernel"):
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactOKAfterResume: "0"})
+		}
+		if strings.HasPrefix(name, "loss-dispatcher") {
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "3"})
+			cases[Pass] = append(cases[Pass], map[string]string{FactLostAfter: "0", FactLostBefore: "0"})
+		} else {
+			cases[Invalid] = append(cases[Invalid], map[string]string{FactLostAfter: "0"}, map[string]string{FactOverflowAfter: "yes"})
+		}
+		for want, changes := range cases {
+			for _, c := range changes {
+				if v, r := JudgeTrial(tr, kernelRun(name, c), cleanBuild, cleanBuild); v != want {
+					t.Errorf("%s with %v: %s (%s), want %s", name, c, v, r, want)
+				}
 			}
+		}
+		if m := Measures(tr, kernelRun(name, nil)); m[MeasureAlarmMS] != 50000 { // from the bracket's start
+			t.Errorf("%s measures %v", name, m)
 		}
 	}
 }
@@ -169,12 +225,14 @@ func TestLossControl(t *testing.T) {
 func TestLossTagsAreThePis(t *testing.T) {
 	for inject, key := range map[string]watch.Key{
 		rangejob.InjectQueue: watch.KeyLossQueue, rangejob.InjectFullFS: watch.KeyLossCap, rangejob.InjectStore: watch.KeyLossStore,
+		rangejob.InjectKernelTransient: watch.KeyLossKernel, rangejob.InjectKernelSustained: watch.KeyLossKernel,
+		rangejob.InjectDispatcher: watch.KeyLossDispatcher,
 	} {
 		if LossTag(inject) != string(key) {
 			t.Errorf("%s: tag %q, the Pi's key %q", inject, LossTag(inject), key)
 		}
 	}
-	if LossTag(rangejob.InjectKernel) != "" || LossTag(rangejob.InjectNone) != "" {
-		t.Error("a case without a detector or a cause has a tag")
+	if LossTag(rangejob.InjectNone) != "" {
+		t.Error("the control has a tag")
 	}
 }

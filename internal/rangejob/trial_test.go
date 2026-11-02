@@ -163,10 +163,11 @@ func TestAlarmTrialsAreTheADRs(t *testing.T) {
 	}
 }
 
-// loss_alarm_s (ADR 0036, point 4): four runs of each collector case, at least the ten the method asks for in
-// all, one each of the undetected cases and the control that must not alert.
+// loss_alarm_s (ADR 0036, point 4; ADR 0039, point 5): four runs of each collector case, at least the ten the
+// method asks for in all, ten of each kernel shape and of the dispatcher, and the control that must not alert.
 func TestLossTrialsAreTheADRs(t *testing.T) {
-	want := map[string]int{InjectQueue: 4, InjectFullFS: 4, InjectStore: 4, InjectKernel: 1, InjectDispatcher: 1, InjectNone: 1}
+	want := map[string]int{InjectQueue: 4, InjectFullFS: 4, InjectStore: 4, InjectKernelTransient: 10, InjectKernelSustained: 10,
+		InjectDispatcher: 10, InjectNone: 1}
 	got, collector := map[string]int{}, 0
 	for _, tr := range Trials() {
 		if tr.Method() != MethodLoss {
