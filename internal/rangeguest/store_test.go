@@ -117,7 +117,7 @@ func (c *fakeCollector) read(t *testing.T, mark func(string), wait time.Duration
 	var got []string
 	c.clock = &fakeClock{now: time.Unix(0, 0)}
 	sr := StoreRead{
-		Dir: c.dir, Collector: c, Clock: c.clock, Settle: time.Second, Poll: 100 * time.Millisecond,
+		Dir: c.dir, Scratch: shard.Scratch{Dir: c.t.TempDir(), Max: 1 << 30}, Collector: c, Clock: c.clock, Settle: time.Second, Poll: 100 * time.Millisecond,
 		Mark: func(_ context.Context, token string) error { mark(token); return nil },
 	}
 	err := sr.Read(t.Context(), wait, func(r rawrecord.Record) error {
@@ -181,7 +181,7 @@ func TestStoreReadHandsOverWhatFollowsTheBarrier(t *testing.T) {
 func TestStoreReadEdges(t *testing.T) {
 	c := newFakeCollector(t)
 	mark := func(token string) { c.add(execLine(token), execLine("late")) }
-	sr := StoreRead{Dir: c.dir, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
+	sr := StoreRead{Dir: c.dir, Scratch: shard.Scratch{Dir: c.t.TempDir(), Max: 1 << 30}, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
 		Mark: func(_ context.Context, token string) error { mark(token); return nil }}
 	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err != nil {
 		t.Fatalf("read without an after callback: %v", err)

@@ -14,15 +14,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver; pure Go (ADR 0003)
+	"modernc.org/sqlite/vfs"
 )
 
 // SchemaVersion of the tables Create makes; Read refuses any other.
@@ -232,28 +237,58 @@ func syncDir(path string) error {
 	return nil
 }
 
-// sealedFile fails unless path is a regular file, not a symlink, with the SQLite header of a database
-// out of WAL mode (bytes 18 and 19 are 1) and the SHA-256 want.
-func sealedFile(path string, want [32]byte) error {
+// Scratch is where Read copies a shard before it reads it (ADR 0050): Dir is a directory with room for
+// the copy, Max the largest shard Read copies. The copy has no name (O_TMPFILE), so Dir's permissions do
+// not matter and nothing is left behind; Dir must not be on the store's filesystem, whose free space is
+// the collector's.
+type Scratch struct {
+	Dir string
+	Max int64
+}
+
+// sealedCopy copies the shard at path into an unnamed file in sc.Dir, hashing exactly the bytes it
+// writes, and returns the copy and its size. It fails unless path is a regular file, not a symlink, of
+// at most sc.Max bytes, whose copy has the SQLite header of a database out of WAL mode (bytes 18 and 19
+// are 1) and the SHA-256 want. The shard's writer can change the file during and after the copy; the
+// copy is the reader's alone.
+func sealedCopy(path string, want [32]byte, sc Scratch) (*os.File, int64, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the caller names the shard; the hash check decides
 	if err != nil {
-		return fmt.Errorf("read shard: %w", err)
+		return nil, 0, fmt.Errorf("read shard: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	if st, err := f.Stat(); err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("read shard: not a regular file (%w)", err)
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("read shard: not a regular file (%w)", err)
+	}
+	size := st.Size()
+	if size > sc.Max {
+		return nil, 0, fmt.Errorf("read shard: %d bytes, over the copy's %d", size, sc.Max)
+	}
+	fd, err := unix.Open(sc.Dir, unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read shard: copy in %s: %w", sc.Dir, err)
+	}
+	cp := os.NewFile(uintptr(fd), "shard copy")
+	if err := check(f, cp, size, want); err != nil {
+		return nil, 0, errors.Join(err, cp.Close())
+	}
+	return cp, size, nil
+}
+
+// check copies size bytes of f into cp through the hash, so a shorter file fails, and checks the copy's
+// header and hash.
+func check(f, cp *os.File, size int64, want [32]byte) error {
+	h := sha256.New()
+	if _, err := io.CopyN(io.MultiWriter(h, cp), f, size); err != nil {
+		return fmt.Errorf("read shard: copy: %w", err)
 	}
 	header := make([]byte, 100)
-	if _, err := io.ReadFull(f, header); err != nil {
+	if _, err := cp.ReadAt(header, 0); err != nil {
 		return fmt.Errorf("read shard header: %w", err)
 	}
 	if !bytes.HasPrefix(header, []byte("SQLite format 3\x00")) || header[18] != 1 || header[19] != 1 {
 		return errors.New("read shard: not a sealed SQLite database (WAL mode or no header)")
-	}
-	h := sha256.New()
-	h.Write(header)
-	if _, err := io.Copy(h, f); err != nil {
-		return fmt.Errorf("read shard: hash: %w", err)
 	}
 	if [32]byte(h.Sum(nil)) != want {
 		return errors.New("read shard: the file's SHA-256 is not the sealed one")
@@ -262,19 +297,69 @@ func sealedFile(path string, want [32]byte) error {
 }
 
 // Read calls fn with every record of the shard at path, whose SHA-256 must be want (what Seal
-// returned), in seq order. It refuses another schema version or label, a gap in seq, a stored leaf
-// that differs from the record's, and an untruncated record whose data does not match its hash.
-func Read(ctx context.Context, path string, want [32]byte, fn func(rawrecord.Record) error) error {
-	if err := sealedFile(path, want); err != nil {
-		return err
-	}
-	db, err := open(path, "mode=ro&immutable=1")
+// returned), in seq order. It reads a copy it hashed while making (sealedCopy), never the file again:
+// the collector's uid owns the shard and could swap or rewrite it between a hash and a read (T18). It
+// refuses another schema version or label, a gap in seq, a stored leaf that differs from the record's,
+// and an untruncated record whose data does not match its hash.
+func Read(ctx context.Context, path string, want [32]byte, sc Scratch, fn func(rawrecord.Record) error) error {
+	cp, size, err := sealedCopy(path, want, sc)
 	if err != nil {
 		return err
 	}
-	defer db.Close() //nolint:errcheck // read-only
-	return records(ctx, db, fn)
+	defer cp.Close() //nolint:errcheck // the unnamed copy goes with its last descriptor
+	name, fsys, err := vfs.New(copyFS{f: cp, size: size})
+	if err != nil {
+		return fmt.Errorf("read shard: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+copyName+"?vfs="+name+"&mode=ro&immutable=1")
+	if err != nil {
+		return errors.Join(fmt.Errorf("open shard copy: %w", err), fsys.Close())
+	}
+	db.SetMaxOpenConns(1)
+	err = records(ctx, db, fn)
+	// The vfs refuses to unregister while SQLite holds the copy open, so the database closes first.
+	if cerr := db.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("close shard copy: %w", cerr))
+	}
+	if cerr := fsys.Close(); cerr != nil {
+		err = errors.Join(err, fmt.Errorf("read shard: %w", cerr))
+	}
+	return err
 }
+
+// copyName is the one file copyFS holds.
+const copyName = "shard"
+
+// copyFS gives SQLite's read-only vfs (modernc.org/sqlite/vfs) the copy and nothing else.
+type copyFS struct {
+	f    *os.File
+	size int64
+}
+
+func (c copyFS) Open(name string) (fs.File, error) {
+	if name != copyName {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
+	}
+	return copyFile{io.NewSectionReader(c.f, 0, c.size), copyInfo(c.size)}, nil
+}
+
+// copyFile reads the copy through ReadAt, so each open has its own offset.
+type copyFile struct {
+	*io.SectionReader
+	info copyInfo
+}
+
+func (c copyFile) Stat() (fs.FileInfo, error) { return c.info, nil }
+func (copyFile) Close() error                 { return nil }
+
+type copyInfo int64
+
+func (copyInfo) Name() string       { return copyName }
+func (i copyInfo) Size() int64      { return int64(i) }
+func (copyInfo) Mode() fs.FileMode  { return 0o400 }
+func (copyInfo) ModTime() time.Time { return time.Time{} }
+func (copyInfo) IsDir() bool        { return false }
+func (copyInfo) Sys() any           { return nil }
 
 // Leaf is what the ledger takes of a stored record (ADR 0027, points 1 and 6): its seq and stored leaf,
 // its provider, whether it was stored truncated, and its data unless it is the sensor's.
