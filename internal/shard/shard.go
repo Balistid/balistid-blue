@@ -238,9 +238,9 @@ func syncDir(path string) error {
 }
 
 // Scratch is where Read copies a shard before it reads it (ADR 0050): Dir is a directory with room for
-// the copy, Max the largest shard Read copies. The copy has no name (O_TMPFILE), so Dir's permissions do
-// not matter and nothing is left behind; Dir must not be on the store's filesystem, whose free space is
-// the collector's.
+// the copy, Max the largest shard Read copies. The copy has no name (O_TMPFILE), so no other uid can open
+// it and nothing is left behind. Dir must be on a filesystem the reader trusts to give back what it wrote
+// (not a FUSE mount another uid serves), and not on the store's, whose free space is the collector's.
 type Scratch struct {
 	Dir string
 	Max int64
@@ -270,17 +270,17 @@ func sealedCopy(path string, want [32]byte, sc Scratch) (*os.File, int64, error)
 		return nil, 0, fmt.Errorf("read shard: copy in %s: %w", sc.Dir, err)
 	}
 	cp := os.NewFile(uintptr(fd), "shard copy")
-	if err := check(f, cp, size, want); err != nil {
+	if err := check(struct{ io.Reader }{f}, cp, size, want); err != nil { // Read only: no second pass over the shard
 		return nil, 0, errors.Join(err, cp.Close())
 	}
 	return cp, size, nil
 }
 
-// check copies size bytes of f into cp through the hash, so a shorter file fails, and checks the copy's
-// header and hash.
-func check(f, cp *os.File, size int64, want [32]byte) error {
+// check copies size bytes of src into cp through the hash, so a shorter source fails, and checks the
+// copy's header and hash. src is a plain reader: what cp holds is what the hash saw, read once.
+func check(src io.Reader, cp *os.File, size int64, want [32]byte) error {
 	h := sha256.New()
-	if _, err := io.CopyN(io.MultiWriter(h, cp), f, size); err != nil {
+	if _, err := io.CopyN(io.MultiWriter(h, cp), src, size); err != nil {
 		return fmt.Errorf("read shard: copy: %w", err)
 	}
 	header := make([]byte, 100)
