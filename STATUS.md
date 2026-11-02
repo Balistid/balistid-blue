@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-02 by claude/opus-5.5 (#184-#188 on `main`; the CPU measurement on the reference host: this PR)
+Updated: 2026-11-02 by claude/opus-5.5 (CP5a, ADR 0045 and the collector's CPU profile in the range: this PR)
 
 ## Where we are
 
@@ -16,23 +16,23 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- #186 CP4 (c9a2258): the collector logs kernel and dispatcher loss and reasons 8-10 from auditstat's report.
-- #184 (ADR 0041) CI on `merge_group`, fuzz matrix from the source; #185 (0042) approvals; #187 (0043) local
-  mode; #188 (0044) agents merge ADRs. cpu-1000 on the host: lean auditd.conf/Laurel 0.629 (auditd 0.17, Laurel
-  0.22, collector 0.25), base 0.704: config tuning stops; host benchmarks explain ~0.06 of the collector's 0.25.
-- #175 balistid-auditstat on `main` (2a2fac7); audit-set (#180, fff816a): under -e 2 auditstat's uid gets EPERM for every
-  lock gate, EEXIST for the pid, EPERM for user messages, and may still reset lost and flip loginuid (KVM PASS).
+- This PR (CP5a; ADR 0039 pts 2, 4, 5; ADR 0045): kernel (transient, sustained) and dispatcher loss judged against
+  the guest's bracket, the kernel's by the printk time of `audit_lost` (AUDIT_GET sleeps while the backlog is full).
+  KVM at 719d52c: 6/6 PASS, alerts 0.4-25 s after the loss. Collector profile in the range (exp branch): per-record
+  stat ~11 %, re-prepared insert ~10 %, JSON Unmarshal for the id ~10 %, goroutine handoff ~20 % of 0.195 cores.
 ## Next step
-1. CPU first: a profile of the collector inside the range during cpu-1000, then an own audit netlink reader
-   measured against auditd with Laurel, and an ADR on the data source (reopens 0004) if it wins.
-   Then CP5a (branch feat/auditstat-cp5: `-queue-bytes` done; brackets, judged kernel and dispatcher, 10 runs).
+1. CPU: the collector's cheap fixes (stat cache, one prepared insert, the id without Unmarshal) in their own
+   pull request; then an own audit netlink reader measured against auditd with Laurel, and an ADR on the data
+   source (reopens 0004) if it wins: auditd with Laurel alone is 0.39-0.46 of the 0.5.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
-3. CP5b: four auditd crashes and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
+3. CP5b: `-queue-bytes` in the range (its drop-in line is at docs_budget's 200 bytes: the maintainer decides),
+   four auditd crashes, 10 runs per shape and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
 4. Host install (9.5) when every range metric and the product bar pass: balistid-install, R2 keys, the store on the
    existing fs with its reserve, x32, io_uring, alarms, a syscall-filtered build unit; L12 and the witness e2e after it.
 ## Open decisions (maintainer)
-- #142: seal continuity left to the Pi; appends wait each (about 45 ms on btrfs). #148: `-final` ends anchoring until rollover.
-- #142: the ledger socket is 0666 and serves one connection; a local flood can delay the collector's reconnect.
+- CP5a: no range unit sets `-queue-bytes` yet: a longer line cap for `range/*.conf`, or one range flag.
+- #142: seal continuity left to the Pi (appends wait ~45 ms on btrfs); the ledger socket is 0666, one connection,
+  so a local flood can delay the collector's reconnect. #148: `-final` ends anchoring until rollover.
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - C1: `shard.Read` hashes a shard, then SQLite reopens it by path: a collector broken through T18 could swap it.
 - #170: another writer filling the store's fs past its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
