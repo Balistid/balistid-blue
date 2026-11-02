@@ -93,8 +93,12 @@ func TestRecordScanFindsEachFault(t *testing.T) {
 		records []rawrecord.Record
 		want    string
 	}{
-		"cut":        {[]rawrecord.Record{laurelExecOf(t, 1, cut)}, "record_131k=cut"},
-		"twice":      {[]rawrecord.Record{laurelExecOf(t, 1, small.args(tok)), laurelExecOf(t, 2, small.args(tok))}, "record_131k=twice"},
+		"cut":   {[]rawrecord.Record{laurelExecOf(t, 1, cut)}, "record_131k=cut"},
+		"twice": {[]rawrecord.Record{laurelExecOf(t, 1, small.args(tok)), laurelExecOf(t, 2, small.args(tok))}, "record_131k=twice"},
+		"malformed": {[]rawrecord.Record{func() rawrecord.Record {
+			x := laurelExecOf(t, 1, small.args(tok))
+			return rawrecord.New(1, store.SensorProvider, 0, 1, x.Data[:len(x.Data)-2]) // every argument, no closing braces
+		}()}, "record_131k=malformed"},
 		"missing":    {nil, "record_131k=missing"},
 		"stats late": {[]rawrecord.Record{statsRecord(1, 0, 0), laurelExecOf(t, 2, small.args(tok))}, "stats_after=no"},
 		"large whole": {[]rawrecord.Record{{Seq: 1, Provider: store.SensorProvider, ProviderSeq: 1,

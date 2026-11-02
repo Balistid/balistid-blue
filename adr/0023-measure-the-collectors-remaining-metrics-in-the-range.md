@@ -26,10 +26,10 @@ to EOF, writes stats every 60 s on a 250 ms tick and none at stop; a refusal sum
    acknowledged seq), or the seqs read without a gap ending below S. INVALID: no or two recovery records (a kill right
    after a seal leaves none), its seq not last+1. H counts from the exec, so auditd's and Laurel's latency is charged to
    the collector: a lagging pipeline is a MISS, never a hidden loss.
-3. record_max_kib: execs with 131 072 B (1024 arguments), 2 000 000 B and, with a 32 MiB stack limit, 6 000 000 B of
-   argv; a child with Laurel's uid connects, the guest sends Laurel SIGHUP (its re-exec ends the old connection, so the
-   collector reads the child's three malformed lines at once; they count as a Laurel restart), and the store is read
-   after the next stats record. MISS unless both smaller execs are stored whole, the large one truncated with its
+3. record_max_kib: a child with Laurel's uid connects, the guest sends Laurel SIGHUP and one exec to wake it (its re-exec
+   ends the old connection, so the collector reads the child's three malformed lines at once; they count as a Laurel
+   restart); then execs with 131 072 B (1024 arguments), 2 000 000 B and, with a 32 MiB stack limit, 6 000 000 B of argv,
+   none in flight at the re-exec (#219), and the store is read after the next stats record. MISS unless both smaller execs are stored whole, the large one truncated with its
    first argument in the head and its last in the tail, the three lines stored exactly (the long one by head, tail,
    length and SHA-256), no loss record, and the stats count every truncated and malformed record before them.
 4. refusal_summary_s: root and a uid in `_laurel`'s group each connect 100 times a second for 150 s; under 99 % of

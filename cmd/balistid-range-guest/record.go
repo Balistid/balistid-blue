@@ -171,6 +171,10 @@ func inject(ctx context.Context, token string) error {
 	if err == nil {
 		err = hupLaurel()
 	}
+	if err == nil {
+		// Laurel reads the SIGHUP's flag only after its next input line; an audited exec gives it one.
+		err = exec.CommandContext(ctx, "/usr/bin/true").Run()
+	}
 	if err != nil {
 		_ = child.Process.Kill()
 		_ = child.Wait()
@@ -303,6 +307,8 @@ func (s *recordScan) argvStored(c argvCase, a []string, x rawrecord.Record) stri
 	switch {
 	case s.cases[c.fact] != "":
 		return "twice"
+	case x.ProviderSeq == 0:
+		return "malformed" // every argument may be there, but the collector could not read it as Laurel's
 	case x.Truncated() && x.OrigLen >= c.minBytes && c.minBytes > 0 && len(x.Data) == rawrecord.MaxBytes &&
 		bytes.Contains(x.Data[:rawrecord.MaxBytes/2], []byte(`"`+a[0]+`"`)) &&
 		bytes.Contains(x.Data[rawrecord.MaxBytes/2:], []byte(`"`+a[len(a)-1]+`"`)):
