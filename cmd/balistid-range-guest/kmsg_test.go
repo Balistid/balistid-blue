@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 )
@@ -77,5 +80,39 @@ func TestStateWatchBracketsByItsOwnReads(t *testing.T) {
 	}
 	if w.cur.value != "yes" {
 		t.Errorf("current %+v", w.cur)
+	}
+}
+
+// kmsgPair is a kmsgReader over one end of a SEQPACKET socket pair, which keeps records apart as /dev/kmsg does,
+// with record already waiting on it.
+func kmsgPair(t *testing.T, record string) *kmsgReader {
+	t.Helper()
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_SEQPACKET|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fds[0]); _ = unix.Close(fds[1]) })
+	if _, err := unix.Write(fds[1], []byte(record)); err != nil {
+		t.Fatal(err)
+	}
+	return &kmsgReader{fd: fds[0], buf: make([]byte, 8192)}
+}
+
+// A scan whose context ended reads no record, and awaitMark then fails at once though the mark is waiting.
+func TestKmsgReadsStopWithTheirContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	k := kmsgPair(t, "12,7,1000,-;"+kmsgMarkPrefix+"after")
+	m := &kmsgMark{tag: "after"}
+	k.marks = append(k.marks, m)
+	if at, _, err := k.scan(ctx, 0, m); at != 0 || err != nil || m.seen {
+		t.Fatalf("a cancelled scan read on: %s %v, mark seen %v", at, err, m.seen)
+	}
+	start := time.Now()
+	if err := k.awaitMark(ctx, m); err == nil || m.seen || time.Since(start) > 100*time.Millisecond {
+		t.Errorf("awaitMark with an ended context: %v, seen %v, after %s", err, m.seen, time.Since(start))
+	}
+	if _, _, err := k.scan(t.Context(), 0, m); err != nil || !m.seen || m.at != time.Millisecond {
+		t.Errorf("a live scan: %v, mark %+v", err, m)
 	}
 }
