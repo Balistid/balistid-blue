@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-03 by claude/opus-5.5 (ADR 0051: each threat-model hole has a milestone or is accepted)
+Updated: 2026-11-03 by claude/opus-5.5 (ADR 0051 maps the holes; #222 fixes #219; issues on milestones)
 
 ## Where we are
 
@@ -23,10 +23,10 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #217: the ledger socket's local flood accepted in T2 (#207). #218: shellcheck pinned by sha256 (#208).
 - ADR 0041's checks hold: the bot's direct `PUT .../merge` refused (405, "must be made through the merge queue"),
   `main` ends at each group's `head_sha` (#195, #214, #215 alone, #216-#218 queued together), history linear.
-- #219: `record-max` misses on `main` too (the 2 MB exec stored twice), found by the full suite.
-- #194 `balistid status` (ADR 0048), #195, #214 (ADR 0049), residual issues #196-#213: as before (git log).
+- #222 (#219): `record-max` passes again (3 of 3 on KVM): Laurel 0.8.2 writes its state before its SIGHUP flush, so an
+  event in flight is stored twice (T25 residual); the trial now sends SIGHUP before its execs. Opus critic CLOSED.
 ## Next step
-1. /security-audit of floor 0 (maintainer); #219 before 9.5 (a floor-0 metric that misses).
+1. /security-audit of floor 0 (maintainer).
 2. 9.5 (milestone; ADR 0051 maps the 28 holes: T8's x32 and T9 block it, T9 needs a hardware key) when every range
    metric and the product bar pass: #199, #213 first; #197, #201, #204 the maintainer's; 2026-11-10 C3 (#200).
 ## Open decisions (maintainer)
