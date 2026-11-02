@@ -52,9 +52,9 @@ is not installed yet, so no host has a mode, local history or an alert path for 
 - The report is world-readable: every local uid learns when the recorder is UNKNOWN, why, and how many losses wait
   to be stored. Any unprivileged status tells the uid running it the same, and A1 runs as the maintainer's uid, so
   a group-readable report would hide nothing from A1.
-- Residual: no run freezes the collector itself (its stale report is tested in-process); the text form is built
-  from the same result as `--json` and only `--json` runs in the range.
-- A collector that stops writing shows UNKNOWN within 5 s; one that cannot write journals once and ages out.
+- Residual: no run freezes the collector (its stale report is tested in-process); only `--json` runs in the range.
+- A collector that stops writing shows UNKNOWN within 5 s. A failed write removes the old report, so the CLI reads
+  UNKNOWN at once; only if that fails too does it stand until 5 s. The collector never stops over its report.
 - In local mode the Pi's two units join the parts and the trial (they are excluded today as the Pi's).
 - Tests: the report's encoding, owner, age and reasons; each unit state; the parser's fuzz; a negative judge case
   for each way to a false PASS (unproven break, store against the CLI, part not shown, as root, an unbroken unit).

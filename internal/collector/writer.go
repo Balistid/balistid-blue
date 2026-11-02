@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -241,9 +242,10 @@ type Writer struct {
 
 // statusState is the writer's report for balistid status (ADR 0048).
 type statusState struct {
-	statusHealth string    // the health last published
-	statusAt     time.Time // when it was
-	statusErr    bool      // the last write failed: its next failure is not journaled again
+	statusHealth string                                                 // the health last published
+	statusAt     time.Time                                              // when it was
+	statusErr    bool                                                   // the last write failed: its next failure is not journaled again
+	writeFile    func(path string, data []byte, perm os.FileMode) error // wholefile.Write; tests make it fail
 }
 
 // ledgerState is the writer's side of the stream to the ledger (ADR 0027).
