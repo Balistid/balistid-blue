@@ -547,7 +547,7 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 	var rise time.Duration
 	var exact bool
 	for rise == 0 && err == nil && pause(flood, lostPoll) {
-		rise, exact, err = klog.scan(uint32(base), first)
+		rise, exact, err = klog.scan(flood, uint32(base), first)
 	}
 	if err == nil && rise == 0 {
 		err = fmt.Errorf("the kernel logged no lost record over %d within %s", base, kernelWait)
@@ -652,10 +652,11 @@ func (k *kmsgReader) mark(tag string) (*kmsgMark, error) {
 	return m, nil
 }
 
-// scan reads the waiting records, at most kmsgBatch: it stamps the marks it meets, and returns the kernel's time of
-// the first record that counts lost above base, 0 before one came, and whether it counts base+1, the rise itself.
-func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, bool, error) {
-	for range kmsgBatch {
+// scan reads the waiting records, at most kmsgBatch and none once ctx ended: it stamps the marks it meets, and
+// returns the kernel's time of the first record that counts lost above base, 0 before one came, and whether it
+// counts base+1, the rise itself.
+func (k *kmsgReader) scan(ctx context.Context, base uint32, need *kmsgMark) (time.Duration, bool, error) {
+	for i := 0; i < kmsgBatch && ctx.Err() == nil; i++ {
 		n, err := unix.Read(k.fd, k.buf)
 		switch {
 		case errors.Is(err, unix.EAGAIN):
@@ -696,11 +697,13 @@ func takeRecord(r rangeguest.KmsgRecord, marks []*kmsgMark, base uint32, need *k
 
 // awaitMark reads the kernel's log until m is stamped, for at most a second.
 func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
-	for deadline := time.Now().Add(time.Second); !m.seen; {
-		if _, _, err := k.scan(math.MaxUint32, m); err != nil {
+	wait, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	for !m.seen {
+		if _, _, err := k.scan(wait, math.MaxUint32, m); err != nil {
 			return err
 		}
-		if !m.seen && (time.Now().After(deadline) || !pause(ctx, 10*time.Millisecond)) {
+		if !m.seen && !pause(wait, 10*time.Millisecond) {
 			return fmt.Errorf("mark %s not read back from the kernel's log", m.tag)
 		}
 	}
@@ -708,24 +711,29 @@ func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 }
 
 // overflowDispatcher stops Laurel and execs until auditd's state file, read and never signalled, says its plugin
-// queue overflowed, then resumes Laurel. It waits for a fresh "no" first, so the bracket, from the mtime of the
-// last state file that read no to that of the first that read yes, starts near the injection. The mtimes are wall
-// clock: the offset to uptime is read at every poll, and a spread over clockSpread fails the run.
+// queue overflowed, then resumes Laurel. The bracket is the guest's own uptime, no wall clock: the overflow came
+// after the last "no" generation was written, so after the last read that still saw the one before it, and before
+// the read that first saw "yes" ended. It waits for a fresh "no" first, so the bracket starts near the injection.
 func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
-	var off offsets
-	if err := off.read(); err != nil {
+	w := stateWatch{read: readState, now: uptime}
+	if _, _, _, err := w.poll(); err != nil {
 		return 0, 0, err
 	}
-	first, err := readState()
-	if err != nil {
-		return 0, 0, err
+	var from time.Duration
+	for deadline := time.Now().Add(freshStateWait); from == 0; {
+		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
+			return 0, 0, errors.New("auditd wrote no fresh state file")
+		}
+		fresh, prev, _, err := w.poll()
+		if err != nil {
+			return 0, 0, err
+		}
+		if fresh {
+			from = max(prev, time.Nanosecond)
+		}
 	}
-	no, err := freshState(ctx, first.mtime)
-	if err != nil {
-		return 0, 0, err
-	}
-	if no.value != "no" {
-		return 0, 0, fmt.Errorf("the state file reads overflow %q before the injection", no.value)
+	if w.cur.value != "no" {
+		return 0, 0, fmt.Errorf("the state file reads overflow %q before the injection", w.cur.value)
 	}
 	pid, err := strconv.Atoi(laurelPID())
 	if err != nil {
@@ -741,22 +749,19 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 			_ = exec.CommandContext(flood, "/usr/bin/true").Run()
 		}
 	})
-	var yes time.Time
-	for yes.IsZero() && err == nil && pause(flood, stateEvery) {
-		if err = off.read(); err != nil {
+	var to time.Duration
+	for to == 0 && err == nil && pause(flood, stateEvery) {
+		fresh, prev, after, perr := w.poll()
+		if err = perr; err != nil || !fresh {
 			continue
 		}
-		var st stateRead
-		if st, err = readState(); err != nil || st.value == stateChanged || st.mtime.Equal(no.mtime) {
-			continue
-		}
-		switch st.value {
+		switch w.cur.value {
 		case "no":
-			no = st
+			from = prev
 		case "yes":
-			yes = st.mtime
+			to = after
 		default:
-			err = fmt.Errorf("the state file reads overflow %q", st.value)
+			err = fmt.Errorf("the state file reads overflow %q", w.cur.value)
 		}
 	}
 	stopFlood()
@@ -767,56 +772,49 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 	switch {
 	case err != nil:
 		return 0, 0, err
-	case yes.IsZero():
+	case to == 0:
 		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
 	}
-	return off.bracket(no.mtime, yes)
+	return from, to, nil
 }
 
-// clockSpread bounds how far the wall clock may move against uptime during a dispatcher injection.
-const clockSpread = time.Second
+// stateWatch follows auditd's state file by the guest's uptime. A generation is told apart by its mtime, which is
+// never turned into a time; seen is the uptime before the latest read that still returned the current one.
+type stateWatch struct {
+	read func() (stateRead, error)
+	now  func() (time.Duration, error)
+	cur  stateRead
+	seen time.Duration
+}
 
-// offsets are the least and most of the wall clock less uptime seen so far.
-type offsets struct{ lo, hi time.Duration }
-
-func (o *offsets) read() error {
-	wall := time.Now().UnixNano()
-	up, err := uptime()
+// poll reads the state file once. fresh is true when it returned a new generation (never on the first read); prev
+// is then the uptime before the last read of the generation before it, which that one was written after. after is
+// the uptime once this read ended. A read the file changed under tells nothing.
+func (w *stateWatch) poll() (fresh bool, prev, after time.Duration, err error) {
+	before, err := w.now()
 	if err != nil {
-		return err
+		return false, 0, 0, err
 	}
-	d := time.Duration(wall) - up
-	if o.lo == 0 && o.hi == 0 {
-		o.lo, o.hi = d, d
+	st, err := w.read()
+	if err != nil {
+		return false, 0, 0, err
 	}
-	o.lo, o.hi = min(o.lo, d), max(o.hi, d)
-	return nil
-}
-
-// bracket is from to to in uptime, from taken with the largest offset and to with the least, so it only widens.
-func (o *offsets) bracket(from, to time.Time) (time.Duration, time.Duration, error) {
-	if o.hi-o.lo > clockSpread {
-		return 0, 0, fmt.Errorf("the wall clock moved %s against uptime during the injection", o.hi-o.lo)
+	if after, err = w.now(); err != nil {
+		return false, 0, 0, err
 	}
-	f, t := time.Duration(from.UnixNano())-o.hi, time.Duration(to.UnixNano())-o.lo
-	if f <= 0 || t < f {
-		return 0, 0, fmt.Errorf("the state files map to %s..%s of uptime", f, t)
+	switch {
+	case st.value == stateChanged:
+		return false, 0, after, nil
+	case w.cur.mtime.IsZero():
+		w.cur, w.seen = st, before
+		return false, 0, after, nil
+	case st.mtime.Equal(w.cur.mtime):
+		w.seen = before
+		return false, 0, after, nil
 	}
-	return f, t, nil
-}
-
-// freshState waits for a whole state file of another mtime than mtime.
-func freshState(ctx context.Context, mtime time.Time) (stateRead, error) {
-	for deadline := time.Now().Add(freshStateWait); time.Now().Before(deadline) && pause(ctx, stateEvery); {
-		st, err := readState()
-		if err != nil {
-			return stateRead{}, err
-		}
-		if st.value != stateChanged && !st.mtime.Equal(mtime) {
-			return st, nil
-		}
-	}
-	return stateRead{}, errors.New("auditd wrote no fresh state file")
+	prev = w.seen
+	w.cur, w.seen = st, before
+	return true, prev, after, nil
 }
 
 // stateRead is auditd's state file's overflow flag and its mtime.
