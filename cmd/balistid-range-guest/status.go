@@ -51,6 +51,7 @@ func runStatus(ctx context.Context, r *report) error {
 	r.add(rangevm.FactStatusUID, strconv.FormatUint(uint64(cred.Uid), 10))
 	r.add(rangevm.FactUnitsInstalled, balistidUnits(ctx))
 	cli := func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }
+	diagNetStderr(ctx)
 	runs := rangevm.StatusRuns()
 	done := make([]statusRun, 0, len(runs))
 	for _, run := range runs {

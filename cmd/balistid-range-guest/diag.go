@@ -6,8 +6,16 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"strings"
 )
+
+// diagNetStderr sends balistid-net's stderr to the journal for this boot.
+func diagNetStderr(ctx context.Context) {
+	_ = os.MkdirAll("/run/systemd/system/balistid-net.service.d", 0o755)
+	_ = os.WriteFile("/run/systemd/system/balistid-net.service.d/diag.conf", []byte("[Service]\nStandardError=journal\nStandardOutput=journal\n"), 0o644)
+	_ = systemctl(ctx, "daemon-reload")
+}
 
 func diagUnit(ctx context.Context, unit string) {
 	for _, args := range [][]string{
