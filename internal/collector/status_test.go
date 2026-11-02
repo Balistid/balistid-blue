@@ -60,11 +60,11 @@ func TestStatusReportIsRewrittenEverySecond(t *testing.T) {
 	first := readStatus(t, path)
 	*boot = 1
 	r.step(250 * time.Millisecond)
-	if rep := readStatus(t, path); rep.Seq != first.Seq {
+	if rep := readStatus(t, path); rep.At != first.At {
 		t.Fatalf("rewritten after 250 ms of the same health: %+v", rep)
 	}
 	r.step(time.Second)
-	if rep := readStatus(t, path); rep.Seq != first.Seq+1 || rep.Boot != 1 {
+	if rep := readStatus(t, path); rep.At == first.At || rep.Boot != 1 {
 		t.Fatalf("not rewritten after a second: %+v", rep)
 	}
 }

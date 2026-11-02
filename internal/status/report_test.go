@@ -13,7 +13,7 @@ var unknownStore = entry.Health{State: entry.StateUnknown, Reason: entry.ReasonS
 
 func TestReportRoundTrips(t *testing.T) {
 	for _, h := range []entry.Health{{State: entry.StateOK}, unknownStore} {
-		r := Report{Seq: 9, Boot: 12345, Health: h, At: 1790899200e9}
+		r := Report{Boot: 12345, Health: h, At: 1790899200e9}
 		b, err := r.Encode()
 		if err != nil {
 			t.Fatal(err)
@@ -39,7 +39,7 @@ func TestReportRefusesAHealthOutsideTheEntryRules(t *testing.T) {
 			t.Errorf("%s: encoded", name)
 		}
 	}
-	good, err := Report{Seq: 1, Health: unknownStore}.Encode()
+	good, err := Report{Boot: 1, Health: unknownStore}.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestReportRefusesAHealthOutsideTheEntryRules(t *testing.T) {
 	for name, mutate := range map[string]func([]byte) []byte{
 		"OK with a reason": func(b []byte) []byte { b[reason-1] = byte(entry.StateOK); return b },
 		"another label":    func(b []byte) []byte { b[0] ^= 1; return b },
-		"another entry":    func(b []byte) []byte { b[len(Label)+1+16] ^= 1; return b },
+		"another entry":    func(b []byte) []byte { b[len(Label)+1+8] ^= 1; return b },
 		"short":            func(b []byte) []byte { return b[:len(b)-1] },
 		"long":             func(b []byte) []byte { return append(b, 0) },
 	} {
@@ -59,14 +59,14 @@ func TestReportRefusesAHealthOutsideTheEntryRules(t *testing.T) {
 
 func TestReadReportReadsTheOwnersFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status")
-	b, err := Report{Seq: 2, Boot: 7, Health: entry.Health{State: entry.StateOK}}.Encode()
+	b, err := Report{Boot: 7, Health: entry.Health{State: entry.StateOK}}.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := ReadReport(path, os.Getuid()); err != nil || r.Seq != 2 {
+	if r, err := ReadReport(path, os.Getuid()); err != nil || r.Boot != 7 {
 		t.Fatalf("%+v, %v", r, err)
 	}
 	if _, err := ReadReport(path, os.Getuid()+1); err == nil {
@@ -77,7 +77,7 @@ func TestReadReportReadsTheOwnersFile(t *testing.T) {
 // Whatever DecodeReport accepts, Encode gives back byte for byte.
 func FuzzDecodeReport(f *testing.F) {
 	for _, h := range []entry.Health{{State: entry.StateOK}, unknownStore} {
-		b, err := Report{Seq: 3, Boot: 4, Health: h}.Encode()
+		b, err := Report{Boot: 4, Health: h}.Encode()
 		if err != nil {
 			f.Fatal(err)
 		}
