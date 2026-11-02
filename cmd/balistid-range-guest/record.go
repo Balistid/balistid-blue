@@ -72,21 +72,22 @@ func malformedMarkers(token string) []string {
 	return []string{token + "-malformed-text", token + "-malformed-json", token + "-malformed-long"}
 }
 
-// runRecord execs the three argv cases, has a child with Laurel's uid send the malformed lines while
-// Laurel's connection is ended by SIGHUP, waits for the next stats record and reports what the store
-// holds (ADR 0023, point 3).
+// runRecord has a child with Laurel's uid send the malformed lines while Laurel's connection is ended
+// by SIGHUP, then execs the three argv cases, waits for the next stats record and reports what the
+// store holds (ADR 0023, point 3). The SIGHUP comes first: Laurel 0.8.2 writes its state before it
+// flushes, so an event in flight at the re-exec is stored twice, a cut head then whole (#219).
 func runRecord(ctx context.Context, r *report) error {
 	token, err := token("balistid-record")
 	if err != nil {
+		return r.fail(err.Error())
+	}
+	if err := inject(ctx, token); err != nil {
 		return r.fail(err.Error())
 	}
 	for _, c := range argvCases {
 		if err := execArgv(ctx, c, token); err != nil {
 			return r.fail(err.Error())
 		}
-	}
-	if err := inject(ctx, token); err != nil {
-		return r.fail(err.Error())
 	}
 	time.Sleep(statsWait)
 	scan := newRecordScan(token)
