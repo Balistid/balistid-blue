@@ -489,8 +489,9 @@ func failStore() error {
 // stopAuditd stops auditd and floods syscall records until the kernel logs its first lost record (no exec while
 // auditd stands: each would wait out the backlog). The kernel's log, not AUDIT_GET, times it: audit_receive sleeps
 // the sender of any audit request up to backlog_wait_time while the backlog is full. Two marks the guest writes
-// there tie the kernel's clock to uptime. Transient resumes auditd at once; sustained leaves it stopped until
-// finish, as the alert must come while it stands (ADR 0039, point 5; ADR 0045).
+// there tie the kernel's clock to uptime. When printk's rate limit dropped the first count, the bracket starts where
+// lost was last read as it was. Transient resumes auditd at once; sustained leaves it stopped until finish, as the
+// alert must come while it stands (ADR 0039, point 5; ADR 0045).
 func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 	pid, err := strconv.Atoi(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "MainPID", "auditd.service")))
 	switch {
@@ -498,6 +499,10 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 		return injected{}, fmt.Errorf("auditd pid: %w", err)
 	case pid <= 0:
 		return injected{}, errors.New("auditd has no main pid")
+	}
+	baseAt, err := uptime()
+	if err != nil {
+		return injected{}, err
 	}
 	base, err := strconv.ParseUint(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"], 10, 32)
 	if err != nil {
@@ -534,8 +539,9 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 		return nil
 	}
 	var rise time.Duration
+	var exact bool
 	for rise == 0 && err == nil && pause(flood, lostPoll) {
-		rise, err = klog.scan(uint32(base), first)
+		rise, exact, err = klog.scan(uint32(base), first)
 	}
 	if err == nil && rise == 0 {
 		err = fmt.Errorf("the kernel logged no lost record over %d within %s", base, kernelWait)
@@ -563,6 +569,9 @@ func stopAuditd(ctx context.Context, sustained bool) (injected, error) {
 		return injected{}, errors.Join(err, rerr)
 	}
 	inj.from, inj.to, err = kernelBracket(rise, first, second)
+	if !exact {
+		inj.from = baseAt
+	}
 	inj.end = inj.to
 	return inj, errors.Join(err, rerr)
 }
@@ -633,32 +642,32 @@ func (k *kmsgReader) mark(tag string) (*kmsgMark, error) {
 	return m, nil
 }
 
-// scan reads every waiting record: it stamps the marks it meets, and returns the kernel's time of the record that
-// counts lost base+1, 0 before one came. A count above it first means the kernel's log skipped the rise.
-func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, error) {
+// scan reads every waiting record: it stamps the marks it meets, and returns the kernel's time of the first record
+// that counts lost above base, 0 before one came, and whether it counts base+1, the rise itself.
+func (k *kmsgReader) scan(base uint32, need *kmsgMark) (time.Duration, bool, error) {
 	for {
 		n, err := unix.Read(k.fd, k.buf)
 		switch {
 		case errors.Is(err, unix.EAGAIN):
-			return 0, nil
+			return 0, false, nil
 		case errors.Is(err, unix.EPIPE): // overwritten before it was read: the next read resumes
 			continue
 		case err != nil:
-			return 0, fmt.Errorf("read /dev/kmsg: %w", err)
+			return 0, false, fmt.Errorf("read /dev/kmsg: %w", err)
 		}
 		r, err := rangeguest.ParseKmsg(string(k.buf[:n]))
 		if err != nil {
-			return 0, fmt.Errorf("read /dev/kmsg: %w", err)
+			return 0, false, fmt.Errorf("read /dev/kmsg: %w", err)
 		}
-		if rise, err := takeRecord(r, k.marks, base, need); rise != 0 || err != nil {
-			return rise, err
+		if at, exact, err := takeRecord(r, k.marks, base, need); at != 0 || err != nil {
+			return at, exact, err
 		}
 	}
 }
 
-// takeRecord stamps the mark r is, or returns the kernel's time of r when it counts lost base+1; a count above
-// base+1 first means the kernel's log skipped the rise, and a count before need was stamped came before the stop.
-func takeRecord(r rangeguest.KmsgRecord, marks []*kmsgMark, base uint32, need *kmsgMark) (time.Duration, error) {
+// takeRecord stamps the mark r is, or returns the kernel's time of r when it counts lost above base, and whether it
+// counts base+1; a count before need was stamped came before the stop.
+func takeRecord(r rangeguest.KmsgRecord, marks []*kmsgMark, base uint32, need *kmsgMark) (time.Duration, bool, error) {
 	for _, m := range marks {
 		if r.Msg == kmsgMarkPrefix+m.tag {
 			m.at, m.seen = r.At, true
@@ -667,19 +676,17 @@ func takeRecord(r rangeguest.KmsgRecord, marks []*kmsgMark, base uint32, need *k
 	lost, ok := rangeguest.AuditLost(r.Msg)
 	switch {
 	case !ok || lost <= base:
-		return 0, nil
+		return 0, false, nil
 	case !need.seen:
-		return 0, fmt.Errorf("lost %d logged before mark %s", lost, need.tag)
-	case lost != base+1:
-		return 0, fmt.Errorf("the kernel's log shows lost %d first, after %d", lost, base)
+		return 0, false, fmt.Errorf("lost %d logged before mark %s", lost, need.tag)
 	}
-	return max(r.At, time.Nanosecond), nil
+	return max(r.At, time.Nanosecond), lost == base+1, nil
 }
 
 // awaitMark reads the kernel's log until m is stamped, for at most a second.
 func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 	for deadline := time.Now().Add(time.Second); !m.seen; {
-		if _, err := k.scan(math.MaxUint32, m); err != nil {
+		if _, _, err := k.scan(math.MaxUint32, m); err != nil {
 			return err
 		}
 		if !m.seen && (time.Now().After(deadline) || !pause(ctx, 10*time.Millisecond)) {
