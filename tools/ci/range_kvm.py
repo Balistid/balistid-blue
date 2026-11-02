@@ -97,7 +97,7 @@ def print_profile(state: Path) -> None:
     root = state / "balistid-range" / "results"
     for d, dirs, names in os.walk(state, followlinks=True):
         print(f"PROFTREE {d} {sorted(dirs)[:20]} {sorted(names)[:20]}", flush=True)
-    for p in sorted(root.glob("*/serial*.txt")) + sorted(root.glob("*/*/serial*.txt")):
+    for p in sorted(root.glob("*/serial*")):
         if p.is_symlink() or not p.is_file():
             continue
         data = p.read_bytes()[: 80 << 20]
