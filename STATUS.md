@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-02 by claude/opus-5.5 (#206: shard.Read reads the copy it hashed, this PR, ADR 0050)
+Updated: 2026-11-02 by claude/opus-5.5 (#216, #217, #218 merged; #219 found; ADR 0041's checks hold)
 
 ## Where we are
 
@@ -16,19 +16,19 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- This PR (ADR 0050, #206): `shard.Read` reads only an unnamed copy it hashed while making (modernc vfs), so the
-  collector's uid can no longer swap or rewrite what a reader takes as sealed; the guest copies to its /tmp.
-- #194 (ADR 0048): `balistid status [--json]` shows each floor-0 unit from `systemctl show` and the collector's health from a
-  74-byte report in /run/balistid-collector (0644, read by owner, size, age at most 5 s); OK only when every part is.
-  Trials status-1/2 break each unit, freeze auditd and Laurel; the judge checks every CLI call against the store's
-  health and lets a MISS outrank INVALID. KVM PASS at 88d1310 (both); Opus critic CLOSED; Codex F1 accepted (acceptance).
-- #195: the Pi's state refuses bytes after its object. #214 (ADR 0049): accepted limits folded into T11, T21, T27,
-  T28 and the scope (local mode); cap 13200 B. Residual triage: issues #196-#213, label `residual`, by milestone.
-- Merge queue on (ADR 0041 point 2, maintainer 2026-11-02): rebase, one PR at a time, strict off.
+- #216 (ADR 0050, #206): `shard.Read` reads only an unnamed copy it hashed while making (modernc vfs), so the
+  collector's uid can no longer swap or rewrite what a reader takes as sealed; the guest copies to its /tmp. All 63
+  trials on 2a64d1b: none worse than `main` (full-fs and the 909147-record sustained store read through the copies);
+  Opus critic CLOSED after one reply round; Codex left out by the maintainer (usage against the change's size).
+- #217: the ledger socket's local flood accepted in T2 (#207). #218: shellcheck pinned by sha256 (#208).
+- ADR 0041's checks hold: the bot's direct `PUT .../merge` refused (405, "must be made through the merge queue"),
+  `main` ends at each group's `head_sha` (#195, #214, #215 alone, #216-#218 queued together), history linear.
+- #219: `record-max` misses on `main` too (the 2 MB exec stored twice), found by the full suite.
+- #194 `balistid status` (ADR 0048), #195, #214 (ADR 0049), residual issues #196-#213: as before (git log).
 ## Next step
-1. Before /security-audit, milestone `security-audit`: #207 ledger socket, #208.
-2. /security-audit of floor 0 (maintainer), then 9.5 (#196-#205, #213) when every range metric and the product bar pass;
-   `range-kvm` required after a week of runs (0028); 2026-11-10 C3 = B4.9 (reinstall, suite).
+1. /security-audit of floor 0 (maintainer); #219 before 9.5 (a floor-0 metric that misses).
+2. 9.5 (#196-#205, #213) when every range metric and the product bar pass: #199 and #213 first (agent), #197, #201,
+   #204 are the maintainer's decisions; 2026-11-10 C3 = B4.9 (reinstall, suite, verdicts; #200).
 ## Open decisions (maintainer)
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
