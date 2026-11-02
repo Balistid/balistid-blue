@@ -152,12 +152,13 @@ func TestJudgeCPU(t *testing.T) {
 	}
 	run := func(change ...string) Outcome { return probeRun("cpu-1000", cpuFacts, base, change...) }
 	judgeCases(t, "cpu-1000", run, map[string][]string{
-		Miss: {"collector_usec=150000001", "auditd_usec=300000001,collector_usec=0"},
+		Miss: {"collector_usec=450000001", "auditd_usec=600000001,collector_usec=0"},
 		Invalid: {
 			"generated=599999,stored=599999", "window_min=9999", "steal_ticks=1201", "cpu_ticks=0", "units=collector restarted",
 			"missing=1,stored=599999", "stored=599999", "auditd_usec=x", "collector_usec", "kernel=6.0.0",
 			"collector_usec=18446744073709551615,auditd_usec=1", "window_min=600001", "auditd_usec=614400000001",
 		},
-		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=299999999,auditd_usec=1", "auditd_usec=300000000,collector_usec=0"},
+		Pass: {"collector_usec=0,auditd_usec=0", "collector_usec=150000001", "collector_usec=599999999,auditd_usec=1",
+			"auditd_usec=600000000,collector_usec=0"},
 	})
 }

@@ -259,7 +259,7 @@ func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 
 // judgeCPU: the load held its rate in every 10 s window, steal stayed within 1 %, neither unit restarted
 // and every record was stored, else INVALID: a lighter or broken load would understate the cost. CPU of
-// collector, auditd and Laurel over the load's seconds above 0.5 cores is a MISS.
+// collector, auditd and Laurel over the load's seconds above 1.0 core is a MISS (ADR 0046).
 func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, cpuFacts, []string{FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
 		FactCollectorUS, FactAuditdUS, FactStored, FactMissing})
@@ -281,8 +281,8 @@ func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 		return Invalid, fmt.Sprintf("units changed during the load: %q", Printable(f[FactUnits], 64))
 	case n[FactMissing] != 0 || n[FactStored] != n[FactGenerated]:
 		return Invalid, fmt.Sprintf("stored %d of %d, missing %d", n[FactStored], n[FactGenerated], n[FactMissing])
-	case used*2 > uint64(tr.Load.Seconds)*1_000_000: //nolint:gosec // positive table value
-		return Miss, fmt.Sprintf("%d.%03d cores at %d records/s, over 0.5", milli/1000, milli%1000, tr.Load.Rate)
+	case used > uint64(tr.Load.Seconds)*1_000_000: //nolint:gosec // positive table value
+		return Miss, fmt.Sprintf("%d.%03d cores at %d records/s, over 1.0", milli/1000, milli%1000, tr.Load.Rate)
 	}
 	return Pass, fmt.Sprintf("%d.%03d cores at %d records/s", milli/1000, milli%1000, tr.Load.Rate)
 }
