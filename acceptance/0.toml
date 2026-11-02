@@ -349,7 +349,7 @@ max = 0
 unit = "runs of the unprivileged balistid status that show OK while a floor-0 unit is stopped or health is UNKNOWN"
 rows = []
 adr = "0040"
-method = "Range VM: stop each floor-0 unit in turn and inject UNKNOWN; each run must show the part that is not OK. A healthy run must show OK."
+method = "Range VM: stop each floor-0 unit in turn and inject UNKNOWN; each run must show the part that is not OK. A healthy run must show OK. Not counted (ADR 0048, maintainer 2026-11-02): an OK report the collector could neither rewrite nor remove, which stands at most status.MaxAge (5 s)."
 
 # --- Range runner (ADR 0011; proposed with it, approved by the maintainer when it merges) ---
 
