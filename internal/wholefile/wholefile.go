@@ -4,9 +4,40 @@ package wholefile
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
+
+// ReadOwned reads a file another service writes whole for this one: a regular file of uid, exactly size
+// bytes, opened without following a symlink or blocking on a FIFO. Its writer replaces it by rename, so a
+// read never sees half of one.
+func ReadOwned(path string, uid, size int) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) //nolint:gosec // the caller names the writer's file
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.Mode().IsRegular():
+		return nil, fmt.Errorf("read %s: not a regular file", path)
+	case !ok || int64(st.Uid) != int64(uid):
+		return nil, fmt.Errorf("read %s: not its writer's file", path)
+	case fi.Size() != int64(size):
+		return nil, fmt.Errorf("read %s: %d bytes, not %d", path, fi.Size(), size)
+	}
+	b := make([]byte, size)
+	if _, err := io.ReadFull(f, b); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return b, nil
+}
 
 // Write writes data to path: a temp file of mode perm in the same directory, fsynced, renamed over
 // path, then the directory fsynced. A crash leaves either the old file or the new one. The rename
