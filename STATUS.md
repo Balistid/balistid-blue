@@ -32,8 +32,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Open decisions (maintainer)
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
-- #142: seal continuity left to the Pi (appends wait ~45 ms on btrfs); the ledger socket is 0666, one connection,
-  so a local flood can delay the collector's reconnect. #148: `-final` ends anchoring until rollover.
+- #142: seal continuity left to the Pi (appends wait ~45 ms on btrfs). #148: `-final` ends anchoring until rollover.
+  #207: the ledger socket's local flood accepted in T2 (maintainer, 2026-11-02).
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
 - #170: another writer filling the store's fs past its statfs check: SQLITE_FULL, UNKNOWN (ADR 0016 pt 4); T10 residual.
 - #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed collector's INVALID trial,
