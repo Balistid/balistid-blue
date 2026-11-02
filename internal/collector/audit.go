@@ -158,13 +158,13 @@ func (a *Audit) check(now time.Time, log *slog.Logger) (kernel, dispatcher uint6
 	return kernel, dispatcher
 }
 
-// journalRead logs a read's first failure and its recovery, not every tick's.
+// journalRead logs a read's or write's first failure and its recovery, not every tick's.
 func journalRead(log *slog.Logger, failing *bool, msg string, err error) {
 	switch {
 	case err != nil && !*failing:
 		log.Error(msg, "err", err)
 	case err == nil && *failing:
-		log.Info(msg + ": read again")
+		log.Info(msg + ": recovered")
 	}
 	*failing = err != nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
 	"github.com/Balistid/balistid-blue/internal/collector"
 	"github.com/Balistid/balistid-blue/internal/cosign"
+	"github.com/Balistid/balistid-blue/internal/status"
 	"github.com/Balistid/balistid-blue/internal/store"
 	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
@@ -83,6 +84,7 @@ func run() int {
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": *ruleVersion},
 		Audit:      audit,
 		LogCommits: *logCommits, QueueBytes: *queueBytes, Cosign: keys, Retention: retention,
+		StatusPath: status.ReportPath,
 	})
 	if err != nil {
 		log.Error("collector stopped", "err", err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Balistid/balistid-blue/internal/cosign"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/status"
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
@@ -49,6 +50,8 @@ type Config struct {
 	// Cosign and Retention retire shards by the ledger's cosigned frames (Writer.Cosign, ADR 0029).
 	Cosign    *cosign.Keys
 	Retention time.Duration
+	// StatusPath is where the health goes for balistid status (Writer.StatusPath, ADR 0048).
+	StatusPath string
 }
 
 // Run collects until ctx is done: the acceptor and reader start before the store opens, READY=1 goes
@@ -75,6 +78,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started, Audit: cfg.Audit,
 		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger, Cosign: cfg.Cosign, Retention: cfg.Retention,
+		StatusPath: cfg.StatusPath, Boottime: status.Boottime,
 	}
 
 	var wg sync.WaitGroup

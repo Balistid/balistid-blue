@@ -88,6 +88,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/shard/` | Raw records in one SQLite file per shard: append with gap-free seq, seal, verified read (ADR 0005) |
 | `internal/store/` | Shards under a cap: rotation, loss records, reserve, the seal index and recovery after a crash (ADR 0005, 0013) |
 | `internal/collector/` | Collector: Laurel's lines to records as evidence, a byte-bounded queue that never blocks Laurel, loss counted per stage (ADR 0016) |
+| `internal/status/` | What `balistid status` shows: floor-0 units from systemd, the collector's health report (ADR 0048) |
 | `internal/unixsock/` | What every service needs from its local sockets: the peer's uid from the kernel, messages to systemd (ADR 0007) |
 | `internal/wholefile/` | Files written whole: temp file, fsync, rename, directory fsync (ENGINEERING.md 7) |
 | `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
