@@ -17,9 +17,9 @@ type Unit struct {
 	Subs []string
 }
 
-// Units are the floor-0 units status asks systemd about: the sensor, the collector and its socket, auditstat,
+// units are the floor-0 units status asks systemd about: the sensor, the collector and its socket, auditstat,
 // the ledger, the relay, the tunnel's oneshot and the unit whose stop announces a shutdown (ADR 0048).
-var Units = []Unit{
+var units = []Unit{
 	{"auditd.service", []string{"running"}},
 	// Accept=no: once the service took the listening fd, systemd shows the socket running, not listening.
 	{"balistid-collector.socket", []string{"listening", "running"}},
@@ -49,7 +49,7 @@ func ShowUnits(ctx context.Context, names []string) ([]UnitState, error) {
 	ctx, cancel := context.WithTimeout(ctx, showTimeout)
 	defer cancel()
 	args := append([]string{"show", "--property=" + strings.Join(showProps, ","), "--"}, names...)
-	cmd := exec.CommandContext(ctx, systemctl, args...) //nolint:gosec // fixed binary and verb; names are Units
+	cmd := exec.CommandContext(ctx, systemctl, args...) //nolint:gosec // fixed binary and verb; names are units
 	cmd.Env = []string{"LC_ALL=C"}
 	out := &capped{limit: maxShow}
 	cmd.Stdout = out

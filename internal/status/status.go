@@ -22,7 +22,7 @@ const (
 	Unknown = "UNKNOWN"
 )
 
-// HealthPart names the collector's health among the parts; every other part is a unit of Units.
+// HealthPart names the collector's health among the parts; every other part is a unit of units.
 const HealthPart = "health"
 
 // Part is one line of the result: a unit or the health, its state, what was seen and, when not OK, where to look.
@@ -60,13 +60,13 @@ func Host() Sources {
 
 // Check reads every part. A part it cannot read is UNKNOWN, never OK.
 func Check(ctx context.Context, src Sources) Result {
-	names := make([]string, len(Units))
-	for i, u := range Units {
+	names := make([]string, len(units))
+	for i, u := range units {
 		names[i] = u.Name
 	}
-	parts := make([]Part, 0, len(Units)+1)
+	parts := make([]Part, 0, len(units)+1)
 	states, err := src.Units(ctx, names)
-	for i, u := range Units {
+	for i, u := range units {
 		if err != nil {
 			parts = append(parts, Part{Name: u.Name, State: Unknown, Detail: "systemd did not answer",
 				Hint: "systemctl status " + u.Name})

@@ -20,22 +20,22 @@ func healthy() Sources {
 	return Sources{
 		Units: func(_ context.Context, names []string) ([]UnitState, error) {
 			out := make([]UnitState, len(names))
-			for i, u := range Units {
+			for i, u := range units {
 				out[i] = UnitState{ID: u.Name, Load: "loaded", Active: "active", Sub: u.Subs[0]}
 			}
 			return out, nil
 		},
 		Report: func() (Report, error) {
-			return Report{Seq: 1, Boot: nowBoot - uint64(time.Second), Health: entry.Health{State: entry.StateOK}}, nil
+			return Report{Boot: nowBoot - uint64(time.Second), Health: entry.Health{State: entry.StateOK}}, nil
 		},
 		Boottime: func() (uint64, error) { return nowBoot, nil },
 	}
 }
 
 func withUnit(src Sources, name string, s UnitState) Sources {
-	units := src.Units
+	prev := src.Units
 	src.Units = func(ctx context.Context, names []string) ([]UnitState, error) {
-		out, err := units(ctx, names)
+		out, err := prev(ctx, names)
 		for i := range out {
 			if out[i].ID == name {
 				out[i] = s
@@ -62,7 +62,7 @@ func part(res Result, name string) Part {
 
 func TestHealthyFloorIsOK(t *testing.T) {
 	res := Check(t.Context(), healthy())
-	if !res.OK || len(res.Parts) != len(Units)+1 {
+	if !res.OK || len(res.Parts) != len(units)+1 {
 		t.Fatalf("%+v", res)
 	}
 	for _, p := range res.Parts {
@@ -74,7 +74,7 @@ func TestHealthyFloorIsOK(t *testing.T) {
 
 // Every unit stopped, failed, missing or in another substate makes its own part FAIL and the floor not OK.
 func TestEachUnitNotDoingItsJobFails(t *testing.T) {
-	for _, u := range Units {
+	for _, u := range units {
 		for _, s := range []UnitState{
 			{u.Name, "loaded", "inactive", "dead"}, {u.Name, "loaded", "failed", "failed"},
 			{u.Name, "not-found", "inactive", "dead"}, {u.Name, "masked", "inactive", "dead"},
@@ -102,7 +102,7 @@ func TestNoAnswerFromSystemdIsUnknown(t *testing.T) {
 	src := healthy()
 	src.Units = func(context.Context, []string) ([]UnitState, error) { return nil, errors.New("bus") }
 	res := Check(t.Context(), src)
-	for _, u := range Units {
+	for _, u := range units {
 		if p := part(res, u.Name); res.OK || p.State != Unknown {
 			t.Errorf("%s: %+v", u.Name, p)
 		}
@@ -173,7 +173,7 @@ func TestJSONIsOneObjectOfTheSchema(t *testing.T) {
 	var back Result
 	d := json.NewDecoder(&b)
 	d.DisallowUnknownFields()
-	if err := d.Decode(&back); err != nil || !back.OK || back.SchemaVersion != SchemaVersion || len(back.Parts) != len(Units)+1 || d.More() {
+	if err := d.Decode(&back); err != nil || !back.OK || back.SchemaVersion != SchemaVersion || len(back.Parts) != len(units)+1 || d.More() {
 		t.Fatalf("%+v, %v", back, err)
 	}
 }

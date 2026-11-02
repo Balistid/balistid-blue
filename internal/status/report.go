@@ -27,14 +27,12 @@ const Label = "balistid/collector-status/v1"
 // healthBytes is a health entry's encoding (entry.Encode): label, terminator, type, At, state, reason, unstored.
 const healthBytes = len(entry.Label) + 1 + 1 + 8 + 1 + 1 + 8
 
-// ReportBytes is a report's size: the label and its terminator, the seq, the boot time and the health entry.
-const ReportBytes = len(Label) + 1 + 8 + 8 + healthBytes
+// ReportBytes is a report's size: the label and its terminator, the boot time and the health entry.
+const ReportBytes = len(Label) + 1 + 8 + healthBytes
 
-// Report is the collector's health as its writer last computed it. Seq counts the reports since the collector
-// started; Boot is CLOCK_BOOTTIME at the write, which a reader of the same boot compares with its own to see
-// a report that stopped changing.
+// Report is the collector's health as its writer last computed it. Boot is CLOCK_BOOTTIME at the write, which a
+// reader of the same boot compares with its own to see a report that stopped changing.
 type Report struct {
-	Seq    uint64
 	Boot   uint64
 	Health entry.Health
 	At     int64 // the host's wall time, information only (T22)
@@ -47,8 +45,7 @@ func (r Report) Encode() ([]byte, error) {
 		return nil, fmt.Errorf("status: report: %w", err)
 	}
 	out := append(make([]byte, 0, ReportBytes), Label...)
-	out = binary.BigEndian.AppendUint64(append(out, 0), r.Seq)
-	out = binary.BigEndian.AppendUint64(out, r.Boot)
+	out = binary.BigEndian.AppendUint64(append(out, 0), r.Boot)
 	if len(h) != healthBytes {
 		return nil, errors.New("status: a health entry of another size")
 	}
@@ -65,7 +62,7 @@ func DecodeReport(b []byte) (Report, error) {
 		return Report{}, errors.New("status: not a balistid/collector-status/v1 report")
 	}
 	b = b[len(Label)+1:]
-	e, err := entry.Decode(b[16:])
+	e, err := entry.Decode(b[8:])
 	if err != nil {
 		return Report{}, fmt.Errorf("status: report: %w", err)
 	}
@@ -73,7 +70,7 @@ func DecodeReport(b []byte) (Report, error) {
 	if !ok {
 		return Report{}, errors.New("status: a report without a health entry")
 	}
-	return Report{Seq: binary.BigEndian.Uint64(b), Boot: binary.BigEndian.Uint64(b[8:]), Health: h, At: e.At}, nil
+	return Report{Boot: binary.BigEndian.Uint64(b), Health: h, At: e.At}, nil
 }
 
 // Boottime is CLOCK_BOOTTIME in ns: it runs through suspend and restarts at boot, when /run starts empty, so

@@ -33,11 +33,10 @@ func (w *Writer) writeStatus(now time.Time) error {
 	if err != nil {
 		return err
 	}
-	w.statusSeq++
-	b, err := status.Report{Seq: w.statusSeq, Boot: boot, Health: h, At: now.UnixNano()}.Encode()
+	b, err := status.Report{Boot: boot, Health: h, At: now.UnixNano()}.Encode()
 	if err != nil {
 		return err //nolint:wrapcheck // status errors carry their context
 	}
-	// World-readable: every user's balistid status reads it, and it says no more than systemd does.
+	// World-readable: every user's balistid status reads it (ADR 0048, Consequences).
 	return wholefile.Write(w.StatusPath, b, 0o644) //nolint:wrapcheck // names the file
 }
