@@ -860,7 +860,8 @@ func crashAuditd(ctx context.Context) (injected, error) {
 	read := func(c context.Context) string {
 		return output(c, "/usr/bin/journalctl", overflowJournalArgs(cursor)...)
 	}
-	inj.to, err = floodAndKill(ctx, pidfd, read, w.cur.mtime, killBy)
+	flood := func(c context.Context) { _ = bigExecs(c, crashExecs, maxChildren) } // the journal's drop is the proof
+	inj.to, err = floodAndKill(ctx, pidfd, flood, read, w.cur.mtime, killBy)
 	if cerr := syscall.Kill(laurel, syscall.SIGCONT); cerr != nil && !errors.Is(cerr, syscall.ESRCH) {
 		err = errors.Join(err, fmt.Errorf("SIGCONT laurel: %w", cerr))
 	}
@@ -873,14 +874,15 @@ func crashAuditd(ctx context.Context) (injected, error) {
 	return inj, nil
 }
 
-// floodAndKill floods crashExecs big execs until read, auditd's journal since the stop, names the plugin queue's
-// drop or killBy passes; then, the state file still "no" in the fresh generation, it SIGKILLs auditd through pidfd
-// and returns the uptime its exit was seen.
-func floodAndKill(ctx context.Context, pidfd int, read func(context.Context) string, fresh, killBy time.Time) (time.Duration, error) {
-	flood, stop := context.WithDeadline(ctx, killBy)
+// floodAndKill runs flood until read, auditd's journal since the stop, names the plugin queue's drop or killBy
+// passes; then, the state file still "no" in the fresh generation, it SIGKILLs auditd through pidfd and returns
+// the uptime its exit was seen.
+func floodAndKill(ctx context.Context, pidfd int, flood func(context.Context), read func(context.Context) string,
+	fresh, killBy time.Time) (time.Duration, error) {
+	fctx, stop := context.WithDeadline(ctx, killBy)
 	done := make(chan struct{})
-	go func() { defer close(done); _ = bigExecs(flood, crashExecs, maxChildren) }() // the journal's drop is the proof
-	dropped := journalNames(flood, read, lostPoll)
+	go func() { defer close(done); flood(fctx) }()
+	dropped := journalNames(fctx, read, lostPoll)
 	stop()
 	<-done
 	if dropped != "yes" {
@@ -911,10 +913,13 @@ func preKill(st stateRead, fresh, now, deadline time.Time) error {
 }
 
 // killAndWait SIGKILLs the live process behind pidfd and returns the uptime its exit was seen, within
-// auditdRestartWait; a process already gone before the signal is an error, as its exit came before the kill.
+// auditdRestartWait; a process already gone before the signal, or ctx ended, is an error and sends nothing.
 func killAndWait(ctx context.Context, pidfd int) (time.Duration, error) {
 	if exited, err := pidfdExited(pidfd, 0); err != nil || exited {
 		return 0, errors.Join(err, errors.New("auditd exited before the kill"))
+	}
+	if err := ctx.Err(); err != nil { // a trial already ended kills nothing
+		return 0, fmt.Errorf("before the kill: %w", err)
 	}
 	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
 		return 0, fmt.Errorf("SIGKILL auditd: %w", err)

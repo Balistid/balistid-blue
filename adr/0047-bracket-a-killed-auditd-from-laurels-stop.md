@@ -35,4 +35,5 @@ that the queue overflowed: the execs can finish while auditd has not yet read th
 - A wider bracket makes a run INVALID sooner, never a false PASS; the measured delays (0.8 to 2.6 s from the kill
   on GitHub's KVM) leave the 65 s window wide open.
 - Residual: the ledger's reason 10 covers both "auditd down" and "restarted", so the trial cannot require the new
-  pid's UNKNOWN specifically; the guest requires a new active MainPID instead.
+  pid's UNKNOWN specifically; the guest requires a new active MainPID instead. The overflow flag after the kill is
+  the new auditd's and reads no, so only the pre-kill read guards against a flag already set.

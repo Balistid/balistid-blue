@@ -70,7 +70,8 @@ func TestPreKillNeedsAFreshNo(t *testing.T) {
 	}
 }
 
-// A pidfd's process already gone cannot be the kill's: its exit came first. A live one exits after the kill.
+// A pidfd's process already gone cannot be the kill's: its exit came first. A cancelled trial kills nothing; a
+// live process exits after the kill.
 func TestKillAndWaitNeedsALiveProcess(t *testing.T) {
 	start := func(args ...string) (*exec.Cmd, int) {
 		cmd := exec.CommandContext(t.Context(), args[0], args[1:]...) //nolint:gosec // fixed test binaries
@@ -93,6 +94,15 @@ func TestKillAndWaitNeedsALiveProcess(t *testing.T) {
 	}
 	if _, err := killAndWait(t.Context(), gone); err == nil || !strings.Contains(err.Error(), "before the kill") {
 		t.Errorf("an exited process killed: %v", err)
+	}
+	_, spared := start("/usr/bin/sleep", "30")
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := killAndWait(ended, spared); err == nil {
+		t.Error("a cancelled trial killed")
+	}
+	if exited, err := pidfdExited(spared, 200*time.Millisecond); err != nil || exited {
+		t.Errorf("a cancelled trial's process exited: %t %v", exited, err)
 	}
 	live, fd := start("/usr/bin/sleep", "30")
 	before, err := uptime()
@@ -120,7 +130,9 @@ func TestFloodAndKillNeedsTheDrop(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait(); _ = unix.Close(fd) }()
 	quiet := func(context.Context) string { return "auditd started" }
-	if _, err := floodAndKill(t.Context(), fd, quiet, time.Now(), time.Now().Add(300*time.Millisecond)); err == nil {
+	flooded := false
+	flood := func(context.Context) { flooded = true } // no real flood: a host that audits execs would record it
+	if _, err := floodAndKill(t.Context(), fd, flood, quiet, time.Now(), time.Now().Add(300*time.Millisecond)); err == nil || !flooded {
 		t.Fatal("killed without a drop in the journal")
 	}
 	if exited, err := pidfdExited(fd, 0); err != nil || exited {
