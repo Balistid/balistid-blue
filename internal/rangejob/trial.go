@@ -40,7 +40,11 @@ const (
 	MetricQuiet             = "announced_quiet_max_h"
 	MetricLogCap            = "host_log_cap_gib"
 	MetricLoss              = "loss_alarm_s"
+	MetricStatus            = "status_false_ok"
 )
+
+// InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
+const InjectStatus = "status"
 
 // Injections of an alarm trial (ADR 0036): the host side of the tunnel down, the ledger killed and kept
 // stopped, or a hard stop of the host's units and links, each without an announcement; or an announcement
@@ -81,7 +85,8 @@ const InjectAuditSet = "audit-set"
 // health OK, an exposure trial scores the recorder's units and a CPU trial times the collector's processes under
 // exec load (ADR 0023), an alarm trial times the Pi's alert at the range's ntfy sink after an injection
 // (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5), an
-// audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038).
+// audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038), a status trial runs
+// the CLI unprivileged after each break of the floor (ADR 0048).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -95,6 +100,7 @@ const (
 	MethodLogCap           = "log-cap"
 	MethodLoss             = "loss"
 	MethodAuditSet         = "audit-set"
+	MethodStatus           = "status"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -103,6 +109,10 @@ func (tr Trial) Method() string {
 	switch {
 	case tr.Inject == InjectAuditSet && tr.Metric == MetricExposureAuditstat && tr.Load == (Load{}) && tr.Failure == "":
 		return MethodAuditSet
+	case tr.Inject == InjectStatus && tr.Metric == MetricStatus && tr.Load == (Load{}) && tr.Failure == "":
+		return MethodStatus
+	case tr.Inject == InjectStatus || tr.Metric == MetricStatus:
+		return ""
 	case tr.Inject != "":
 		return alarmMethod(tr)
 	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
@@ -288,6 +298,9 @@ var trials = slices.Concat([]Trial{
 		{Name: "loss-control-none", Metric: MetricLoss, Expect: ExpectPass, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1, Inject: InjectNone},
 	},
+	// status_false_ok (ADR 0048): each run breaks every floor-0 part in turn, two runs.
+	repeated(Trial{Name: "status", Metric: MetricStatus, Wall: 20 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 1, Inject: InjectStatus}, 2),
 )
 
 // repeated returns n rows of tr named tr.Name-1 to tr.Name-n: a metric needs more trials than one row

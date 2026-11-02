@@ -103,6 +103,7 @@ var guestPrograms = []imageProgram{
 	{"relay program", ".", "./cmd/balistid-relay", "usr/local/lib/balistid/balistid-relay"},
 	{"auditstat program", ".", "./cmd/balistid-auditstat", "usr/local/lib/balistid/balistid-auditstat"},
 	{"Pi watcher program", ".", "./cmd/balistid-pi", "usr/local/lib/balistid/balistid-pi"},
+	{"CLI program", ".", "./cmd/balistid", "usr/local/bin/balistid"},
 }
 
 // witnessPrograms are the pinned litewitness and its control tool, from range/witness.
