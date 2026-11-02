@@ -119,7 +119,9 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return r.fail(err.Error())
 	}
 	fromNs := time.Now().UnixNano() // after the bracket's start, in the clock the ledger stamps entries with (internal/anchor)
+	stopDiag := diagState(ctx)
 	inj := injectLoss(ctx, tr.Inject)
+	diag("inject", inj.proof)
 	if inj.end == 0 {
 		if inj.end, err = uptime(); err != nil {
 			return r.fail(errors.Join(err, inj.release()).Error())
@@ -168,6 +170,8 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, fromNs))
 	r.add(rangevm.FactOKAfterResume, okAfter)
+	stopDiag()
+	diagFacts(r.facts)
 	return r.send(r.facts)
 }
 
