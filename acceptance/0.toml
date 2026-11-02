@@ -110,7 +110,7 @@ method = "Maximum summed RSS from /proc over each run."
 
 [[metric]]
 id = "cpu_cores"
-max = 1.0
+max = 1.0                    # raised from 0.5 by ADR 0046 (product choice, before a host number)
 unit = "cores, all Balistid Blue processes at 1000 records/s"
 rows = ["T20"]
 adr = "0007"
@@ -329,10 +329,10 @@ method = "Install, uninstall, reboot on a fresh VM of each distribution, then co
 
 [[metric]]
 id = "cpu_cores_typical"
-max = 0.05
+max = 0.05                   # lowered from 0.5 by ADR 0046 (the bar a user sees)
 unit = "cores, the units of cpu_cores, mean over each day of normal use"
 rows = []
-adr = "0046"
+adr = "0040"
 method = "The seven days of loss_per_day on the reference host: each day's CPU time of the units cpu_cores counts divided by the day's wall time; every day must pass. Who computes the binding result is decided in 9.5, as for healthy_ok (T33)."
 
 [[metric]]

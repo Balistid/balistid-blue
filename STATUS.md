@@ -16,7 +16,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007) | OCSF view, `balistid status` | not started |
 ## Done in the last sessions
-- This PR (CP5a; ADR 0039 pts 2, 4, 5; ADR 0045): kernel (transient, sustained) and dispatcher loss judged against
+- #191 (CP5a; ADR 0039 pts 2, 4, 5; ADR 0045): kernel (transient, sustained) and dispatcher loss judged against
   the guest's bracket, the kernel's by the printk time of `audit_lost` (AUDIT_GET sleeps while the backlog is full).
   KVM: kernel 4/4 PASS at 719d52c and e769c81, dispatcher 2/2 at its redesign e769c81, alerts 1-25 s after. Collector profile in the range (exp branch): per-record
   stat ~11 %, re-prepared insert ~10 %, JSON Unmarshal for the id ~10 %, goroutine handoff ~20 % of 0.195 cores.
