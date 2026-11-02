@@ -54,6 +54,18 @@ func TestHealthTimelineProvesTheStateAtTheEnd(t *testing.T) {
 	}
 }
 
+// A timeout says which parts were not OK, so a run that never got healthy shows why.
+func TestNotOKNamesTheParts(t *testing.T) {
+	out := []byte(`{"schema_version":1,"ok":false,"parts":[{"part":"a","state":"OK","detail":"x"},` +
+		`{"part":"health","state":"UNKNOWN","detail":"canary-missed"}]}`)
+	if got := notOK(out); got != `health UNKNOWN "canary-missed"` {
+		t.Fatalf("%q", got)
+	}
+	if got := notOK([]byte("{")); got != "unreadable output" {
+		t.Fatalf("%q", got)
+	}
+}
+
 // untilCLI returns at the first wanted exit and fails on a cancelled context rather than waiting out statusWait.
 func TestUntilCLIStopsAtTheWantedExit(t *testing.T) {
 	n := 0
