@@ -28,24 +28,27 @@ const (
 )
 
 // statusRun is one measured run of the CLI: its exit and output, the guest's proof that the break held from
-// before it to after it ("yes" or why not), when it started and returned, and whether the store's health over
-// that window is read: not for a stopped unit, whose collector may be the stopped one.
+// before it to after it ("yes" or why not), when it started and returned, whether the store's health over that
+// window is read (not for a stopped unit, whose collector may be the stopped one), and when a freeze began.
 type statusRun struct {
 	exit       int
 	out        []byte
 	proof      string
 	start, end int64
 	store      bool
+	frozeAt    int64
 }
 
 // cliRun runs the CLI once: its exit and output, or why it did not run to an exit.
 type cliRun func(ctx context.Context) (int, []byte, error)
 
-// cliCall is one call of the CLI the trial made, waits included: the run it served, its window and its exit.
+// cliCall is one call of the CLI the trial made, waits included: the run it served, its window, its exit and what
+// its output said (rangevm.ShowsOKOf).
 type cliCall struct {
 	run        int
 	start, end int64
 	exit       int
+	shows      string
 }
 
 // recorded wraps cli so every call that ran to an exit is kept in *calls under the run *at points to.
@@ -54,7 +57,8 @@ func recorded(cli cliRun, calls *[]cliCall, at *int) cliRun {
 		start := time.Now().UnixNano()
 		exit, out, err := cli(ctx)
 		if err == nil {
-			*calls = append(*calls, cliCall{run: *at, start: start, end: time.Now().UnixNano(), exit: exit})
+			*calls = append(*calls, cliCall{run: *at, start: start, end: time.Now().UnixNano(), exit: exit,
+				shows: rangevm.ShowsOKOf(out)})
 		}
 		return exit, out, err
 	}
@@ -74,11 +78,15 @@ func runStatus(ctx context.Context, r *report) error {
 	cli := recorded(func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }, &calls, &at)
 	runs := rangevm.StatusRuns()
 	done := make([]statusRun, 0, len(runs))
+	wait := statusWait
 	for i, run := range runs {
 		at = i
-		res, err := breakAndRun(ctx, run, cli)
+		res, healthy, err := breakAndRun(ctx, run, cli, wait)
 		if err != nil {
 			return r.fail(run.Name + ": " + err.Error())
+		}
+		if !healthy {
+			wait = 0 // a CLI that never shows the floor healthy would wait out the trial's wall clock
 		}
 		done = append(done, res)
 	}
@@ -88,21 +96,29 @@ func runStatus(ctx context.Context, r *report) error {
 	}
 	r.add(rangevm.FactStatusPolls, timeline.polls(calls))
 	for i, run := range runs {
-		res, health := done[i], rangevm.StoreUnread
+		res, health, before := done[i], rangevm.StoreUnread, rangevm.StoreUnread
 		if res.store {
 			health = timeline.over(res.start, res.end)
 		}
-		r.add(rangevm.FactStatusRun+run.Name, fmt.Sprintf("%d %s %s %s", res.exit, health,
+		if res.frozeAt != 0 {
+			before = timeline.over(res.frozeAt, res.frozeAt)
+		}
+		r.add(rangevm.FactStatusRun+run.Name, fmt.Sprintf("%d %s %s %s %s", res.exit, health, before,
 			base64.StdEncoding.EncodeToString(res.out), res.proof))
 	}
 	return r.send(r.facts)
 }
 
-// breakAndRun waits for the floor to show healthy, breaks what run names, runs the CLI between two proofs of the
-// break, and undoes the break. Each wait is at most statusWait and never decides: a CLI that never shows healthy
-// or never shows the break is measured anyway, and the judge sees what it showed against the store.
-func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (statusRun, error) {
-	_ = untilCLI(ctx, cli, 0)
+// breakAndRun waits at most wait for the floor to show healthy, breaks what run names, runs the CLI between two
+// proofs of the break, and undoes the break; it reports whether the floor showed healthy. No wait decides: a CLI
+// that never shows healthy or never shows the break is measured anyway, and the judge sees it against the store.
+func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun, wait time.Duration) (statusRun, bool, error) {
+	healthy := untilCLI(ctx, cli, 0, wait) == nil
+	res, err := breakOnce(ctx, run, cli)
+	return res, healthy, err
+}
+
+func breakOnce(ctx context.Context, run rangevm.StatusRun, cli cliRun) (statusRun, error) {
 	switch run.Kind {
 	case rangevm.StatusHealthy:
 		return measure(ctx, cli, func() string { return unitsActive(ctx) }, true), nil
@@ -121,11 +137,13 @@ func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (status
 		if err != nil {
 			return statusRun{}, err
 		}
+		frozeAt := time.Now().UnixNano()
 		if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
 			return statusRun{}, fmt.Errorf("SIGSTOP %d: %w", pid, err)
 		}
-		_ = untilCLI(ctx, cli, 1) // a CLI that never shows the break is measured, not skipped
+		_ = untilCLI(ctx, cli, 1, statusWait) // a CLI that never shows the break is measured, not skipped
 		res := measure(ctx, cli, func() string { return processStopped(pid) }, true)
+		res.frozeAt = frozeAt
 		if err := syscall.Kill(pid, syscall.SIGCONT); err != nil {
 			return statusRun{}, fmt.Errorf("SIGCONT %d: %w", pid, err)
 		}
@@ -160,16 +178,16 @@ func measure(ctx context.Context, cli cliRun, prove func() string, store bool) s
 	return res
 }
 
-// untilCLI asks the CLI until it exits with want, at most statusWait; a timeout names the parts it last showed not OK.
-func untilCLI(ctx context.Context, cli cliRun, want int) error {
-	deadline := time.Now().Add(statusWait)
+// untilCLI asks the CLI until it exits with want, at most wait; a timeout names the parts it last showed not OK.
+func untilCLI(ctx context.Context, cli cliRun, want int, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
 	for {
 		exit, out, err := cli(ctx)
 		if err == nil && exit == want {
 			return nil
 		}
 		if !time.Now().Before(deadline) {
-			return errors.Join(fmt.Errorf("the CLI did not exit %d within %s (last %d, not OK: %s)", want, statusWait, exit,
+			return errors.Join(fmt.Errorf("the CLI did not exit %d within %s (last %d, not OK: %s)", want, wait, exit,
 				notOK(out)), err)
 		}
 		if !pause(ctx, statusPoll) {
@@ -291,7 +309,7 @@ func (t *healthTimeline) add(x rawrecord.Record) error {
 func (t healthTimeline) polls(calls []cliCall) string {
 	entries := make([]string, len(calls))
 	for i, c := range calls {
-		entries[i] = fmt.Sprintf("%d:%d:%s", c.run, c.exit, t.over(c.start, c.end))
+		entries[i] = fmt.Sprintf("%d:%d:%s:%s", c.run, c.exit, c.shows, t.over(c.start, c.end))
 	}
 	return strings.Join(entries, ",")
 }

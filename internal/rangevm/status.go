@@ -18,7 +18,7 @@ const (
 	FactStatusUID      = "status_uid"
 	FactUnitsInstalled = "units_installed"
 	FactStatusRun      = "status_"
-	// FactStatusPolls is every CLI call of the trial, waits included, as "<run index>:<exit>:<store health>,...".
+	// FactStatusPolls is every CLI call of the trial, waits included, as "<run index>:<exit>:<shows>:<store health>,...".
 	FactStatusPolls = "status_polls"
 )
 
@@ -111,31 +111,23 @@ func judgeStatus(tr rangejob.Trial, o Outcome) (string, string) {
 	if why := unitsUnbroken(f[FactUnitsInstalled]); why != "" {
 		return Invalid, why
 	}
-	misses, err := pollMisses(f[FactStatusPolls], runs)
-	if err != nil {
-		return Invalid, err.Error()
-	}
+	// Every false OK the facts show is found before any run that proves nothing can end the judging: a MISS is
+	// never hidden by an INVALID, which a later run could replace.
+	misses, unproven := pollMisses(f[FactStatusPolls], runs)
 	for _, r := range runs {
-		exit, health, out, err := statusOf(f[FactStatusRun+r.Name])
-		if err != nil {
-			return Invalid, fmt.Sprintf("run %s: %s", r.Name, err)
-		}
-		res, bad := resultOf(out)
-		why, invalid := storeShows(r, res, exit, health)
+		why, invalid := judgeRun(r, f[FactStatusRun+r.Name])
 		switch {
 		case invalid:
-			return Invalid, fmt.Sprintf("run %s: %s", r.Name, why)
-		case bad != "":
-			why = bad
-		case why == "":
-			why = statusMiss(r, res, exit)
-		}
-		if why != "" {
+			unproven = append(unproven, fmt.Sprintf("run %s: %s", r.Name, why))
+		case why != "":
 			misses = append(misses, r.Name+": "+why)
 		}
 	}
-	if len(misses) > 0 {
-		return Miss, fmt.Sprintf("%d of %d runs: %s", len(misses), len(runs), strings.Join(misses, "; "))
+	switch {
+	case len(misses) > 0:
+		return Miss, fmt.Sprintf("%d false OK or healthy runs not OK: %s", len(misses), strings.Join(misses, "; "))
+	case len(unproven) > 0:
+		return Invalid, strings.Join(unproven, "; ")
 	}
 	return Pass, fmt.Sprintf("%d runs: every break showed its part not OK, every healthy run OK", len(runs))
 }
@@ -167,28 +159,52 @@ const (
 	StoreUnread  = "-"
 )
 
-// statusOf decodes one run's value: "<exit> <store health> <base64 output> <proof>", the proof "yes" or the
-// guest's reason.
-func statusOf(v string) (int, string, []byte, error) {
-	parts := strings.SplitN(v, " ", 4)
-	if len(parts) != 4 {
-		return 0, "", nil, fmt.Errorf("not an exit, store health, output and proof")
+// judgeRun is why run r's value is a false OK or a healthy run not OK (a MISS), or why it proves nothing (invalid),
+// or "" for a sound run.
+func judgeRun(r StatusRun, v string) (string, bool) {
+	exit, health, before, out, err := statusOf(v)
+	if err != nil {
+		return err.Error(), true
 	}
-	if parts[3] != "yes" {
-		return 0, "", nil, fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[3], 256))
+	freeze := r.Kind == StatusFreezeAuditd || r.Kind == StatusFreezeLaurel
+	if freeze && before != StoreOK || !freeze && before != StoreUnread {
+		return fmt.Sprintf("the store's health when the break began was %s", before), true
+	}
+	res, bad := resultOf(out)
+	why, invalid := storeShows(r, res, exit, health)
+	switch {
+	case invalid, why != "":
+		return why, invalid
+	case bad != "":
+		return bad, false
+	}
+	return statusMiss(r, res, exit), false
+}
+
+// statusOf decodes one run's value: "<exit> <store health over the CLI's run> <store health when the break began>
+// <base64 output> <proof>", the proof "yes" or the guest's reason.
+func statusOf(v string) (int, string, string, []byte, error) {
+	parts := strings.SplitN(v, " ", 5)
+	if len(parts) != 5 {
+		return 0, "", "", nil, fmt.Errorf("not an exit, two store healths, output and proof")
+	}
+	if parts[4] != "yes" {
+		return 0, "", "", nil, fmt.Errorf("the break is not proven: \"%s\"", Printable(parts[4], 256))
 	}
 	exit, err := strconv.Atoi(parts[0])
 	if err != nil || strconv.Itoa(exit) != parts[0] {
-		return 0, "", nil, fmt.Errorf("the exit is not a plain number")
+		return 0, "", "", nil, fmt.Errorf("the exit is not a plain number")
 	}
-	if !slices.Contains(storeStates, parts[1]) && parts[1] != StoreUnread {
-		return 0, "", nil, fmt.Errorf("the store health is not one the guest reports")
+	for _, h := range parts[1:3] {
+		if !slices.Contains(storeStates, h) && h != StoreUnread {
+			return 0, "", "", nil, fmt.Errorf("a store health is not one the guest reports")
+		}
 	}
-	out, err := base64.StdEncoding.DecodeString(parts[2])
-	if err != nil || base64.StdEncoding.EncodeToString(out) != parts[2] || len(out) > MaxStatusOut {
-		return 0, "", nil, fmt.Errorf("the output is not canonical base64 within %d bytes", MaxStatusOut)
+	out, err := base64.StdEncoding.DecodeString(parts[3])
+	if err != nil || base64.StdEncoding.EncodeToString(out) != parts[3] || len(out) > MaxStatusOut {
+		return 0, "", "", nil, fmt.Errorf("the output is not canonical base64 within %d bytes", MaxStatusOut)
 	}
-	return exit, parts[1], out, nil
+	return exit, parts[1], parts[2], out, nil
 }
 
 // storeStates are the store's health over a CLI call the guest computes.
@@ -211,25 +227,47 @@ func resultOf(out []byte) (statusResult, string) {
 	return res, ""
 }
 
-// pollMisses checks every CLI call of the trial: one that exited 0 while the store was UNKNOWN throughout is a false
-// OK, whichever wait it was in. Anything but well-formed entries of known runs is an error.
-func pollMisses(polls string, runs []StatusRun) ([]string, error) {
-	var misses []string
+// The CLI's own verdict in a call's output, as the guest reads it with ShowsOK.
+const (
+	ShowsOK    = "ok"
+	ShowsNotOK = "not-ok"
+	ShowsBad   = "bad"
+)
+
+// ShowsOKOf is what out says, read as the judge reads a run's output: ShowsBad unless it is exactly one canonical
+// status result. The guest keeps this, not the output, for every call it made while waiting.
+func ShowsOKOf(out []byte) string {
+	res, bad := resultOf(out)
+	switch {
+	case bad != "":
+		return ShowsBad
+	case res.OK:
+		return ShowsOK
+	}
+	return ShowsNotOK
+}
+
+// pollMisses checks every CLI call of the trial, "<run>:<exit>:<shows>:<store health>": one that exited 0, said
+// ok or printed no canonical result while the store was UNKNOWN throughout is a false OK, whichever wait it was in.
+// An entry it cannot read is unproven, and the entries after it are still checked.
+func pollMisses(polls string, runs []StatusRun) (misses, unproven []string) {
 	for _, entry := range strings.Split(polls, ",") {
 		fields := strings.Split(entry, ":")
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("a poll \"%s\" is not run, exit and store health", Printable(entry, 64))
+		if len(fields) != 4 {
+			unproven = append(unproven, fmt.Sprintf("a poll \"%s\" is not run, exit, verdict and store health", Printable(entry, 64)))
+			continue
 		}
 		i, errI := plainNumber(fields[0])
 		exit, errE := plainNumber(fields[1])
 		switch {
-		case errI != nil || i >= uint64(len(runs)) || errE != nil || !slices.Contains(storeStates, fields[2]):
-			return nil, fmt.Errorf("a poll \"%s\" of no known run, exit or store health", Printable(entry, 64))
-		case exit == 0 && fields[2] == StoreUnknown:
+		case errI != nil || i >= uint64(len(runs)) || errE != nil || !slices.Contains(storeStates, fields[3]) ||
+			fields[2] != ShowsOK && fields[2] != ShowsNotOK && fields[2] != ShowsBad:
+			unproven = append(unproven, fmt.Sprintf("a poll \"%s\" of no known run, exit, verdict or store health", Printable(entry, 64)))
+		case fields[3] == StoreUnknown && (exit == 0 || fields[2] != ShowsNotOK):
 			misses = append(misses, runs[i].Name+": false OK in a poll while the store was UNKNOWN throughout")
 		}
 	}
-	return misses, nil
+	return misses, unproven
 }
 
 // storeShows judges run r by the store's health over it: why it is a false OK (a MISS), or why the run proves
