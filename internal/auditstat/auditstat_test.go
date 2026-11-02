@@ -191,6 +191,28 @@ func TestPollWritesOnlyTheKernelsAnswer(t *testing.T) {
 	}
 }
 
+// A Conn's status is the kernel's answer to its own next request; a stale or foreign reply is refused as a poll's.
+func TestConnStatusTakesOnlyTheAnswerToItsRequest(t *testing.T) {
+	c := &Conn{ask: answer(func(seq uint32) []byte { return reply(seq, sample) }, 0, nil)}
+	for range 2 {
+		if s, err := c.Status(); err != nil || s != sample {
+			t.Fatalf("%+v %v", s, err)
+		}
+	}
+	if c.seq != 2 {
+		t.Errorf("seq %d after two requests", c.seq)
+	}
+	for name, ask := range map[string]exchange{
+		"refused":      answer(nil, 0, syscall.EPERM),
+		"stale":        answer(func(seq uint32) []byte { return reply(seq-1, sample) }, 0, nil),
+		"another port": answer(func(seq uint32) []byte { return reply(seq, sample) }, 77, nil),
+	} {
+		if s, err := (&Conn{ask: ask}).Status(); err == nil {
+			t.Errorf("%s: %+v", name, s)
+		}
+	}
+}
+
 // The first failing poll is logged, as a missing capability or a newer kernel fails every poll from the start.
 func TestLoopLogsTheFirstFailure(t *testing.T) {
 	var logs bytes.Buffer

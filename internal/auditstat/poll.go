@@ -25,15 +25,60 @@ type exchange func(req []byte) ([]byte, uint32, error)
 // Run writes a report to path every Interval until ctx ends. A failed poll writes nothing, so the report stops
 // changing and the collector names it (ADR 0038 point 4).
 func Run(ctx context.Context, path string) error {
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_AUDIT)
+	fd, err := socket()
 	if err != nil {
-		return fmt.Errorf("auditstat: netlink socket: %w", err)
+		return err
 	}
 	defer unix.Close(fd) //nolint:errcheck // nothing was written through it that a close could lose
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
-		return fmt.Errorf("auditstat: receive timeout: %w", err)
-	}
 	loop(ctx, netlinkExchange(fd), path, Interval)
+	return nil
+}
+
+// socket is an audit netlink socket whose receive gives up after a second.
+func socket() (int, error) {
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_AUDIT)
+	if err != nil {
+		return 0, fmt.Errorf("auditstat: netlink socket: %w", err)
+	}
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
+		_ = unix.Close(fd)
+		return 0, fmt.Errorf("auditstat: receive timeout: %w", err)
+	}
+	return fd, nil
+}
+
+// Conn asks the kernel for its audit status as Run does, one request at a time; the range's guest polls lost
+// with it (ADR 0039, point 4). It needs CAP_AUDIT_CONTROL.
+type Conn struct {
+	fd  int
+	ask exchange
+	seq uint32
+}
+
+// Dial opens a Conn.
+func Dial() (*Conn, error) {
+	fd, err := socket()
+	if err != nil {
+		return nil, err
+	}
+	return &Conn{fd: fd, ask: netlinkExchange(fd)}, nil
+}
+
+// Status is the kernel's answer to one AUDIT_GET, decoded as Run's.
+func (c *Conn) Status() (Status, error) {
+	c.seq++
+	b, port, err := c.ask(request(c.seq))
+	if err != nil {
+		return Status{}, err
+	}
+	return decodeReply(b, port, c.seq)
+}
+
+// Close closes c's socket.
+func (c *Conn) Close() error {
+	if err := unix.Close(c.fd); err != nil {
+		return fmt.Errorf("auditstat: close: %w", err)
+	}
 	return nil
 }
 
