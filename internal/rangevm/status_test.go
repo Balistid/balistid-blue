@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -40,7 +41,7 @@ func runValue(res cliResult, exit int, health, proof string) string {
 	if err != nil {
 		panic(err)
 	}
-	return fmt.Sprintf("%d %s %s %s", exit, health, base64.StdEncoding.EncodeToString(b), proof)
+	return fmt.Sprintf("%d %s %s %s", exit, health, base64.StdEncoding.EncodeToString(append(b, '\n')), proof)
 }
 
 // soundHealth is the store's health a sound run reports: OK while healthy, UNKNOWN while frozen, unread when stopped.
@@ -59,6 +60,15 @@ const installedUnits = "balistid-announce-suspend.service,balistid-announce.serv
 	"balistid-pi-failed.service,balistid-pi.service,balistid-range-guest.service,balistid-range-store.service," +
 	"balistid-relay.service"
 
+// soundPolls are the waits of a sound trial: OK over an OK store before each run, not OK over UNKNOWN in a freeze.
+func soundPolls() string {
+	var polls []string
+	for i := range StatusRuns() {
+		polls = append(polls, fmt.Sprintf("%d:0:OK", i), fmt.Sprintf("%d:1:UNKNOWN", i), fmt.Sprintf("%d:1:mixed", i))
+	}
+	return strings.Join(polls, ",")
+}
+
 // statusOutcome is a sound status report; edit changes the value of one run before it is encoded.
 func statusOutcome(t *testing.T, edit map[string]func(*cliResult, *int, *string)) Outcome {
 	t.Helper()
@@ -70,7 +80,7 @@ func statusOutcomeStore(t *testing.T, edit map[string]func(*cliResult, *int, *st
 	t.Helper()
 	tr := trial(t, "status-1")
 	facts := []Record{{Name: FactTrial, Value: tr.Name}, {Name: FactPhase, Value: "1"}, {Name: FactKernel, Value: TargetKernel},
-		{Name: FactStatusUID, Value: "985"}, {Name: FactUnitsInstalled, Value: installedUnits}}
+		{Name: FactStatusUID, Value: "985"}, {Name: FactUnitsInstalled, Value: installedUnits}, {Name: FactStatusPolls, Value: soundPolls()}}
 	for _, run := range StatusRuns() {
 		res, exit, proof := cliFor(run), 1, "yes"
 		if run.Kind == StatusHealthy {
@@ -181,12 +191,11 @@ func TestStatusUnprovenRunIsInvalid(t *testing.T) {
 		"no proof field":     setFact(statusOutcome(t, nil), FactStatusRun+"healthy", "0 OK e30="),
 		"base64 not canonical": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
 			"0 OK "+strings.TrimRight(base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}`)), "=")+" yes"),
-		"unknown field": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[],"mode":"x"}`))+" yes"),
-		"another schema": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":2,"ok":true,"parts":[]}`))+" yes"),
-		"two objects": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
-			"0 OK "+base64.StdEncoding.EncodeToString([]byte(`{"schema_version":1,"ok":true,"parts":[]}{}`))+" yes"),
+		"no polls":         setFact(statusOutcome(t, nil), FactStatusPolls, ""),
+		"a poll of no run": setFact(statusOutcome(t, nil), FactStatusPolls, "11:0:OK"),
+		"a poll malformed": setFact(statusOutcome(t, nil), FactStatusPolls, "0:0"),
+		"a poll exit -1":   setFact(statusOutcome(t, nil), FactStatusPolls, "0:-1:OK"),
+		"a poll unread":    setFact(statusOutcome(t, nil), FactStatusPolls, "0:0:-"),
 		"over the cap": setFact(statusOutcome(t, nil), FactStatusRun+"healthy",
 			"0 OK "+base64.StdEncoding.EncodeToString(make([]byte, MaxStatusOut+1))+" yes"),
 	}
@@ -200,6 +209,62 @@ func TestStatusUnprovenRunIsInvalid(t *testing.T) {
 		if v, why := judgeStatus(tr, o); v != Invalid {
 			t.Errorf("%s: %s (%s)", name, v, why)
 		}
+	}
+}
+
+// Output that is not exactly what the CLI's encoder writes, or a part in a state of no known kind, counts against the
+// metric: a MISS, never an INVALID that a later run could replace.
+func TestStatusOutputNotCanonicalIsAMiss(t *testing.T) {
+	tr := trial(t, "status-1")
+	healthy := cliFor(StatusRuns()[0])
+	good, err := json.Marshal(healthy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := func(out string) string { return "0 OK " + base64.StdEncoding.EncodeToString([]byte(out)) + " yes" }
+	g := string(good)
+	cases := map[string]string{
+		"unknown field":     raw(strings.Replace(g, `"ok":true`, `"ok":true,"mode":"x"`, 1) + "\n"),
+		"another schema":    raw(strings.Replace(g, `"schema_version":1`, `"schema_version":2`, 1) + "\n"),
+		"two objects":       raw(g + "{}\n"),
+		"a trailing ]":      raw(g + "]\n"),
+		"a trailing brace":  raw(g + "}\n"),
+		"no newline":        raw(g),
+		"ok twice":          raw(strings.Replace(g, `"ok":true`, `"ok":true,"ok":false`, 1) + "\n"),
+		"no ok":             raw(strings.Replace(g, `"ok":true,`, ``, 1) + "\n"),
+		"spaces":            raw(strings.Replace(g, `"ok":true`, `"ok": true`, 1) + "\n"),
+		"terminal controls": raw(g + "\n\x1b[2Jbalistid status: OK\n"),
+	}
+	for name, v := range cases {
+		if v, why := judgeStatus(tr, setFact(statusOutcome(t, nil), FactStatusRun+"healthy", v)); v != Miss {
+			t.Errorf("%s: %s (%s)", name, v, why)
+		}
+	}
+	for _, state := range []string{"", "HEALTHY", "ok", "Fail"} {
+		edit := map[string]func(*cliResult, *int, *string){StatusRuns()[2].Name: func(r *cliResult, _ *int, _ *string) {
+			for i := range r.Parts {
+				if r.Parts[i].State == "FAIL" {
+					r.Parts[i].State = state
+				}
+			}
+		}}
+		if v, why := judgeStatus(tr, statusOutcome(t, edit)); v != Miss {
+			t.Errorf("state %q: %s (%s)", state, v, why)
+		}
+	}
+}
+
+// A CLI call in any wait that exited 0 while the store was UNKNOWN throughout is a false OK, though the measured run
+// came later and showed the break.
+func TestStatusFalseOKInAPollIsAMiss(t *testing.T) {
+	o := setFact(statusOutcome(t, nil), FactStatusPolls, soundPolls()+",12:0:UNKNOWN")
+	if v, why := judgeStatus(trial(t, "status-1"), o); v != Invalid {
+		t.Fatalf("a poll of run 12: %s (%s)", v, why)
+	}
+	laurel := len(StatusRuns()) - 2
+	o = setFact(statusOutcome(t, nil), FactStatusPolls, soundPolls()+fmt.Sprintf(",%d:0:UNKNOWN", laurel))
+	if v, why := judgeStatus(trial(t, "status-1"), o); v != Miss || !strings.Contains(why, "laurel: false OK in a poll") {
+		t.Fatalf("%s (%s)", v, why)
 	}
 }
 
@@ -238,17 +303,36 @@ func TestStatusStoreDecidesHealthyAndFrozenRuns(t *testing.T) {
 	}
 }
 
-// Whatever value statusOf reads is a proven run of schema 1 within the cap.
+// Whatever value statusOf reads is a proven run within the cap.
 func FuzzStatusOf(f *testing.F) {
 	f.Add(runValue(cliFor(StatusRuns()[0]), 0, StoreOK, "yes"))
 	f.Add("0 OK e30= yes")
 	f.Fuzz(func(t *testing.T, v string) {
-		res, _, _, err := statusOf(v)
+		_, _, out, err := statusOf(v)
 		if err != nil {
 			return
 		}
-		if !strings.HasSuffix(v, " yes") || res.SchemaVersion != 1 {
-			t.Fatalf("statusOf(%q) = %+v", v, res)
+		if !strings.HasSuffix(v, " yes") || len(out) > MaxStatusOut {
+			t.Fatalf("statusOf(%q) = %d bytes", v, len(out))
+		}
+	})
+}
+
+// Whatever resultOf accepts is the canonical encoding of what it returns, newline included.
+func FuzzResultOf(f *testing.F) {
+	b, err := json.Marshal(cliFor(StatusRuns()[0]))
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(append(b, '\n'))
+	f.Fuzz(func(t *testing.T, out []byte) {
+		res, bad := resultOf(out)
+		if bad != "" {
+			return
+		}
+		back, err := json.Marshal(res)
+		if err != nil || !bytes.Equal(append(back, '\n'), out) {
+			t.Fatalf("resultOf(%q) = %+v", out, res)
 		}
 	})
 }

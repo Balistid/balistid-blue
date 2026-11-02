@@ -41,6 +41,25 @@ type statusRun struct {
 // cliRun runs the CLI once: its exit and output, or why it did not run to an exit.
 type cliRun func(ctx context.Context) (int, []byte, error)
 
+// cliCall is one call of the CLI the trial made, waits included: the run it served, its window and its exit.
+type cliCall struct {
+	run        int
+	start, end int64
+	exit       int
+}
+
+// recorded wraps cli so every call that ran to an exit is kept in *calls under the run *at points to.
+func recorded(cli cliRun, calls *[]cliCall, at *int) cliRun {
+	return func(ctx context.Context) (int, []byte, error) {
+		start := time.Now().UnixNano()
+		exit, out, err := cli(ctx)
+		if err == nil {
+			*calls = append(*calls, cliCall{run: *at, start: start, end: time.Now().UnixNano(), exit: exit})
+		}
+		return exit, out, err
+	}
+}
+
 // runStatus breaks each floor-0 part in turn and runs the CLI unprivileged after each (status_false_ok, ADR 0048),
 // then reads the store once, which stops the collector, for the health over each run; the judge decides by it.
 func runStatus(ctx context.Context, r *report) error {
@@ -50,10 +69,13 @@ func runStatus(ctx context.Context, r *report) error {
 	}
 	r.add(rangevm.FactStatusUID, strconv.FormatUint(uint64(cred.Uid), 10))
 	r.add(rangevm.FactUnitsInstalled, balistidUnits(ctx))
-	cli := func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }
+	var calls []cliCall
+	at := 0
+	cli := recorded(func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }, &calls, &at)
 	runs := rangevm.StatusRuns()
 	done := make([]statusRun, 0, len(runs))
-	for _, run := range runs {
+	for i, run := range runs {
+		at = i
 		res, err := breakAndRun(ctx, run, cli)
 		if err != nil {
 			return r.fail(run.Name + ": " + err.Error())
@@ -64,6 +86,7 @@ func runStatus(ctx context.Context, r *report) error {
 	if err := readStore(ctx, timeline.add, timeline.add); err != nil {
 		return r.fail("store: " + err.Error())
 	}
+	r.add(rangevm.FactStatusPolls, timeline.polls(calls))
 	for i, run := range runs {
 		res, health := done[i], rangevm.StoreUnread
 		if res.store {
@@ -263,21 +286,32 @@ func (t *healthTimeline) add(x rawrecord.Record) error {
 	return nil
 }
 
+// polls is every call as "<run>:<exit>:<store health over it>", comma-separated, for the judge to find a false OK
+// in any wait.
+func (t healthTimeline) polls(calls []cliCall) string {
+	entries := make([]string, len(calls))
+	for i, c := range calls {
+		entries[i] = fmt.Sprintf("%d:%d:%s", c.run, c.exit, t.over(c.start, c.end))
+	}
+	return strings.Join(entries, ",")
+}
+
 // over is the collector's health from start to end: the last record at or before start and every record after it
 // up to end, OK or UNKNOWN when all of them are, mixed when both, none without a record at or before start.
 // Records without a time never count.
 func (t healthTimeline) over(start, end int64) string {
 	var states []string
+	known := false
 	for _, h := range t {
 		switch {
 		case h.at <= 0 || h.at > end:
 		case h.at <= start:
-			states = []string{h.state}
+			states, known = []string{h.state}, true
 		default:
 			states = append(states, h.state)
 		}
 	}
-	if len(states) == 0 {
+	if !known {
 		return rangevm.StoreNone
 	}
 	seen := map[string]bool{}

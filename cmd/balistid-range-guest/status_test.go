@@ -59,6 +59,35 @@ func TestHealthTimelineOverTheRun(t *testing.T) {
 	}
 }
 
+// Every call that ran to an exit is kept under the run it served, and polls says the store's health over each.
+func TestEveryCLICallIsKept(t *testing.T) {
+	var calls []cliCall
+	at := 0
+	exits := []int{1, 0}
+	var errs []error
+	errs = append(errs, nil, nil, errors.New("killed"))
+	n := 0
+	cli := recorded(func(context.Context) (int, []byte, error) {
+		n++
+		if n == 3 {
+			return 0, nil, errs[2]
+		}
+		return exits[n-1], nil, nil
+	}, &calls, &at)
+	_, _, _ = cli(t.Context())
+	at = 3
+	_, _, _ = cli(t.Context())
+	_, _, _ = cli(t.Context())
+	if len(calls) != 2 || calls[0].run != 0 || calls[0].exit != 1 || calls[1].run != 3 || calls[1].exit != 0 || calls[1].start > calls[1].end {
+		t.Fatalf("%+v", calls)
+	}
+	tl := healthTimeline{{kind: "health", state: "UNKNOWN canary-missed", at: 1}}
+	calls[0].start, calls[0].end, calls[1].start, calls[1].end = 0, 5, 5, 9
+	if got := tl.polls(calls); got != "0:1:none,3:0:UNKNOWN" {
+		t.Fatalf("%q", got)
+	}
+}
+
 // A unit is stopped before it is masked, so its ExecStopPost runs, and stopped again after.
 func TestStopUnitStopsBeforeMasking(t *testing.T) {
 	got := stopUnit("balistid-net.service")
