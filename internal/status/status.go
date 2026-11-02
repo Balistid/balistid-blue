@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
@@ -86,7 +87,7 @@ func unitPart(u Unit, s UnitState) Part {
 	switch {
 	case s.Load != "loaded":
 		p.State, p.Detail, p.Hint = Fail, s.Load, "the unit is not installed: install Balistid Blue again"
-	case s.Active != "active" || s.Sub != u.Sub:
+	case s.Active != "active" || !slices.Contains(u.Subs, s.Sub):
 		p.State, p.Hint = Fail, "systemctl status "+u.Name+"; journalctl -u "+u.Name
 	}
 	return p
