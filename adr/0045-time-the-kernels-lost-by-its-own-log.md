@@ -24,7 +24,9 @@ stamped by the kernel when it counts.
 2. Two marks the guest writes to `/dev/kmsg`, before the stop and after the rise, tie the kernel's clock to uptime:
    each bounds the offset by the uptime read just before and just after its write, and the bracket takes the widest
    offset both allow.
-3. Nothing else of ADR 0039 changes: the 65 s rules, the shapes, the dispatcher's bracket by the state file.
+3. The dispatcher's bracket uses no wall clock either: it starts at the guest's uptime before the last read that
+   still saw the state file's generation before the last "no", and ends when the read that first saw "yes" ended;
+   mtimes only tell generations apart. Nothing else of ADR 0039 changes: the 65 s rules and the shapes.
 
 ## Alternatives considered
 

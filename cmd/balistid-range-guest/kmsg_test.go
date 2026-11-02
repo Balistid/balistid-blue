@@ -53,21 +53,29 @@ func TestKernelBracket(t *testing.T) {
 	}
 }
 
-// The dispatcher's bracket maps wall-clock mtimes to uptime with the offsets seen during the injection: its start
-// with the largest, its end with the least, and a spread over clockSpread fails it.
-func TestStateBracketOnlyWidens(t *testing.T) {
-	base := time.Unix(1_800_000_000, 0)
-	o := offsets{lo: time.Duration(base.UnixNano()) - 100*time.Second, hi: time.Duration(base.UnixNano()) - 99*time.Second}
-	from, to, err := o.bracket(base.Add(5*time.Second), base.Add(10*time.Second))
-	if err != nil || from != 104*time.Second || to != 110*time.Second {
-		t.Errorf("bracket %s..%s %v", from, to, err)
+// The dispatcher's bracket is the guest's own uptime: a new generation's lower bound is the read before the last
+// one that still saw the generation before it, a changing file tells nothing, and the first read sets the start.
+func TestStateWatchBracketsByItsOwnReads(t *testing.T) {
+	gen := func(sec int64, value string) stateRead { return stateRead{value: value, mtime: time.Unix(sec, 0)} }
+	reads := []stateRead{gen(10, "no"), gen(10, "no"), {value: stateChanged}, gen(15, "no"), gen(15, "no"), gen(20, "yes")}
+	clock := time.Duration(0)
+	w := stateWatch{
+		read: func() (stateRead, error) { r := reads[0]; reads = reads[1:]; return r, nil },
+		now:  func() (time.Duration, error) { clock += time.Second; return clock, nil },
 	}
-	o.lo -= time.Millisecond
-	if _, _, err := o.bracket(base.Add(5*time.Second), base.Add(10*time.Second)); err == nil {
-		t.Error("a clock spread over clockSpread gave a bracket")
+	type step struct {
+		fresh       bool
+		prev, after time.Duration
 	}
-	var fresh offsets
-	if err := fresh.read(); err != nil || fresh.lo != fresh.hi || fresh.lo <= 0 {
-		t.Errorf("first read %+v %v", fresh, err)
+	want := []step{{false, 0, 2 * time.Second}, {false, 0, 4 * time.Second}, {false, 0, 6 * time.Second},
+		{true, 3 * time.Second, 8 * time.Second}, {false, 0, 10 * time.Second}, {true, 9 * time.Second, 12 * time.Second}}
+	for i, w0 := range want {
+		fresh, prev, after, err := w.poll()
+		if err != nil || fresh != w0.fresh || (fresh && prev != w0.prev) || after != w0.after {
+			t.Fatalf("read %d: fresh %v prev %s after %s %v, want %+v", i, fresh, prev, after, err, w0)
+		}
+	}
+	if w.cur.value != "yes" {
+		t.Errorf("current %+v", w.cur)
 	}
 }

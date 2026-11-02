@@ -5,16 +5,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
-// uptime is CLOCK_BOOTTIME to the nanosecond, the clock /proc/uptime shows in hundredths.
+// uptime is CLOCK_BOOTTIME to the nanosecond, between two readings of that clock around it: /proc/uptime's
+// hundredths would fall before the first.
 func TestUptimeIsBoottime(t *testing.T) {
-	a, err := uptime()
-	if err != nil || a <= 0 {
-		t.Fatalf("%s %v", a, err)
-	}
-	if b, err := uptime(); err != nil || b < a {
-		t.Fatalf("uptime went back: %s then %s, %v", a, b, err)
+	for range 20 {
+		var before, after unix.Timespec
+		if err := unix.ClockGettime(unix.CLOCK_BOOTTIME, &before); err != nil {
+			t.Fatal(err)
+		}
+		up, err := uptime()
+		if err := errors.Join(err, unix.ClockGettime(unix.CLOCK_BOOTTIME, &after)); err != nil {
+			t.Fatal(err)
+		}
+		if up < time.Duration(before.Nano()) || up > time.Duration(after.Nano()) {
+			t.Fatalf("uptime %s outside CLOCK_BOOTTIME %d..%d", up, before.Nano(), after.Nano())
+		}
 	}
 }
 

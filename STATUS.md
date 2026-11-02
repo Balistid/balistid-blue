@@ -25,12 +25,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
    pull request; then an own audit netlink reader measured against auditd with Laurel, and an ADR on the data
    source (reopens 0004) if it wins: auditd with Laurel alone is 0.39-0.46 of the 0.5.
 2. `range-kvm` advisory until a week of runs, then required (0028). /security-audit of floor 0 before 9.5.
-3. CP5b: `-queue-bytes` in the range (its drop-in line is at docs_budget's 200 bytes: the maintainer decides),
+3. CP5b: the queue trial with `-queue-bytes` (range lines may run to 300 bytes, the maintainer's choice 2.11.),
    four auditd crashes, 10 runs per shape and `loss_alarm_s`, before 9.5 (ADR 0040). 2026-11-10 C3 = B4.9 (reinstall, suite).
 4. Host install (9.5) when every range metric and the product bar pass: balistid-install, R2 keys, the store on the
    existing fs with its reserve, x32, io_uring, alarms, a syscall-filtered build unit; L12 and the witness e2e after it.
 ## Open decisions (maintainer)
-- CP5a: no range unit sets `-queue-bytes` yet: a longer line cap for `range/*.conf`, or one range flag.
 - #142: seal continuity left to the Pi (appends wait ~45 ms on btrfs); the ledger socket is 0666, one connection,
   so a local flood can delay the collector's reconnect. #148: `-final` ends anchoring until rollover.
 - #123: the module cap measures after the download; a real bound needs a quota filesystem or a watcher (T36).
