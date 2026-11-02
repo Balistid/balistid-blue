@@ -100,7 +100,7 @@ func healthPart(src Sources) Part {
 	if err != nil {
 		p.Detail, p.Hint = "the collector's report is unreadable", collectorHint
 		if errors.Is(err, fs.ErrNotExist) {
-			p.Detail = "no report: the collector is not running"
+			p.Detail = "no report: the collector is not running or cannot write it"
 		}
 		return p
 	}

@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/status"
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // statusRig is a rig whose writer publishes its report into a temp directory on a boot clock the test sets.
@@ -81,5 +83,38 @@ func TestStatusReportWriteFailureKeepsTheWriterGoing(t *testing.T) {
 	}
 	if _, err := os.Stat(r.w.StatusPath); err == nil {
 		t.Fatal("a report in a missing directory")
+	}
+}
+
+// A write that fails removes the last report, which said OK, so the CLI reads UNKNOWN at once rather than an OK that
+// is still fresh; the next write that succeeds publishes again.
+func TestStatusWriteFailureRemovesTheOKReport(t *testing.T) {
+	r, path, _ := statusRig(t)
+	fail := make(chan bool, 1)
+	fail <- false
+	r.w.writeFile = func(p string, b []byte, perm os.FileMode) error {
+		f := <-fail
+		fail <- f
+		if f {
+			return errors.New("no space left on device")
+		}
+		return wholefile.Write(p, b, perm)
+	}
+	r.start(nil)
+	r.settle()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("no first report: %v", err)
+	}
+	<-fail
+	fail <- true
+	r.step(time.Second)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a report outlived its failed write: %v", err)
+	}
+	<-fail
+	fail <- false
+	r.step(250 * time.Millisecond)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("not written again after the failure: %v", err)
 	}
 }
