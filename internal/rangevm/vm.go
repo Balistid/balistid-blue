@@ -45,7 +45,7 @@ const (
 // Limits of one run (ADR 0009, points 3–5).
 const (
 	ResultsBytes = 16 << 20
-	SerialBudget = 1 << 20
+	SerialBudget = 16 << 20
 	RunTimeout   = 10 * time.Minute
 	setupTimeout = time.Minute
 	setupShown   = 512 // bytes of the overlay step's output kept in its INVALID reason

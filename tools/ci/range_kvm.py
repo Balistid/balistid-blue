@@ -97,7 +97,9 @@ def print_profile(state: Path) -> None:
     for p in sorted((state / "balistid-range" / "results").rglob("serial.txt")):
         if p.is_symlink() or not p.is_file():
             continue
-        for line in p.read_bytes()[: 8 << 20].decode("ascii", "replace").splitlines():
+        data = p.read_bytes()[: 80 << 20]
+        print(f"PROFFILE {p.parent.name} {len(data)}", flush=True)
+        for line in data.decode("ascii", "replace").splitlines():
             m = PROF_LINE.search(line)
             if m:
                 print(m.group(0), flush=True)
