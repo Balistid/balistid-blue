@@ -4,7 +4,7 @@
 - Date: 2026-11-02
 - Decided-by: alex
 - Agent: claude/opus-5.5
-- Amends: ADR 0014 (the cap)
+- Amends: ADR 0014 (the cap).
 
 ## Context
 
