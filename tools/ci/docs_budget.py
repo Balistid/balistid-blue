@@ -196,14 +196,24 @@ PINNED = {
 # Files root installs (units, rules, the range image, packages): every line is printable ASCII, no tab,
 # at most 200 bytes. Anything else (a NUL, U+2028, a no-break space, a line over systemd's limit) lets
 # systemd, auditd or a shell read a line the tests and the review read differently. An allowlist (R7).
+# The range image's drop-ins repeat the installed argv and add the range's flags on one ExecStart line (the unit
+# tests refuse continuation lines), so their lines may run to 300 bytes; they never reach a host (ADR 0022).
 ROOT_INSTALLED = ("deploy/", "range/", "packaging/")
 ROOT_INSTALLED_LINE = re.compile(rb"[\x20-\x7e]{0,200}")
+RANGE_LINE = re.compile(rb"[\x20-\x7e]{0,300}")
 
 
-def unreadable_line(data: bytes) -> int | None:
-    """The first line of a root-installed file outside ROOT_INSTALLED_LINE, or None."""
+def line_cap(path: str) -> int:
+    """The longest line a root-installed file at path may hold."""
+    return 300 if path.startswith("range/") else 200
+
+
+def unreadable_line(data: bytes, path: str = "") -> int | None:
+    """The first line of a root-installed file outside its line allowlist (RANGE_LINE under range/, else
+    ROOT_INSTALLED_LINE), or None."""
+    pattern = RANGE_LINE if line_cap(path) == 300 else ROOT_INSTALLED_LINE
     for number, line in enumerate(data.split(b"\n"), 1):
-        if not ROOT_INSTALLED_LINE.fullmatch(line):
+        if not pattern.fullmatch(line):
             return number
     return None
 
@@ -354,8 +364,8 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
                     violations.append(f"{path}: {problem}")
                     continue
         # a file with a content grammar (range/witness/go.mod) is checked by it, tabs included
-        if path.startswith(ROOT_INSTALLED) and path not in CONTENT_GRAMMAR and (number := unreadable_line(blob(repo, sha))):
-            violations.append(f"{path}: line {number} is not printable ASCII of at most 200 bytes")
+        if path.startswith(ROOT_INSTALLED) and path not in CONTENT_GRAMMAR and (number := unreadable_line(blob(repo, sha), path)):
+            violations.append(f"{path}: line {number} is not printable ASCII of at most {line_cap(path)} bytes")
             continue
         cap = doc_cap(path)
         if cap is None:
