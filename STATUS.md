@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-02 by claude/opus-5.5 (#216, #217, #218 merged; #219 found; ADR 0041's checks hold)
+Updated: 2026-11-03 by claude/opus-5.5 (ADR 0051: each threat-model hole has a milestone or is accepted)
 
 ## Where we are
 
@@ -27,8 +27,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #194 `balistid status` (ADR 0048), #195, #214 (ADR 0049), residual issues #196-#213: as before (git log).
 ## Next step
 1. /security-audit of floor 0 (maintainer); #219 before 9.5 (a floor-0 metric that misses).
-2. 9.5 (#196-#205, #213) when every range metric and the product bar pass: #199 and #213 first (agent), #197, #201,
-   #204 are the maintainer's decisions; 2026-11-10 C3 = B4.9 (reinstall, suite, verdicts; #200).
+2. 9.5 (milestone; ADR 0051 maps the 28 holes: T8's x32 and T9 block it, T9 needs a hardware key) when every range
+   metric and the product bar pass: #199, #213 first; #197, #201, #204 the maintainer's; 2026-11-10 C3 (#200).
 ## Open decisions (maintainer)
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
