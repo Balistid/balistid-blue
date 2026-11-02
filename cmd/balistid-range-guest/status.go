@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -130,21 +131,39 @@ func measure(ctx context.Context, cli cliRun, prove func() string, want string) 
 	return res
 }
 
-// untilCLI asks the CLI until it exits with want, at most statusWait.
+// untilCLI asks the CLI until it exits with want, at most statusWait; a timeout names the parts it last showed not OK.
 func untilCLI(ctx context.Context, cli cliRun, want int) error {
 	deadline := time.Now().Add(statusWait)
 	for {
-		exit, _, err := cli(ctx)
+		exit, out, err := cli(ctx)
 		if err == nil && exit == want {
 			return nil
 		}
 		if !time.Now().Before(deadline) {
-			return errors.Join(fmt.Errorf("the CLI did not exit %d within %s (last %d)", want, statusWait, exit), err)
+			return errors.Join(fmt.Errorf("the CLI did not exit %d within %s (last %d, not OK: %s)", want, statusWait, exit,
+				notOK(out)), err)
 		}
 		if !pause(ctx, statusPoll) {
 			return fmt.Errorf("waiting for the CLI: %w", ctx.Err())
 		}
 	}
+}
+
+// notOK lists the parts of the CLI's JSON that are not OK with their detail, or why it does not read.
+func notOK(out []byte) string {
+	var res struct {
+		Parts []struct{ Part, State, Detail string }
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "unreadable output"
+	}
+	var bad []string
+	for _, p := range res.Parts {
+		if p.State != "OK" {
+			bad = append(bad, fmt.Sprintf("%s %s %q", p.Part, p.State, p.Detail))
+		}
+	}
+	return strings.Join(bad, ", ")
 }
 
 // runCLI runs `balistid status --json` as cred with an empty environment and returns its exit and output.
