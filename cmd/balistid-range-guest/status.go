@@ -91,6 +91,7 @@ func breakAndRun(ctx context.Context, run rangevm.StatusRun, cli cliRun) (status
 		stopErr := systemctl(ctx, "stop", run.Name)
 		res := measure(ctx, cli, func() string { return unitStopped(ctx, run.Name) }, "")
 		if err := errors.Join(stopErr, restoreUnits(ctx, run.Name)); err != nil {
+			diagUnit(ctx, run.Name)
 			return statusRun{}, err
 		}
 		return res, nil

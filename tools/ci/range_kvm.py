@@ -89,6 +89,20 @@ def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpect
     return f"::error title={title}::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+DIAG_LINE = re.compile(r"DIAG [A-Za-z0-9+/=_. ;:|-]{1,800}")
+
+
+def print_diag(state: Path) -> None:
+    """Exp only, never merged: the guest's DIAG lines from every kept serial log."""
+    for p in sorted((state / "balistid-range" / "results").glob("*/serial*")):
+        if p.is_symlink() or not p.is_file():
+            continue
+        for line in p.read_bytes()[: 80 << 20].decode("ascii", "replace").splitlines():
+            m = DIAG_LINE.search(line)
+            if m:
+                print(m.group(0), flush=True)
+
+
 class RangeError(Exception):
     """A condition under which the self-test did not run; the job fails (R6)."""
 
@@ -183,6 +197,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     print(f"::stop-commands::{token}", flush=True)
     try:
         done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid(), trial), check=False)
+        print_diag(state)
     finally:
         # On a line of its own: the runner resumes commands only on a line that starts with "::".
         print(f"\n::{token}::", flush=True)
