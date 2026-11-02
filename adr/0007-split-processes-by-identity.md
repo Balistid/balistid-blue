@@ -22,7 +22,7 @@ are inside the threat model.
 | `balistid-ledger` | own uid | none, no network | collector stream | log tiles, signing key |
 | `balistid-relay` | own uid | none | tiles | HTTP and witness, WireGuard only |
 | `balistid-normalize` | own uid | none | sealed shards | derived database |
-| CLI, UI | user | none | derived database, status | requests over sockets |
+| CLI, UI | user | none | derived database, status (0048) | requests over sockets |
 
 1. This ADR amends R13: the one long-running privileged Balistid Blue process is `balistid-auditstat`; it parses no
    sensor data and only reports fixed structures. The collector needs no privilege.
