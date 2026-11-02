@@ -23,28 +23,28 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 	"github.com/Balistid/balistid-blue/internal/shard"
+	"github.com/Balistid/balistid-blue/internal/watch"
 )
 
 const (
 	// freezeFor holds the store's filesystem frozen: under the collector's WatchdogSec (10 s), so the watchdog
 	// does not restart it and turn the queue's loss into a shutdown's.
 	freezeFor = 6 * time.Second
-	// bigArg is an exec argument near MAX_ARG_STRLEN (128 KiB); bigArgs of them make a record of about 1.2 MB,
-	// under record_max_kib (2 MiB, stored whole). queueExecs of them overfill the range's 8 MiB queue twice, in
-	// fewer kernel records than auditd's plugin queue holds, so the dispatcher cannot overflow even if Laurel
-	// took none of them during the freeze.
-	bigArg     = 100 << 10
-	bigArgs    = 12
-	queueExecs = 16
+	// bigArgs exec arguments of bigArg bytes make a record of about 1.2 MB, under record_max_kib (2 MiB, stored
+	// whole). Each argument stays under execveChunk, the kernel's MAX_EXECVE_AUDIT_LEN, which it never splits:
+	// Laurel took split ones at about 1 MB/s in the range, a thousandth of whole ones. queueExecs of them
+	// overfill the range's 8 MiB queue twice in fewer kernel records than auditd's plugin queue holds.
+	bigArg      = 7000
+	bigArgs     = 175
+	execveChunk = 7500
+	queueExecs  = 16
 	// crashExecs of them pass auditd's plugin queue at the fewest kernel records each, total bytes over
 	// execveChunk; crashFlood bounds the flood and kill after a fresh state write, under its 5 s report_interval.
 	crashExecs = 128
 	crashFlood = 3 * time.Second
 	// auditdRestartWait covers systemd's restart of a killed auditd (Restart=on-failure, 100 ms) and its start.
 	auditdRestartWait = 15 * time.Second
-	// execveChunk is the kernel's MAX_EXECVE_AUDIT_LEN: an argument longer than it spans records of at most it.
-	execveChunk = 7500
-	fillFile    = scratchMount + "/fill"
+	fillFile          = scratchMount + "/fill"
 	// fillSlack bounds what the fill leaves above a WAL: the store's admit slack (64 KiB), so the least a record
 	// needs, a WAL, twice its size and that slack, is more than is left.
 	fillSlack  = 64 << 10
@@ -280,9 +280,9 @@ func lossMatch(inject string) func(entry.Body) bool {
 	return func(entry.Body) bool { return false }
 }
 
-// firstUnknown attributes a store trial's unknown alert by the ledger's own stamps (ADR 0039, point 3): "before N"
-// when the ledger logged an UNKNOWN within rangevm.LossAlarm before fromNs, whose alert may land after the
-// injection, else the reason of its first UNKNOWN from fromNs on, "none" without one.
+// firstUnknown attributes an unknown alert by the ledger's own stamps (ADR 0039, point 3): "before N" when the
+// ledger logged an UNKNOWN within rangevm.LossAlarm before fromNs, whose alert may land after the injection, else
+// the reason of its first UNKNOWN from fromNs on, "none" without one. Only UNKNOWNs the Pi alerts as unknown count.
 func firstUnknown(ctx context.Context, fromNs int64) string {
 	keys, err := rangeKeys()
 	if err != nil {
@@ -297,7 +297,7 @@ func firstUnknownIn(ctx context.Context, root string, v note.Verifier, fromNs in
 	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
 		h, ok := e.Body.(entry.Health)
 		switch {
-		case !ok || h.State != entry.StateUnknown:
+		case !ok || h.State != entry.StateUnknown || !watch.AlertsUnknown(h.Reason):
 		case e.At < fromNs && e.At >= fromNs-rangevm.LossAlarm.Nanoseconds():
 			before = "before " + strconv.Itoa(int(h.Reason))
 		case e.At >= fromNs && after == "none":
