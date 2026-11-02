@@ -149,7 +149,7 @@ def service_problems(name: str, text: str) -> list[str]:
 def lines(name: str) -> list[list[str]]:
     text = (RUNNER / name).read_text()
     # systemd-tmpfiles and -sysusers expand C escapes and % specifiers, which shlex does not.
-    if docs_budget.unreadable_line(text.encode()) or "\\" in text or "%" in text:
+    if docs_budget.unreadable_line(text.encode(), "") or "\\" in text or "%" in text:
         raise ValueError(f"{name}: a line the tests would read differently from systemd")
     return [shlex.split(line) for line in text.splitlines()
             if line.strip() and not line.lstrip().startswith("#")]

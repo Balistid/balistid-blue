@@ -26,7 +26,8 @@ stamped by the kernel when it counts.
    offset both allow.
 3. The dispatcher's bracket uses no wall clock either: it starts at the guest's uptime before the last read that
    still saw the state file's generation before the last "no", and ends when the read that first saw "yes" ended;
-   mtimes only tell generations apart. Nothing else of ADR 0039 changes: the 65 s rules and the shapes.
+   mtimes only tell generations apart. It holds as auditd truncates the file before it reads the flag (4.2.1,
+   src/auditd.c:231 and :249); a file without the flag line is one being written and tells nothing. Nothing else of ADR 0039 changes: the 65 s rules and the shapes.
 
 ## Alternatives considered
 
