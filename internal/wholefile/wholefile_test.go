@@ -27,6 +27,37 @@ func TestWriteSetsTheMode(t *testing.T) {
 	}
 }
 
+// A file another service writes is read only as that uid's regular file of its exact size: a FIFO neither
+// blocks nor reads, a symlink is not followed.
+func TestReadOwnedRefusesAnythingElse(t *testing.T) {
+	dir := t.TempDir()
+	good, fifo, link := filepath.Join(dir, "good"), filepath.Join(dir, "fifo"), filepath.Join(dir, "link")
+	if err := Write(good, []byte("abcd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := ReadOwned(good, os.Getuid(), 4); err != nil || string(b) != "abcd" {
+		t.Fatalf("good: %q, %v", b, err)
+	}
+	for name, c := range map[string]struct {
+		path      string
+		uid, size int
+	}{
+		"another owner": {good, os.Getuid() + 1, 4}, "longer": {good, os.Getuid(), 3}, "shorter": {good, os.Getuid(), 5},
+		"symlink": {link, os.Getuid(), 4}, "fifo": {fifo, os.Getuid(), 0}, "directory": {dir, os.Getuid(), 4},
+		"missing": {filepath.Join(dir, "none"), os.Getuid(), 4},
+	} {
+		if _, err := ReadOwned(c.path, c.uid, c.size); err == nil {
+			t.Errorf("%s: read", name)
+		}
+	}
+}
+
 func TestWriteReplacesASymlinkInsteadOfFollowingIt(t *testing.T) {
 	dir := t.TempDir()
 	target, link := filepath.Join(dir, "target"), filepath.Join(dir, "link")
