@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"runtime/debug"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,7 +57,7 @@ func run() int {
 	flag.Parse()
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
+		f, err := os.Create(*cpuProfile + "." + strconv.Itoa(os.Getpid()))
 		if err != nil {
 			log.Error("cpu profile", "err", err)
 			return 1

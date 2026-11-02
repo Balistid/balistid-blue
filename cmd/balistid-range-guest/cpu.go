@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -156,7 +157,16 @@ func dumpProfile(ctx context.Context) {
 		}
 	}
 	output(ctx, "/usr/bin/systemctl", "stop", collectorUnitName)
-	data, err := os.ReadFile("/var/lib/balistid/collector/cpu.prof")
+	profiles, _ := filepath.Glob("/var/lib/balistid/collector/cpu.prof.*")
+	var data []byte
+	err := errors.New("no profile")
+	for _, p := range profiles {
+		d, rerr := os.ReadFile(p) //nolint:gosec // exp only
+		fmt.Printf("PROFSTAT file %s %d\n", filepath.Base(p), len(d))
+		if rerr == nil && len(d) > len(data) {
+			data, err = d, nil
+		}
+	}
 	if err != nil {
 		fmt.Printf("PROFERR %s\n", strings.ReplaceAll(err.Error(), " ", "_"))
 		return
