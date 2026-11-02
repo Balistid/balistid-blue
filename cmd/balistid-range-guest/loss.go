@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -35,6 +36,12 @@ const (
 	bigArg     = 100 << 10
 	bigArgs    = 12
 	queueExecs = 16
+	// crashExecs of them pass auditd's plugin queue at the fewest kernel records each, total bytes over
+	// execveChunk; crashFlood bounds the flood and kill after a fresh state write, under its 5 s report_interval.
+	crashExecs = 128
+	crashFlood = 3 * time.Second
+	// auditdRestartWait covers systemd's restart of a killed auditd (Restart=on-failure, 100 ms) and its start.
+	auditdRestartWait = 15 * time.Second
 	// execveChunk is the kernel's MAX_EXECVE_AUDIT_LEN: an argument longer than it spans records of at most it.
 	execveChunk = 7500
 	fillFile    = scratchMount + "/fill"
@@ -229,7 +236,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 		posts, _, _ := readSink()
 		now, err := uptime()
 		tag := rangevm.LossTag(tr.Inject)
-		seen := tag != "" && firstAfter(posts, tag, from) || tr.Inject == rangejob.InjectStore && firstAfter(posts, "unknown", from)
+		unknown := tr.Inject == rangejob.InjectStore || tr.Inject == rangejob.InjectAuditdCrash
+		seen := tag != "" && firstAfter(posts, tag, from) || unknown && firstAfter(posts, "unknown", from)
 		switch {
 		case err != nil:
 			return err
@@ -243,8 +251,8 @@ func waitLoss(ctx context.Context, tr rangejob.Trial, from, end time.Duration) e
 }
 
 // lossMatch is which ledger entries an injection's loss makes: a loss of the queue's stage, of the cap's (a
-// full filesystem), of the store's or the store's UNKNOWN, of the kernel's or of the dispatcher's (ADR 0038); none
-// for the control.
+// full filesystem), of the store's or the store's UNKNOWN, of the kernel's or of the dispatcher's (ADR 0038), the
+// UNKNOWN of a killed auditd (ADR 0039, point 3: a 10 for its new pid); none for the control.
 func lossMatch(inject string) func(entry.Body) bool {
 	stage := func(s entry.Stage) func(entry.Body) bool {
 		return func(b entry.Body) bool { l, ok := b.(entry.Loss); return ok && l.Stage == s }
@@ -263,6 +271,11 @@ func lossMatch(inject string) func(entry.Body) bool {
 		return stage(entry.StageKernel)
 	case rangejob.InjectDispatcher:
 		return stage(entry.StageDispatcher)
+	case rangejob.InjectAuditdCrash:
+		return func(b entry.Body) bool {
+			h, ok := b.(entry.Health)
+			return ok && h.State == entry.StateUnknown && h.Reason == entry.ReasonAuditd
+		}
 	}
 	return func(entry.Body) bool { return false }
 }
@@ -372,6 +385,8 @@ func injectLoss(ctx context.Context, inject string) injected {
 		inj, err = stopAuditd(ctx, inject == rangejob.InjectKernelSustained)
 	case rangejob.InjectDispatcher:
 		inj.from, inj.to, err = overflowDispatcher(ctx)
+	case rangejob.InjectAuditdCrash:
+		inj.from, inj.to, err = crashAuditd(ctx)
 	case rangejob.InjectNone:
 	default:
 		err = fmt.Errorf("no injection %q", inject)
@@ -387,10 +402,6 @@ func injectLoss(ctx context.Context, inject string) injected {
 // at a time, so the collector's writer blocks and its queue fills; the proof is the freeze, every exec and the
 // thaw done, and it returns the thaw's uptime, where the injection ends.
 func freezeStore(ctx context.Context) (time.Duration, error) {
-	args := make([]string, bigArgs)
-	for i := range args {
-		args[i] = strings.Repeat("q", bigArg)
-	}
 	if err := systemctl(ctx, "is-active", collectorUnitName); err != nil {
 		return 0, err
 	}
@@ -404,12 +415,7 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 	}
 	thawAt := time.Now().Add(freezeFor)
 	burst, stop := context.WithDeadline(ctx, thawAt)
-	var execErr error
-	for i := 0; i < queueExecs && execErr == nil; i++ {
-		if err := exec.CommandContext(burst, "/usr/bin/true", args...).Run(); err != nil { //nolint:gosec // our own fixed arguments
-			execErr = fmt.Errorf("exec %d of %d: %w", i+1, queueExecs, err)
-		}
-	}
+	execErr := bigExecs(burst, queueExecs, 1)
 	stop()
 	pause(ctx, time.Until(thawAt))
 	thawErr := unix.IoctlSetInt(int(d.Fd()), fiThaw, 0)
@@ -423,6 +429,35 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 		return 0, err
 	}
 	return end, nil
+}
+
+// bigExecs runs n execs of bigArgs arguments of bigArg bytes, at most parallel at once; an exec that fails, or one
+// that ctx's end stopped or kept from starting, is an error.
+func bigExecs(ctx context.Context, n, parallel int) error {
+	args := make([]string, bigArgs)
+	for i := range args {
+		args[i] = strings.Repeat("q", bigArg)
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var first error
+	sem := make(chan struct{}, parallel)
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		sem <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-sem }()
+			if err := exec.CommandContext(ctx, "/usr/bin/true", args...).Run(); err != nil { //nolint:gosec // our own fixed arguments
+				mu.Lock()
+				first = cmp.Or(first, fmt.Errorf("exec %d of %d: %w", i+1, n, err))
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if first == nil && ctx.Err() != nil {
+		first = fmt.Errorf("%d execs: %w", n, ctx.Err())
+	}
+	return first
 }
 
 // fillScratch fills the scratch filesystem outside the store, so the store meets a full filesystem: no room for
@@ -718,20 +753,9 @@ func (k *kmsgReader) awaitMark(ctx context.Context, m *kmsgMark) error {
 // the read that first saw "yes" ended. That holds as auditd 4.2.1 truncates the file before it reads the flag
 // (src/auditd.c:231, :249). It waits for a fresh "no" first, so the bracket starts near the injection.
 func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, error) {
-	w := stateWatch{read: readState, now: uptime}
-	if _, _, _, err := w.poll(); err != nil {
+	w, err := freshState(ctx)
+	if err != nil {
 		return 0, 0, err
-	}
-	for deadline := time.Now().Add(freshStateWait); w.from == 0 && w.to == 0; {
-		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
-			return 0, 0, errors.New("auditd wrote no fresh state file")
-		}
-		if err := w.step(); err != nil {
-			return 0, 0, err
-		}
-	}
-	if w.to != 0 {
-		return 0, 0, errors.New("the state file reads overflow yes before the injection")
 	}
 	pid, err := strconv.Atoi(laurelPID())
 	if err != nil {
@@ -762,6 +786,123 @@ func overflowDispatcher(ctx context.Context) (time.Duration, time.Duration, erro
 		return 0, 0, fmt.Errorf("no overflow in the state file within %s", overflowWait)
 	}
 	return w.from, w.to, nil
+}
+
+// freshState watches auditd's state file until it writes a fresh "no", so a bracket from it starts near the
+// injection and auditd's next write is report_interval away.
+func freshState(ctx context.Context) (*stateWatch, error) {
+	w := &stateWatch{read: readState, now: uptime}
+	if _, _, _, err := w.poll(); err != nil {
+		return nil, err
+	}
+	for deadline := time.Now().Add(freshStateWait); w.from == 0 && w.to == 0; {
+		if time.Now().After(deadline) || !pause(ctx, stateEvery) {
+			return nil, errors.New("auditd wrote no fresh state file")
+		}
+		if err := w.step(); err != nil {
+			return nil, err
+		}
+	}
+	if w.to != 0 {
+		return nil, errors.New("the state file reads overflow yes before the injection")
+	}
+	return w, nil
+}
+
+// crashAuditd stops Laurel right after auditd's state write, floods past its plugin queue and SIGKILLs auditd
+// before the next write, for systemd to restart it (ADR 0039, point 5). The bracket runs from just before the kill
+// to auditd's exit seen through its pidfd. A flood cut short, a state file read yes before the kill or no new
+// auditd within auditdRestartWait fails the proof.
+func crashAuditd(ctx context.Context) (time.Duration, time.Duration, error) {
+	w, err := freshState(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	killBy := time.Now().Add(crashFlood)
+	pid, err := strconv.Atoi(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "MainPID", auditdUnitName)))
+	switch {
+	case err != nil:
+		return 0, 0, fmt.Errorf("auditd pid: %w", err)
+	case pid <= 0:
+		return 0, 0, errors.New("auditd has no main pid")
+	}
+	pidfd, err := unix.PidfdOpen(pid, 0)
+	if err != nil {
+		return 0, 0, fmt.Errorf("pidfd of auditd: %w", err)
+	}
+	defer unix.Close(pidfd) //nolint:errcheck // a pidfd, nothing to flush
+	laurel, err := strconv.Atoi(laurelPID())
+	if err != nil {
+		return 0, 0, errors.New("no laurel process")
+	}
+	if err := syscall.Kill(laurel, syscall.SIGSTOP); err != nil {
+		return 0, 0, fmt.Errorf("SIGSTOP laurel: %w", err)
+	}
+	from, to, err := floodAndKill(ctx, w, pidfd, killBy)
+	if cerr := syscall.Kill(laurel, syscall.SIGCONT); cerr != nil && !errors.Is(cerr, syscall.ESRCH) {
+		err = errors.Join(err, fmt.Errorf("SIGCONT laurel: %w", cerr))
+	}
+	if err == nil {
+		err = awaitAuditd(ctx, pid)
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return from, to, nil
+}
+
+// floodAndKill floods crashExecs big execs by killBy, reads the state file once more and SIGKILLs auditd through
+// pidfd, then waits for its exit; the bracket is the uptime before the signal to the uptime the exit was seen.
+func floodAndKill(ctx context.Context, w *stateWatch, pidfd int, killBy time.Time) (time.Duration, time.Duration, error) {
+	flood, stop := context.WithDeadline(ctx, killBy)
+	err := bigExecs(flood, crashExecs, maxChildren)
+	stop()
+	if err == nil {
+		err = w.step()
+	}
+	switch {
+	case err != nil:
+		return 0, 0, fmt.Errorf("flood before auditd's next state write: %w", err)
+	case w.to != 0:
+		return 0, 0, errors.New("the state file read overflow yes before the kill")
+	}
+	from, err := uptime()
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := unix.PidfdSendSignal(pidfd, unix.SIGKILL, nil, 0); err != nil {
+		return 0, 0, fmt.Errorf("SIGKILL auditd: %w", err)
+	}
+	fds := []unix.PollFd{{Fd: int32(pidfd), Events: unix.POLLIN}} //nolint:gosec // a descriptor fits int32
+	n, err := unix.Poll(fds, int(auditdRestartWait.Milliseconds()))
+	switch {
+	case err != nil:
+		return 0, 0, fmt.Errorf("poll auditd's pidfd: %w", err)
+	case n == 0:
+		return 0, 0, fmt.Errorf("auditd did not exit within %s of SIGKILL", auditdRestartWait)
+	}
+	to, err := uptime()
+	if err != nil {
+		return 0, 0, err
+	}
+	return from, to, nil
+}
+
+// awaitAuditd waits until systemd runs an auditd other than old, active, within auditdRestartWait.
+func awaitAuditd(ctx context.Context, old int) error {
+	wait, stop := context.WithTimeout(ctx, auditdRestartWait)
+	defer stop()
+	for {
+		pid := strings.TrimSpace(output(wait, "/usr/bin/systemctl", "show", "-P", "MainPID", auditdUnitName))
+		state := strings.TrimSpace(output(wait, "/usr/bin/systemctl", "show", "-P", "ActiveState", auditdUnitName))
+		if n, err := strconv.Atoi(pid); err == nil && n > 0 && n != old && state == "active" {
+			return nil
+		}
+		if !pause(wait, stateEvery) {
+			return fmt.Errorf("no new active auditd within %s: pid %q, %q", auditdRestartWait, rangevm.Printable(pid, 16),
+				rangevm.Printable(state, 32))
+		}
+	}
 }
 
 // stateWatch follows auditd's state file by the guest's uptime. A generation is told apart by its mtime, which is

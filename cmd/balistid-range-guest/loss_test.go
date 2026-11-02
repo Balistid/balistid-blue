@@ -11,7 +11,7 @@ import (
 // kernel records still fits auditd's plugin queue: only the collector's stage can lose (ADR 0039, point 2).
 func TestQueueBurstFillsOnlyTheCollectorsQueue(t *testing.T) {
 	number := func(path, pattern string) int {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // the repo's own files, named below
 		if err != nil {
 			t.Fatal(err)
 		}
