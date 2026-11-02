@@ -3,7 +3,7 @@
 Scope: an Arch Linux host recording via auditd and Laurel (ADR 0004), raw SQLite shards (0005),
 a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007), and the attack
 range VM that tests them (0009) and its runner (0011). Rows assume the higher level with a witness off the host; in
-local mode, the 9.5 default, no witness or Pi exists, A2 is unopposed and a dead host alarms only through the opt-in
+local mode, the 9.5 default, no off-host witness or Pi exists, A2 is unopposed and a dead host alarms only through the opt-in
 dead-man (0043). Detection and response start on floor 1. Each row names its control and proof in `acceptance/0.toml` or a test.
 Status: **designed** (control decided, test not passing yet), **partial** (a stated hole), **gap** (no
 control; the floor to close it, or "open"), **assumption**. No row is
