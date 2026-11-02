@@ -200,6 +200,10 @@ type Writer struct {
 	Cosign *cosign.Keys
 	// Retention is raw_retention_days: how far both clocks must be past a shard's seal.
 	Retention time.Duration
+	// StatusPath is where the health goes for balistid status (ADR 0048); "" publishes none. Boottime is its
+	// clock (status.Boottime).
+	StatusPath string
+	Boottime   func() (uint64, error)
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -232,6 +236,15 @@ type Writer struct {
 	refuse        tally  // refusals not yet in a summary record
 	loggedCommit  uint64 // the Committed last journaled
 	ledgerState
+	statusState
+}
+
+// statusState is the writer's report for balistid status (ADR 0048).
+type statusState struct {
+	statusSeq    uint64
+	statusHealth string    // the health last published
+	statusAt     time.Time // when it was
+	statusErr    bool      // the last write failed: its next failure is not journaled again
 }
 
 // ledgerState is the writer's side of the stream to the ledger (ADR 0027).
@@ -386,6 +399,7 @@ func (w *Writer) step(ctx context.Context) {
 	}
 	w.summaries(false)
 	w.setHealth()
+	w.publish(now)
 	w.writeNotes()
 	w.stream(ctx)
 	// While the store is down, the journal is where losses leave the collector (ADR 0017, point 7).

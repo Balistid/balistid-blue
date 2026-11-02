@@ -27,6 +27,9 @@ ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/co
 # Open and the canary refuse a directory anyone but the collector could write.
 StateDirectory=balistid/collector
 StateDirectoryMode=0700
+# The health report every user's balistid status reads (ADR 0048); gone while the collector is stopped.
+RuntimeDirectory=balistid-collector
+RuntimeDirectoryMode=0755
 UMask=0077
 # rss_mib (512 MiB for all of floor 0): the binary's own 192 MiB heap limit, the 64 MiB queue twice
 # while it drains, SQLite's pages and /tmp, with room. No swap.
@@ -35,7 +38,7 @@ MemorySwapMax=0
 # No exec (ADR 0017, point 3; T18): systemd needs execve to start the binary, so a syscall filter
 # cannot deny it; nothing but the binary is executable, and the other ways in are filtered. The
 # mounts systemd adds for the unit skip the noexec of /, so each writable one is listed too.
-NoExecPaths=/ /var/lib/balistid/collector /tmp -/dev/shm
+NoExecPaths=/ /var/lib/balistid/collector /run/balistid-collector /tmp -/dev/shm
 ExecPaths=/usr/local/lib/balistid/balistid-collector
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
