@@ -151,6 +151,11 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		names = []string{FactCapEntries, FactFullBundles, FactFullBytes}
 	case rangejob.MethodRSS:
 		names = []string{FactGenerated, FactWindowMin, FactRSSSamples, FactRSSMaxKiB, FactRSSAuditKiB}
+	case rangejob.MethodCanary:
+		names = []string{FactCanaryCount, FactCanaryGapMS}
+		for _, s := range CanaryStages() {
+			names = append(names, CanaryFact(s.Name, CanaryFirstMS), CanaryFact(s.Name, CanaryUnknownMS), CanaryFact(s.Name, CanaryOKMS))
+		}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -237,6 +242,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeStatus(tr, o)
 	case rangejob.MethodRSS:
 		return judgeRSS(tr, o)
+	case rangejob.MethodCanary:
+		return judgeCanary(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

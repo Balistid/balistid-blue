@@ -44,6 +44,7 @@ const (
 	MetricLoss              = "loss_alarm_s"
 	MetricStatus            = "status_false_ok"
 	MetricRSS               = "rss_mib"
+	MetricCanary            = "canary_interval_s"
 )
 
 // InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
@@ -90,7 +91,8 @@ const InjectAuditSet = "audit-set"
 // (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5), an
 // audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038), a status trial runs
 // the CLI unprivileged after each break of the floor (ADR 0048), an RSS trial samples the resident memory of the
-// recorder's units under load (rss_mib).
+// recorder's units under load (rss_mib), a canary trial times the collector's canary quiet and with Laurel and then
+// auditd frozen (ADR 0017).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -106,6 +108,7 @@ const (
 	MethodAuditSet         = "audit-set"
 	MethodStatus           = "status"
 	MethodRSS              = "rss"
+	MethodCanary           = "canary"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -147,6 +150,8 @@ func (tr Trial) Method() string {
 	case tr.Metric == MetricRSS && !tr.Load.Drop &&
 		(tr.Load.Kind == LoadExec || tr.Load.Kind == LoadPtrace || tr.Load.Kind == LoadExecLarge):
 		return MethodRSS
+	case tr.Metric == MetricCanary && tr.Load == (Load{}):
+		return MethodCanary
 	}
 	return ""
 }
@@ -274,6 +279,9 @@ var trials = slices.Concat([]Trial{
 			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
 		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 10}},
+		// canary_interval_s (ADR 0017): quiet, then Laurel and auditd frozen in turn; the kernel stage is no trial,
+		// as the rules locked by -e 2 cannot drop the canary's.
+		{Name: "canary", Metric: MetricCanary, Wall: 13 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
 	},
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).

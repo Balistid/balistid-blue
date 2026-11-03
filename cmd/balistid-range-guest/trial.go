@@ -73,6 +73,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runStatus(ctx, r)
 	case rangejob.MethodRSS:
 		return runRSS(ctx, tr, r)
+	case rangejob.MethodCanary:
+		return runCanary(ctx, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }

@@ -127,6 +127,12 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricRSS, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
 		{Trial{Metric: MetricRSS, Inject: InjectLedger}, ""},
 		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}}, ""},
+		{Trial{Metric: MetricCanary}, MethodCanary},
+		{Trial{Metric: MetricCanary, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricCanary, Load: Load{Kind: LoadPtrace, Rate: 1, Seconds: 10, Drop: true}}, ""},
+		{Trial{Metric: MetricCanary, Failure: FailKill}, ""},
+		{Trial{Metric: MetricCanary, Inject: InjectDispatcher}, ""},
+		{Trial{Metric: MetricCanary, Inject: InjectStatus}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -187,6 +193,35 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	for _, load := range []string{"at 1000 execs/s", "at burst_rate with its small ptrace records", "at 50 execs/s with 2 MB argv records"} {
 		if !strings.Contains(string(unit[1]), load) {
 			t.Errorf("rss_mib's unit does not say %q", load)
+		}
+	}
+}
+
+// canary_interval_s has one deciding trial, and acceptance/0.toml says which stages it drops canaries at.
+func TestCanaryTrialIsTheAcceptance(t *testing.T) {
+	var names []string
+	for _, tr := range Trials() {
+		if tr.Metric == MetricCanary {
+			names = append(names, tr.Name)
+			if tr.Method() != MethodCanary || tr.Trend || tr.Expect != "" || tr.Count < 2 {
+				t.Errorf("%s: method %q, trend %v, expect %q, count %d", tr.Name, tr.Method(), tr.Trend, tr.Expect, tr.Count)
+			}
+		}
+	}
+	if len(names) != 1 || names[0] != "canary" {
+		t.Errorf("canary trials %v", names)
+	}
+	data, err := os.ReadFile("../../acceptance/0.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	method := regexp.MustCompile(`(?m)^id = "canary_interval_s"\n(?:.*\n){4}method = "(.*)"$`).FindSubmatch(data)
+	if method == nil {
+		t.Fatal("no canary_interval_s with a method in acceptance/0.toml")
+	}
+	for _, says := range []string{"Laurel", "auditd", "kernel stage is not"} {
+		if !strings.Contains(string(method[1]), says) {
+			t.Errorf("canary_interval_s's method does not say %q", says)
 		}
 	}
 }
