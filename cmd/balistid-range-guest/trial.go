@@ -170,8 +170,9 @@ func stateLine(ctx context.Context, name string) string {
 func sampleSteal(ctx context.Context) (stop func() (string, error)) {
 	var reads []rangeguest.StatSample
 	read := func() bool {
+		at := time.Now()
 		line, _, _ := strings.Cut(readTrim("/proc/stat"), "\n")
-		reads = append(reads, rangeguest.StatSample{At: time.Now(), Stat: line})
+		reads = append(reads, rangeguest.StatSample{At: at, Stat: line})
 		return true
 	}
 	stopEvery := sampleEvery(ctx, time.Second, read)

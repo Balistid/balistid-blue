@@ -58,7 +58,7 @@ min = 2000
 unit = "records/s for 600 s with zero loss"
 rows = ["T4"]
 adr = "0005"
-method = "Range VM generator gives every exec a sequence number in argv; read from the collector's store (Laurel-only runs are a baseline and never pass), every number is stored once and none outside the generated set, audit lost is unchanged, no dispatcher overflow, the rate holds in every 10 s window, where a number emitted at most 100 ms after the end of the window it was due in still counts there (scheduler jitter, at most 1 % of a window; ADR 0019); a MISS with guest steal over 1 % in any second from the load's start to the store read's end, or a second not measured, is INVALID (ADR 0057)."
+method = "Range VM generator gives every exec a sequence number in argv; read from the collector's store (Laurel-only runs are a baseline and never pass), every number is stored once and none outside the generated set, audit lost is unchanged, no dispatcher overflow, the rate holds in every 10 s window, where a number emitted at most 100 ms after the end of the window it was due in still counts there (scheduler jitter, at most 1 % of a window; ADR 0019); a run with guest steal over 1 % of the ticks of any span between two reads of /proc/stat a second apart, from the load's start to the store read's end, or a span not measured, is INVALID whatever it would have given (ADR 0057)."
 
 [[metric]]
 id = "burst_rate"
