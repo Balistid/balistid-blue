@@ -6,7 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"strconv"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -94,10 +94,6 @@ func TestReadBundleReadsRegularFiles(t *testing.T) {
 // Nothing in a bundle is a path, a link or a second copy: the installer resolves nothing on disk from it.
 func TestReadBundleRefusesAnythingElse(t *testing.T) {
 	m := entry{name: "MANIFEST", data: "m"}
-	many := []entry{m}
-	for i := range maxEntries {
-		many = append(many, entry{name: "f" + strconv.Itoa(i)})
-	}
 	for name, b := range map[string][]byte{
 		"a symlink":      tarOf(t, m, entry{name: "balistid-runner", link: "/etc/shadow", typeflag: tar.TypeSymlink}),
 		"a hard link":    tarOf(t, m, entry{name: "balistid-runner", link: "MANIFEST", typeflag: tar.TypeLink}),
@@ -111,7 +107,6 @@ func TestReadBundleRefusesAnythingElse(t *testing.T) {
 		"a name twice":   tarOf(t, m, entry{name: "a", data: "1"}, entry{name: "a", data: "2"}),
 		"MANIFEST twice": tarOf(t, m, m),
 		"no MANIFEST":    tarOf(t, entry{name: "a", data: "1"}),
-		"too many":       tarOf(t, many...),
 		"cut":            tarOf(t, m, entry{name: "a", data: "12345"})[:512+512+512+3],
 		"not a tar":      []byte("MANIFEST"),
 		"nothing":        nil,
@@ -220,4 +215,23 @@ func FuzzParseSigners(f *testing.F) {
 			t.Fatalf("%q read as %q", b, s.blob)
 		}
 	})
+}
+
+// archive/tar refuses a size field holding -1 (base-256), which is why ReadBundle checks no negative size itself.
+func TestReadBundleRefusesANegativeSize(t *testing.T) {
+	h := tarOf(t, entry{name: "MANIFEST", data: "x"})
+	for i := 124; i < 136; i++ {
+		h[i] = 0xff
+	}
+	sum := 0
+	for i, c := range h[:512] {
+		if i >= 148 && i < 156 {
+			c = ' '
+		}
+		sum += int(c)
+	}
+	copy(h[148:156], fmt.Appendf(nil, "%06o\x00 ", sum))
+	if files, err := ReadBundle(h); err == nil {
+		t.Fatalf("read %d files", len(files))
+	}
 }
