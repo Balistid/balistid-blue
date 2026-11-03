@@ -15,6 +15,8 @@ const (
 	LoadWrite  = "write"
 	// LoadConnect connects to the collector's socket from peers it must refuse (refusal_summary_s).
 	LoadConnect = "connect"
+	// LoadExecLarge execs with record-max's 2 MB argv, 16 arguments of 125000 B, unnumbered (rss_mib).
+	LoadExecLarge = "exec-large"
 )
 
 // Failure trials (ADR 0018, point 3): a reset by sysrq b, which boots the run again, or SIGKILL of
@@ -41,6 +43,7 @@ const (
 	MetricLogCap            = "host_log_cap_gib"
 	MetricLoss              = "loss_alarm_s"
 	MetricStatus            = "status_false_ok"
+	MetricRSS               = "rss_mib"
 )
 
 // InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
@@ -86,7 +89,8 @@ const InjectAuditSet = "audit-set"
 // exec load (ADR 0023), an alarm trial times the Pi's alert at the range's ntfy sink after an injection
 // (ADR 0036), a log-cap trial fills the ledger's lowered cap and times the Pi's alert (ADR 0036, point 5), an
 // audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038), a status trial runs
-// the CLI unprivileged after each break of the floor (ADR 0048).
+// the CLI unprivileged after each break of the floor (ADR 0048), an RSS trial samples the resident memory of the
+// recorder's units under load (rss_mib).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -101,6 +105,7 @@ const (
 	MethodLoss             = "loss"
 	MethodAuditSet         = "audit-set"
 	MethodStatus           = "status"
+	MethodRSS              = "rss"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -139,6 +144,9 @@ func (tr Trial) Method() string {
 		return MethodCPU
 	case tr.Metric == MetricLogCap && tr.Load == (Load{}):
 		return MethodLogCap
+	case tr.Metric == MetricRSS && !tr.Load.Drop &&
+		(tr.Load.Kind == LoadExec || tr.Load.Kind == LoadPtrace || tr.Load.Kind == LoadExecLarge):
+		return MethodRSS
 	}
 	return ""
 }
@@ -258,6 +266,14 @@ var trials = slices.Concat([]Trial{
 			Scratch: StoreScratch, Count: 1, Inject: InjectAuditSet},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
+		// rss_mib at cpu-1000's and rate-burst's loads and at 50 execs/s of 2 MB records, 20 s of which fill half
+		// the largest scratch disk (maintainer, 2026-11-03).
+		{Name: "rss-1000", Metric: MetricRSS, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
+			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}},
+		{Name: "rss-burst", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
+			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
+		{Name: "rss-large", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
+			Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}},
 	},
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).

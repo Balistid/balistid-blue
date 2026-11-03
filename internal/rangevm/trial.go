@@ -149,6 +149,8 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		names = []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS}
 	case rangejob.MethodLogCap:
 		names = []string{FactCapEntries, FactFullBundles, FactFullBytes}
+	case rangejob.MethodRSS:
+		names = []string{FactGenerated, FactWindowMin, FactRSSSamples, FactRSSMaxKiB, FactRSSAuditKiB}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -233,6 +235,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeAuditSet(tr, o)
 	case rangejob.MethodStatus:
 		return judgeStatus(tr, o)
+	case rangejob.MethodRSS:
+		return judgeRSS(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

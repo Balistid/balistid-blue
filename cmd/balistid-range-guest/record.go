@@ -44,9 +44,12 @@ type argvCase struct {
 	minBytes uint64 // a truncated record's original length at least
 }
 
+// argv2M is 2 000 000 B under the default 8 MiB stack, also an RSS trial's large record (rss_mib).
+var argv2M = argvCase{rangevm.FactRecord2M, 16, 125000, defaultStack, 0}
+
 var argvCases = []argvCase{
-	{rangevm.FactRecord131K, 1024, 128, defaultStack, 0},      // 131 072 B, as xargs fills a command line
-	{rangevm.FactRecord2M, 16, 125000, defaultStack, 0},       // 2 000 000 B under the default 8 MiB stack
+	{rangevm.FactRecord131K, 1024, 128, defaultStack, 0}, // 131 072 B, as xargs fills a command line
+	argv2M,
 	{rangevm.FactRecord6M, 48, 125000, largeStack, 6_000_000}, // over the record limit, so stored truncated
 }
 
