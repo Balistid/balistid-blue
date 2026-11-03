@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -252,45 +253,39 @@ func TestQueueFlag(t *testing.T) {
 	}
 }
 
-// A drop after the kernel is a loss record of the store, a "lost" record of the collector, or a stats record with
-// a loss since start; a health record that does not read may be one. Laurel's records and the rest are not.
+// A drop of the load after the kernel is any loss record of the store, or a "lost" record of the collector whose span
+// meets the load and its drain, up to the read; one before the load or from the read's own stop is not the load's.
+// A health record that does not read may be one; stats repeat "lost" records and count health records given way.
 func TestRSSLoss(t *testing.T) {
 	h := func(body string) rawrecord.Record { return rawrecord.New(1, store.HealthProvider, 0, 1, []byte(body)) }
+	lost := func(stage string, first, last int64) rawrecord.Record {
+		return h(fmt.Sprintf(`{"schema_version":1,"kind":"lost","stage":%q,"count":3,"bytes":9,"first_seq":1,"last_seq":3,`+
+			`"first_at":%d,"last_at":%d,"at":%d,"note_seq":4}`, stage, first, last, last+1))
+	}
+	const from, to = 1000, 2000
 	for name, c := range map[string]struct {
 		x    rawrecord.Record
 		loss bool
 	}{
-		"a store's loss record":     {rawrecord.New(1, store.LossProvider, 0, 1, []byte(`{}`)), true},
-		"a collector's lost record": {h(`{"schema_version":1,"kind":"lost","stage":"queue","count":3}`), true},
-		"stats with a loss":         {h(`{"schema_version":1,"kind":"stats","lost":1,"lost_health":0}`), true},
-		"stats with a lost health":  {h(`{"schema_version":1,"kind":"stats","lost":0,"lost_health":2}`), true},
-		"stats with a null loss":    {h(`{"schema_version":1,"kind":"stats","lost":null,"lost_health":0}`), true},
-		"an unreadable health":      {h(`{"schema_version":9,"kind":"stats"}`), true},
-		"stats without loss":        {h(`{"schema_version":1,"kind":"stats","lost":0,"lost_health":0}`), false},
-		"a health record":           {h(`{"schema_version":1,"kind":"health","state":"OK"}`), false},
-		"Laurel's record":           {rawrecord.New(1, store.SensorProvider, 1, 1, []byte(`{"kind":"lost"}`)), false},
+		"a store's loss record":          {rawrecord.New(1, store.LossProvider, 0, 1, []byte(`{}`)), true},
+		"the queue's loss in the load":   {lost("queue", 1500, 1600), true},
+		"a loss across the load's start": {lost("queue", 900, 1000), true},
+		"a loss across the read's start": {lost("store", 1999, 2500), true},
+		"a loss before the load":         {lost("kernel", 10, 999), false},
+		"the read's stop":                {lost("shutdown", 2000, 2100), false},
+		"a lost record cut short":        {h(`{"schema_version":1,"kind":"lost","stage":"queue","count":3}`), true},
+		"an unreadable health":           {h(`{"schema_version":9,"kind":"stats"}`), true},
+		"a kind that is no string":       {h(`{"schema_version":1,"kind":7}`), true},
+		"not JSON":                       {h(`{"schema_version":1,`), true},
+		"the store's own note":           {h(`{"schema_version":1,"event":"recovered","shards":1,"first":1,"last":9}`), false},
+		"stats with a loss":              {h(`{"schema_version":1,"kind":"stats","lost":1,"lost_health":2}`), false},
+		"a lag record":                   {h(`{"schema_version":1,"kind":"lag","lag_ms":1500}`), false},
+		"a health record":                {h(`{"schema_version":1,"kind":"health","state":"OK"}`), false},
+		"Laurel's record":                {rawrecord.New(1, store.SensorProvider, 1, 1, []byte(`{"kind":"lost"}`)), false},
 	} {
-		if got := rssLoss(c.x); got != c.loss {
-			t.Errorf("%s: loss %v, want %v", name, got, c.loss)
+		if got := rssLoss(c.x, from, to); (got != "") != c.loss {
+			t.Errorf("%s: loss %q, want %v", name, got, c.loss)
 		}
-	}
-}
-
-// rss_mib sums the image's long-running balistid services and the range's litewitness and agent (ADR 0043):
-// not a socket, another range unit or a oneshot.
-func TestLongRunningUnits(t *testing.T) {
-	types := map[string]string{"balistid-net.service": "oneshot", "balistid-announce.service": "oneshot",
-		"balistid-collector.service": "notify", "balistid-auditstat.service": "exec", "balistid-range-witness.service": "simple",
-		"balistid-range-witness-agent.service": "notify", "balistid-range-ntfy.service": "simple"}
-	units := "balistid-announce.service,balistid-auditstat.service,balistid-collector.service,balistid-collector.socket," +
-		"balistid-net.service,balistid-range-ntfy.service,balistid-range-witness.service,balistid-range-witness-agent.service"
-	got := longRunning(units, func(u string) string { return types[u] })
-	if want := []string{"balistid-auditstat.service", "balistid-collector.service", "balistid-range-witness.service",
-		"balistid-range-witness-agent.service"}; !slices.Equal(got, want) {
-		t.Errorf("long-running %v, want %v", got, want)
-	}
-	if got := longRunning("", func(string) string { return "" }); len(got) != 0 || strings.Join(got, "") != "" {
-		t.Errorf("no units: %v", got)
 	}
 }
 

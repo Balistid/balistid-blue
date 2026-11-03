@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -90,7 +91,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	defer func() { stopWatch(); w.wait() }()
 	lost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
-	lostBefore, overflowBefore := lost(), freshOverflow(ctx)
+	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
 	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
 	from := time.Now()
@@ -99,9 +100,13 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	to := time.Now()
 	var drainErr error
 	if genErr == nil {
-		drainErr = drained(w, time.Now, func() string {
-			return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
-		}, rssDrainWait(tr.Load.Kind))
+		// auditd's queue first: the kernel's backlog empties while 2 MB records still wait there for Laurel, and
+		// the units' memory counts until they reached the store.
+		if drainErr = auditIdle(ctx, "rss drain", rssDrainWait(tr.Load.Kind)); drainErr == nil {
+			drainErr = drained(w, time.Now, func() string {
+				return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
+			}, rssDrainWait(tr.Load.Kind))
+		}
 	}
 	m := stop()
 	var runErrs []string
@@ -123,8 +128,8 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	journalOOM, err := oomJournal(ctx, units)
 	note("OOM journal: ", err)
-	lostAfter, overflowAfter := lost(), freshOverflow(ctx)
-	lostRecords, err := storeLosses(ctx) // last: the read stops the collector
+	lostAfter, overflowAfter := lost(), stateLine(ctx, rangeguest.StateOverflow)
+	lostRecords, err := storeLosses(ctx, from.UnixNano(), time.Now().UnixNano()) // last: the read stops the collector
 	if err != nil {
 		reportCollector(ctx, os.Stdout, output)
 	}
@@ -235,32 +240,56 @@ func oomJournal(ctx context.Context, units []string) (uint64, error) {
 	return uint64(len(strings.FieldsFunc(string(out), func(r rune) bool { return r == '\n' }))), nil
 }
 
-// storeLosses reads the store once and counts the records that say part of the load was dropped after the kernel,
-// before or behind the read's barrier (rssLoss); a read that failed returns those it counted and why.
-func storeLosses(ctx context.Context) (uint64, error) {
-	var n uint64
+// storeLosses reads the store once and counts the records that say part of the load was dropped after the kernel
+// between from and to (ns, the load's start and the read's), before or behind the read's barrier (rssLoss), printing
+// each; a read that failed returns those it counted and why.
+func storeLosses(ctx context.Context, from, to int64) (uint64, error) {
+	log := &lossLog{w: os.Stdout}
 	count := func(x rawrecord.Record) error {
-		if rssLoss(x) {
-			n++
+		if rssLoss(x, from, to) != "" {
+			log.add(x)
 		}
 		return nil
 	}
-	return n, readStore(ctx, count, count)
+	err := readStore(ctx, count, count)
+	log.done()
+	return uint64(log.n), err //nolint:gosec // a count, never negative
 }
 
-// rssLoss reports whether x says a record was dropped after the kernel: a loss record of the store, a "lost" record of
-// the collector's queue, or a stats record whose counts since the collector started hold a loss, which also counts a
-// "lost" record given way. A health record that does not read counts too: it may be one.
-func rssLoss(x rawrecord.Record) bool {
+// rssLoss says which loss x is, or "" when it is none of the load's: any loss record of the store, whose disk the load
+// filled; a "lost" record of the collector whose span from first_at to last_at, the collector's clock, meets from to
+// to, so not a loss before the load or of the read's own stop of the collector; or a health record that does not read,
+// which may be one. The collector's stats count health records given way too, which are no records of the load (T25),
+// and repeat its "lost" records, so they are not read.
+func rssLoss(x rawrecord.Record, from, to int64) string {
 	switch x.Provider {
 	case store.LossProvider:
-		return true
+		return fmt.Sprintf("of the store: %.120q", x.Data)
 	case store.HealthProvider:
-		h, ok := decodeHealth(x.Data)
-		return !ok || h.kind == "lost" ||
-			h.kind == "stats" && (h.lost == nil || h.lostHealth == nil || *h.lost > 0 || *h.lostHealth > 0)
+		var raw map[string]json.RawMessage
+		var schema int
+		var kind, stage string
+		var count uint64
+		var first, last int64
+		if json.Unmarshal(x.Data, &raw) != nil || json.Unmarshal(raw["schema_version"], &schema) != nil || schema != healthSchema {
+			return fmt.Sprintf("unreadable: %.120q", x.Data)
+		}
+		if k, has := raw["kind"]; has && json.Unmarshal(k, &kind) != nil {
+			return fmt.Sprintf("unreadable: %.120q", x.Data)
+		}
+		if kind != "lost" { // the store's own notes have no kind
+			return ""
+		}
+		if json.Unmarshal(raw["stage"], &stage) != nil || json.Unmarshal(raw["count"], &count) != nil ||
+			json.Unmarshal(raw["first_at"], &first) != nil || json.Unmarshal(raw["last_at"], &last) != nil {
+			return fmt.Sprintf("lost, unreadable: %.120q", x.Data)
+		}
+		if last < from || first >= to {
+			return ""
+		}
+		return fmt.Sprintf("lost at stage %q: %d records from %d to %d", stage, count, first, last)
 	}
-	return false
+	return ""
 }
 
 // longRunning are the services of units, the comma-separated unit files balistidUnits lists, that rss_mib

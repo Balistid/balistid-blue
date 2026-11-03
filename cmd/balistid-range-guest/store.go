@@ -160,7 +160,7 @@ func readStore(ctx context.Context, before, after func(rawrecord.Record) error) 
 func storeReader(around func(done bool)) rangeguest.StoreRead {
 	return rangeguest.StoreRead{
 		Dir: storeDir, Scratch: shard.Scratch{Dir: shardCopyDir, Max: shardCopyMax}, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Idle: idleThen(auditIdle, around),
+		Idle: idleThen(func(ctx context.Context) error { return auditIdle(ctx, "store read", idleWait) }, around),
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},
@@ -178,16 +178,16 @@ func idleThen(wait func(context.Context) error, around func(done bool)) func(con
 	}
 }
 
-// auditIdle waits up to idleWait for an idle audit (rangeguest.AuditIdle) and shows in the host's log how
-// long that took. It reads the kernel's backlog from balistid-auditstat's reports, not by exec: an exec of
+// auditIdle waits up to wait for an idle audit (rangeguest.AuditIdle) and shows in the host's log how long
+// that took, for what. It reads the kernel's backlog from balistid-auditstat's reports, not by exec: an exec of
 // auditctl is audited, so each would land before the barrier, in an exec job's window and its Laurel cap.
-func auditIdle(ctx context.Context) error {
+func auditIdle(ctx context.Context, what string, wait time.Duration) error {
 	var waited time.Duration
 	backlog, err := reportBacklog()
 	if err == nil {
-		waited, err = rangeguest.AuditIdle(ctx, auditdState, backlog, idleWait, time.Second)
+		waited, err = rangeguest.AuditIdle(ctx, auditdState, backlog, wait, time.Second)
 	}
-	hostLine(os.Stdout, "store read: audit idle after %s, %v", waited.Round(time.Millisecond), err)
+	hostLine(os.Stdout, "%s: audit idle after %s, %v", what, waited.Round(time.Millisecond), err)
 	return err //nolint:wrapcheck // the reader wraps it
 }
 
