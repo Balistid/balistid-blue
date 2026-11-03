@@ -1003,7 +1003,8 @@ func TestBuildCommitRefusesANonCommitFirst(t *testing.T) {
 // maps one uid, so a killed build leaves only files the next Lock can remove.
 func TestBuildKeepsMkosiDirectoriesInTheStage(t *testing.T) {
 	stage, built := t.TempDir(), t.TempDir()
-	cmd := mkosiCommand(newTool(t.Context(), stage, moduleProxy, io.Discard), stage, built)
+	try := filepath.Join(stage, "mkosi-1")
+	cmd := mkosiCommand(newTool(t.Context(), stage, moduleProxy, io.Discard), stage, try, built)
 	if want := append(toolEnv(stage, moduleProxy), "MKOSI_FORCE_USERNS_FALLBACK=1"); !slices.Equal(cmd.Env, want) {
 		t.Errorf("mkosi environment\n got %q\nwant %q", cmd.Env, want)
 	}
@@ -1018,9 +1019,11 @@ func TestBuildKeepsMkosiDirectoriesInTheStage(t *testing.T) {
 		rel, err := filepath.Rel(stage, path)
 		return err == nil && filepath.IsLocal(rel)
 	}
-	// mkosi creates its workspace with mkdtemp inside the given directory, so it must exist.
+	// mkosi creates its workspace with mkdtemp inside the given directory, so it must exist: one the stage
+	// creates, or one buildImage creates in the try's directory.
 	created := func(path string) bool {
-		return inStage(path) && slices.Contains(stageDirs, strings.TrimPrefix(path, stage+"/"))
+		rel := strings.TrimPrefix(path, stage+"/")
+		return inStage(path) && (slices.Contains(stageDirs, rel) || rel == "mkosi-1/workspace" || rel == "mkosi-1/pkgcache")
 	}
 	named := map[string]string{}
 	for _, a := range args[:len(args)-1] {
@@ -1882,5 +1885,75 @@ func TestLockExcludesBuildAndCheck(t *testing.T) {
 		t.Fatalf("Lock after Close = %v", err)
 	} else if err := again.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A failed mkosi build is tried again, at most three times in all, each try in a fresh output directory and with
+// a fresh workspace and package cache, a failed try's removed: no try reads what another downloaded.
+func TestBuildImageTriesMkosiAgainInFreshDirectories(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		fails int
+		ok    bool
+	}{{"first try", 0, true}, {"two failures", 2, true}, {"three failures", 3, false}} {
+		cache, stage := t.TempDir(), t.TempDir()
+		var tries, outputs []string
+		var log strings.Builder
+		built, err := buildImage(t.Context(), cache, stage, []time.Duration{0, 0}, &log, func(try, built string) error {
+			for _, d := range []string{built, filepath.Join(try, "workspace"), filepath.Join(try, "pkgcache")} {
+				if entries, err := os.ReadDir(d); err != nil || len(entries) != 0 {
+					t.Errorf("%s: %s is not a fresh directory: %v, %v", c.name, d, entries, err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(try, "pkgcache", "pkg"), []byte("downloaded"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			tries, outputs = append(tries, try), append(outputs, built)
+			if len(tries) <= c.fails {
+				return errors.New("Operation too slow")
+			}
+			return os.WriteFile(filepath.Join(built, "image.raw"), nil, 0o600)
+		})
+		want := min(c.fails+1, 3)
+		switch {
+		case len(tries) != want || len(slices.Compact(slices.Clone(tries))) != want || len(slices.Compact(slices.Clone(outputs))) != want:
+			t.Errorf("%s: tries %v, outputs %v; want %d distinct", c.name, tries, outputs, want)
+		case c.ok && (err != nil || built != outputs[len(outputs)-1]):
+			t.Errorf("%s: %q, %v; want the last try's output", c.name, built, err)
+		case !c.ok && (err == nil || !strings.Contains(err.Error(), "Operation too slow") || built != ""):
+			t.Errorf("%s: %q, %v; want the failure", c.name, built, err)
+		case strings.Count(log.String(), "mkosi try ") != min(c.fails, 2):
+			t.Errorf("%s: log %q names %d failures, want %d", c.name, log.String(), strings.Count(log.String(), "mkosi try "), min(c.fails, 2))
+		}
+		for i, try := range tries {
+			last := i == len(tries)-1 && c.ok
+			if _, err := os.Stat(try); (err == nil) != last {
+				t.Errorf("%s: try %s left %v", c.name, try, err)
+			}
+			if _, err := os.Stat(outputs[i]); (err == nil) != last {
+				t.Errorf("%s: output %s left %v", c.name, outputs[i], err)
+			}
+		}
+	}
+}
+
+// A build stopped while it waits for its next try ends at once with the failure and the stop.
+func TestBuildImageStopsBetweenTries(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	tries := 0
+	_, err := buildImage(ctx, t.TempDir(), t.TempDir(), []time.Duration{time.Hour, time.Hour}, io.Discard, func(string, string) error {
+		tries++
+		cancel()
+		return errors.New("Connection timed out")
+	})
+	if tries != 1 || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Connection timed out") {
+		t.Errorf("%d tries, %v", tries, err)
+	}
+}
+
+// The build tries mkosi three times, 30 s and then 60 s apart.
+func TestDefaultBuildTriesMkosiThreeTimes(t *testing.T) {
+	if p := defaultBuild().mkosiPauses; !slices.Equal(p, []time.Duration{30 * time.Second, time.Minute}) {
+		t.Errorf("mkosi pauses %v", p)
 	}
 }

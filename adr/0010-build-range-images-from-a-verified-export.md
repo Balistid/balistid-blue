@@ -51,10 +51,10 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
 - Building a commit runs its PKGBUILD and mkosi configuration with the maintainer's rights. The
   launcher is only as clean as the checkout it was built from and the place it is stored (T34).
 - An agent's branch is built by the maintainer only after review, until the runner confines builds.
-- mkosi downloads the package snapshot on every build (no shared cache to poison); workspace, package
-  cache and TMPDIR are in the build directory (mkosi 27.1 code, not run); a small pack can still inflate (DoS, T34).
-- Tests: the source's configuration, attributes, replace refs, index, work tree and store links are
-  not read; the copy has a time limit and ends on failure; forged objects and sizes, malformed
-  trees, symlinks, submodules,
-  unsafe paths, existing files and every limit are refused; unusual names and modes survive; no
-  history is copied; an unstamped launcher is refused; no enclosing repository is stamped.
+- mkosi downloads the package snapshot on every build (no shared cache to poison), up to three tries of the same
+  snapshot, each with a fresh workspace, package cache and output; workspace, package cache and TMPDIR are in the
+  build directory (mkosi 27.1 code, not run); a small pack can still inflate (DoS, T34).
+- Tests: the source's configuration, attributes, replace refs, index, work tree and store links are not read; the copy
+  has a time limit and ends on failure; forged objects and sizes, malformed trees, symlinks, submodules, unsafe paths,
+  existing files and every limit are refused; unusual names and modes survive; no history is copied; an unstamped
+  launcher is refused; no enclosing repository is stamped.
