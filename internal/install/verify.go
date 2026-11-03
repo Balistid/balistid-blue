@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -50,9 +49,6 @@ const (
 	// maxSigBytes is about ten times an armored ed25519-sk signature, and the bootstrap's cap (release.py SIG_MAX_BYTES).
 	maxSigBytes = 4 << 10
 )
-
-// fingerprintForm is the form ssh-keygen prints a key's SHA256 fingerprint in.
-var fingerprintForm = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 
 // Release is a bundle whose MANIFEST the trusted key signed and whose files are exactly the manifest's.
 type Release struct {
@@ -126,9 +122,6 @@ func check(ctx context.Context, cfg Config, host *os.Root, dir, fingerprint stri
 func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string) (Signer, error) {
 	file := path.Join(signersDir, signersName)
 	if fingerprint != "" {
-		if !fingerprintForm.MatchString(fingerprint) {
-			return Signer{}, errors.New("the fingerprint is not of the form SHA256:<43 base64>")
-		}
 		if _, err := host.Lstat(file); errors.Is(err, fs.ErrNotExist) {
 			s, err := ParseSigners(bundled, cfg.KeyType)
 			if err != nil {
