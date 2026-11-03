@@ -146,7 +146,7 @@ func FuzzReadBundle(f *testing.F) {
 // The line made from a key ssh-keygen wrote is accepted, and its fingerprint is the one ssh-keygen prints.
 func TestParseSignersReadsTheMaintainersLine(t *testing.T) {
 	k := newKey(t)
-	s, err := ParseSigners(k.signers, "ssh-ed25519")
+	s, err := ParseSigners(k.signers)
 	if err != nil || !bytes.Equal(s.Line, k.signers) {
 		t.Fatalf("%q: %v", s.Line, err)
 	}
@@ -164,10 +164,10 @@ func TestParseSignersRefusesAnythingElse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The same key bytes under another type inside the blob, and the software key named as the token's type.
+	// The same key bytes under another type inside the blob, and the key named as a plain ed25519 one.
 	relabelled := strings.Replace(good, strings.Fields(good)[3],
-		base64.StdEncoding.EncodeToString(append([]byte("\x00\x00\x00\x07ssh-rsa"), blob[15:]...)), 1)
-	asSK := strings.Replace(good, " ssh-ed25519 ", " "+SKKeyType+" ", 1)
+		base64.StdEncoding.EncodeToString(append([]byte("\x00\x00\x00\x07ssh-rsa"), blob[4+len(SKKeyType):]...)), 1)
+	asPlain := strings.Replace(good, " "+SKKeyType+" ", " ssh-ed25519 ", 1)
 	for name, line := range map[string]string{
 		"two lines":            good + other,
 		"a blank line":         good + "\n",
@@ -184,34 +184,30 @@ func TestParseSignersRefusesAnythingElse(t *testing.T) {
 		"all namespaces":       strings.Replace(good, Namespace, "*", 1),
 		"no option":            strings.Replace(good, ns+" ", "", 1),
 		"a comment":            strings.Replace(good, "\n", " maintainer\n", 1),
-		"two spaces":           strings.Replace(good, " ssh-ed25519", "  ssh-ed25519", 1),
-		"the sk type named":    asSK,
+		"two spaces":           strings.Replace(good, " "+SKKeyType, "  "+SKKeyType, 1),
+		"the plain type named": asPlain,
+		"a plain ed25519 key":  string(plainSigners(t)),
 		"another key's type":   relabelled,
 		"not base64":           strings.Replace(good, strings.Fields(good)[3], "!!!!", 1),
 		"no key":               strings.Replace(good, " "+strings.Fields(good)[3], "", 1),
 		"nothing":              "",
 		"over the cap":         strings.Replace(good, "\n", strings.Repeat(" ", maxSignersBytes)+"\n", 1),
 	} {
-		if s, err := ParseSigners([]byte(line), "ssh-ed25519"); err == nil {
+		if s, err := ParseSigners([]byte(line)); err == nil {
 			t.Errorf("%s: read %q", name, s.Line)
-		}
-	}
-	for _, line := range []string{good, asSK} {
-		if _, err := ParseSigners([]byte(line), SKKeyType); err == nil {
-			t.Errorf("a software key passed where the token's key type is required: %q", line)
 		}
 	}
 }
 
 // Whatever ParseSigners accepts is the exact line and its key is of the type asked for.
 func FuzzParseSigners(f *testing.F) {
-	f.Add([]byte(Principal + ` namespaces="` + Namespace + `" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID+xUOO49fSjHBxMTJSdnpxe5V597l/RM+9uoPWU826q` + "\n"))
+	f.Add(newSKKey(1).signers())
 	f.Fuzz(func(t *testing.T, b []byte) {
-		s, err := ParseSigners(b, "ssh-ed25519")
+		s, err := ParseSigners(b)
 		if err != nil {
 			return
 		}
-		if !bytes.Equal(s.Line, b) || !bytes.HasPrefix(s.blob, []byte("\x00\x00\x00\x0bssh-ed25519")) {
+		if !bytes.Equal(s.Line, b) || !bytes.HasPrefix(s.blob, sshString([]byte(SKKeyType))) {
 			t.Fatalf("%q read as %q", b, s.blob)
 		}
 	})
