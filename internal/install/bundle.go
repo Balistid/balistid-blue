@@ -12,7 +12,6 @@ import (
 const (
 	// MaxBundleBytes caps the bundle as the root command CI prints does (release.py BUNDLE_MAX_MIB).
 	MaxBundleBytes = 64 << 20
-	maxEntries     = 64
 	manifestName   = "MANIFEST"
 )
 
@@ -20,8 +19,8 @@ const (
 var entryName = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9._-]{0,63}|MANIFEST)$`)
 
 // ReadBundle reads the bundle tar from memory into its files by name. Only regular files of plain names, each
-// once, at most maxEntries of them and MaxBundleBytes in all (a sparse entry cannot expand past it); a link, a
-// directory, a device or a path is refused whole, so nothing in it is ever resolved on disk.
+// once, MaxBundleBytes in all (a sparse entry cannot expand past it); a link, a directory, a device or a path is
+// refused whole, so nothing in it is ever resolved on disk. archive/tar refuses a negative size and a cut entry.
 func ReadBundle(b []byte) (map[string][]byte, error) {
 	files := map[string][]byte{}
 	tr := tar.NewReader(bytes.NewReader(b))
@@ -41,17 +40,12 @@ func ReadBundle(b []byte) (map[string][]byte, error) {
 			return nil, errors.New("bundle: an entry name outside the manifest's grammar")
 		case dup:
 			return nil, errors.New("bundle: an entry name twice")
-		case len(files) == maxEntries:
-			return nil, fmt.Errorf("bundle: over %d entries", maxEntries)
-		case hdr.Size < 0 || hdr.Size > MaxBundleBytes-total:
+		case hdr.Size > MaxBundleBytes-total:
 			return nil, fmt.Errorf("bundle: over %d bytes", MaxBundleBytes)
 		}
-		data, err := io.ReadAll(io.LimitReader(tr, hdr.Size+1))
+		data, err := io.ReadAll(tr)
 		if err != nil {
 			return nil, fmt.Errorf("bundle: %w", err)
-		}
-		if int64(len(data)) != hdr.Size {
-			return nil, errors.New("bundle: an entry shorter or longer than its header")
 		}
 		total += hdr.Size
 		files[hdr.Name] = data

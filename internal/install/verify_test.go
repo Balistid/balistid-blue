@@ -246,7 +246,7 @@ func TestCheckFirstInstallTrustsOnlyTheTypedFingerprint(t *testing.T) {
 	}
 	h.refuses(t, "no key and no fingerprint", "", "allowed_signers")
 	h.refuses(t, "another fingerprint", newKey(t).fingerprint(t), "typed fingerprint")
-	h.refuses(t, "not a fingerprint", strings.TrimPrefix(fp, "SHA256:"), "not of the form")
+	h.refuses(t, "not a fingerprint", strings.TrimPrefix(fp, "SHA256:"), "typed fingerprint")
 	// The attacker's own key and signature, with the fingerprint root typed.
 	other := newKey(t)
 	files := runnerFiles(other.signers)
