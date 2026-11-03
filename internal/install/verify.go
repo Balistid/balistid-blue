@@ -64,8 +64,8 @@ type Release struct {
 
 // Check reads the bundle and its signature from dir once and returns the release only when the signature
 // verifies and every file matches its sha256; it writes nothing. The key is the installed allowed_signers, whose
-// copy in the bundle must be identical; given a fingerprint (the first install), none may be installed and the
-// bundle's own key must have it (ADR 0058, point 5).
+// copy in the bundle must be identical; given a fingerprint (the first install), the bundle's own key must have it,
+// and a key already installed must be that same key (ADR 0058, point 5).
 func Check(ctx context.Context, cfg Config, dir, fingerprint string) (Release, error) {
 	host, err := os.OpenRoot(cfg.Root)
 	if err != nil {
@@ -129,17 +129,18 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 		if !fingerprintForm.MatchString(fingerprint) {
 			return Signer{}, errors.New("the fingerprint is not of the form SHA256:<43 base64>")
 		}
-		if _, err := host.Lstat(file); !errors.Is(err, fs.ErrNotExist) {
-			return Signer{}, fmt.Errorf("/%s is already installed or cannot be read; a new key is installed by hand", file)
+		if _, err := host.Lstat(file); errors.Is(err, fs.ErrNotExist) {
+			s, err := ParseSigners(bundled, cfg.KeyType)
+			if err != nil {
+				return Signer{}, err
+			}
+			if s.Fingerprint() != fingerprint {
+				return Signer{}, errors.New("the bundle's key does not have the typed fingerprint")
+			}
+			return s, nil
 		}
-		s, err := ParseSigners(bundled, cfg.KeyType)
-		if err != nil {
-			return Signer{}, err
-		}
-		if s.Fingerprint() != fingerprint {
-			return Signer{}, errors.New("the bundle's key does not have the typed fingerprint")
-		}
-		return s, nil
+		// A first install that stopped after writing the key runs again: the installed key must then pass
+		// every check below and have the typed fingerprint too.
 	}
 	if err := rootDir(cfg, host, signersDir); err != nil {
 		return Signer{}, err
@@ -161,6 +162,9 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 	}
 	if !bytes.Equal(bundled, data) {
 		return Signer{}, errors.New("the bundle's allowed_signers is not the installed one; a new key is installed by hand")
+	}
+	if fingerprint != "" && s.Fingerprint() != fingerprint {
+		return Signer{}, errors.New("the installed key does not have the typed fingerprint")
 	}
 	return s, nil
 }
