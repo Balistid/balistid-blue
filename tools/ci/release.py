@@ -48,12 +48,16 @@ BUNDLE = "balistid-runner-bundle.tar"
 BUNDLE_MAX_MIB = 64
 SIG = "MANIFEST.sig"
 SIG_MAX_BYTES = 4 << 10  # internal/install's maxSigBytes
+SIGNERS_MAX_BYTES = 1024  # maxSignersBytes
+MANIFEST_MAX_BYTES = 64 << 10  # MaxManifestBytes
 # $1 is the key's fingerprint. The bundle's directory and the maintainer are read as data, typed as dir=... and
 # user=...: nothing typed is parsed by a shell, and a typo that makes sh read its commands from that input (-s for
-# -c) only assigns. The gate is data flow: the binary is renamed to its own sha256 and run only by the name the
-# MANIFEST gives it, inside the one case arm a verify output ending in the typed fingerprint reaches, so a typo that
-# skips a check finds nothing to run; tar only prints members (-O), so nothing in the bundle is resolved on disk. A
-# hand-typed command cannot be safe against every typo: tests cover every dropped character and the typos review
+# -c) only assigns. The gate is data flow: the installer is renamed to the sha256 of its bytes and run only by the
+# 64-hex digest the MANIFEST gives it, inside the one case arm that a verify exiting 0 with an output ending in the
+# typed fingerprint reaches, so a typo that skips a check finds nothing to run. tar reads the bundle on stdin, so it
+# refuses a compressed one instead of running a decompressor, and prints only the three members, each capped: nothing
+# in the bundle is resolved on disk. This command checks no sk flags (ssh-keygen does not); balistid-install does.
+# A hand-typed command cannot be safe against every typo: tests cover every dropped character and the typos review
 # found, and root reads the command against the CI log before Enter. Under `env -i` and `sh -p`: root's shell may
 # carry the maintainer's TMPDIR, PATH or exported functions. runuser -u keeps root's console as the reader's
 # terminal; that it cannot be driven from there assumes Yama ptrace_scope >= 1.
@@ -63,12 +67,13 @@ BOOTSTRAP = (
     'ro=$(mktemp -d /tmp/balistid-install.XXXXXXXXXX) && '
     f'timeout -k 5 20 runuser -u "$m" -- cat -- "$dl/{BUNDLE}" </dev/null | head -c {BUNDLE_MAX_MIB << 20} > "$ro/{BUNDLE}" && '
     f'timeout -k 5 20 runuser -u "$m" -- cat -- "$dl/{SIG}" </dev/null | head -c {SIG_MAX_BYTES} > "$ro/{SIG}" && '
-    f'tar -xOf "$ro/{BUNDLE}" {SIGNERS} > "$ro/k" && tar -xOf "$ro/{BUNDLE}" MANIFEST > "$ro/m" && '
-    f'tar -xOf "$ro/{BUNDLE}" {INSTALLER} > "$ro/i" && h=$(cksum -a sha256 --untagged < "$ro/i") && '
-    'mv -- "$ro/i" "$ro/${h%% *}" && '
-    f'v=$(ssh-keygen -Y verify -f "$ro/k" -I maintainer@balistid.dev -n install@balistid.dev -s "$ro/{SIG}" < "$ro/m"); '
-    f'case $v in *" key $1") x=$(sed -n "s/  {INSTALLER}\\$//p" "$ro/m") && chmod 700 -- "$ro/$x" && '
-    '"$ro/$x" runner "$ro" "$m" "$1" ;; '
+    f'timeout 20 tar -xO {SIGNERS} < "$ro/{BUNDLE}" | head -c {SIGNERS_MAX_BYTES} > "$ro/k" && '
+    f'timeout 20 tar -xO MANIFEST < "$ro/{BUNDLE}" | head -c {MANIFEST_MAX_BYTES} > "$ro/m" && '
+    f'timeout 20 tar -xO {INSTALLER} < "$ro/{BUNDLE}" | head -c {BUNDLE_MAX_MIB << 20} > "$ro/i" && '
+    'h=$(cksum -a sha256 --untagged < "$ro/i") && mv -- "$ro/i" "$ro/${h%% *}" && '
+    f'x=$(sed -n "s/^\\([0-9a-f]\\{{64\\}}\\)  {INSTALLER}\\$/\\1/p" "$ro/m") && '
+    f'v=$(timeout 20 ssh-keygen -Y verify -f "$ro/k" -I maintainer@balistid.dev -n install@balistid.dev -s "$ro/{SIG}" < "$ro/m") && '
+    'case $v in *" key $1") chmod 700 -- "$ro/$x" && "$ro/$x" runner "$ro" "$m" "$1" ;; '
     '*) logger -s -t balistid-install "the manifest is not signed by the typed key"; false ;; esac; '
     'r=$?; rm -rf -- "$ro" || r=9; [ $r = 0 ] || logger -s -t balistid-install "bootstrap stopped, status $r"; exit $r'
 )
@@ -172,7 +177,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "bootstrap":
             fp = fingerprint(args.signers)
             print("First install only, as root at a console login (not sudo or su from a desktop session an agent can")
-            print("control), read on another device; the fingerprint at its end must be the one README.md publishes.")
+            print("control), read on another device; the fingerprint at its end must be the one README.md and")
+            print("balistid.dev publish.")
             print(f"Then type two lines, dir=<the directory with {BUNDLE} and {SIG}> and user=<the maintainer, uid")
             print("1000 or more>. Ctrl-C may leave /tmp/balistid-install.*:")
             print(f"/usr/bin/env -i PATH={ROOT_PATH} /usr/bin/sh -p -c '{BOOTSTRAP}' - {fp}")
