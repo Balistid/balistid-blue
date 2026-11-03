@@ -11,11 +11,10 @@ import (
 	"time"
 )
 
-// The host's configuration requires the token's key type and names its tools by absolute path (R2, ADR 0058).
-func TestDefaultConfigRequiresTheTokensKey(t *testing.T) {
+// The host's configuration is root's paths and names its tools by absolute path (ADR 0058).
+func TestDefaultConfigIsTheHosts(t *testing.T) {
 	got := DefaultConfig()
-	if got.Root != "/" || got.UID != 0 || got.GID != 0 || got.KeyType != "sk-ssh-ed25519@openssh.com" ||
-		got.SSHKeygen != "/usr/bin/ssh-keygen" || got.VerifyTimeout != 10*time.Second {
+	if got.Root != "/" || got.UID != 0 || got.GID != 0 || got.SSHKeygen != "/usr/bin/ssh-keygen" || got.VerifyTimeout != 10*time.Second {
 		t.Fatalf("%+v", got)
 	}
 	if got.Run == nil || got.Show == nil || got.LookupUser == nil || got.LookupGroup == nil || got.Log == nil {
@@ -172,7 +171,7 @@ func TestCheckRefusesAnAllowedSignersRootDidNotLeave(t *testing.T) {
 		"a wildcard":       func(h *fakeHost) { h.replace(t, file, Principal, "*") },
 		"cert-authority":   func(h *fakeHost) { h.replace(t, file, "namespaces=", "cert-authority,namespaces=") },
 		"other namespaces": func(h *fakeHost) { h.replace(t, file, Namespace, "file") },
-		"a software key":   func(h *fakeHost) { h.cfg.KeyType = SKKeyType },
+		"a plain key":      func(h *fakeHost) { h.put(t, file, plainSigners(t), 0o644) },
 		"another key":      func(h *fakeHost) { h.put(t, file, newKey(t).signers, 0o644) },
 		"not a key":        func(h *fakeHost) { h.put(t, file, []byte("garbage\n"), 0o644) },
 		"empty":            func(h *fakeHost) { h.put(t, file, nil, 0o644) },

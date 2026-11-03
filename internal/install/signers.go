@@ -13,7 +13,7 @@ const (
 	// Principal and Namespace are the identity and namespace every install signature carries (ADR 0053).
 	Principal = "maintainer@balistid.dev"
 	Namespace = "install@balistid.dev"
-	// SKKeyType is the only key type DefaultConfig accepts, a FIDO2 key's (R2, ADR 0053 point 1). The type alone
+	// SKKeyType is the only key type allowed_signers may hold, a FIDO2 key's (R2, ADR 0053 point 1). The type alone
 	// proves no token (nothing is attested); each signature's touch and PIN flags are checked (sshsig.go).
 	SKKeyType       = "sk-ssh-ed25519@openssh.com"
 	maxSignersBytes = 1024
@@ -28,9 +28,10 @@ type Signer struct {
 }
 
 // ParseSigners reads allowed_signers strictly: one line of exactly four fields, the principal, the one option
-// `namespaces="install@balistid.dev"`, keyType and its key. A wildcard or list of principals, cert-authority,
+// `namespaces="install@balistid.dev"`, SKKeyType and its key. A wildcard or list of principals, cert-authority,
 // any other option, a comment, another key type or a second line is refused: ssh-keygen would honour them.
-func ParseSigners(b []byte, keyType string) (Signer, error) {
+func ParseSigners(b []byte) (Signer, error) {
+	keyType := SKKeyType
 	if len(b) > maxSignersBytes || bytes.Count(b, []byte("\n")) != 1 || !bytes.HasSuffix(b, []byte("\n")) {
 		return Signer{}, errors.New("allowed_signers: not one capped line")
 	}

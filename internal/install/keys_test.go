@@ -3,6 +3,9 @@ package install
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,14 +15,39 @@ import (
 
 const sshKeygen = "/usr/bin/ssh-keygen"
 
-// key is a software signing key made at test runtime in a temp directory; nothing secret is committed. A
-// missing ssh-keygen fails the test: the refusals it proves must not turn into skips.
+// key is a software sk-ssh-ed25519 key made at test runtime (nothing secret is committed). It signs with the touch and
+// PIN flags set, and the real ssh-keygen verifies and fingerprints it; a missing ssh-keygen fails the test.
 type key struct {
-	path    string
-	signers []byte // its allowed_signers line, of the type the tests' config accepts
+	sk      skKey
+	signers []byte
 }
 
 func newKey(t *testing.T) key {
+	t.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		t.Fatal(err)
+	}
+	k := skKeyFromSeed(seed)
+	return key{sk: k, signers: k.signers()}
+}
+
+// fingerprint is the key's fingerprint as ssh-keygen prints it.
+func (k key) fingerprint(t *testing.T) string {
+	t.Helper()
+	pub := filepath.Join(t.TempDir(), "k.pub")
+	if err := os.WriteFile(pub, []byte(SKKeyType+" "+base64.StdEncoding.EncodeToString(k.sk.blob)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.CommandContext(t.Context(), sshKeygen, "-l", "-f", pub).Output() //nolint:gosec // fixed binary, test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(out))[1]
+}
+
+// plainSigners is the allowed_signers line of a plain ssh-ed25519 key ssh-keygen made: not the token's type.
+func plainSigners(t *testing.T) []byte {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "k")
 	if out, err := exec.CommandContext(t.Context(), sshKeygen, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", path).CombinedOutput(); err != nil { //nolint:gosec // fixed binary, test temp dir
@@ -30,17 +58,7 @@ func newKey(t *testing.T) key {
 		t.Fatal(err)
 	}
 	f := strings.Fields(string(pub))
-	return key{path: path, signers: []byte(Principal + ` namespaces="` + Namespace + `" ` + f[0] + " " + f[1] + "\n")}
-}
-
-// fingerprint is the key's fingerprint as ssh-keygen prints it.
-func (k key) fingerprint(t *testing.T) string {
-	t.Helper()
-	out, err := exec.CommandContext(t.Context(), sshKeygen, "-l", "-f", k.path+".pub").Output() //nolint:gosec // fixed binary, test temp dir
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Fields(string(out))[1]
+	return []byte(Principal + ` namespaces="` + Namespace + `" ` + f[0] + " " + f[1] + "\n")
 }
 
 type entry struct {

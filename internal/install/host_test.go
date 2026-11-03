@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"syscall"
@@ -26,7 +25,7 @@ type fakeHost struct {
 func newHost(t *testing.T) *fakeHost {
 	t.Helper()
 	h := &fakeHost{dir: t.TempDir(), key: newKey(t)}
-	h.cfg = Config{Root: t.TempDir(), UID: os.Getuid(), GID: os.Getgid(), KeyType: "ssh-ed25519", SSHKeygen: sshKeygen,
+	h.cfg = Config{Root: t.TempDir(), UID: os.Getuid(), GID: os.Getgid(), SSHKeygen: sshKeygen,
 		VerifyTimeout: 10 * time.Second}
 	h.mkdir(t, "etc/balistid", 0o755)
 	h.put(t, "etc/balistid/allowed_signers", h.key.signers, 0o644)
@@ -56,21 +55,10 @@ func (h *fakeHost) put(t *testing.T, name string, data []byte, mode fs.FileMode)
 	}
 }
 
-// sign signs data in namespace as `ssh-keygen -Y sign` does for the maintainer, and returns the signature.
+// sign signs data in namespace as `ssh-keygen -Y sign` does for the maintainer, touch and PIN given.
 func (k key) sign(t *testing.T, data []byte, namespace string) []byte {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "MANIFEST")
-	if err := os.WriteFile(p, data, 0o600); err != nil { //nolint:gosec // test temp dir
-		t.Fatal(err)
-	}
-	if out, err := exec.CommandContext(t.Context(), sshKeygen, "-q", "-Y", "sign", "-f", k.path, "-n", namespace, p).CombinedOutput(); err != nil { //nolint:gosec // fixed binary, test temp dir
-		t.Fatalf("ssh-keygen -Y sign: %v: %s", err, out)
-	}
-	sig, err := os.ReadFile(p + ".sig") //nolint:gosec // test temp dir
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sig
+	return k.sk.sign(data, namespace, skPresence|skVerified)
 }
 
 // manifestOf is the MANIFEST CI writes for files.
