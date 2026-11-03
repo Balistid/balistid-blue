@@ -87,7 +87,7 @@ func TestIdleThenTellsAroundTheWait(t *testing.T) {
 func TestBacklogAfterTakesOnlyALaterReport(t *testing.T) {
 	reports := []auditstat.Report{{Seq: 7, Status: auditstat.Status{Backlog: 3}}, {Seq: 8, Status: auditstat.Status{Backlog: 0}}}
 	i := 0
-	backlog := backlogAfter(7, func() (auditstat.Report, error) {
+	backlog := backlogAfter(7, true, func() (auditstat.Report, error) {
 		if i == len(reports) {
 			return auditstat.Report{}, errors.New("auditstat: a report of the wrong size")
 		}
@@ -119,5 +119,25 @@ func TestDrainTicksKeepTheIdleWaitApart(t *testing.T) {
 	}
 	if _, _, err := drainTicks(loaded, "", "", after); err == nil {
 		t.Error("a drain without the wait's ticks counted")
+	}
+}
+
+// Without a report when the wait began, as right after boot, the wait keeps polling: the missing report is no
+// backlog, and the first report that appears is of a poll since and counts.
+func TestBacklogWaitsForAFirstReport(t *testing.T) {
+	missing := errors.New("auditstat: report: no such file")
+	reads := []func() (auditstat.Report, error){
+		func() (auditstat.Report, error) { return auditstat.Report{}, missing },
+		func() (auditstat.Report, error) {
+			return auditstat.Report{Seq: 1, Status: auditstat.Status{Backlog: 4}}, nil
+		},
+		func() (auditstat.Report, error) { return auditstat.Report{Seq: 2}, nil },
+	}
+	i := 0
+	backlog := backlogAfter(0, false, func() (auditstat.Report, error) { i++; return reads[min(i-1, len(reads)-1)]() })
+	for _, want := range []string{missing.Error(), "4", "0"} {
+		if got := backlog(t.Context()); got != want {
+			t.Errorf("backlog %q, want %q", got, want)
+		}
 	}
 }
