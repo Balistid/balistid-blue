@@ -335,7 +335,7 @@ func buildImage(ctx context.Context, cache, stage string, pauses []time.Duration
 			return built, nil
 		}
 		err = fmt.Errorf("mkosi: %w", runErr)
-		if rmErr := errors.Join(removeDir(built), removeDir(try)); rmErr != nil || n > len(pauses) {
+		if rmErr := errors.Join(removeDir(built), removeDir(try)); rmErr != nil || n > len(pauses) || ctx.Err() != nil {
 			return "", errors.Join(err, rmErr, ctx.Err())
 		}
 		_, _ = fmt.Fprintf(log, "balistid-range: mkosi try %d of %d failed, again in %s: %v\n", n, len(pauses)+1, pauses[n-1], err)
