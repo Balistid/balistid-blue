@@ -150,7 +150,7 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	case rangejob.MethodLogCap:
 		names = []string{FactCapEntries, FactFullBundles, FactFullBytes}
 	case rangejob.MethodRSS:
-		names = []string{FactGenerated, FactWindowMin, FactRSSSamples, FactRSSMaxKiB, FactRSSAuditKiB}
+		names = []string{FactGenerated, FactWindowMin, FactRSSSamples, FactRSSMaxKiB, FactRSSHWMKiB, FactRSSAuditKiB}
 	case rangejob.MethodCanary:
 		names = []string{FactCanaryCount, FactCanaryGapMS}
 		for _, s := range CanaryStages() {
@@ -306,20 +306,32 @@ func judgeFailure(tr rangejob.Trial, o Outcome) (string, string) {
 
 // closedFacts maps facts that must be exactly names, each once.
 func closedFacts(facts []Record, names []string) (map[string]string, error) {
+	f, missing, err := namedFacts(facts, names)
+	if err == nil && len(missing) > 0 {
+		err = fmt.Errorf("report has %d of %d facts", len(f), len(names))
+	}
+	return f, err
+}
+
+// namedFacts maps facts that must each be one of names, reported once, and lists the names missing.
+func namedFacts(facts []Record, names []string) (map[string]string, []string, error) {
 	f := map[string]string{}
 	for _, r := range facts {
 		if !slices.Contains(names, r.Name) {
-			return nil, fmt.Errorf("unexpected fact \"%s\"", Printable(r.Name, 64))
+			return nil, nil, fmt.Errorf("unexpected fact \"%s\"", Printable(r.Name, 64))
 		}
 		if _, dup := f[r.Name]; dup {
-			return nil, fmt.Errorf("fact %s reported twice", r.Name)
+			return nil, nil, fmt.Errorf("fact %s reported twice", r.Name)
 		}
 		f[r.Name] = r.Value
 	}
-	if len(f) != len(names) {
-		return nil, fmt.Errorf("report has %d of %d facts", len(f), len(names))
+	var missing []string
+	for _, name := range names {
+		if _, ok := f[name]; !ok {
+			missing = append(missing, name)
+		}
 	}
-	return f, nil
+	return f, missing, nil
 }
 
 // plainNumber is a canonical decimal.
