@@ -298,6 +298,7 @@ func (s *recordScan) after(x rawrecord.Record) error {
 func (s *recordScan) countLoss(x rawrecord.Record) {
 	if x.Provider == store.LossProvider || healthKind(x) == "lost" {
 		s.lost++
+		hostLine(os.Stdout, "%s", lossLine(x))
 	}
 }
 

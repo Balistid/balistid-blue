@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -146,10 +147,18 @@ func (collectorUnit) Stop(ctx context.Context) error {
 }
 
 // readStore reads every record the collector stored before a fresh barrier, and after it the rest
-// of the run the read stopped (ADR 0022, point 3); after may be nil.
+// of the run the read stopped (ADR 0022, point 3); after may be nil. Its barrier waits for an idle
+// audit first, up to idleWait, and the host's log shows how long that took.
 func readStore(ctx context.Context, before, after func(rawrecord.Record) error) error {
 	sr := rangeguest.StoreRead{
 		Dir: storeDir, Scratch: shard.Scratch{Dir: shardCopyDir, Max: shardCopyMax}, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
+		Idle: func(ctx context.Context) error {
+			waited, err := rangeguest.AuditIdle(ctx, auditdState, func() string {
+				return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"])
+			}, idleWait, 200*time.Millisecond)
+			hostLine(os.Stdout, "store read: audit idle after %s, %v", waited.Round(time.Millisecond), err)
+			return err //nolint:wrapcheck // the reader wraps it
+		},
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},
@@ -157,16 +166,59 @@ func readStore(ctx context.Context, before, after func(rawrecord.Record) error) 
 	return sr.Read(ctx, waitLimit, before, after) //nolint:wrapcheck // the reader's errors name the step
 }
 
+// idleWait bounds how long a store read waits for the kernel's backlog and auditd's plugin queue to
+// empty: rate-burst's 100000 records reach Laurel well after its 10 s load.
+const idleWait = 2 * time.Minute
+
 // reportCollector prints, when a store read failed, how often systemd restarted the collector and its
-// last journal lines: the store is gone after the run. Each line is quoted, so none becomes a console
-// line of its own such as a mark; the collector journals no record bodies (ENGINEERING.md 7, Logging).
+// last journal lines: the store is gone after the run. Each line is a quoted host line, so none becomes
+// a console line of its own such as a mark; the collector journals no record bodies (ENGINEERING.md 7,
+// Logging).
 func reportCollector(ctx context.Context, w io.Writer, run func(ctx context.Context, name string, args ...string) string) {
-	_, _ = fmt.Fprintf(w, "balistid-range-guest: collector %q\n", run(ctx, "/usr/bin/systemctl", "show",
+	hostLine(w, "collector %+q", run(ctx, "/usr/bin/systemctl", "show",
 		"--property=NRestarts,Result,ExecMainCode,ExecMainStatus", collectorUnitName))
 	journal := run(ctx, "/usr/bin/journalctl", "-q", "--no-pager", "-o", "short-monotonic", "-n", "60", "-u", collectorUnitName)
 	for _, line := range strings.Split(journal, "\n") {
-		_, _ = fmt.Fprintf(w, "balistid-range-guest: collector journal %q\n", line)
+		hostLine(w, "collector journal %+q", line)
 	}
+}
+
+// hostPrefix marks a console line that tools/ci/range_kvm.py shows in a trial's GitHub log (its
+// HOST_LINE): the only guest output that reaches the log, and only whole lines of printable ASCII.
+const (
+	hostPrefix  = "balistid-range-guest: host: "
+	hostLineMax = 300
+)
+
+// hostLine writes one line for the host's log to w: its bytes outside printable ASCII as '?', at most
+// hostLineMax of them.
+func hostLine(w io.Writer, format string, args ...any) {
+	b := []byte(fmt.Sprintf(format, args...))
+	for i, c := range b {
+		if c < ' ' || c > '~' {
+			b[i] = '?'
+		}
+	}
+	_, _ = fmt.Fprintf(w, "%s%s\n", hostPrefix, b[:min(len(b), hostLineMax)])
+}
+
+// lossLine is what the host's log shows of a loss record a read counted: its seq and provider, and the
+// fields that say what was lost and when, the store's or the collector's; a body that does not decode
+// shows none of them.
+func lossLine(x rawrecord.Record) string {
+	var f struct {
+		Kind          string `json:"kind"`
+		Stage         string `json:"stage"`
+		Count         uint64 `json:"count"`
+		Dropped       uint64 `json:"dropped"`
+		FirstAt       int64  `json:"first_at"`
+		LastAt        int64  `json:"last_at"`
+		FirstReceived int64  `json:"first_received"`
+		LastReceived  int64  `json:"last_received"`
+	}
+	err := json.Unmarshal(x.Data, &f)
+	return fmt.Sprintf("loss record seq %d %s kind=%+q stage=%+q count=%d dropped=%d at=%d..%d received=%d..%d decoded=%v",
+		x.Seq, x.Provider, f.Kind, f.Stage, f.Count, f.Dropped, f.FirstAt, f.LastAt, f.FirstReceived, f.LastReceived, err == nil)
 }
 
 // laurelLines reads the store once and returns its Laurel lines, one per line, at most limit bytes of

@@ -300,11 +300,11 @@ func TestReportCollectorQuotesEveryLine(t *testing.T) {
 		if strings.HasSuffix(name, "systemctl") {
 			return "NRestarts=1\nResult=success"
 		}
-		return "[ 9.1] collector: store open\nbalistid-fail 1 2\nbalistid-killed"
+		return "[ 9.1] collector: store open\nbalistid-fail 1 2\nbalistid-killed \u00e9\x1b[2J"
 	})
 	for _, line := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
-		if !strings.HasPrefix(line, "balistid-range-guest: collector ") {
-			t.Errorf("console line of its own: %q", line)
+		if !regexp.MustCompile(`^balistid-range-guest: host: collector [ -~]+$`).MatchString(line) {
+			t.Errorf("console line of its own or not printable ASCII: %q", line)
 		}
 	}
 	if !strings.Contains(out.String(), `"NRestarts=1\nResult=success"`) || !strings.Contains(out.String(), `"balistid-fail 1 2"`) {

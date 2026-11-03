@@ -118,7 +118,7 @@ func (c *fakeCollector) read(t *testing.T, mark func(string), wait time.Duration
 	c.clock = &fakeClock{now: time.Unix(0, 0)}
 	sr := StoreRead{
 		Dir: c.dir, Scratch: shard.Scratch{Dir: c.t.TempDir(), Max: 1 << 30}, Collector: c, Clock: c.clock, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Mark: func(_ context.Context, token string) error { mark(token); return nil },
+		Idle: idle, Mark: func(_ context.Context, token string) error { mark(token); return nil },
 	}
 	err := sr.Read(t.Context(), wait, func(r rawrecord.Record) error {
 		if r.Provider == store.SensorProvider {
@@ -182,7 +182,7 @@ func TestStoreReadEdges(t *testing.T) {
 	c := newFakeCollector(t)
 	mark := func(token string) { c.add(execLine(token), execLine("late")) }
 	sr := StoreRead{Dir: c.dir, Scratch: shard.Scratch{Dir: c.t.TempDir(), Max: 1 << 30}, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)}, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Mark: func(_ context.Context, token string) error { mark(token); return nil }}
+		Idle: idle, Mark: func(_ context.Context, token string) error { mark(token); return nil }}
 	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err != nil {
 		t.Fatalf("read without an after callback: %v", err)
 	}
@@ -219,10 +219,14 @@ func TestUnindexedShardBelowTheSealsRefused(t *testing.T) {
 	}
 }
 
-// A store read needs a positive settle time and poll interval: zero would spin or stop before the
-// commit line settled.
+// idle is the wait for an idle audit of a test, where nothing waits before Laurel.
+func idle(context.Context) error { return nil }
+
+// A store read needs a positive settle time and poll interval, zero would spin or stop before the
+// commit line settled, and a wait for an idle audit.
 func TestStoreReadRefusesZeroTimings(t *testing.T) {
-	for _, sr := range []StoreRead{{Settle: 0, Poll: time.Millisecond}, {Settle: time.Second, Poll: 0}} {
+	for _, sr := range []StoreRead{{Settle: 0, Poll: time.Millisecond, Idle: idle}, {Settle: time.Second, Poll: 0, Idle: idle},
+		{Settle: time.Second, Poll: time.Millisecond}} {
 		if err := sr.Read(t.Context(), time.Second, func(rawrecord.Record) error { return nil }, nil); err == nil {
 			t.Errorf("%+v: read ran", sr)
 		}
@@ -437,5 +441,33 @@ func TestCommitTime(t *testing.T) {
 		if got := CommitTime(bad); !got.IsZero() {
 			t.Errorf("%s: %v", bad, got)
 		}
+	}
+}
+
+// The read waits for an idle audit before its barrier: a barrier exec'd while auditd's queue still holds the run's
+// records comes after them, later than the commit line settles. An audit not idle fails the read before any barrier
+// and with the collector still running, so nothing Laurel sent is lost to a stop.
+func TestStoreReadWaitsForAnIdleAuditFirst(t *testing.T) {
+	c := newFakeCollector(t)
+	var steps []string
+	mark := func(token string) { steps = append(steps, "mark"); c.add(execLine(token)) }
+	sr := StoreRead{Dir: c.dir, Scratch: shard.Scratch{Dir: c.t.TempDir(), Max: 1 << 30}, Collector: c, Clock: &fakeClock{now: time.Unix(0, 0)},
+		Settle: time.Second, Poll: 100 * time.Millisecond,
+		Idle: func(context.Context) error { steps = append(steps, "idle"); return nil },
+		Mark: func(_ context.Context, token string) error { mark(token); return nil }}
+	if err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil); err != nil ||
+		strings.Join(steps, ",") != "idle,mark" || c.stops != 1 {
+		t.Fatalf("read: %v, steps %v, %d stops", err, steps, c.stops)
+	}
+	c = newFakeCollector(t)
+	steps = nil
+	sr.Collector, sr.Dir = c, c.dir
+	sr.Idle = func(context.Context) error {
+		steps = append(steps, "idle")
+		return errors.New("auditd's plugin queue depth \"12\"")
+	}
+	err := sr.Read(t.Context(), 30*time.Second, func(rawrecord.Record) error { return nil }, nil)
+	if err == nil || !strings.Contains(err.Error(), "plugin queue depth") || strings.Join(steps, ",") != "idle" || c.stops != 0 {
+		t.Fatalf("an audit not idle: %v, steps %v, %d stops", err, steps, c.stops)
 	}
 }

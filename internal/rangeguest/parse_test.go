@@ -79,10 +79,14 @@ func TestHasRefusedDisable(t *testing.T) {
 	}
 }
 
-func TestOverflowDetected(t *testing.T) {
-	state := "audit version = 4.2.1\nplugin queue size = 16384\nplugin queue overflow detected = yes\nmax plugin queue depth used = 16384\n"
-	if OverflowDetected(state) != "yes" || OverflowDetected("audit version = 4.2.1\n") != "missing" {
-		t.Fatal("OverflowDetected")
+// audit 4.2.1's queue report, as its auditd binary writes it: the depth now and the most used are two lines.
+func TestStateValue(t *testing.T) {
+	state := "audit version = 4.2.1\ncurrent plugin queue depth = 12\nmax plugin queue depth used = 16384\n" +
+		"plugin queue size = 16384\nplugin queue overflow detected = yes\nplugin queueing suspended = no\n"
+	if StateValue(state, StateOverflow) != "yes" || StateValue(state, StateQueueDepth) != "12" ||
+		StateValue("audit version = 4.2.1\n", StateOverflow) != "missing" ||
+		StateValue("max plugin queue depth used = 3\n", StateQueueDepth) != "missing" {
+		t.Fatal("StateValue")
 	}
 }
 
@@ -96,7 +100,7 @@ func FuzzParsers(f *testing.F) {
 		_, _, _ = Caps(s)
 		_ = StatusField(s, "Uid")
 		_ = UserName(s, "0")
-		_ = OverflowDetected(s)
+		_ = StateValue(s, StateQueueDepth)
 		_ = HasExecArg(bytes.NewReader(data), "t")
 		_ = HasRefusedDisable(bytes.NewReader(data))
 		_ = HasRuleKey(bytes.NewReader(data), "t")

@@ -138,11 +138,17 @@ func scalar(raw json.RawMessage) string {
 	return string(bytes.TrimSpace(raw))
 }
 
-// OverflowDetected returns the value of "plugin queue overflow detected" in /run/audit/auditd.state,
-// or "missing".
-func OverflowDetected(state string) string {
+// Lines of auditd's state file (/run/audit/auditd.state, audit 4.2.1's audisp queue report): whether its plugin
+// queue overflowed since start, and how many events wait in it for the plugins, Laurel, now.
+const (
+	StateOverflow   = "plugin queue overflow detected"
+	StateQueueDepth = "current plugin queue depth"
+)
+
+// StateValue returns the value of the line name in auditd's state file, or "missing".
+func StateValue(state, name string) string {
 	for _, line := range strings.Split(state, "\n") {
-		if name, value, ok := strings.Cut(line, "="); ok && strings.TrimSpace(name) == "plugin queue overflow detected" {
+		if n, value, ok := strings.Cut(line, "="); ok && strings.TrimSpace(n) == name {
 			return strings.TrimSpace(value)
 		}
 	}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,7 +83,12 @@ func TestFreshStateReadsOnlyARewrite(t *testing.T) {
 			}
 		}
 		start := time.Now()
-		if got := FreshState(t.Context(), path, c.signal, 300*time.Millisecond, 5*time.Millisecond); got != c.want || time.Since(start) > time.Second {
+		state, ok := FreshState(t.Context(), path, c.signal, 300*time.Millisecond, 5*time.Millisecond)
+		got := "stale"
+		if ok {
+			got = StateValue(state, StateOverflow)
+		}
+		if got != c.want || time.Since(start) > time.Second {
 			t.Errorf("%s: %q after %s, want %q within the deadline", name, got, time.Since(start), c.want)
 		}
 	}
@@ -99,5 +105,62 @@ func TestTrialForTakesOnlyATrialsOwnBoots(t *testing.T) {
 		if _, _, err := TrialFor(c[0], c[1]); err == nil {
 			t.Errorf("TrialFor(%q, %q) accepted", c[0], c[1])
 		}
+	}
+}
+
+// Audit is idle once the kernel's backlog is empty and then a rewrite of auditd's state shows its plugin queue empty;
+// an old file, a queue still holding records or a backlog never empty is no idle audit within the wait.
+func TestAuditIdleWaitsForTheKernelAndAuditdsQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auditd.state")
+	write := func(depth string) {
+		if err := os.WriteFile(path, []byte("current plugin queue depth = "+depth+"\nplugin queue overflow detected = no\n"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	rewrite := func(depths ...string) func() {
+		stop := make(chan struct{})
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				case <-time.After(20 * time.Millisecond):
+					write(depths[min(i, len(depths)-1)])
+				}
+			}
+		}()
+		return func() { close(stop); <-done }
+	}
+	write("0") // left from before: never fresh enough
+	backlogs := []string{"12", "3", "0"}
+	calls := 0
+	backlog := func() string { calls++; return backlogs[min(calls-1, len(backlogs)-1)] }
+	stop := rewrite("7", "1", "0")
+	waited, err := AuditIdle(t.Context(), path, backlog, 5*time.Second, 5*time.Millisecond)
+	stop()
+	if err != nil || calls < 3 || waited <= 0 {
+		t.Fatalf("idle after a backlog and a queue: %s, %v after %d backlog reads", waited, err, calls)
+	}
+	stop = rewrite("9")
+	_, err = AuditIdle(t.Context(), path, func() string { return "0" }, 200*time.Millisecond, 5*time.Millisecond)
+	stop()
+	if err == nil || !strings.Contains(err.Error(), `auditd's plugin queue depth "9"`) {
+		t.Errorf("a queue that holds records: %v", err)
+	}
+	if _, err = AuditIdle(t.Context(), path, func() string { return "40" }, 50*time.Millisecond, 5*time.Millisecond); err == nil ||
+		!strings.Contains(err.Error(), `backlog "40"`) {
+		t.Errorf("a backlog never empty: %v", err)
+	}
+	if _, err = AuditIdle(t.Context(), path, func() string { return "0" }, 100*time.Millisecond, 5*time.Millisecond); err == nil ||
+		!strings.Contains(err.Error(), "no fresh auditd state") {
+		t.Errorf("no rewrite: %v", err)
+	}
+	stop = rewrite("none")
+	_, err = AuditIdle(t.Context(), path, func() string { return "0" }, 100*time.Millisecond, 5*time.Millisecond)
+	stop()
+	if err == nil {
+		t.Error("a depth that is no number counted as idle")
 	}
 }
