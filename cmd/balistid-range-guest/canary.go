@@ -21,22 +21,28 @@ import (
 // canaryMissed is the collector's health while two probes in a row missed (internal/collector/writer.go).
 const canaryMissed = "UNKNOWN canary-missed"
 
-// runCanary measures canary_interval_s (ADR 0017): once the floor shows healthy it stays quiet for CanaryQuiet,
-// then freezes Laurel and then auditd for CanaryFreeze each and watches CanaryAfter after each SIGCONT. Then it
-// reads the store once, which stops the collector: the collector's canary records give their audit times, its
-// health records when it went UNKNOWN and OK. The kernel stage is no stage: rules locked by -e 2 keep the canary's.
+// sysOpenat is openat's number on x86-64, the guest's arch: the collector's touch creates c-<n> with it
+// (os.OpenFile), and Laurel, translate.universal off, writes the number.
+const sysOpenat = "257"
+
+// runCanary measures canary_interval_s (ADR 0017, ADR 0054): once the floor shows healthy it stays quiet for
+// CanaryQuiet, then freezes Laurel and then auditd for CanaryFreeze each and watches CanaryAfter after each SIGCONT.
+// Then it reads the store once, which stops the collector: the collector's canary records give their audit times,
+// its health records when it went UNKNOWN and OK. The kernel stage is no stage: rules locked by -e 2 keep the
+// canary's. A floor that never shows healthy fails the trial: nothing after it would be the injection's.
 func runCanary(ctx context.Context, r *report) error {
 	cred, err := credential(statusUser)
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	// A floor that never shows healthy is measured anyway: the judge reads the store's health at each freeze.
-	_ = untilCLI(ctx, func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }, 0, statusWait)
+	quietFrom, err := healthyFrom(ctx, func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }, statusWait)
+	if err != nil {
+		return r.fail("before the quiet phase: " + err.Error())
+	}
 	owner, err := collectorProcess(ctx)
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	quietFrom := time.Now().UnixNano()
 	if !pause(ctx, rangevm.CanaryQuiet) {
 		return r.fail("quiet phase: " + ctx.Err().Error())
 	}
@@ -68,6 +74,7 @@ func runCanary(ctx context.Context, r *report) error {
 	times := slices.Sorted(maps.Values(sent))
 	count, gap := canaryGaps(times, quietFrom, quietTo)
 	r.add(rangevm.FactCanaryQuietMS, msString(quietTo-quietFrom))
+	r.add(rangevm.FactCanaryQuietHealth, timeline.over(quietFrom, quietTo))
 	r.add(rangevm.FactCanaryCount, strconv.Itoa(count))
 	r.add(rangevm.FactCanaryGapMS, msString(gap))
 	for i, s := range rangevm.CanaryStages() {
@@ -76,6 +83,15 @@ func runCanary(ctx context.Context, r *report) error {
 		}
 	}
 	return r.send(r.facts)
+}
+
+// healthyFrom waits up to wait for the CLI to exit 0, the floor healthy, and returns when it did in the guest's wall
+// clock in ns, where a canary trial's quiet phase starts; a floor not healthy by then is an error.
+func healthyFrom(ctx context.Context, cli cliRun, wait time.Duration) (int64, error) {
+	if err := untilCLI(ctx, cli, 0, wait); err != nil {
+		return 0, err
+	}
+	return time.Now().UnixNano(), nil
 }
 
 // canaryOwner is the collector's process as its canary records name it: the uid and pid of its probes' syscalls.
@@ -137,8 +153,9 @@ func freezeStage(ctx context.Context, kind string) (canaryFreeze, error) {
 }
 
 // facts are the stage's facts by rangevm.CanaryFact's what: the proof, the store's health when the freeze
-// began, its length and the watch after it, the first canary sent from the freeze on, the first
-// canaryMissed from then until the watch ended and the first OK from SIGCONT on and after that UNKNOWN.
+// began and from the first canaryMissed after it to SIGCONT, its length and the watch after it, the first canary
+// sent from the freeze on, that first canaryMissed, until the watch ended, and the first OK from SIGCONT on and
+// after that UNKNOWN.
 func (fr canaryFreeze) facts(sent []int64, t healthTimeline) [][2]string {
 	first, unknown, ok := rangevm.CanaryNone, rangevm.CanaryNone, rangevm.CanaryNone
 	if i, _ := slices.BinarySearch(sent, fr.from); i < len(sent) && sent[i] <= fr.until {
@@ -154,8 +171,12 @@ func (fr canaryFreeze) facts(sent []int64, t healthTimeline) [][2]string {
 			ok = msString(h.at - fr.thaw)
 		}
 	}
+	held := rangevm.CanaryNone
+	if unknownAt != 0 {
+		held = t.over(unknownAt, fr.thaw)
+	}
 	return [][2]string{
-		{rangevm.CanaryStopped, fr.stopped}, {rangevm.CanaryHealth, t.over(fr.from, fr.from)},
+		{rangevm.CanaryStopped, fr.stopped}, {rangevm.CanaryHealth, t.over(fr.from, fr.from)}, {rangevm.CanaryHeld, held},
 		{rangevm.CanaryFrozenMS, msString(fr.thaw - fr.from)}, {rangevm.CanaryAfterMS, msString(fr.until - fr.thaw)},
 		{rangevm.CanaryFirstMS, first}, {rangevm.CanaryUnknownMS, unknown}, {rangevm.CanaryOKMS, ok},
 	}
@@ -175,9 +196,9 @@ func canaryGaps(sent []int64, from, to int64) (int, int64) {
 	return count, max(longest, to-last)
 }
 
-// canarySent is the probe number and the audit time in ns of x when it is a canary record of owner as the
-// collector's Observe takes one: the canary key, owner's uid and pid, a successful syscall and a PATH basename
-// c-<n>. Keys are matched exactly, as Laurel puts an enriched "PID" beside "pid".
+// canarySent is the probe number and the audit time in ns of x when it is the record of owner's probe: the canary
+// key, owner's uid and pid, a successful openat and a PATH item c-<n> it created. Removing an older c-<n>, which the
+// next probe does, is no probe. Keys are matched exactly, as Laurel puts an enriched "PID" beside "pid".
 func canarySent(x rawrecord.Record, owner canaryOwner) (uint64, int64, bool) {
 	var top map[string]json.RawMessage
 	var sc map[string]json.RawMessage
@@ -186,7 +207,8 @@ func canarySent(x rawrecord.Record, owner canaryOwner) (uint64, int64, bool) {
 	if x.Provider != store.SensorProvider || x.Truncated() || json.Unmarshal(x.Data, &top) != nil ||
 		json.Unmarshal(top["ID"], &id) != nil || json.Unmarshal(top["SYSCALL"], &sc) != nil ||
 		json.Unmarshal(top["PATH"], &paths) != nil || json.Unmarshal(sc["success"], &success) != nil ||
-		success != "yes" || string(sc["uid"]) != owner.uid || string(sc["pid"]) != owner.pid || !canaryKey(sc["key"]) {
+		success != "yes" || string(sc["syscall"]) != sysOpenat || string(sc["uid"]) != owner.uid || string(sc["pid"]) != owner.pid ||
+		!canaryKey(sc["key"]) {
 		return 0, 0, false
 	}
 	at, ok := auditTime(id)
@@ -194,8 +216,8 @@ func canarySent(x rawrecord.Record, owner canaryOwner) (uint64, int64, bool) {
 		return 0, 0, false
 	}
 	for _, p := range paths {
-		var name string
-		if json.Unmarshal(p["name"], &name) != nil {
+		var name, nametype string
+		if json.Unmarshal(p["name"], &name) != nil || json.Unmarshal(p["nametype"], &nametype) != nil || nametype != "CREATE" {
 			continue
 		}
 		if n, found := strings.CutPrefix(filepath.Base(name), "c-"); found {
