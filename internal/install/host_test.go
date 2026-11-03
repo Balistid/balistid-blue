@@ -33,17 +33,15 @@ func newHost(t *testing.T) *fakeHost {
 	return h
 }
 
-// mkdir makes name and its parents in the fake root with mode, whatever the umask.
+// mkdir makes name, with mode whatever the umask, and its missing parents in the fake root.
 func (h *fakeHost) mkdir(t *testing.T, name string, mode fs.FileMode) {
 	t.Helper()
 	p := filepath.Join(h.cfg.Root, name)
-	if err := os.MkdirAll(p, mode); err != nil {
+	if err := os.MkdirAll(p, 0o755); err != nil { //nolint:gosec // root's directories are 0755
 		t.Fatal(err)
 	}
-	for ; p != h.cfg.Root; p = filepath.Dir(p) {
-		if err := os.Chmod(p, mode); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Chmod(p, mode); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -125,6 +123,9 @@ func snapshot(t *testing.T, root string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil && d != nil && d.IsDir() {
+			return fs.SkipDir // a directory a test made unreadable: its own entry is already recorded
+		}
 		if err != nil {
 			return err
 		}
