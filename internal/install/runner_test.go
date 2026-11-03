@@ -577,18 +577,21 @@ func TestRunnerChecksTheStateDirectoryWhateverTmpfilesLists(t *testing.T) {
 }
 
 // tmpfiles restores the modes of the directories it gives to the runner, which owns them: their owner and type are
-// checked, not their mode, so a mode the runner changed does not block a reinstall.
+// checked, not their mode, so a mode the runner changed does not block a reinstall; writable by others still refuses.
 func TestRunnerLeavesResultModesToTmpfiles(t *testing.T) {
 	h, s := newRunnerHost(t)
 	results := "var/lib/balistid/results"
 	h.mkdir(t, "var/lib/balistid", 0o755)
-	h.mkdir(t, results, 0o777)
+	h.mkdir(t, results, 0o770)
 	for _, d := range []string{"agent", "evidence", "acceptance"} {
 		h.mkdir(t, results+"/"+d, 0o750|fs.ModeSetgid)
 	}
 	h.chmod(t, results+"/agent", 0o700)
 	h.chmod(t, results+"/evidence", 0o750)
 	s.groupMade = true
+	h.chmod(t, results+"/acceptance", 0o757|fs.ModeSetgid)
+	h.refusedRun(t, s, "acceptance writable by others", maint, "", "acceptance: mode")
+	h.chmod(t, results+"/acceptance", 0o750|fs.ModeSetgid)
 	if err := h.install(t, s, maint, ""); err != nil {
 		t.Fatal(err)
 	}
