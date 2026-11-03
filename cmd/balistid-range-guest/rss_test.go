@@ -293,3 +293,30 @@ func TestLongRunningUnits(t *testing.T) {
 		t.Errorf("no units: %v", got)
 	}
 }
+
+// The trial samples only once every unit runs: one still starting, or waiting to restart after a failure at boot,
+// holds no cgroup to sample; one that does not run in time fails the trial, naming it.
+func TestUntilRunningWaitsForEveryUnit(t *testing.T) {
+	calls := map[string]int{}
+	state := func(u string) string {
+		calls[u]++
+		if u == "balistid-pi.service" && calls[u] < 3 {
+			return "activating/auto-restart/1"
+		}
+		return "active/running/0"
+	}
+	units := []string{"balistid-collector.service", "balistid-pi.service"}
+	if err := untilRunning(t.Context(), units, state, time.Minute, time.Millisecond); err != nil || calls["balistid-pi.service"] != 3 {
+		t.Errorf("a unit restarting at boot: %v after %v", err, calls)
+	}
+	never := func(string) string { return "inactive/dead/0" }
+	err := untilRunning(t.Context(), []string{"balistid-pi.service"}, never, 0, time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), `balistid-pi.service is "inactive/dead/0"`) {
+		t.Errorf("a unit that never runs: %v", err)
+	}
+	for _, s := range []string{"", "active", "activating/start/0", "failed/failed/3", "reloading/reload/0"} {
+		if err := untilRunning(t.Context(), units, func(string) string { return s }, 0, time.Millisecond); err == nil {
+			t.Errorf("state %q counted as running", s)
+		}
+	}
+}

@@ -29,7 +29,7 @@ const rssEvery = time.Second
 const unitOOMMessage = "fe6faa94e7774663a0da52717891d8ef"
 
 // rssDrainWait bounds how long an RSS trial waits for the store to catch up with its load. Laurel holds 2 MB records
-// at about the load's 4 MB/s on one core (ADR 0054), so a backlog it builds drains no faster than the load came.
+// at about 4 MB/s on one core (ADR 0054), so a backlog it builds drains no faster than the load came.
 func rssDrainWait(kind string) time.Duration {
 	if kind == rangejob.LoadExecLarge {
 		return 3 * time.Minute
@@ -37,17 +37,28 @@ func rssDrainWait(kind string) time.Duration {
 	return cpuDrainWait
 }
 
+// rssReadyWait bounds how long an RSS trial waits for every unit it samples to run: the guest starts after the
+// collector, ledger and auditstat only, and a unit that failed at boot waits its RestartSec (the Pi's watcher 30 s).
+const rssReadyWait = 2 * time.Minute
+
 // runRSS generates the trial's load and, every rssEvery from before it until it drained, sums the VmRSS of every
 // process of the image's long-running balistid services, and of auditd's cgroup, Laurel in it, as a trend
 // (rss_mib, ADR 0054). It reports the facts it has also when the run is not whole, so the host finds a MISS in them:
 // the sums, the VmHWM at the end, the OOM events and the collector's queue; what dropped part of the load after the
-// kernel; and rss_run, "ok" or why not.
+// kernel; and rss_run, "ok" or every reason the run is not whole. Every unit is read before the store, whose read
+// stops the collector and the units after it.
 func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	units := longRunning(balistidUnits(ctx), func(u string) string {
 		return strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "Type", u))
 	})
 	if len(units) == 0 {
 		return r.fail("no long-running balistid service")
+	}
+	state := func(u string) string {
+		return strings.Join(strings.Fields(output(ctx, "/usr/bin/systemctl", "show", "--value", "-p", "ActiveState,SubState,NRestarts", u)), "/")
+	}
+	if err := untilRunning(ctx, units, state, rssReadyWait, time.Second); err != nil {
+		return r.fail(err.Error())
 	}
 	before, cgroups := map[string]unitSample{}, []string{}
 	for _, u := range units {
@@ -93,42 +104,43 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 		}, rssDrainWait(tr.Load.Kind))
 	}
 	m := stop()
-	run := "ok"
-	switch {
-	case genErr != nil:
-		run = "generator: " + genErr.Error()
-	case drainErr != nil:
-		run = drainErr.Error()
-	case m.err != nil:
-		run = "rss: " + m.err.Error()
+	var runErrs []string
+	note := func(what string, err error) {
+		if err != nil {
+			runErrs = append(runErrs, what+err.Error())
+		}
 	}
-	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
-	hwm := "VmHWM: "
-	if kib, _, _, err := cgroupSum("/", cgroups, "VmHWM"); err != nil {
-		hwm += err.Error()
-	} else {
-		hwm = u(kib)
-	}
+	note("generator: ", genErr)
+	note("", drainErr)
+	note("rss: ", m.err)
+	hwm, _, _, err := cgroupSum("/", cgroups, "VmHWM")
+	note("VmHWM: ", err)
 	same := "same"
 	for _, unit := range units {
 		if _, why := used(before[unit], sampleUnit(ctx, unit)); why != "" && same == "same" {
 			same = unit + ": " + why
 		}
 	}
-	events := m.oomEvents()
-	oom := u(events) // a journal not read cannot unsay events the cgroups showed
-	switch n, err := oomJournal(ctx, units); {
-	case err == nil:
-		oom = u(events + n)
-	case events == 0:
-		oom = "journal: " + err.Error()
+	journalOOM, err := oomJournal(ctx, units)
+	note("OOM journal: ", err)
+	lostAfter, overflowAfter := lost(), freshOverflow(ctx)
+	lostRecords, err := storeLosses(ctx) // last: the read stops the collector
+	if err != nil {
+		reportCollector(ctx, os.Stdout, output)
 	}
+	note("store: ", err)
+	run := "ok"
+	if len(runErrs) > 0 {
+		run = strings.Join(runErrs, "; ")
+	}
+	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	r.add(rangevm.FactGenerated, u(generated))
 	r.add(rangevm.FactWindowMin, u(windowMin))
 	r.add(rangevm.FactLostBefore, lostBefore)
-	r.add(rangevm.FactLostAfter, lost())
+	r.add(rangevm.FactLostAfter, lostAfter)
 	r.add(rangevm.FactOverflowBefore, overflowBefore)
-	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
+	r.add(rangevm.FactOverflowAfter, overflowAfter)
+	r.add(rangevm.FactLostRecords, u(lostRecords))
 	r.add(rangevm.FactUnits, same)
 	r.add(rangevm.FactRSSRun, run)
 	r.add(rangevm.FactRSSUnits, strings.Join(units, ","))
@@ -136,17 +148,37 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRSSLoadGapMS, loadGap(m.at, from, to))
 	r.add(rangevm.FactRSSProcsMin, strconv.Itoa(m.procsMin))
 	r.add(rangevm.FactRSSMaxKiB, u(m.kib))
-	r.add(rangevm.FactRSSHWMKiB, hwm)
-	r.add(rangevm.FactRSSOOM, oom)
+	r.add(rangevm.FactRSSHWMKiB, u(hwm))
+	r.add(rangevm.FactRSSOOM, u(m.oomEvents()+journalOOM)) // a journal not read cannot unsay the cgroups' events
 	r.add(rangevm.FactRSSQueueBytes, queue)
 	audit := u(m.auditKiB)
 	if m.auditWhy != "" {
 		audit = m.auditWhy
 	}
 	r.add(rangevm.FactRSSAuditKiB, audit)
-	// Last: reading the store stops the collector.
-	r.add(rangevm.FactLostRecords, storeLosses(ctx))
 	return r.send(r.facts)
+}
+
+// untilRunning waits up to wait, polling every poll, until state, "ActiveState/SubState/..." of a unit, shows each of
+// units active, or says which was not and how.
+func untilRunning(ctx context.Context, units []string, state func(string) string, wait, poll time.Duration) error {
+	for deadline := time.Now().Add(wait); ; {
+		down := ""
+		for _, u := range units {
+			if s := state(u); !strings.HasPrefix(s, "active/") {
+				down = fmt.Sprintf("%s is %q", u, s)
+				break
+			}
+		}
+		switch {
+		case down == "":
+			return nil
+		case !time.Now().Before(deadline):
+			return fmt.Errorf("not running %s after the boot: %s", wait, down)
+		case !pause(ctx, poll):
+			return fmt.Errorf("waiting for %s: %w", down, ctx.Err())
+		}
+	}
 }
 
 // collectorQueue is the -queue-bytes of the collector's running process, read from its argv, or why not.
@@ -204,8 +236,8 @@ func oomJournal(ctx context.Context, units []string) (uint64, error) {
 }
 
 // storeLosses reads the store once and counts the records that say part of the load was dropped after the kernel,
-// before or behind the read's barrier (rssLoss), or why it could not.
-func storeLosses(ctx context.Context) string {
+// before or behind the read's barrier (rssLoss); a read that failed returns those it counted and why.
+func storeLosses(ctx context.Context) (uint64, error) {
 	var n uint64
 	count := func(x rawrecord.Record) error {
 		if rssLoss(x) {
@@ -213,10 +245,7 @@ func storeLosses(ctx context.Context) string {
 		}
 		return nil
 	}
-	if err := readStore(ctx, count, count); err != nil {
-		return "store: " + err.Error()
-	}
-	return strconv.FormatUint(n, 10)
+	return n, readStore(ctx, count, count)
 }
 
 // rssLoss reports whether x says a record was dropped after the kernel: a loss record of the store, a "lost" record of
