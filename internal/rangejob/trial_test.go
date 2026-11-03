@@ -163,8 +163,8 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 	}
 }
 
-// rss_mib is measured at the three loads the maintainer chose (2026-11-03): cpu-1000's execs, rate-burst's
-// ptrace burst and 50 execs/s of record-max's 2 MB argv, each deciding; acceptance/0.toml names the same.
+// rss_mib is measured at the three loads the maintainer chose (ADR 0054): cpu-1000's execs, rate-burst's ptrace
+// burst and 2 execs/s of record-max's 2 MB argv, each deciding; acceptance/0.toml names the same.
 func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	cpu, _ := Lookup("cpu-1000")
 	burst, _ := Lookup("rate-burst")
@@ -177,6 +177,9 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 		got[tr.Name] = tr.Load
 		if tr.Method() != MethodRSS || tr.Trend || tr.Expect != "" {
 			t.Errorf("%s: method %q, trend %v, expect %q", tr.Name, tr.Method(), tr.Trend, tr.Expect)
+		}
+		if tr.Name == "rss-large" && tr.Scratch != StoreScratch { // its 120 MB fit the store's disk
+			t.Errorf("rss-large: scratch disk of %d bytes, want the store's %d", tr.Scratch, StoreScratch)
 		}
 	}
 	if !maps.Equal(got, want) {

@@ -271,13 +271,13 @@ var trials = slices.Concat([]Trial{
 			Scratch: StoreScratch, Count: 1, Inject: InjectAuditSet},
 		{Name: "cpu-1000", Metric: MetricCPU, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}, Trend: true},
-		// rss_mib at cpu-1000's and rate-burst's loads and at 50 execs/s of 2 MB records, 20 s of which fill half
-		// the largest scratch disk (maintainer, 2026-11-03).
+		// rss_mib at cpu-1000's and rate-burst's loads and at 2 execs/s of 2 MB records, the rate Laurel holds; 60
+		// of them, 120 MB, fit the store's scratch disk (ADR 0054).
 		{Name: "rss-1000", Metric: MetricRSS, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 1,
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}},
 		{Name: "rss-burst", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
 			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
-		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
+		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
 			Load: Load{Kind: LoadExecLarge, Rate: 2, Seconds: 30}},
 		// canary_interval_s (ADR 0017): quiet, then Laurel and auditd frozen in turn; the kernel stage is no trial,
 		// as the rules locked by -e 2 cannot drop the canary's.
