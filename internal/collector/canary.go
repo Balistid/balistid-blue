@@ -19,8 +19,9 @@ import (
 const (
 	// CanaryKey is the audit rule key on the canary directory (ADR 0017, point 2).
 	CanaryKey = "balistid-canary"
-	// CanaryEvery is how often a probe goes out and how long it has to come back (canary_interval_s).
-	CanaryEvery = 30 * time.Second
+	// CanaryEvery is how often a probe goes out and how long it has to come back: a second inside
+	// canary_interval_s's 30 s, so a late tick does not put a gap over it (maintainer, 2026-11-03).
+	CanaryEvery = 29 * time.Second
 	// canaryMisses missed probes in a row make the sensor UNKNOWN.
 	canaryMisses = 2
 )

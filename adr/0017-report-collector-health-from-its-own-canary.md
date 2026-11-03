@@ -1,26 +1,26 @@
 # 0017 — Report the collector's health from its own canary
 
 - Status: proposed (accepted when merged with the maintainer's approval)
-- Date: 2026-10-11, amended 2026-10-19 (exec denied by mount, not by syscall filter)
+- Date: 2026-10-11, amended 2026-10-19 (exec denied by mount, not by syscall filter), 2026-11-03 (29 s)
 - Decided-by: alex
 - Agent: claude/opus-5.5
 
 ## Context
 
 ADR 0004 point 4 requires sensor health that is fresh or UNKNOWN with a canary on a schedule; ADR 0007 gives the
-collector the canary. Acceptance: two missed canaries 30 s apart set UNKNOWN (`canary_interval_s`), killing Laurel or
-stopping auditd reads UNKNOWN within 10 s (`sensor_down_s`), a health failure reaches the phone within 120 s
+collector the canary. Acceptance: two missed canaries at most 30 s apart set UNKNOWN (`canary_interval_s`), killing
+Laurel or stopping auditd reads UNKNOWN within 10 s (`sensor_down_s`), a health failure reaches the phone within 120 s
 (`loss_alarm_s`), health is OK within 30 s of boot (`ready_s`). An audited syscall can sleep up to 60 s per record when
 the kernel backlog is full (ADR 0016), so a canary writer can hang. Laurel re-execs itself on SIGHUP with the same pid.
 
 ## Decision
 
 1. Health is UNKNOWN from start until the first canary is stored, and READY=1 is sent once the reader runs.
-2. A canary goroutine creates `c-<n>` every 30 s in a 0700 directory of the collector's uid outside the store, and
-   removes `c-<n-1>`; an audit rule watches the directory with key `balistid-canary`. Probe `n` counts as seen only
-   when the writer stores a record with that key, the collector's uid and pid, `success=yes` and a PATH basename `c-<n>`;
-   leftover `c-*` files are removed at start.
-3. The writer checks deadlines on its own tick: a probe not seen within 30 s is a miss whether or not its goroutine
+2. A canary goroutine creates `c-<n>` every 29 s, a second inside `canary_interval_s`, in a 0700 directory of the
+   collector's uid outside the store, and removes `c-<n-1>`; an audit rule watches the directory with key
+   `balistid-canary`. Probe `n` counts as seen only when the writer stores a record with that key, the collector's
+   uid and pid, `success=yes` and a PATH basename `c-<n>`; leftover `c-*` files are removed at start.
+3. The writer checks deadlines on its own tick: a probe not seen within 29 s is a miss whether or not its goroutine
    returned; two misses set UNKNOWN. A late record for an old probe does not count. No exec (T18): systemd
    needs `execve` to start the binary, so the unit makes nothing else executable (`NoExecPaths=` on `/`
    and on each path it can write) and filters `execveat` and `memfd_create`; shutdown does not wait for the canary goroutine, which holds no store state.

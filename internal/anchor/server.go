@@ -20,7 +20,7 @@ import (
 const (
 	// TickEvery is how often a connection checks for a batch to cut (CutEvery).
 	TickEvery = 100 * time.Millisecond
-	// idleTimeout drops a connection that sent nothing: the canary commits a record every 30 s, so a
+	// idleTimeout drops a connection that sent nothing: the canary commits a record every 29 s, so a
 	// live collector is never idle this long, and it reconnects at once.
 	idleTimeout  = 5 * time.Minute
 	writeTimeout = 5 * time.Second
