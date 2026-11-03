@@ -192,7 +192,8 @@ func auditIdle(ctx context.Context, what string, wait time.Duration) error {
 }
 
 // reportBacklog reads the kernel's audit backlog from balistid-auditstat's report as the collector reads
-// it (auditstat.ReadReport, ADR 0038), counting only a report of a poll after this call.
+// it (auditstat.ReadReport, ADR 0038), counting only a report of a poll after this call. A report not
+// there yet, as right after boot (auditstat is ready at execve, before its first poll), is not idle yet.
 func reportBacklog() (func(context.Context) string, error) {
 	uid, err := unixsock.LookupUID("balistid-auditstat")
 	if err != nil {
@@ -200,21 +201,20 @@ func reportBacklog() (func(context.Context) string, error) {
 	}
 	read := func() (auditstat.Report, error) { return auditstat.ReadReport(auditstat.ReportPath, uid) }
 	first, err := read()
-	if err != nil {
-		return nil, err
-	}
-	return backlogAfter(first.Seq, read), nil
+	return backlogAfter(first.Seq, err == nil, read), nil
 }
 
-// backlogAfter is the backlog of the report read returns once its seq passed seq, "stale" before that, or
-// why it could not be read: a report every auditstat.Interval, so a backlog read before the wait never counts.
-func backlogAfter(seq uint64, read func() (auditstat.Report, error)) func(context.Context) string {
+// backlogAfter is the backlog of the report read returns, or why it could not be read. When a report was
+// there before the wait (had), only one whose seq passed seq counts, "stale" before; without one, the
+// first report read is of a poll since. A report comes every auditstat.Interval, so a backlog read before
+// the wait never counts.
+func backlogAfter(seq uint64, had bool, read func() (auditstat.Report, error)) func(context.Context) string {
 	return func(context.Context) string {
 		r, err := read()
 		switch {
 		case err != nil:
 			return err.Error()
-		case r.Seq <= seq:
+		case had && r.Seq <= seq:
 			return "stale"
 		}
 		return strconv.FormatUint(uint64(r.Status.Backlog), 10)
