@@ -63,16 +63,40 @@ RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 TRIAL_NAME = re.compile(r"[a-z0-9-]{1,32}")
 
 
-def newest_results(state: Path) -> list[Path]:
-    """The result.json of each run the launcher left, oldest first by run id."""
-    return sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json") if RESULT_ID.fullmatch(p.parent.name))
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
-def read_regular(path: Path, limit: int) -> bytes | None:
-    """At most limit bytes of path, or None unless it is a regular file: container root can write the state
-    directory, so no symlink and no FIFO."""
+def open_newest_run(state: Path) -> int | None:
+    """A descriptor of the newest run's directory, the greatest run id under state/balistid-range/results holding a
+    result.json, or None without one. Container root can write the state directory, so no step below state is
+    followed through a symlink: a planted link raises OSError and is never read."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError:
+        return None
+    try:
+        for name in ("balistid-range", "results"):
+            sub = os.open(name, DIR_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = sub
+        for name in sorted((n for n in os.listdir(fd) if RESULT_ID.fullmatch(n)), reverse=True):
+            try:
+                os.stat(f"{name}/result.json", dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            return os.open(name, DIR_FLAGS, dir_fd=fd)
+        return None
+    except FileNotFoundError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def read_regular(dir_fd: int, name: str, limit: int) -> bytes | None:
+    """At most limit bytes of name in the directory dir_fd, or None unless it is a regular file: no symlink and no
+    FIFO."""
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
         with os.fdopen(fd, "rb") as f:
             return f.read(limit) if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else None
     except OSError:
@@ -82,11 +106,17 @@ def read_regular(path: Path, limit: int) -> bytes | None:
 def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpected: bool = False) -> str | None:
     """The newest run's verdict and reason as an ::error:: command, or None when it left none or passed and
     unexpected is false; with unexpected the launcher refused the verdict, so even a control's PASS is shown."""
-    results = newest_results(state)
-    if not results:
-        return None
     unreadable = f"::error title={title}::the result could not be read"
-    raw = read_regular(results[-1], 1 << 20)
+    try:
+        run = open_newest_run(state)
+    except OSError:
+        return unreadable
+    if run is None:
+        return None
+    try:
+        raw = read_regular(run, "result.json", 1 << 20)
+    finally:
+        os.close(run)
     try:
         data = json.loads(raw) if raw is not None else None
     except ValueError:
@@ -113,11 +143,18 @@ SERIAL_LOG = "serial.log"
 
 def host_lines(state: Path) -> list[str]:
     """The guest's host lines in the newest run's serial log, in order."""
-    results = newest_results(state)
-    if not results:
+    try:
+        run = open_newest_run(state)
+    except OSError:
         return []
+    if run is None:
+        return []
+    try:
+        data = read_regular(run, SERIAL_LOG, SERIAL_MAX) or b""
+    finally:
+        os.close(run)
     out: list[str] = []
-    for raw in (read_regular(results[-1].parent / SERIAL_LOG, SERIAL_MAX) or b"").split(b"\n"):
+    for raw in data.split(b"\n"):
         m = HOST_LINE.fullmatch(raw.rstrip(b"\r").decode("ascii", "replace"))
         if m:
             out.append(m[1])
