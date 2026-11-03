@@ -83,6 +83,37 @@ class Pins(unittest.TestCase):
         self.assertNotIn("silence-ledger", range_kvm.CONTAINER_SCRIPT)
 
 
+class PacmanTries(unittest.TestCase):
+    """The archive stalls: the container's pacman step tries the same snapshot three times, 30 s and 60 s apart, then
+    fails the job. The loop runs here with pacman and sleep replaced by shell functions that record their calls."""
+
+    def run_loop(self, fails: int) -> tuple[int, list[str]]:
+        script = range_kvm.CONTAINER_SCRIPT
+        loop = script[script.index("for try in"):script.index("done\n") + len("done\n")]
+        fake = (f'n=0; pacman() {{ n=$((n+1)); echo "pacman $*" >> "$LOG"; [ "$n" -gt {fails} ]; }}; '
+                'sleep() { echo "sleep $1" >> "$LOG"; }\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "log"
+            log.touch()
+            done = subprocess.run(["/usr/bin/bash", "-euo", "pipefail", "-c", fake + loop, "bash", "git", "go"],
+                                  env={"LOG": str(log), "PATH": "/usr/bin"}, capture_output=True, check=False)
+            return done.returncode, log.read_text(encoding="utf-8").splitlines()
+
+    def test_two_failures_then_the_install(self) -> None:
+        install = "pacman -Syyuu --noconfirm --needed git go"
+        self.assertEqual(self.run_loop(fails=2), (0, [install, "sleep 30", install, "sleep 60", install]))
+
+    def test_three_failures_fail_the_job(self) -> None:
+        code, calls = self.run_loop(fails=3)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls.count("pacman -Syyuu --noconfirm --needed git go"), 3)
+        self.assertEqual([c for c in calls if c.startswith("sleep")], ["sleep 30", "sleep 60"])
+
+    def test_one_try_when_it_works_and_the_stall_limit_stays(self) -> None:
+        self.assertEqual(self.run_loop(fails=0), (0, ["pacman -Syyuu --noconfirm --needed git go"]))
+        self.assertNotIn("DisableDownloadTimeout", range_kvm.CONTAINER_SCRIPT)
+
+
 class FailsClosed(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

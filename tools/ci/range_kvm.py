@@ -39,10 +39,16 @@ USERNS_SYSCTL = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
 UDEV_RULE = 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"\n'
 
 # Runs in the container as root, then as the runner's uid with a fixed environment; the packages are
-# its arguments, the snapshot and uid come through --env, so nothing is spliced into the text.
+# its arguments, the snapshot and uid come through --env, so nothing is spliced into the text. The
+# archive often stalls or times out: pacman gets three tries of the same snapshot, 30 s and 60 s apart,
+# then the job fails; pacman's own stall limit stays on.
 CONTAINER_SCRIPT = r"""set -euo pipefail
 printf 'Server = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' "$SNAPSHOT" > /etc/pacman.d/mirrorlist
-pacman -Syyuu --noconfirm --needed "$@"
+for try in 1 2 3; do
+  pacman -Syyuu --noconfirm --needed "$@" && break
+  if [ "$try" = 3 ]; then echo "range-kvm: pacman failed 3 times" >&2; exit 1; fi
+  sleep $((try * 30))
+done
 useradd --no-create-home --home-dir /cache/home --uid "$RANGE_UID" range
 exec runuser -u range -- /usr/bin/env -i HOME=/cache/home XDG_CACHE_HOME=/cache XDG_STATE_HOME=/state \
   RANGE_TRIAL="${RANGE_TRIAL:-}" PATH=/usr/bin GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0 /usr/bin/bash -euo pipefail -c '
