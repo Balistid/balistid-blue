@@ -50,6 +50,7 @@ SIG = "MANIFEST.sig"
 SIG_MAX_BYTES = 4 << 10  # internal/install's maxSigBytes
 SIGNERS_MAX_BYTES = 1024  # maxSignersBytes
 MANIFEST_MAX_BYTES = 64 << 10  # MaxManifestBytes
+INSTALLED = "/usr/local/lib/balistid/balistid-install"
 # $1 is the key's fingerprint. The bundle's directory and the maintainer are read as data, typed as dir=... and
 # user=...: nothing typed is parsed by a shell, and a typo that makes sh read its commands from that input (-s for
 # -c) only assigns. The gate is data flow: the installer is renamed to the sha256 of its bytes and run only by the
@@ -57,12 +58,14 @@ MANIFEST_MAX_BYTES = 64 << 10  # MaxManifestBytes
 # typed fingerprint reaches, so a typo that skips a check finds nothing to run. tar reads the bundle on stdin, so it
 # refuses a compressed one instead of running a decompressor, and prints only the three members, each capped by
 # ulimit -f (512-byte blocks) with no pipeline, so its status counts: nothing in the bundle is resolved on disk.
-# This command checks no sk flags (ssh-keygen does not); balistid-install does.
+# This command checks no sk flags (ssh-keygen does not), so it refuses once a balistid-install is installed: it is
+# the first install only, and a first install that stopped before writing the installer can run it again.
 # A hand-typed command cannot be safe against every typo: tests cover every dropped character and the typos review
 # found, and root reads the command against the CI log before Enter. Under `env -i` and `sh -p`: root's shell may
 # carry the maintainer's TMPDIR, PATH or exported functions. runuser -u keeps root's console as the reader's
 # terminal; that it cannot be driven from there assumes Yama ptrace_scope >= 1.
 BOOTSTRAP = (
+    f'[ ! -e {INSTALLED} ] || {{ logger -s -t balistid-install "an installer is installed: run it, not this"; false; }} && '
     'IFS= read -r a && IFS= read -r b && case $a$b in dir=/*user=*) ;; *) false ;; esac && '
     'dl=${a#dir=} && m=${b#user=} && [ "$(id -u -- "$m")" -ge 1000 ] && '
     'ro=$(mktemp -d /tmp/balistid-install.XXXXXXXXXX) && '
