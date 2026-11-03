@@ -13,7 +13,8 @@ const (
 	// Principal and Namespace are the identity and namespace every install signature carries (ADR 0053).
 	Principal = "maintainer@balistid.dev"
 	Namespace = "install@balistid.dev"
-	// SKKeyType is the only key type DefaultConfig accepts: a key on a FIDO2 token (R2, ADR 0053 point 1).
+	// SKKeyType is the only key type DefaultConfig accepts, a FIDO2 key's (R2, ADR 0053 point 1). The type alone
+	// proves no token (nothing is attested); each signature's touch and PIN flags are checked (sshsig.go).
 	SKKeyType       = "sk-ssh-ed25519@openssh.com"
 	maxSignersBytes = 1024
 )
