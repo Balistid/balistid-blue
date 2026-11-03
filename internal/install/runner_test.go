@@ -210,7 +210,32 @@ func TestRunnerFirstInstallPlacesTheKey(t *testing.T) {
 	if got, want := snapshot(t, h.cfg.Root), h.installed(t, s, before, files); !maps.Equal(got, want) {
 		t.Fatalf("root:\ngot  %v\nwant %v", got, want)
 	}
-	h.refusedRun(t, s, "the key is now installed", maint, h.key.fingerprint(t), "already installed")
+	if err := h.install(t, s, maint, h.key.fingerprint(t)); err != nil {
+		t.Fatalf("the printed command run again: %v", err)
+	}
+}
+
+// A first install that stopped after writing the key is run again with the same printed command and completes.
+func TestRunnerFirstInstallRunsAgainAfterAStop(t *testing.T) {
+	h, s := newRunnerHost(t)
+	must(t, os.RemoveAll(filepath.Join(h.cfg.Root, "etc/balistid")))
+	fp := h.key.fingerprint(t)
+	s.failCmd = "systemd-sysusers"
+	if err := h.install(t, s, maint, fp); err == nil {
+		t.Fatal("the stopped run passed")
+	}
+	if _, err := os.Lstat(filepath.Join(h.cfg.Root, "etc/balistid/allowed_signers")); err != nil {
+		t.Fatalf("the stopped run wrote no key: %v", err)
+	}
+	s.failCmd = ""
+	if err := h.install(t, s, maint, fp); err != nil {
+		t.Fatalf("run again: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(h.cfg.Root, "usr/local/lib/balistid/balistid-install")); err != nil {
+		t.Fatalf("no installer after the second run: %v", err)
+	}
+	h.put(t, "etc/balistid/allowed_signers", newKey(t).signers, 0o644)
+	h.refusedRun(t, s, "another key installed", maint, fp, "not the installed one")
 }
 
 // A reinstall keeps inbox and objects and what agents left there, and replaces each file only by rename.
