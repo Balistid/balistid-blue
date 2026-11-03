@@ -165,12 +165,11 @@ type buildConfig struct {
 	afterCap    func(stage string) // a test seam: runs after the cap, before go build
 	afterTree   func(tree string)  // a test seam: runs once the tree mkosi copies into the image is complete
 	programs    []imageProgram
-	mkosiPauses []time.Duration // after each failed mkosi try but the last: their count+1 bounds the tries
 }
 
 func defaultBuild() buildConfig {
 	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy, moduleCache: maxModuleCache,
-		programs: slices.Concat(guestPrograms, witnessPrograms), mkosiPauses: []time.Duration{30 * time.Second, time.Minute}}
+		programs: slices.Concat(guestPrograms, witnessPrograms)}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -277,7 +276,7 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("makepkg laurel: %w", err)
 	}
 
-	built, err := buildImage(ctx, cache, stage, cfg.mkosiPauses, log, func(try, built string) error {
+	built, err := buildImage(ctx, cache, stage, mkosiPauses, log, func(try, built string) error {
 		mkosi := mkosiCommand(tool, stage, try, built)
 		// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
 		// and the next invocation never sweeps a build directory mkosi still writes.
@@ -310,6 +309,9 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
 }
 
+// mkosiPauses come after each failed mkosi try but the last: their count+1 bounds the tries.
+var mkosiPauses = []time.Duration{30 * time.Second, time.Minute}
+
 // buildImage runs mkosi (run, with a try's directory and its output directory) until it succeeds, at most
 // len(pauses)+1 times, pausing pauses[i] after failed try i+1, and returns the output directory of the try that
 // built the image. archive.archlinux.org, where mkosi downloads the snapshot's packages, often stalls or times
@@ -332,7 +334,7 @@ func buildImage(ctx context.Context, cache, stage string, pauses []time.Duration
 			return built, nil
 		}
 		err = errors.Join(fmt.Errorf("mkosi: %w", runErr), removeDir(built), removeDir(try))
-		if n > len(pauses) || ctx.Err() != nil {
+		if n > len(pauses) {
 			return "", errors.Join(err, ctx.Err())
 		}
 		_, _ = fmt.Fprintf(log, "balistid-range: mkosi try %d of %d failed, again in %s: %v\n", n, len(pauses)+1, pauses[n-1], err)
@@ -464,7 +466,7 @@ func prepareStage(stage string) error {
 }
 
 // mkosiCommand builds the image from the export in stage into built, with its workspace and package
-// cache in try, the build try's own directory in the stage (mkosiTryDirs). mkosi's defaults are
+// cache in try, the build try's own directory in the stage (buildImage). mkosi's defaults are
 // /var/tmp for the workspace (shared on the host for the maintainer, T34) and, at a system uid,
 // /var/cache for packages (read-only under the runner's ProtectSystem=strict).
 func mkosiCommand(tool toolFunc, stage, try, built string) *exec.Cmd {

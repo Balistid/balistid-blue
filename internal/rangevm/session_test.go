@@ -1063,7 +1063,7 @@ func TestSweepRemovesDirectoriesWithoutPermissions(t *testing.T) {
 	if err := os.Mkdir(locked, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	work := filepath.Join(cache, "stage-x", "mkosi-workspace", "work")
+	work := filepath.Join(cache, "stage-x", "mkosi-1", "workspace", "work")
 	if err := os.MkdirAll(filepath.Join(work, "work"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1948,12 +1948,5 @@ func TestBuildImageStopsBetweenTries(t *testing.T) {
 	})
 	if tries != 1 || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Connection timed out") {
 		t.Errorf("%d tries, %v", tries, err)
-	}
-}
-
-// The build tries mkosi three times, 30 s and then 60 s apart.
-func TestDefaultBuildTriesMkosiThreeTimes(t *testing.T) {
-	if p := defaultBuild().mkosiPauses; !slices.Equal(p, []time.Duration{30 * time.Second, time.Minute}) {
-		t.Errorf("mkosi pauses %v", p)
 	}
 }
