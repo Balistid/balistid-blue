@@ -82,7 +82,7 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 	for _, name := range rssCounts {
 		v, err := plainNumber(f[name])
 		if err != nil {
-			bad("fact %s is not a plain number", name)
+			bad("fact %s is not a plain number: \"%s\"", name, Printable(f[name], 256))
 			continue
 		}
 		n[name] = v
