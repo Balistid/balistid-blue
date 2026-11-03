@@ -219,10 +219,11 @@ func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string
 		if err != nil {
 			return nil, fmt.Errorf("/%s: %w", d.name, err)
 		}
-		// tmpfiles restores the mode of a directory it gives to a user other than root, who owns and may change it.
+		// tmpfiles restores the mode of a directory it gives to a user other than root, who owns and may change it;
+		// one writable by others is still refused, since anyone could plant a link there before tmpfiles runs.
 		mode := d.mode
 		if d.user != "root" && d.user != maintainerOwner && fi.IsDir() {
-			mode = fi.Mode()
+			mode = fi.Mode() &^ 0o002
 		}
 		if err := ownedAs(fi, uid, gid, mode); err != nil {
 			return nil, fmt.Errorf("/%s: %w", d.name, err)
