@@ -27,9 +27,9 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
    from its argv, in KiB. A peak over 256 MiB is a MISS; a queue not read is INVALID.
 3. An OOM event of a recorder unit, from its cgroup's `memory.events` (`oom`, `oom_kill`) or systemd's OOM message,
    which outlives the restart, is a MISS. A MISS outranks every INVALID of the run. The control `rss-oom-control` sets
-   the ledger's MemoryMax to 1 MiB at runtime under 1000 execs/s for 30 s, the ledger neither sampled nor waited for.
-   It gives MISS only by the ledger's OOM messages after a proven injection, with none before it and the other units'
-   run whole; anything less is INVALID.
+   the ledger's MemoryMax to 1 MiB at runtime under 1000 execs/s for 30 s and stops it after the load (each restart
+   is an audited exec); the ledger is not sampled. It gives MISS only by the ledger's OOM messages whose journal time
+   is after the proven injection, none at or before it, with the other units' run whole; anything less is INVALID.
 4. A load not delivered, shown by auditd's overflow flag, a loss record of the store or a collector's lost record
    from the load's start to the store read, or not covered, the first sample after the load's start or a gap over
    2 s during it, is INVALID. The drain waits for auditd's plugin queue too, as the kernel's backlog empties first.

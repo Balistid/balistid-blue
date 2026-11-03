@@ -33,21 +33,30 @@ const unitOOMMessage = "fe6faa94e7774663a0da52717891d8ef"
 // so the kernel OOM-kills it at once and at each restart (ADR 0054).
 var oomInjection = []string{"set-property", "--runtime", rangevm.OOMControlUnit, "MemoryMax=1M"}
 
-// injectOOM runs oomInjection and returns when in ns it began, or why not, and the OOM events of the unit before it,
-// its cgroup's memory.events and systemd's messages, which must be none for the control's MISS to be the
-// injection's, or why they were not read: then the injection is not tried.
-func injectOOM(ctx context.Context) (injected, before string) {
-	journal, errJ := oomJournal(ctx, []string{rangevm.OOMControlUnit})
-	_, _, events, errE := cgroupSum("/", []string{sampleUnit(ctx, rangevm.OOMControlUnit).cgroup}, "VmRSS")
-	if err := errors.Join(errJ, errE); err != nil {
-		return "not tried: " + err.Error(), "unread: " + err.Error()
-	}
-	before = strconv.FormatUint(journal+events[0], 10)
+// injectOOM runs oomInjection and returns the guest's realtime in ns as it began, or 0 and why it failed.
+func injectOOM(ctx context.Context) (int64, string) {
 	at := time.Now().UnixNano()
 	if err := systemctl(ctx, oomInjection...); err != nil {
-		return "failed: " + err.Error(), before
+		return 0, "failed: " + err.Error()
 	}
-	return strconv.FormatInt(at, 10), before
+	return at, strconv.FormatInt(at, 10)
+}
+
+// splitAt counts the times at or before at, and those after it with the first of them, or RSSNone without one:
+// one journal query split at the injection, so no OOM message falls between a count before it and one after.
+func splitAt(times []int64, at int64) (before, after int, first string) {
+	first = rangevm.RSSNone
+	for _, t := range times {
+		switch {
+		case t <= at:
+			before++
+		case after == 0:
+			after, first = 1, strconv.FormatInt(t, 10)
+		default:
+			after++
+		}
+	}
+	return before, after, first
 }
 
 // rssDrainWait bounds how long an RSS trial waits for the store to catch up with its load. Laurel holds 2 MB records
@@ -119,14 +128,20 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
 	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
-	injected, oomBefore := rangevm.RSSNone, rangevm.RSSNone
+	injectedAt, injected := int64(0), rangevm.RSSNone
 	if control {
-		injected, oomBefore = injectOOM(ctx)
+		injectedAt, injected = injectOOM(ctx)
 	}
 	from := time.Now()
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
 	to := time.Now()
+	var stopErr error
+	if control {
+		// RestartSec=1s and no start limit: each restart of the killed unit is an audited execve, so the collector
+		// would commit every second and never drain.
+		stopErr = systemctl(ctx, "stop", rangevm.OOMControlUnit)
+	}
 	var drainErr error
 	if genErr == nil {
 		// auditd's queue first: the kernel's backlog empties while 2 MB records still wait there for Laurel, and
@@ -144,6 +159,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 			runErrs = append(runErrs, what+err.Error())
 		}
 	}
+	note("OOM control's stop: ", stopErr)
 	note("generator: ", genErr)
 	note("", drainErr)
 	note("rss: ", m.err)
@@ -156,14 +172,20 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 		}
 	}
 	oomUnits := units
-	if control { // only the killed unit's messages, of which there were none before the injection
+	if control { // only the killed unit's messages, counted by their time from the injection on
 		oomUnits = []string{rangevm.OOMControlUnit}
 	}
-	journalOOM, err := oomJournal(ctx, oomUnits)
+	oomTimes, err := oomJournal(ctx, oomUnits)
 	note("OOM journal: ", err)
+	journalOOM := uint64(len(oomTimes))
 	oom := m.oomEvents() + journalOOM // a journal not read cannot unsay the cgroups' events
+	oomBefore, oomFirst := rangevm.RSSNone, rangevm.RSSNone
 	if control {
-		oom = journalOOM
+		before, after, first := splitAt(oomTimes, injectedAt)
+		oom, oomBefore, oomFirst = uint64(after), strconv.Itoa(before), first //nolint:gosec // a count
+		if err != nil {
+			oomBefore = "unread: " + err.Error()
+		}
 	}
 	lostAfter, overflowAfter := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	lostRecords, err := storeLosses(ctx, from.UnixNano(), time.Now().UnixNano()) // last: the read stops the collector
@@ -196,6 +218,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRSSOOM, u(oom))
 	r.add(rangevm.FactRSSInjected, injected)
 	r.add(rangevm.FactRSSOOMBefore, oomBefore)
+	r.add(rangevm.FactRSSOOMFirst, oomFirst)
 	r.add(rangevm.FactRSSQueueBytes, queue)
 	audit := u(m.auditKiB)
 	if m.auditWhy != "" {
@@ -268,17 +291,36 @@ func queueFlag(cmdline string) string {
 	return fmt.Sprintf("-queue-bytes given %d times", len(values))
 }
 
-// oomJournal counts systemd's messages since boot that the OOM killer killed a process of one of units.
-func oomJournal(ctx context.Context, units []string) (uint64, error) {
-	args := []string{"-b", "-q", "--no-pager", "-o", "cat", "MESSAGE_ID=" + unitOOMMessage}
+// oomJournal is the realtime in ns of each of systemd's messages since boot that the OOM killer killed a process
+// of one of units.
+func oomJournal(ctx context.Context, units []string) ([]int64, error) {
+	args := []string{"-b", "-q", "--no-pager", "-o", "short-unix", "MESSAGE_ID=" + unitOOMMessage}
 	for _, u := range units {
 		args = append(args, "UNIT="+u) // matches of one field are alternatives, of two fields both hold
 	}
 	out, err := exec.CommandContext(ctx, "/usr/bin/journalctl", args...).Output()
 	if err != nil {
-		return 0, fmt.Errorf("journalctl: %w", err)
+		return nil, fmt.Errorf("journalctl: %w", err)
 	}
-	return uint64(len(strings.FieldsFunc(string(out), func(r rune) bool { return r == '\n' }))), nil
+	return journalTimes(string(out))
+}
+
+// journalTimes is the realtime in ns of each line of journalctl -o short-unix, "<s>.<6 digits> ...", or why a line
+// has none.
+func journalTimes(out string) ([]int64, error) {
+	var times []int64
+	for _, line := range strings.FieldsFunc(out, func(r rune) bool { return r == '\n' }) {
+		stamp, _, _ := strings.Cut(line, " ")
+		sec, usec, dot := strings.Cut(stamp, ".")
+		s, errS := strconv.ParseInt(sec, 10, 64)
+		us, errU := strconv.ParseInt(usec, 10, 64)
+		if !dot || errS != nil || errU != nil || len(usec) != 6 || strconv.FormatInt(s, 10) != sec || s < 0 || s > 1<<33 ||
+			strings.Trim(usec, "0123456789") != "" {
+			return nil, fmt.Errorf("journal line without a time: %+q", line[:min(len(line), 64)])
+		}
+		times = append(times, s*int64(time.Second)+us*int64(time.Microsecond))
+	}
+	return times, nil
 }
 
 // storeLosses reads the store once and counts the records that say part of the load was dropped after the kernel

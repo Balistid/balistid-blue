@@ -369,7 +369,48 @@ func TestOOMInjectionLowersARecordersLimit(t *testing.T) {
 	}
 	if !slices.Equal(oomInjection[:3], []string{"set-property", "--runtime", rangevm.OOMControlUnit}) ||
 		rangevm.OOMControlUnit != ledgerUnit || !rangevm.RSSUnits()[ledgerUnit] ||
-		oomInjection[3] != "MemoryMax=1M" || !strings.Contains(string(unit), "\nMemoryMax=128M\n") {
+		oomInjection[3] != "MemoryMax=1M" || !strings.Contains(string(unit), "\nMemoryMax=128M\n") ||
+		// Restarted every second without a start limit, each an audited exec: why the control stops it after the load.
+		!strings.Contains(string(unit), "\nRestartSec=1s\n") || !strings.Contains(string(unit), "\nStartLimitIntervalSec=0\n") {
 		t.Errorf("injection %v of a unit installed with another MemoryMax", oomInjection)
+	}
+}
+
+// One journal query split at the injection: a message at or before it, as one between a baseline read and the
+// injection would be, counts before it, never as its evidence; the first after it is kept.
+func TestSplitAtTheInjection(t *testing.T) {
+	const at = 1793686252000000000
+	for _, c := range []struct {
+		times         []int64
+		before, after int
+		first         string
+	}{
+		{nil, 0, 0, rangevm.RSSNone},
+		{[]int64{at - 1}, 1, 0, rangevm.RSSNone},
+		{[]int64{at}, 1, 0, rangevm.RSSNone},
+		{[]int64{at - 1, at + 5}, 1, 1, "1793686252000000005"},
+		{[]int64{at + 5, at + 9, at + 7}, 0, 3, "1793686252000000005"},
+	} {
+		if b, a, f := splitAt(c.times, at); b != c.before || a != c.after || f != c.first {
+			t.Errorf("%v: %d before, %d after, first %s; want %d, %d, %s", c.times, b, a, f, c.before, c.after, c.first)
+		}
+	}
+}
+
+// journalctl -o short-unix lines give their realtime to the microsecond; a line without one is an error.
+func TestJournalTimes(t *testing.T) {
+	got, err := journalTimes("1793686252.004113 range systemd[1]: balistid-ledger.service: A process of this unit has been killed by the OOM killer.\n" +
+		"1793686253.000001 range systemd[1]: balistid-ledger.service: A process of this unit has been killed by the OOM killer.\n")
+	if err != nil || !slices.Equal(got, []int64{1793686252004113000, 1793686253000001000}) {
+		t.Errorf("times %v, %v", got, err)
+	}
+	if got, err := journalTimes(""); err != nil || len(got) != 0 {
+		t.Errorf("no message: %v, %v", got, err)
+	}
+	for _, bad := range []string{"range systemd[1]: x", "1793686252 range x", "1793686252.0041 range x", "+1793686252.004113 x",
+		"1793686252.+04113 x", "01793686252.004113 x", "-1.004113 x"} {
+		if _, err := journalTimes(bad + "\n"); err == nil {
+			t.Errorf("%q gave a time", bad)
+		}
 	}
 }

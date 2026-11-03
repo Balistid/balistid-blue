@@ -15,8 +15,8 @@ import (
 // and the longest time in ms no sample covered of the load; the fewest processes any unit held in a sample; the
 // largest summed VmRSS of a sample and the summed VmHWM at the end, in KiB; the OOM events of the units' cgroups;
 // the collector's -queue-bytes; the largest sum of auditd's cgroup with Laurel, a trend, a number or why not; and of
-// the OOM control alone, else RSSNone, when in ns it lowered OOMControlUnit's MemoryMax or why not, and that unit's
-// OOM events before it.
+// the OOM control alone, else RSSNone, when in ns it lowered OOMControlUnit's MemoryMax or why not, that unit's OOM
+// messages at or before it, and the time in ns of the first after it (rss_oom then counts only those after).
 const (
 	FactRSSRun        = "rss_run"
 	FactRSSUnits      = "rss_units"
@@ -30,6 +30,7 @@ const (
 	FactRSSAuditKiB   = "rss_auditd_max_kib"
 	FactRSSInjected   = "rss_injected"
 	FactRSSOOMBefore  = "rss_oom_before"
+	FactRSSOOMFirst   = "rss_oom_first"
 	RSSNone           = "none"
 )
 
@@ -52,7 +53,7 @@ var rssFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactOverflowBefore,
 	FactOverflowAfter, FactLostRecords, FactUnits, FactRSSRun, FactRSSUnits, FactRSSSamples, FactRSSLoadGapMS,
 	FactRSSProcsMin, FactRSSMaxKiB, FactRSSHWMKiB, FactRSSOOM, FactRSSQueueBytes, FactRSSAuditKiB, FactRSSInjected,
-	FactRSSOOMBefore,
+	FactRSSOOMBefore, FactRSSOOMFirst,
 }
 
 // rssCounts are the RSS facts that must be plain numbers.
@@ -109,7 +110,7 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 	if tr.Inject == rangejob.InjectOOM {
 		return oomControl(tr, f, n, unproven)
 	}
-	if f[FactRSSInjected] != RSSNone || f[FactRSSOOMBefore] != RSSNone {
+	if f[FactRSSInjected] != RSSNone || f[FactRSSOOMBefore] != RSSNone || f[FactRSSOOMFirst] != RSSNone {
 		bad("an injection in a trial without one: \"%s\", \"%s\"", Printable(f[FactRSSInjected], 64), Printable(f[FactRSSOOMBefore], 64))
 	}
 	peak := max(n[FactRSSMaxKiB], n[FactRSSHWMKiB])
@@ -177,15 +178,20 @@ func rssUnproven(tr rangejob.Trial, f map[string]string, n map[string]uint64, wa
 }
 
 // oomControl judges rss-oom-control from evidence of its own injection only: a whole run of the other units, as an
-// RSS trial must be, the injection proven by its time, no OOM event of OOMControlUnit before it, and then one after
-// it, the expected MISS. Anything missing or failed is INVALID, never that MISS; peaks are not looked at.
+// RSS trial must be, the injection proven by its time, no OOM message of OOMControlUnit at or before it, and then one
+// whose time is after it, the expected MISS. Anything missing or failed is INVALID, never that MISS; peaks are not
+// looked at.
 func oomControl(tr rangejob.Trial, f map[string]string, n map[string]uint64, unproven []string) (string, string) {
 	bad := func(format string, a ...any) { unproven = append(unproven, fmt.Sprintf(format, a...)) }
 	others := RSSUnits()
 	delete(others, OOMControlUnit)
 	rssUnproven(tr, f, n, others, bad)
-	if at, err := plainNumber(f[FactRSSInjected]); err != nil || at == 0 {
+	at, err := plainNumber(f[FactRSSInjected])
+	if err != nil || at == 0 {
 		bad("the OOM injection is not proven: \"%s\"", Printable(f[FactRSSInjected], 256))
+	}
+	if first, err := plainNumber(f[FactRSSOOMFirst]); n[FactRSSOOM] > 0 && (err != nil || first <= at) {
+		bad("the first counted OOM message at \"%s\" is not after the injection at %d", Printable(f[FactRSSOOMFirst], 64), at)
 	}
 	if f[FactRSSOOMBefore] != "0" {
 		bad("OOM events of %s before the injection: \"%s\"", OOMControlUnit, Printable(f[FactRSSOOMBefore], 256))
