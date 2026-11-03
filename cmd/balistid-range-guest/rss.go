@@ -29,6 +29,10 @@ const rssEvery = time.Second
 // (SD_MESSAGE_UNIT_OUT_OF_MEMORY): it stays in the journal after systemd restarted the unit and removed its cgroup.
 const unitOOMMessage = "fe6faa94e7774663a0da52717891d8ef"
 
+// oomInjection is rss-oom-control's injection: the ledger's MemoryMax, until the VM ends, far below what it holds,
+// so the kernel OOM-kills it at once and at each restart (ADR 0054).
+var oomInjection = []string{"set-property", "--runtime", ledgerUnit, "MemoryMax=1M"}
+
 // rssDrainWait bounds how long an RSS trial waits for the store to catch up with its load. Laurel holds 2 MB records
 // at about 4 MB/s on one core (ADR 0054), so a backlog it builds drains no faster than the load came.
 func rssDrainWait(kind string) time.Duration {
@@ -94,6 +98,10 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
 	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
+	var injectErr error
+	if tr.Inject == rangejob.InjectOOM {
+		injectErr = systemctl(ctx, oomInjection...)
+	}
 	from := time.Now()
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
@@ -115,10 +123,11 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 			runErrs = append(runErrs, what+err.Error())
 		}
 	}
+	note("OOM injection: ", injectErr)
 	note("generator: ", genErr)
 	note("", drainErr)
 	note("rss: ", m.err)
-	hwm, _, _, err := cgroupSum("/", cgroups, "VmHWM")
+	hwm, err := m.final("/", cgroups)
 	note("VmHWM: ", err)
 	same := "same"
 	for _, unit := range units {
@@ -154,6 +163,8 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRSSProcsMin, strconv.Itoa(m.procsMin))
 	r.add(rangevm.FactRSSMaxKiB, u(m.kib))
 	r.add(rangevm.FactRSSHWMKiB, u(hwm))
+	// Both counts for the host's log, as the OOM control proves each path in a real kill.
+	hostLine(os.Stdout, "rss oom: %d in the units' memory.events, %d in the journal", m.oomEvents(), journalOOM)
 	r.add(rangevm.FactRSSOOM, u(m.oomEvents()+journalOOM)) // a journal not read cannot unsay the cgroups' events
 	r.add(rangevm.FactRSSQueueBytes, queue)
 	audit := u(m.auditKiB)
@@ -322,6 +333,8 @@ type rssMax struct {
 // samples, auditd's only its trend.
 func (m *rssMax) sample(root string, cgroups, auditd []string) {
 	kib, procs, oom, err := cgroupSum(root, cgroups, "VmRSS")
+	m.kib = max(m.kib, kib) // what was read counts also when another cgroup was not: a MISS outranks the INVALID
+	m.mergeOOM(oom)
 	if err != nil {
 		m.err = err
 		return
@@ -334,18 +347,29 @@ func (m *rssMax) sample(root string, cgroups, auditd []string) {
 		m.procsMin = low
 	}
 	m.samples++
-	m.kib = max(m.kib, kib)
-	if len(m.oom) != len(oom) {
-		m.oom = make([]uint64, len(oom))
-	}
-	for i, n := range oom {
-		m.oom[i] = max(m.oom[i], n)
-	}
 	if a, _, _, err := cgroupSum(root, auditd, "VmRSS"); err != nil {
 		m.auditWhy = err.Error()
 	} else {
 		m.auditKiB = max(m.auditKiB, a)
 	}
+}
+
+// mergeOOM keeps for each unit's cgroup the most OOM events a read of them, in cgroups' order, showed.
+func (m *rssMax) mergeOOM(oom []uint64) {
+	if len(m.oom) < len(oom) {
+		m.oom = append(m.oom, make([]uint64, len(oom)-len(m.oom))...)
+	}
+	for i, n := range oom {
+		m.oom[i] = max(m.oom[i], n)
+	}
+}
+
+// final is the units' summed VmHWM at the end of the run, and adds the OOM events that read showed: one after the
+// last sample counts as much as any. Both count what was read also when a cgroup was not, with why.
+func (m *rssMax) final(root string, cgroups []string) (uint64, error) {
+	hwm, _, oom, err := cgroupSum(root, cgroups, "VmHWM")
+	m.mergeOOM(oom)
+	return hwm, err
 }
 
 // oomEvents is the sum over the units' cgroups of the most OOM events each showed.
@@ -404,25 +428,28 @@ func loadGap(at []time.Time, from, to time.Time) string {
 
 // cgroupSum sums under root the status field (VmRSS or VmHWM) of every process in cgroups, their child cgroups
 // included, each process once; procs is how many each cgroup held and oom the oom and oom_kill events of its
-// memory.events, which count its children's too. A process gone or exited before its status was read holds no
-// memory and is skipped; a cgroup or its memory.events that cannot be read is an error, never a sum without it.
+// memory.events, which count its children's too, both in cgroups' order. A process gone or exited before its status
+// was read holds no memory and is skipped. A cgroup or its memory.events that cannot be read is an error, never a
+// clean sum without it; the sum and events of the cgroups that were read still come with it, as evidence that only
+// adds memory or events (a MISS) and never makes a run whole.
 func cgroupSum(root string, cgroups []string, field string) (kib uint64, procs []int, oom []uint64, err error) {
 	seen := map[string]bool{}
-	for _, cg := range cgroups {
+	procs, oom = make([]int, len(cgroups)), make([]uint64, len(cgroups))
+	var errs []error
+	for i, cg := range cgroups {
 		if !strings.HasPrefix(cg, "/") || cg == "/" {
-			return 0, nil, nil, fmt.Errorf("cgroup %q is not a unit's", cg)
+			errs = append(errs, fmt.Errorf("cgroup %q is not a unit's", cg))
+			continue
 		}
 		dir := filepath.Join(root, "sys/fs/cgroup", cg)
 		events, err := os.ReadFile(filepath.Join(dir, "memory.events")) //nolint:gosec // a unit's cgroup under /sys/fs/cgroup, or a test's
-		if err != nil {
-			return 0, nil, nil, fmt.Errorf("cgroup %s: %w", cg, err)
+		if err == nil {
+			oom[i], err = oomCount(string(events))
 		}
-		n, err := oomCount(string(events))
 		if err != nil {
-			return 0, nil, nil, fmt.Errorf("cgroup %s: %w", cg, err)
+			errs = append(errs, fmt.Errorf("cgroup %s: %w", cg, err))
+			continue
 		}
-		oom = append(oom, n)
-		held := 0
 		err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || d.Name() != "cgroup.procs" {
 				return err
@@ -444,17 +471,16 @@ func cgroupSum(root string, cgroups []string, field string) (kib uint64, procs [
 					return err
 				}
 				if ok {
-					kib, held = kib+v, held+1
+					kib, procs[i] = kib+v, procs[i]+1
 				}
 			}
 			return nil
 		})
 		if err != nil {
-			return 0, nil, nil, fmt.Errorf("cgroup %s: %w", cg, err)
+			errs = append(errs, fmt.Errorf("cgroup %s: %w", cg, err))
 		}
-		procs = append(procs, held)
 	}
-	return kib, procs, oom, nil
+	return kib, procs, oom, errors.Join(errs...)
 }
 
 // oomCount is the sum of the oom and oom_kill counts of a cgroup's memory.events; each must be there once.

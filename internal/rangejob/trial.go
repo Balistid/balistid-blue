@@ -78,6 +78,10 @@ const (
 	InjectNone            = "none"
 )
 
+// InjectOOM lowers one recorder's MemoryMax under an RSS load until the kernel OOM-kills it: the control that
+// rss_mib's OOM path must give MISS (ADR 0054).
+const InjectOOM = "oom"
+
 // InjectAuditSet asks the kernel, as balistid-auditstat's uid with its one capability, for every audit change
 // under -e 2; the trial records which the kernel still allows (ADR 0038, Consequences).
 const InjectAuditSet = "audit-set"
@@ -121,6 +125,8 @@ func (tr Trial) Method() string {
 		return MethodStatus
 	case tr.Inject == InjectStatus || tr.Metric == MetricStatus:
 		return ""
+	case tr.Inject == InjectOOM:
+		return rssMethod(tr, tr.Expect == ExpectMiss)
 	case tr.Inject != "":
 		return alarmMethod(tr)
 	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
@@ -147,11 +153,19 @@ func (tr Trial) Method() string {
 		return MethodCPU
 	case tr.Metric == MetricLogCap && tr.Load == (Load{}):
 		return MethodLogCap
-	case tr.Metric == MetricRSS && !tr.Load.Drop &&
-		(tr.Load.Kind == LoadExec || tr.Load.Kind == LoadPtrace || tr.Load.Kind == LoadExecLarge):
-		return MethodRSS
+	case tr.Metric == MetricRSS:
+		return rssMethod(tr, true)
 	case tr.Metric == MetricCanary && tr.Load == (Load{}):
 		return MethodCanary
+	}
+	return ""
+}
+
+// rssMethod is MethodRSS for an RSS trial of tr's load when ok, else "".
+func rssMethod(tr Trial, ok bool) string {
+	if ok && tr.Metric == MetricRSS && !tr.Load.Drop && tr.Failure == "" &&
+		(tr.Load.Kind == LoadExec || tr.Load.Kind == LoadPtrace || tr.Load.Kind == LoadExecLarge) {
+		return MethodRSS
 	}
 	return ""
 }
@@ -279,6 +293,9 @@ var trials = slices.Concat([]Trial{
 			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
 		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
 			Load: Load{Kind: LoadExecLarge, Rate: 1, Seconds: 30}},
+		// The control of rss_mib's OOM path: the ledger OOM-killed under cpu-1000's exec rate must give MISS.
+		{Name: "rss-oom-control", Metric: MetricRSS, Expect: ExpectMiss, Wall: 6 * time.Minute, Serial: 1 << 20, Boots: 1,
+			Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30}, Inject: InjectOOM},
 		// canary_interval_s (ADR 0017): quiet, then Laurel and auditd frozen in turn; the kernel stage is no trial,
 		// as the rules locked by -e 2 cannot drop the canary's.
 		{Name: "canary", Metric: MetricCanary, Wall: 13 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
