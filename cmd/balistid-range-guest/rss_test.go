@@ -376,10 +376,10 @@ func TestOOMInjectionLowersARecordersLimit(t *testing.T) {
 	}
 }
 
-// One journal query split at the injection: a message at or before it, as one between a baseline read and the
-// injection would be, counts before it, never as its evidence; the first after it is kept.
+// One journal query split around the injection: a message at or before its start, as one between a baseline read
+// and the injection would be, counts before it; one while systemctl runs is neither; the first after it is kept.
 func TestSplitAtTheInjection(t *testing.T) {
-	const at = 1793686252000000000
+	const at, end = 1793686252000000000, 1793686252000000003
 	for _, c := range []struct {
 		times         []int64
 		before, after int
@@ -389,9 +389,10 @@ func TestSplitAtTheInjection(t *testing.T) {
 		{[]int64{at - 1}, 1, 0, rangevm.RSSNone},
 		{[]int64{at}, 1, 0, rangevm.RSSNone},
 		{[]int64{at - 1, at + 5}, 1, 1, "1793686252000000005"},
+		{[]int64{at + 1, end}, 0, 0, rangevm.RSSNone}, // during the call: no evidence of the injection
 		{[]int64{at + 5, at + 9, at + 7}, 0, 3, "1793686252000000005"},
 	} {
-		if b, a, f := splitAt(c.times, at); b != c.before || a != c.after || f != c.first {
+		if b, a, f := splitAt(c.times, at, end); b != c.before || a != c.after || f != c.first {
 			t.Errorf("%v: %d before, %d after, first %s; want %d, %d, %s", c.times, b, a, f, c.before, c.after, c.first)
 		}
 	}

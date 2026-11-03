@@ -33,23 +33,28 @@ const unitOOMMessage = "fe6faa94e7774663a0da52717891d8ef"
 // so the kernel OOM-kills it at once and at each restart (ADR 0054).
 var oomInjection = []string{"set-property", "--runtime", rangevm.OOMControlUnit, "MemoryMax=1M"}
 
-// injectOOM runs oomInjection and returns the guest's realtime in ns as it began, or 0 and why it failed.
-func injectOOM(ctx context.Context) (int64, string) {
-	at := time.Now().UnixNano()
+// injectOOM runs oomInjection and returns the guest's realtime in ns as it began and once systemctl returned with the
+// limit applied, reported as the injection, or zeros and why it failed. An OOM between the two is neither before
+// the injection nor its evidence: systemd may apply the limit at any moment of that call.
+func injectOOM(ctx context.Context) (start, end int64, fact string) {
+	start = time.Now().UnixNano()
 	if err := systemctl(ctx, oomInjection...); err != nil {
-		return 0, "failed: " + err.Error()
+		return 0, 0, "failed: " + err.Error()
 	}
-	return at, strconv.FormatInt(at, 10)
+	end = time.Now().UnixNano()
+	return start, end, strconv.FormatInt(end, 10)
 }
 
-// splitAt counts the times at or before at, and those after it with the first of them, or RSSNone without one:
-// one journal query split at the injection, so no OOM message falls between a count before it and one after.
-func splitAt(times []int64, at int64) (before, after int, first string) {
+// splitAt counts the times at or before start, and those after end with the first of them, or RSSNone without one;
+// one journal query split around the injection, so no OOM message falls between a count before it and one after,
+// and none from the call itself counts as its evidence.
+func splitAt(times []int64, start, end int64) (before, after int, first string) {
 	first = rangevm.RSSNone
 	for _, t := range times {
 		switch {
-		case t <= at:
+		case t <= start:
 			before++
+		case t <= end:
 		case after == 0:
 			after, first = 1, strconv.FormatInt(t, 10)
 		default:
@@ -128,9 +133,9 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
 	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
-	injectedAt, injected := int64(0), rangevm.RSSNone
+	injectStart, injectedAt, injected := int64(0), int64(0), rangevm.RSSNone
 	if control {
-		injectedAt, injected = injectOOM(ctx)
+		injectStart, injectedAt, injected = injectOOM(ctx)
 	}
 	from := time.Now()
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
@@ -181,7 +186,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	oom := m.oomEvents() + journalOOM // a journal not read cannot unsay the cgroups' events
 	oomBefore, oomFirst := rangevm.RSSNone, rangevm.RSSNone
 	if control {
-		before, after, first := splitAt(oomTimes, injectedAt)
+		before, after, first := splitAt(oomTimes, injectStart, injectedAt)
 		oom, oomBefore, oomFirst = uint64(after), strconv.Itoa(before), first //nolint:gosec // a count
 		if err != nil {
 			oomBefore = "unread: " + err.Error()
