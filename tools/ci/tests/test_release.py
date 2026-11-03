@@ -392,10 +392,9 @@ class BootstrapTest(unittest.TestCase):
         self.assertEqual(self.logged("runuser"), [f"runuser -u maint -- cat -- {self.stage}/{release.BUNDLE}",
                                                   f"runuser -u maint -- cat -- {self.stage}/{release.SIG}"])
         self.assertEqual(self.logged("tar"), [f"tar -xO {m}" for m in (release.SIGNERS, "MANIFEST", release.INSTALLER)])
-        cap = release.BUNDLE_MAX_MIB << 20
-        self.assertEqual(self.logged("head"), [f"head -c {n}" for n in (cap, release.SIG_MAX_BYTES,
-                                                                         release.SIGNERS_MAX_BYTES,
-                                                                         release.MANIFEST_MAX_BYTES, cap)])
+        self.assertEqual(self.logged("head"), [f"head -c {n}" for n in (release.BUNDLE_MAX_MIB << 20, release.SIG_MAX_BYTES)])
+        for cap in (release.SIGNERS_MAX_BYTES, release.MANIFEST_MAX_BYTES, release.BUNDLE_MAX_MIB << 20):
+            self.assertIn(f"( ulimit -f {cap // 512} && timeout 20 tar -xO ", release.BOOTSTRAP)
         self.assertEqual(self.logged("logger"), [])
 
     def test_another_signer_runs_nothing(self):
@@ -444,6 +443,28 @@ class BootstrapTest(unittest.TestCase):
                 r = self.run_bootstrap(str(self.stage))
                 self.assertEqual(self.logged("decompressor"), [])
                 self.assert_ran_nothing(r)
+
+    # tar's own status counts: a bundle it reads only in part, with every member root needs intact, runs nothing.
+    def test_a_malformed_bundle_runs_nothing(self):
+        data = bytearray(self.bundle.read_bytes())
+        with tarfile.open(self.bundle) as tar:
+            offset = next(m.offset for m in tar.getmembers() if m.name == "tmpfiles.conf")
+        data[offset + 148] ^= 0x01  # the header checksum of a member root does not extract
+        self.bundle.write_bytes(bytes(data))
+        r = self.run_bootstrap(str(self.stage))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.mark.exists(), "the installer ran from a bundle tar could not read")
+
+    # A member over its cap stops the extraction instead of being cut.
+    def test_a_member_over_its_cap_runs_nothing(self):
+        stage = self.release(self.key, Key(self.subdir("long-key")), "long")
+        files = self.tmp / "long-work" / "files"
+        (files / "allowed_signers").write_text(self.key.signers + "#" * release.SIGNERS_MAX_BYTES)
+        (stage / release.BUNDLE).unlink()
+        release.bundle(files, stage / release.BUNDLE)
+        r = self.run_bootstrap(str(stage))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.mark.exists())
 
     # Only a 64-hex digest names what runs: a signed MANIFEST whose installer line holds a path runs nothing outside.
     def test_a_signed_manifest_naming_a_path_runs_nothing(self):
