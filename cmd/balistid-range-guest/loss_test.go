@@ -49,47 +49,42 @@ func TestBurstsAgainstTheQueues(t *testing.T) {
 	}
 }
 
-// The queue trial's drop-in runs the collector's own argv with the small queue added, after the image's drop-in; an
-// argv the added flag would not set, or one systemd could read otherwise than as given, is refused.
+// The queue trial's drop-in sets the variable the image's collector argv reads its queue from, after the image's
+// drop-in, to smallQueue; the image's default is another.
 func TestQueueDropIn(t *testing.T) {
-	argv := func(args ...string) string { return strings.Join(args, "\x00") + "\x00" }
-	bin := "/usr/local/lib/balistid/balistid-collector"
-	ranged := []string{bin, "-store", "/var/lib/balistid-range/scratch/store", "-canary", "/var/lib/balistid/collector/canary",
-		"-rule-version", "adr-0004-v2", "-headroom", "67108864", "-log-commits"}
-	body, want, err := queueDropIn(argv(ranged...))
+	conf, err := os.ReadFile("../../range/balistid-collector-range.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
-	line := strings.Join(ranged, " ") + " -queue-bytes 8388608"
-	if body != "[Service]\nExecStart=\nExecStart="+line+"\n" || want != argv(append(ranged, "-queue-bytes", "8388608")...) {
-		t.Errorf("drop-in %q, argv %q", body, want)
+	flag := regexp.MustCompile(`(?m)^ExecStart=/\S+ .* -queue-bytes \$\{([A-Z_]+)\}$`).FindSubmatch(conf)
+	if flag == nil {
+		t.Fatal("no -queue-bytes ${...} in the image's ExecStart")
 	}
-	if queueFlag(want) != "8388608" || smallQueue != 8<<20 || filepath.Base(queueDropInPath) <= "range.conf" {
-		t.Errorf("queue %s of %d in %s", queueFlag(want), smallQueue, queueDropInPath)
+	def := regexp.MustCompile(`(?m)^Environment=` + string(flag[1]) + `=(\d+)$`).FindSubmatch(conf)
+	switch {
+	case def == nil:
+		t.Errorf("no default of %s", flag[1])
+	case string(def[1]) == strconv.Itoa(smallQueue):
+		t.Errorf("the image's default is the trial's %d", smallQueue)
 	}
-	for _, cmdline := range []string{
-		argv(bin, "-queue-bytes", "4096"), argv(bin, "-queue-bytes=67108864"), argv(bin, "--queue-bytes", "1"), argv(bin, "--"),
-		argv(bin, "-store", "/s", "--", "-x"), argv(bin, "-queue-bytes"), argv("balistid-collector", "-store", "/s"),
-		strings.TrimSuffix(argv(bin), "\x00"), "", "\x00", argv(bin, ""), argv(bin, "-store", "/a b"), argv(bin, "-canary", "%h"),
-		argv(bin, "-store", "$STORE"), argv(bin, "-store", `/a\x20`), argv(bin, "-store", "'/s'"), argv(bin, "-store", `"/s"`),
-		argv(bin, ";", "-log-commits"), argv(bin, "-store", "/s\n-x"), argv(bin, "-store", "/é"),
-	} {
-		if body, want, err := queueDropIn(cmdline); err == nil {
-			t.Errorf("%q: drop-in %q for argv %q", cmdline, body, want)
-		}
+	if want := "[Service]\nEnvironment=" + string(flag[1]) + "=" + strconv.Itoa(smallQueue) + "\n"; queueDropIn != want {
+		t.Errorf("drop-in %q, want %q", queueDropIn, want)
+	}
+	if smallQueue != 8<<20 || filepath.Base(queueDropInPath) <= "range.conf" {
+		t.Errorf("queue %d in %s", smallQueue, queueDropInPath)
 	}
 }
 
-// Only the argv the drop-in starts, read from the process's cmdline, proves the small queue runs.
-func TestRunsArgv(t *testing.T) {
+// Only a cmdline the collector parses to -queue-bytes smallQueue proves the small queue runs.
+func TestRunsQueue(t *testing.T) {
 	argv := func(args ...string) string { return strings.Join(args, "\x00") + "\x00" }
 	bin := "/usr/local/lib/balistid/balistid-collector"
-	want := argv(bin, "-store", "/s", "-log-commits", "-queue-bytes", "8388608")
 	proc := t.TempDir()
 	for pid, cmdline := range map[string]string{
-		"10": want, "11": argv(bin, "-store", "/s", "-log-commits"), "12": argv(bin, "-store", "/s", "-queue-bytes", "8388608"),
-		"13": argv(bin, "-store", "/s", "-log-commits", "-queue-bytes", "8388608", "-queue-bytes", "67108864"), "14": "",
-		"15": argv(bin, "-store", "/s", "-log-commits", "-queue-bytes=8388608"),
+		"10": argv(bin, "-store", "/s", "-log-commits", "-queue-bytes", "8388608"), "11": argv(bin, "-queue-bytes=8388608"),
+		"20": argv(bin, "-store", "/s", "-log-commits"), "21": argv(bin, "-queue-bytes", "67108864"),
+		"22": argv(bin, "-queue-bytes", "8388608", "-queue-bytes", "8388608"), "23": "",
+		"24": argv(bin, "-log-commits", "x", "-queue-bytes", "8388608"), "25": argv(bin, "-queue-bytes", "08388608"),
 	} {
 		if err := os.MkdirAll(proc+"/"+pid, 0o700); err != nil {
 			t.Fatal(err)
@@ -98,11 +93,13 @@ func TestRunsArgv(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := runsArgv(proc, "10", want); err != nil {
-		t.Errorf("the drop-in's argv: %v", err)
+	for _, pid := range []string{"10", "11"} {
+		if err := runsQueue(proc, pid); err != nil {
+			t.Errorf("pid %s: %v", pid, err)
+		}
 	}
-	for _, pid := range []string{"11", "12", "13", "14", "15", "16"} {
-		if err := runsArgv(proc, pid, want); err == nil {
+	for _, pid := range []string{"20", "21", "22", "23", "24", "25", "26"} {
+		if err := runsQueue(proc, pid); err == nil {
 			t.Errorf("pid %s passes", pid)
 		}
 	}

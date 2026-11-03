@@ -21,8 +21,8 @@ collector's 64 MiB queue fills. auditd writes its state file every 5 s, so a fli
    reason 9 is a condition under `lossdispatcher`, alerted again every 6 h while it holds (ADR 0031 point 6). Pis
    that decode stages 7-8 and reasons 8-10 are installed before hosts that emit them (ADR 0027 point 6).
 2. `balistid-collector -queue-bytes` only lowers the 64 MiB queue, to at least one largest record. The range runs
-   the shipped queue; only the queue trial sets 8 MiB, at runtime: a drop-in under /run with the collector's own argv
-   and the flag, a restart, the floor healthy, and that argv read from its /proc cmdline, else INVALID. So Laurel's
+   the shipped queue through one variable; only the queue trial sets it to 8 MiB at runtime: a drop-in under /run, a
+   restart, the floor healthy, and that queue read from the collector's /proc cmdline, else INVALID. So Laurel's
    real stream fills a small queue under a frozen store before the dispatcher overflows.
 3. A trial counts only the alert of its cause: its stage's key, or `unknown` when the ledger's first UNKNOWN after the
    bracket's start names a reason the trial allows (store: 2; auditd killed: 3 or 10, with a 10 for its new pid).
@@ -55,4 +55,5 @@ collector's 64 MiB queue fills. auditd writes its state file every 5 s, so a fli
 - Tests: a stage-2 entry raises `lossqueue` and no other key; unstored records raise `lossunstored`; reason 9
   alerts again after 6 h and clears with the flag; the queue judge refuses a `lossstore` post and the store judge an
   `unknown` with reason 8, a killed auditd without a 10 misses; each bracket's PASS, INVALID and MISS edges; no deploy
-  or range unit carries `-queue-bytes`; the queue trial's drop-in and its argv check refuse what would not set it.
+  unit carries `-queue-bytes`, the image's only through its variable, by default the shipped queue; the queue
+  trial's argv check refuses any other queue.

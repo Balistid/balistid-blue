@@ -172,26 +172,34 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertRegex(main, r'flag\.Int64\("headroom", headroom, ')
         self.assertRegex(main, r'rawCap, headroom, shardMax = 150 << 30, 2 << 30, 512 << 20\n')
         self.assertRegex(main, r'flag\.Bool\("log-commits", false, ')
-        # ADR 0039, point 2: only the loss-queue trial lowers the queue, at runtime; no installed or image unit sets it.
+        # ADR 0039, point 2: no installed unit sets the queue; the image's drop-in only through the variable the
+        # loss-queue trial overrides, whose default is the shipped queue.
         self.assertRegex(main, r'flag\.Int\("queue-bytes", collector\.QueueBytes, ')
+        self.assertRegex((REPO / "internal" / "collector" / "run.go").read_text(), r'\n\tQueueBytes = 64 << 20\n')
+        drop_in = "range/balistid-collector-range.conf"
         for unit in sorted([*(REPO / "deploy").rglob("*"), *(REPO / "range").rglob("*")]):
             if unit.is_file():
-                with self.subTest(unit=unit.relative_to(REPO).as_posix()):
-                    self.assertNotIn("queue-bytes", unit.read_text(encoding="utf-8", errors="replace"))
+                name = unit.relative_to(REPO).as_posix()
+                text = unit.read_text(encoding="utf-8", errors="replace")
+                with self.subTest(unit=name):
+                    if name == drop_in:
+                        text = text.replace(" -queue-bytes ${BALISTID_RANGE_QUEUE}\n", "\n", 1)
+                    self.assertNotIn("queue-bytes", text)
 
     def test_range_drop_in_changes_only_the_store_and_the_range_flags(self):
         # ADR 0022, point 2: the image's drop-in moves the store to the scratch disk and adds the range flags;
-        # everything else is the installed argv, the shipped queue too, and only the store is writable.
+        # everything else is the installed argv, the queue the shipped one by default, and only the store is writable.
         drop_in = parse_unit((REPO / "range" / "balistid-collector-range.conf").read_text(), "range/balistid-collector-range.conf")
         installed = shlex.split(deployed_service()["ExecStart"][0])
         store = "/var/lib/balistid-range/scratch/store"
         want = installed[:]
         want[want.index("-store") + 1] = store
-        want += ["-headroom", "67108864", "-log-commits"]
+        want += ["-headroom", "67108864", "-log-commits", "-queue-bytes", "${BALISTID_RANGE_QUEUE}"]
         self.assertEqual(set(drop_in), {"Unit", "Service"})
         keys = "balistid-range-store.service balistid-range-witness-key.service"
         self.assertEqual(drop_in["Unit"], {"Requires": [keys], "After": [keys]})
-        self.assertEqual(set(drop_in["Service"]), {"ExecStart", "ReadWritePaths", "NoExecPaths"})
+        self.assertEqual(set(drop_in["Service"]), {"Environment", "ExecStart", "ReadWritePaths", "NoExecPaths"})
+        self.assertEqual(drop_in["Service"]["Environment"], [f"BALISTID_RANGE_QUEUE={64 << 20}"])
         self.assertEqual(drop_in["Service"]["ExecStart"][0], "")
         self.assertEqual([shlex.split(v) for v in drop_in["Service"]["ExecStart"][1:]], [want])
         self.assertEqual(drop_in["Service"]["ReadWritePaths"], [store])
