@@ -108,11 +108,12 @@ def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpect
     return f"::error title={title}::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-# A guest line marked for the host (cmd/balistid-range-guest hostLine): the marker, then printable ASCII only. Guest
-# output is hostile (T30): only whole lines that match are shown, at most HOST_LINES of them from at most SERIAL_MAX
-# bytes of the newest run's serial log, printed while workflow commands are off, never interpreted. A run of the
-# launcher keeps its whole serial output, all boots, beside its result.json (internal/rangevm/session.go, check).
-HOST_LINE = re.compile(r"balistid-range-guest: host: [ -~]{1,300}")
+# A guest line marked for the host (cmd/balistid-range-guest hostLine): the marker, then printable ASCII only, as
+# journald forwards the guest's stdout to the serial console, behind the kernel's time and "guest[<pid>]: ". Guest
+# output is hostile (T30): only whole lines that match are shown, the marked part of at most HOST_LINES of them from
+# at most SERIAL_MAX bytes of the newest run's serial log, printed while workflow commands are off, never
+# interpreted. A run of the launcher keeps its whole serial output beside its result.json (internal/rangevm, check).
+HOST_LINE = re.compile(r"\[ {0,8}[0-9]{1,10}\.[0-9]{6}\] guest\[[0-9]{1,10}\]: (balistid-range-guest: host: [ -~]{1,300})")
 HOST_LINES = 400
 SERIAL_MAX = 16 << 20
 SERIAL_LOG = "serial.log"
@@ -125,9 +126,9 @@ def host_lines(state: Path) -> list[str]:
         return []
     out: list[str] = []
     for raw in (read_regular(results[-1].parent / SERIAL_LOG, SERIAL_MAX) or b"").split(b"\n"):
-        line = raw.rstrip(b"\r").decode("ascii", "replace")
-        if HOST_LINE.fullmatch(line):
-            out.append(line)
+        m = HOST_LINE.fullmatch(raw.rstrip(b"\r").decode("ascii", "replace"))
+        if m:
+            out.append(m[1])
             if len(out) == HOST_LINES:
                 break
     return out
