@@ -246,13 +246,15 @@ class HostLines(unittest.TestCase):
         return out
 
     def test_only_whole_marked_printable_lines(self) -> None:
-        mark = b"balistid-range-guest: host: "
+        mark = b"[   10.408037] guest[555]: balistid-range-guest: host: "
         self.run_dir("20261103T000000Z-00000000", mark + b"old run\n")
         self.run_dir("20261103T010000Z-11111111", b"\n".join([
             mark + b"store read: audit idle after 3.2s, <nil>\r",
-            b"[  9.1] kernel: " + mark + b"inside another line",
+            b"[    9.100000] kernel: " + mark + b"inside another line",
+            b"balistid-range-guest: host: no console prefix", b"[   10.408037] laurel[5]: balistid-range-guest: host: x",
             mark + b"caf\xc3\xa9", mark + b"bell\x07", mark + b"x" * 301, mark,
-            b"balistid-range-guest: collector \"x\"",
+            b"[   10.5] guest[555]: balistid-range-guest: host: short time",
+            b"[   10.408037] guest[555]: balistid-range-guest: collector \"x\"",
             mark + b"loss record seq 7 balistid-loss",
             mark + b"second boot",
         ]))
@@ -263,11 +265,11 @@ class HostLines(unittest.TestCase):
         ])
 
     def test_bounded_and_no_planted_link_or_fifo(self) -> None:
-        out = self.run_dir("20261103T010000Z-11111111", b"balistid-range-guest: host: y\n" * 1000)
+        out = self.run_dir("20261103T010000Z-11111111", b"[   10.408037] guest[555]: balistid-range-guest: host: y\n" * 1000)
         self.assertEqual(len(range_kvm.host_lines(self.state)), range_kvm.HOST_LINES)
         (out / "serial.log").unlink()
         secret = self.work / "secret"
-        secret.write_bytes(b"balistid-range-guest: host: from outside\n")
+        secret.write_bytes(b"[   10.408037] guest[555]: balistid-range-guest: host: from outside\n")
         (out / "serial.log").symlink_to(secret)
         self.assertEqual(range_kvm.host_lines(self.state), [])
         (out / "serial.log").unlink()
@@ -276,7 +278,7 @@ class HostLines(unittest.TestCase):
         self.assertEqual(range_kvm.host_lines(self.work / "none"), [])
 
     def test_a_trial_prints_them_while_commands_are_off_a_self_test_does_not(self) -> None:
-        self.run_dir("20261103T010000Z-11111111", b"balistid-range-guest: host: ::error::not a command\n")
+        self.run_dir("20261103T010000Z-11111111", b"[   10.408037] guest[555]: balistid-range-guest: host: ::error::not a command\n")
         for argv, shown in ((["--trial", "rate-burst"], True), ([], False)):
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
