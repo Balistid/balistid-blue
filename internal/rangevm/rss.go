@@ -29,12 +29,14 @@ var rssFacts = []string{
 	FactRSSUnits, FactRSSSamples, FactRSSProcsMin, FactRSSMaxKiB, FactRSSAuditKiB,
 }
 
-// RSSUnits are the units rss_mib sums: the image's long-running Balistid Blue services, not the range's own
-// and not the oneshots. One more or one fewer sampled makes an RSS trial INVALID.
+// RSSUnits are the units rss_mib sums: the image's long-running Balistid Blue services, and litewitness with
+// the agent's stand-in, which local mode runs on the host (ADR 0043); not the oneshots. One more or one fewer
+// sampled makes an RSS trial INVALID.
 func RSSUnits() map[string]bool {
 	return map[string]bool{
 		"balistid-collector.service": true, "balistid-auditstat.service": true, "balistid-ledger.service": true,
-		"balistid-relay.service": true, "balistid-pi.service": true,
+		"balistid-relay.service": true, "balistid-pi.service": true, "balistid-range-witness.service": true,
+		"balistid-range-witness-agent.service": true,
 	}
 }
 

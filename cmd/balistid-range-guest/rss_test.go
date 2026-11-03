@@ -141,14 +141,17 @@ func TestSampleRSSRunsUntilStopped(t *testing.T) {
 	}
 }
 
-// rss_mib sums the image's long-running balistid services: not a socket, a range unit or a oneshot.
+// rss_mib sums the image's long-running balistid services and the range's litewitness and agent (ADR 0043):
+// not a socket, another range unit or a oneshot.
 func TestLongRunningUnits(t *testing.T) {
 	types := map[string]string{"balistid-net.service": "oneshot", "balistid-announce.service": "oneshot",
-		"balistid-collector.service": "notify", "balistid-auditstat.service": "exec", "balistid-range-witness.service": "simple"}
+		"balistid-collector.service": "notify", "balistid-auditstat.service": "exec", "balistid-range-witness.service": "simple",
+		"balistid-range-witness-agent.service": "notify", "balistid-range-ntfy.service": "simple"}
 	units := "balistid-announce.service,balistid-auditstat.service,balistid-collector.service,balistid-collector.socket," +
-		"balistid-net.service,balistid-range-witness.service"
+		"balistid-net.service,balistid-range-ntfy.service,balistid-range-witness.service,balistid-range-witness-agent.service"
 	got := longRunning(units, func(u string) string { return types[u] })
-	if want := []string{"balistid-auditstat.service", "balistid-collector.service"}; !slices.Equal(got, want) {
+	if want := []string{"balistid-auditstat.service", "balistid-collector.service", "balistid-range-witness.service",
+		"balistid-range-witness-agent.service"}; !slices.Equal(got, want) {
 		t.Errorf("long-running %v, want %v", got, want)
 	}
 	if got := longRunning("", func(string) string { return "" }); len(got) != 0 || strings.Join(got, "") != "" {
