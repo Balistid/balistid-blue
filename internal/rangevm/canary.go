@@ -11,22 +11,25 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
-// Facts of a canary trial (canary_interval_s, ADR 0017): how long the quiet phase lasted, how many of the
-// collector's canaries went out in it by their audit time, and the longest time without one, the phase's start
-// and end included. Each frozen stage adds the facts CanaryFact names.
+// Facts of a canary trial (canary_interval_s, ADR 0017, ADR 0054): how long the quiet phase lasted, the store's
+// health over it, how many of the collector's canaries went out in it by their audit time, and the longest time
+// without one, the phase's start and end included. Each frozen stage adds the facts CanaryFact names.
 const (
-	FactCanaryQuietMS = "canary_quiet_ms"
-	FactCanaryCount   = "canary_count"
-	FactCanaryGapMS   = "canary_max_gap_ms"
+	FactCanaryQuietMS     = "canary_quiet_ms"
+	FactCanaryQuietHealth = "canary_quiet_health"
+	FactCanaryCount       = "canary_count"
+	FactCanaryGapMS       = "canary_max_gap_ms"
 )
 
 // What a canary trial reports of each stage it froze: "yes" when the process was stopped a second after SIGSTOP
-// and right before SIGCONT, or why not; the store's health when the freeze began; how long it was frozen and
-// how long the guest watched after SIGCONT; and, each in ms or CanaryNone, when the first canary went out and
-// the first "UNKNOWN canary-missed" came after the freeze began, and the first OK after SIGCONT.
+// and right before SIGCONT, or why not; the store's health when the freeze began, and from the first "UNKNOWN
+// canary-missed" to SIGCONT (CanaryNone without one); how long it was frozen and how long the guest watched after
+// SIGCONT; and, each in ms or CanaryNone, when the first canary went out and the first UNKNOWN canary-missed came
+// after the freeze began, and the first OK after SIGCONT.
 const (
 	CanaryStopped   = "stopped"
 	CanaryHealth    = "health"
+	CanaryHeld      = "held"
 	CanaryFrozenMS  = "frozen_ms"
 	CanaryAfterMS   = "after_ms"
 	CanaryFirstMS   = "first_ms"
@@ -44,15 +47,18 @@ const (
 	CanaryAfter  = 45 * time.Second
 )
 
-// The judge's bounds. canaryGapMS is canary_interval_s. UNKNOWN comes within the deadlines of two probes from
-// the first sent while frozen, plus the writer's ticks (250 ms each). OK comes back within the next probe after
-// SIGCONT (30 s), Laurel's hold of 7 s and two ticks; auditd's state, written every 5 s, is fresh within that.
+// The judge's bounds. canaryGapMS is canary_interval_s, also the latest the first probe of a freeze may go out.
+// UNKNOWN comes within the deadlines of two probes from that first one, plus the writer's ticks (250 ms each), so a
+// freeze of canaryFreezeMinMS holds both; it comes no earlier than the first probe's own deadline, the collector's
+// CanaryEvery of 29 s less a second, or a probe missed before the freeze caused it. OK comes back within the next
+// probe after SIGCONT (30 s), Laurel's hold of 7 s and two ticks; auditd's state, written every 5 s, is fresh then.
 const (
 	canaryGapMS       = 30_000
 	canaryQuietMS     = uint64(CanaryQuiet / time.Millisecond)
 	canaryMinSeen     = 4
-	canaryFreezeMinMS = 3*canaryGapMS + 1_000
 	canaryUnknownMS   = 2*canaryGapMS + 1_000
+	canaryFreezeMinMS = canaryGapMS + canaryUnknownMS
+	canaryEarliestMS  = 28_000
 	canaryRecoverMS   = 40_000
 )
 
@@ -69,41 +75,40 @@ func CanaryStages() []CanaryStage {
 func CanaryFact(stage, what string) string { return "canary_" + stage + "_" + what }
 
 func canaryFacts() []string {
-	names := []string{FactTrial, FactPhase, FactKernel, FactCanaryQuietMS, FactCanaryCount, FactCanaryGapMS}
+	names := []string{FactTrial, FactPhase, FactKernel, FactCanaryQuietMS, FactCanaryQuietHealth, FactCanaryCount,
+		FactCanaryGapMS}
 	for _, s := range CanaryStages() {
-		for _, what := range []string{CanaryStopped, CanaryHealth, CanaryFrozenMS, CanaryAfterMS, CanaryFirstMS,
-			CanaryUnknownMS, CanaryOKMS} {
+		for _, what := range []string{CanaryStopped, CanaryHealth, CanaryHeld, CanaryFrozenMS, CanaryAfterMS,
+			CanaryFirstMS, CanaryUnknownMS, CanaryOKMS} {
 			names = append(names, CanaryFact(s.Name, what))
 		}
 	}
 	return names
 }
 
-// judgeCanary judges a canary trial. The facts are closed and on the target kernel, else INVALID. A gap over
-// 30 s in the quiet phase, a freeze without "UNKNOWN canary-missed" or with it late, or no OK in time after it
-// is a MISS. A quiet phase too short or with too few canaries for its gaps, or a stage whose freeze is not proven
-// or did not begin OK, is INVALID; as in judgeStatus, no INVALID hides a MISS another part shows.
+// judgeCanary judges a canary trial. A report with an unknown or repeated fact, or of another trial or kernel, is
+// INVALID. A gap over 30 s or health not OK in the quiet phase, or a stage whose freeze shows UNKNOWN not in the
+// order and within the bounds two missed probes give, health not UNKNOWN from then to SIGCONT, or no OK in time
+// after it, is a MISS. A fact missing or not a number, a quiet phase too short or with too few canaries for its
+// gaps, or a stage whose freeze is not proven or not long enough is INVALID; as in judgeStatus, every MISS the facts
+// show is found before an INVALID is returned.
 func judgeCanary(tr rangejob.Trial, o Outcome) (string, string) {
-	f, _, why := probeFacts(tr, o, canaryFacts(), nil)
+	f, missing, why := knownFacts(tr, o, canaryFacts())
 	if why != "" {
 		return Invalid, why
 	}
-	var misses, unproven []string
-	note := func(why string, invalid bool) {
-		switch {
-		case invalid:
-			unproven = append(unproven, why)
-		case why != "":
-			misses = append(misses, why)
-		}
+	misses, unproven := quietCanaries(f)
+	if missing != "" {
+		unproven = append(unproven, missing)
 	}
-	note(quietCanaries(f))
 	for _, s := range CanaryStages() {
-		why, invalid := frozenStage(s.Name, f)
-		if why != "" {
-			why = s.Name + ": " + why
+		m, u := frozenStage(s.Name, f)
+		for _, why := range m {
+			misses = append(misses, s.Name+": "+why)
 		}
-		note(why, invalid)
+		for _, why := range u {
+			unproven = append(unproven, s.Name+": "+why)
+		}
 	}
 	switch {
 	case len(misses) > 0:
@@ -115,23 +120,28 @@ func judgeCanary(tr rangejob.Trial, o Outcome) (string, string) {
 		f[FactCanaryCount], f[FactCanaryGapMS])
 }
 
-// quietCanaries is why the quiet phase is a MISS, or proves nothing (invalid), or "". n canaries leave n+1
-// gaps that cover the phase, so a run without a long gap has four canaries in 150 s.
-func quietCanaries(f map[string]string) (string, bool) {
+// quietCanaries is why the quiet phase is a MISS, and why it proves nothing. n canaries leave n+1 gaps that cover
+// the phase, so a run without a long gap has four canaries in 150 s.
+func quietCanaries(f map[string]string) (misses, unproven []string) {
 	quiet, errQ := plainNumber(f[FactCanaryQuietMS])
 	count, errC := plainNumber(f[FactCanaryCount])
 	gap, errG := plainNumber(f[FactCanaryGapMS])
-	switch {
-	case errG == nil && gap > canaryGapMS:
-		return fmt.Sprintf("%d ms without a canary, over %d", gap, canaryGapMS), false
-	case errQ != nil || errC != nil || errG != nil:
-		return "a quiet phase's count is not a plain number", true
-	case quiet < canaryQuietMS:
-		return fmt.Sprintf("a quiet phase of %d ms, under %d", quiet, canaryQuietMS), true
-	case count < canaryMinSeen || !covers(count, gap, quiet):
-		return fmt.Sprintf("%d canaries at most %d ms apart cannot cover a quiet phase of %d ms", count, gap, quiet), true
+	if errG == nil && gap > canaryGapMS {
+		misses = append(misses, fmt.Sprintf("%d ms without a canary, over %d", gap, canaryGapMS))
 	}
-	return "", false
+	if h, reported := f[FactCanaryQuietHealth]; reported && h != StoreOK {
+		misses = append(misses, fmt.Sprintf("the store's health over the quiet phase was \"%s\"", Printable(h, 32)))
+	}
+	switch {
+	case errQ != nil || errC != nil || errG != nil:
+		unproven = append(unproven, "a quiet phase's count is not a plain number")
+	case quiet < canaryQuietMS:
+		unproven = append(unproven, fmt.Sprintf("a quiet phase of %d ms, under %d", quiet, canaryQuietMS))
+	case count < canaryMinSeen || !covers(count, gap, quiet):
+		unproven = append(unproven, fmt.Sprintf("%d canaries at most %d ms apart cannot cover a quiet phase of %d ms",
+			count, gap, quiet))
+	}
+	return misses, unproven
 }
 
 // covers reports whether count+1 gaps of at most gap ms can span quiet ms, without overflow.
@@ -140,39 +150,64 @@ func covers(count, gap, quiet uint64) bool {
 	return count+1 != 0 && (hi != 0 || lo >= quiet)
 }
 
-// frozenStage is why a stage's freeze is a MISS, or proves nothing (invalid), or "". A freeze not proven, not
-// begun OK, shorter than two misses or watched less than the recovery after it proves nothing; a canary none
-// went out in proves nothing of when UNKNOWN came, but a freeze without UNKNOWN misses whatever its canaries.
-func frozenStage(stage string, f map[string]string) (string, bool) {
+// frozenStage is why a stage's freeze is a MISS, and why it proves nothing. A freeze is a MISS when UNKNOWN came
+// before it, its first canary went out over 30 s into it, UNKNOWN came before that canary's deadline or over 61 s
+// after it, health left UNKNOWN before SIGCONT, or OK did not come back within 40 s of SIGCONT. It proves nothing
+// when not proven, shorter than the first canary's 30 s and two deadlines, watched less than the recovery after it,
+// or without a canary that times its UNKNOWN; a freeze without UNKNOWN misses whatever its canaries.
+func frozenStage(stage string, f map[string]string) (misses, unproven []string) {
 	v := func(what string) string { return f[CanaryFact(stage, what)] }
+	miss := func(format string, a ...any) { misses = append(misses, fmt.Sprintf(format, a...)) }
+	bad := func(format string, a ...any) { unproven = append(unproven, fmt.Sprintf(format, a...)) }
 	frozen, errF := msOrNone(v(CanaryFrozenMS)) // none is under the minimum below
 	after, errA := msOrNone(v(CanaryAfterMS))
 	first, errFirst := msOrNone(v(CanaryFirstMS))
 	unknown, errU := msOrNone(v(CanaryUnknownMS))
 	ok, errO := msOrNone(v(CanaryOKMS))
-	switch {
-	case v(CanaryStopped) != "yes":
-		return fmt.Sprintf("the freeze is not proven: \"%s\"", Printable(v(CanaryStopped), 256)), true
-	case v(CanaryHealth) != StoreOK:
-		return fmt.Sprintf("the store's health when the freeze began was \"%s\"", Printable(v(CanaryHealth), 32)), true
-	case errF != nil || errA != nil || errFirst != nil || errU != nil || errO != nil:
-		return "a time is not a plain number or none", true
-	case frozen < canaryFreezeMinMS || after < canaryRecoverMS:
-		return fmt.Sprintf("frozen %d ms and watched %d ms after, under %d and %d", frozen, after, canaryFreezeMinMS,
-			canaryRecoverMS), true
-	case unknown < 0 || unknown > frozen:
-		return fmt.Sprintf("no UNKNOWN canary-missed in %d ms frozen", frozen), false
-	case first < 0 || first > frozen:
-		return "no canary went out while frozen, so its UNKNOWN is not timed", true
-	case unknown > first+canaryUnknownMS:
-		return fmt.Sprintf("UNKNOWN %d ms after the first canary sent while frozen, over %d", unknown-first,
-			canaryUnknownMS), false
-	case ok < 0 || ok > after:
-		return fmt.Sprintf("no OK in the %d ms after SIGCONT", after), false
-	case ok > canaryRecoverMS:
-		return fmt.Sprintf("OK %d ms after SIGCONT, over %d", ok, canaryRecoverMS), false
+	if v(CanaryStopped) != "yes" {
+		bad("the freeze is not proven: \"%s\"", Printable(v(CanaryStopped), 256))
 	}
-	return "", false
+	switch h := v(CanaryHealth); h {
+	case StoreOK:
+	case StoreUnknown:
+		miss("UNKNOWN already when the freeze began")
+	default:
+		bad("the store's health when the freeze began was \"%s\"", Printable(h, 32))
+	}
+	if errF != nil || errA != nil || frozen < canaryFreezeMinMS || after < canaryRecoverMS {
+		bad("frozen %s ms and watched %s ms after, under %d and %d", Printable(v(CanaryFrozenMS), 32),
+			Printable(v(CanaryAfterMS), 32), canaryFreezeMinMS, canaryRecoverMS)
+	}
+	switch {
+	case errFirst != nil:
+		bad("the first canary's time is not a plain number or none")
+	case first < 0:
+		bad("no canary went out from the freeze on, so its UNKNOWN is not timed")
+	case first > canaryGapMS:
+		miss("the first canary went out %d ms after the freeze began, over %d", first, canaryGapMS)
+	}
+	switch {
+	case errU != nil:
+		bad("UNKNOWN's time is not a plain number or none")
+	case unknown < 0 || errF == nil && frozen >= 0 && unknown > frozen:
+		miss("no UNKNOWN canary-missed in %s ms frozen", Printable(v(CanaryFrozenMS), 32))
+	case errFirst == nil && first >= 0 && unknown < first+canaryEarliestMS:
+		miss("UNKNOWN %d ms after the freeze began, before the deadline of its first canary at %d ms", unknown, first)
+	case errFirst == nil && first >= 0 && unknown > first+canaryUnknownMS:
+		miss("UNKNOWN %d ms after the first canary sent while frozen, over %d", unknown-first, canaryUnknownMS)
+	}
+	if held, reported := f[CanaryFact(stage, CanaryHeld)]; reported && errU == nil && unknown >= 0 && held != StoreUnknown {
+		miss("the store's health from UNKNOWN to SIGCONT was \"%s\"", Printable(held, 32))
+	}
+	switch {
+	case errO != nil:
+		bad("OK's time is not a plain number or none")
+	case ok < 0 || errA == nil && after >= 0 && ok > after:
+		miss("no OK in the %s ms after SIGCONT", Printable(v(CanaryAfterMS), 32))
+	case ok > canaryRecoverMS:
+		miss("OK %d ms after SIGCONT, over %d", ok, canaryRecoverMS)
+	}
+	return misses, unproven
 }
 
 // msOrNone is a plain number of ms, or -1 for CanaryNone.
