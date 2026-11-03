@@ -84,33 +84,42 @@ class Pins(unittest.TestCase):
 
 
 class PacmanTries(unittest.TestCase):
-    """The archive stalls: the container's pacman step tries the same snapshot three times, 30 s and 60 s apart, then
-    fails the job. The loop runs here with pacman and sleep replaced by shell functions that record their calls."""
+    """The archive stalls: the container's pacman download of the same snapshot gets three tries, 30 s and 60 s apart,
+    then fails the job; the install runs once and is never tried again. The step runs here with pacman and sleep
+    replaced by shell functions that record their calls."""
 
-    def run_loop(self, fails: int) -> tuple[int, list[str]]:
+    DOWNLOAD = "pacman -Syyuuw --noconfirm --needed git go"
+    INSTALL = "pacman -Suu --noconfirm --needed git go"
+
+    def run_step(self, fails: int, install_ok: bool = True) -> tuple[int, list[str]]:
         script = range_kvm.CONTAINER_SCRIPT
-        loop = script[script.index("for try in"):script.index("done\n") + len("done\n")]
-        fake = (f'n=0; pacman() {{ n=$((n+1)); echo "pacman $*" >> "$LOG"; [ "$n" -gt {fails} ]; }}; '
+        step = script[script.index("for try in"):script.index("useradd ")]
+        fake = (f'n=0; pacman() {{ echo "pacman $*" >> "$LOG"; if [ "$1" = -Syyuuw ]; then n=$((n+1)); '
+                f'[ "$n" -gt {fails} ]; else [ {int(install_ok)} = 1 ]; fi; }}; '
                 'sleep() { echo "sleep $1" >> "$LOG"; }\n')
         with tempfile.TemporaryDirectory() as tmp:
             log = Path(tmp) / "log"
             log.touch()
-            done = subprocess.run(["/usr/bin/bash", "-euo", "pipefail", "-c", fake + loop, "bash", "git", "go"],
+            done = subprocess.run(["/usr/bin/bash", "-euo", "pipefail", "-c", fake + step, "bash", "git", "go"],
                                   env={"LOG": str(log), "PATH": "/usr/bin"}, capture_output=True, check=False)
             return done.returncode, log.read_text(encoding="utf-8").splitlines()
 
-    def test_two_failures_then_the_install(self) -> None:
-        install = "pacman -Syyuu --noconfirm --needed git go"
-        self.assertEqual(self.run_loop(fails=2), (0, [install, "sleep 30", install, "sleep 60", install]))
+    def test_two_download_failures_then_one_install(self) -> None:
+        dl = self.DOWNLOAD
+        self.assertEqual(self.run_step(fails=2), (0, [dl, "sleep 30", dl, "sleep 60", dl, self.INSTALL]))
 
-    def test_three_failures_fail_the_job(self) -> None:
-        code, calls = self.run_loop(fails=3)
+    def test_three_download_failures_fail_the_job_before_the_install(self) -> None:
+        code, calls = self.run_step(fails=3)
         self.assertNotEqual(code, 0)
-        self.assertEqual(calls.count("pacman -Syyuu --noconfirm --needed git go"), 3)
-        self.assertEqual([c for c in calls if c.startswith("sleep")], ["sleep 30", "sleep 60"])
+        self.assertEqual(calls, [self.DOWNLOAD, "sleep 30", self.DOWNLOAD, "sleep 60", self.DOWNLOAD])
+
+    def test_a_failed_install_is_not_tried_again(self) -> None:
+        code, calls = self.run_step(fails=0, install_ok=False)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [self.DOWNLOAD, self.INSTALL])
 
     def test_one_try_when_it_works_and_the_stall_limit_stays(self) -> None:
-        self.assertEqual(self.run_loop(fails=0), (0, ["pacman -Syyuu --noconfirm --needed git go"]))
+        self.assertEqual(self.run_step(fails=0), (0, [self.DOWNLOAD, self.INSTALL]))
         self.assertNotIn("DisableDownloadTimeout", range_kvm.CONTAINER_SCRIPT)
 
 
