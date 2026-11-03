@@ -147,14 +147,32 @@ func TestJudgeExposure(t *testing.T) {
 
 func TestJudgeCPU(t *testing.T) {
 	base := map[string]string{
-		FactGenerated: "600000", FactWindowMin: "10000", FactCPUTicks: "120000", FactStealTicks: "1200",
+		FactGenerated: "600000", FactWindowMin: "10000", FactStealWindows: windows(600),
 		FactCollectorUS: "150000000", FactAuditdUS: "150000000", FactUnits: "same", FactStored: "600000", FactMissing: "0",
 	}
 	run := func(change ...string) Outcome { return probeRun("cpu-1000", cpuFacts, base, change...) }
+	// Steal over 1 % in one second makes only a MISS INVALID (ADR 0057); a series not covering the load, any verdict.
+	tr := trial(t, "cpu-1000")
+	stolen := FactStealWindows + "=" + windows(600, "599=1000:400:5")
+	for change, want := range map[[2]string]string{
+		{stolen, ""}:                         Pass,
+		{stolen, "collector_usec=450000001"}: Invalid,
+		{FactStealWindows + "=" + windows(600, "300=2500:1000:0"), "collector_usec=450000001"}: Invalid,
+		{FactStealWindows + "=1000:400:0", ""}:                                                 Invalid,
+		{FactStealWindows + "=", ""}:                                                           Invalid,
+	} {
+		changes := []string{change[0]}
+		if change[1] != "" {
+			changes = append(changes, change[1])
+		}
+		if v, r := JudgeTrial(tr, run(changes...), cleanBuild, cleanBuild); v != want {
+			t.Errorf("%.40s… with %q: %s (%s); want %s", change[0], change[1], v, r, want)
+		}
+	}
 	judgeCases(t, "cpu-1000", run, map[string][]string{
 		Miss: {"collector_usec=450000001", "auditd_usec=600000001,collector_usec=0"},
 		Invalid: {
-			"generated=599999,stored=599999", "window_min=9999", "steal_ticks=1201", "cpu_ticks=0", "units=collector restarted",
+			"generated=599999,stored=599999", "window_min=9999", "steal_windows", "units=collector restarted",
 			"missing=1,stored=599999", "stored=599999", "auditd_usec=x", "collector_usec", "kernel=6.0.0",
 			"collector_usec=18446744073709551615,auditd_usec=1", "window_min=600001", "auditd_usec=614400000001",
 		},

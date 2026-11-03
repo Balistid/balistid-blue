@@ -12,7 +12,7 @@ func TestMeasuresOfARateTrialAreItsCounts(t *testing.T) {
 	tr := trial(t, "rate-burst")
 	m := Measures(tr, report(tr))
 	// The collector's CPU is a measure too; its memory peak, reported as unknown, is left out.
-	if len(m) != len(counts)+1 || m[FactStealTicks] != 100 || m[FactCPUTicks] != 10000 || m[FactGenerated] != 100000 ||
+	if len(m) != len(counts)+1 || m[FactWindowMin] != 100000 || m[FactGenerated] != 100000 ||
 		m[FactCollectorUS] != 9000000 {
 		t.Fatalf("measures %v", m)
 	}
@@ -33,16 +33,16 @@ func TestMeasuresLeaveOutABadCount(t *testing.T) {
 	for name, o := range map[string]Outcome{
 		"repeated": func() Outcome {
 			o := report(tr)
-			o.Facts = append(o.Facts, Record{Name: FactStealTicks, Value: "0"})
+			o.Facts = append(o.Facts, Record{Name: FactWindowMin, Value: "0"})
 			return o
 		}(),
-		"signed":  report(tr, FactStealTicks+"=+100"),
-		"padded":  report(tr, FactStealTicks+"=0100"),
-		"text":    report(tr, FactStealTicks+"=lots"),
-		"missing": report(tr, FactStealTicks+"="),
+		"signed":  report(tr, FactWindowMin+"=+100000"),
+		"padded":  report(tr, FactWindowMin+"=0100000"),
+		"text":    report(tr, FactWindowMin+"=lots"),
+		"missing": report(tr, FactWindowMin+"="),
 	} {
 		m := Measures(tr, o)
-		if _, ok := m[FactStealTicks]; ok || len(m) != len(counts) {
+		if _, ok := m[FactWindowMin]; ok || len(m) != len(counts) {
 			t.Errorf("%s: measures %v", name, m)
 		}
 	}

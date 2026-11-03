@@ -2,6 +2,7 @@ package rangeguest
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -98,6 +99,30 @@ func TestCPUTicks(t *testing.T) {
 	for _, bad := range []string{"", "cpu0 1 2 3 4 5 6 7 8\n", "cpu 1 2 3 4 5 6 7\n", "cpu 1 2 3 4 5 6 7 x\n"} {
 		if _, _, err := CPUTicks(bad); err == nil {
 			t.Errorf("CPUTicks(%q) accepted", bad)
+		}
+	}
+}
+
+// Each span between two reads of /proc/stat keeps its own time, ticks and steal; counters that went backwards,
+// a read without its cpu line or fewer than two reads are an error, never a span.
+func TestStealWindows(t *testing.T) {
+	at := time.Unix(1000, 0)
+	read := func(ms int, user, steal int) StatSample {
+		return StatSample{At: at.Add(time.Duration(ms) * time.Millisecond), Stat: fmt.Sprintf("cpu  %d 0 0 0 0 0 0 %d 0 0", user, steal)}
+	}
+	got, err := StealWindows([]StatSample{read(0, 100, 1), read(1000, 500, 1), read(2600, 900, 9), read(2600, 900, 9)})
+	if want := "1000:400:0,1600:408:8,0:0:0"; err != nil || got != want {
+		t.Errorf("StealWindows = %q, %v; want %q", got, err, want)
+	}
+	for name, reads := range map[string][]StatSample{
+		"one read":   {read(0, 100, 1)},
+		"none":       nil,
+		"backwards":  {read(0, 100, 1), read(1000, 99, 1)},
+		"steal back": {read(0, 100, 2), read(1000, 500, 1)},
+		"no cpu":     {read(0, 100, 1), {At: at, Stat: "intr 1 2 3"}},
+	} {
+		if got, err := StealWindows(reads); err == nil {
+			t.Errorf("%s: %q accepted", name, got)
 		}
 	}
 }

@@ -3,8 +3,10 @@ package rangevm
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
@@ -23,15 +25,14 @@ const (
 	FactLostAfter      = "audit_lost_after"
 	FactOverflowBefore = "overflow_before"
 	FactOverflowAfter  = "overflow_after"
-	FactCPUTicks       = "cpu_ticks"
-	FactStealTicks     = "steal_ticks"
-	FactDrainCPU       = "drain_cpu_ticks"
-	FactDrainSteal     = "drain_steal_ticks"
-	FactFollow         = "follow"
-	FactStored         = "stored"
-	FactMissing        = "missing"
-	FactDuplicate      = "duplicate"
-	FactOutside        = "outside"
+	// FactStealWindows is the guest's /proc/stat read every second from just before the load to the end of its
+	// read: "ms:total:steal" for each span between two reads, comma-separated (ADR 0057).
+	FactStealWindows = "steal_windows"
+	FactFollow       = "follow"
+	FactStored       = "stored"
+	FactMissing      = "missing"
+	FactDuplicate    = "duplicate"
+	FactOutside      = "outside"
 	// FactTrialError replaces the counts when the guest could not run the trial; boot reports it.
 	FactTrialError = "trial_error"
 )
@@ -40,20 +41,71 @@ const (
 // only, not judged, a number or why there is none.
 var rateFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter,
-	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactDrainCPU, FactDrainSteal, FactFollow,
+	FactOverflowBefore, FactOverflowAfter, FactStealWindows, FactFollow,
 	FactStored, FactMissing, FactDuplicate, FactOutside, FactCollectorUS, FactCollectorMem,
 }
 
 // counts are the rate facts that must be plain decimal numbers.
 var counts = []string{
-	FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactCPUTicks, FactStealTicks, FactDrainCPU,
-	FactDrainSteal, FactStored, FactMissing, FactDuplicate, FactOutside,
+	FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactStored, FactMissing, FactDuplicate, FactOutside,
+}
+
+// maxStealWindows bounds a report's spans: 68 min of reads every second, for runs that end within 40 min.
+const maxStealWindows = 4096
+
+// stealWindow is one span of FactStealWindows; the digits cap keeps steal*100 far below 2^64.
+var stealWindow = regexp.MustCompile(`^(0|[1-9][0-9]{0,8}):(0|[1-9][0-9]{0,11}):(0|[1-9][0-9]{0,11})$`)
+
+// stealOverMiss is why host steal leaves a MISS of the run unproven (ADR 0057): the first span with more than 1 % of
+// its ticks stolen, of 1 s or more without ticks, or over 2 s, which leaves its seconds unmeasured; "" when none.
+// A series not of that form, with steal over its ticks, too many spans or covering less than the load is an error.
+func stealOverMiss(series string, loadSeconds int) (string, error) {
+	spans := strings.Split(series, ",")
+	if len(spans) > maxStealWindows {
+		return "", fmt.Errorf("%d steal windows, at most %d", len(spans), maxStealWindows)
+	}
+	why, covered := "", uint64(0)
+	for i, span := range spans {
+		m := stealWindow.FindStringSubmatch(span)
+		if m == nil {
+			return "", fmt.Errorf("steal window %d \"%s\" is not ms:total:steal", i, Printable(span, 64))
+		}
+		ms, _ := strconv.ParseUint(m[1], 10, 64)
+		total, _ := strconv.ParseUint(m[2], 10, 64)
+		steal, _ := strconv.ParseUint(m[3], 10, 64)
+		if steal > total {
+			return "", fmt.Errorf("steal window %d has %d steal of %d ticks", i, steal, total)
+		}
+		switch {
+		case why != "":
+		case ms > 2000:
+			why = fmt.Sprintf("%d ms unmeasured from %d ms on", ms, covered)
+		case total == 0 && ms >= 1000:
+			why = fmt.Sprintf("no CPU ticks in %d ms from %d ms on", ms, covered)
+		case steal*100 > total:
+			why = fmt.Sprintf("guest steal %d of %d ticks in %d ms from %d ms on", steal, total, ms, covered)
+		}
+		covered += ms
+	}
+	if covered < uint64(loadSeconds)*1000 { //nolint:gosec // positive table value
+		return "", fmt.Errorf("steal windows cover %d ms of a %d s load", covered, loadSeconds)
+	}
+	return why, nil
+}
+
+// missUnlessSteal is a MISS for reason, or INVALID when host steal (stealOverMiss) may have caused it.
+func missUnlessSteal(steal, reason string) (string, string) {
+	if steal != "" {
+		return Invalid, fmt.Sprintf("a MISS under host steal (%s): %s", steal, reason)
+	}
+	return Miss, reason
 }
 
 // judgeRate judges a run of rate trial tr. The guest's facts form a closed set, each once, as plain
-// values; anything else, another kernel, a reader that did not see the run's end, or steal over 1 % is
-// INVALID. Loss, a changed audit lost counter, a plugin-queue overflow or a rate not held in every 10 s
-// window is a MISS, so a control, whose reader drops one number, must come out MISS (ADR 0018, point 4).
+// values; anything else, another kernel or a reader that did not see the run's end is INVALID. Loss, a
+// changed audit lost counter, a plugin-queue overflow or a rate not held in every 10 s window is a MISS,
+// so a control, whose reader drops one number, must come out MISS (ADR 0018, point 4), unless host
+// steal may have caused it: then INVALID (ADR 0057).
 func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 	f := map[string]string{}
 	for _, r := range o.Facts {
@@ -77,7 +129,10 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		n[name] = v
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
+	steal, stealErr := stealOverMiss(f[FactStealWindows], tr.Load.Seconds)
 	switch {
+	case stealErr != nil:
+		return Invalid, stealErr.Error()
 	case f[FactTrial] != tr.Name:
 		return Invalid, "the guest ran another trial"
 	case f[FactKernel] != TargetKernel:
@@ -86,9 +141,6 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		return Invalid, fmt.Sprintf("the reader did not see the whole run: \"%s\"", Printable(f[FactFollow], 256))
 	case f[FactOverflowBefore] != "no" || (f[FactOverflowAfter] != "no" && f[FactOverflowAfter] != "yes"):
 		return Invalid, "the plugin queue state is unknown"
-	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100 || n[FactDrainSteal] > n[FactDrainCPU]/100:
-		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks under load, %d of %d while draining",
-			n[FactStealTicks], n[FactCPUTicks], n[FactDrainSteal], n[FactDrainCPU])
 	case n[FactGenerated] == 0 || n[FactGenerated] > planned || n[FactStored] > n[FactGenerated] ||
 		n[FactMissing] != n[FactGenerated]-n[FactStored]:
 		return Invalid, fmt.Sprintf("generated %d of %d planned, stored %d and missing %d do not add up",
@@ -102,13 +154,13 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		n[FactGenerated], n[FactStored], n[FactMissing], n[FactDuplicate], n[FactOutside])
 	switch {
 	case n[FactMissing] > 0 || n[FactDuplicate] > 0 || n[FactOutside] > 0:
-		return Miss, loss
+		return missUnlessSteal(steal, loss)
 	case n[FactLostAfter] != n[FactLostBefore]:
-		return Miss, fmt.Sprintf("audit lost %d before, %d after", n[FactLostBefore], n[FactLostAfter])
+		return missUnlessSteal(steal, fmt.Sprintf("audit lost %d before, %d after", n[FactLostBefore], n[FactLostAfter]))
 	case f[FactOverflowAfter] == "yes":
-		return Miss, "the plugin queue overflowed"
+		return missUnlessSteal(steal, "the plugin queue overflowed")
 	case n[FactGenerated] < planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10: //nolint:gosec // positive table value
-		return Miss, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin])
+		return missUnlessSteal(steal, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin]))
 	}
 	return Pass, loss
 }

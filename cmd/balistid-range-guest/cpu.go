@@ -90,8 +90,8 @@ func collectorMeasures(before, after unitSample) (cpu, mem string) {
 }
 
 // runCPU execs numbered events at the trial's rate and reports the CPU of the collector's and of
-// auditd's cgroups from before the load until it drained, with the load's counts and steal
-// (cpu_cores, ADR 0023 point 5).
+// auditd's cgroups from before the load until it drained, with the load's counts and steal over
+// that time (cpu_cores, ADR 0023 point 5, ADR 0057).
 func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	w, err := watchCommits(commitFollower(watchCtx), time.Now)
@@ -101,20 +101,22 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	defer func() { stopWatch(); w.wait() }()
 	collector0, auditd0 := sampleUnit(ctx, collectorUnitName), sampleUnit(ctx, auditdUnitName)
-	statBefore := readTrim("/proc/stat")
+	stopSteal := sampleSteal(ctx)
 	execs := rangeguest.NewExecs(maxChildren)
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, execs.Emit, rangeguest.WallClock)
 	if err := errors.Join(genErr, execs.Wait()); err != nil {
+		_, _ = stopSteal() // the generator's error ends the run
 		return r.fail("generator: " + err.Error())
 	}
-	cpu, steal, err := rangeguest.TickDelta(statBefore, readTrim("/proc/stat"))
-	if err != nil {
-		return r.fail("CPU ticks: " + err.Error())
-	}
-	if err := drained(w, time.Now, func() string {
+	drainErr := drained(w, time.Now, func() string {
 		return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
-	}, cpuDrainWait); err != nil {
-		return r.fail(err.Error())
+	}, cpuDrainWait)
+	windows, stealErr := stopSteal()
+	switch {
+	case drainErr != nil:
+		return r.fail(drainErr.Error())
+	case stealErr != nil:
+		return r.fail("steal: " + stealErr.Error())
 	}
 	collectorUS, whyC := used(collector0, sampleUnit(ctx, collectorUnitName))
 	auditdUS, whyA := used(auditd0, sampleUnit(ctx, auditdUnitName))
@@ -134,8 +136,7 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	u := func(v uint64) string { return strconv.FormatUint(v, 10) }
 	r.add(rangevm.FactGenerated, u(generated))
 	r.add(rangevm.FactWindowMin, u(windowMin))
-	r.add(rangevm.FactCPUTicks, u(cpu))
-	r.add(rangevm.FactStealTicks, u(steal))
+	r.add(rangevm.FactStealWindows, windows)
 	r.add(rangevm.FactCollectorUS, u(collectorUS))
 	r.add(rangevm.FactAuditdUS, u(auditdUS))
 	r.add(rangevm.FactUnits, unitsState(whyC, whyA))

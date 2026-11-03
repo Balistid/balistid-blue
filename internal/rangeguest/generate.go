@@ -171,6 +171,30 @@ func TickDelta(before, after string) (total, steal uint64, err error) {
 	return t1 - t0, s1 - s0, nil
 }
 
+// StatSample is one read of /proc/stat and when it began.
+type StatSample struct {
+	At   time.Time
+	Stat string
+}
+
+// StealWindows formats each span between two consecutive reads as "ms:total:steal", comma-separated, for the host
+// to judge steal second by second (ADR 0057); fewer than two reads or a read without its cpu line is an error.
+func StealWindows(reads []StatSample) (string, error) {
+	if len(reads) < 2 {
+		return "", fmt.Errorf("%d reads of /proc/stat, want two or more", len(reads))
+	}
+	spans := make([]string, 0, len(reads)-1)
+	for i := 1; i < len(reads); i++ {
+		total, steal, err := TickDelta(reads[i-1].Stat, reads[i].Stat)
+		if err != nil {
+			return "", fmt.Errorf("span %d: %w", i, err)
+		}
+		ms := reads[i].At.Sub(reads[i-1].At).Milliseconds()
+		spans = append(spans, fmt.Sprintf("%d:%d:%d", ms, total, steal))
+	}
+	return strings.Join(spans, ","), nil
+}
+
 // FreshState returns auditd's state file at path, only once auditd rewrote it after signal asked it
 // to: a file left from before would report no overflow it never saw and an old queue depth, and auditd
 // truncates the file before it writes it, so only a rewrite whose overflow flag reads "yes" or "no" ends

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
@@ -100,36 +101,24 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 		execs := rangeguest.NewExecs(maxChildren)
 		emit, wait = execs.Emit, execs.Wait
 	}
-	statBefore := readTrim("/proc/stat")
+	stopSteal := sampleSteal(ctx)
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
-	statLoaded := readTrim("/proc/stat")
 	// The collector's CPU and memory peak over the load and its drain: sampled once the read's wait for an
 	// idle audit is over, before its barrier and stop end the collector and its cgroup (measures only).
-	var idleFrom, idleTo string
 	collector1 := unitSample{err: errors.New("no sample after the drain")}
-	read := storeReader(func(done bool) {
-		if !done {
-			idleFrom = readTrim("/proc/stat")
-			return
-		}
-		idleTo, collector1 = readTrim("/proc/stat"), sampleUnit(ctx, collectorUnitName)
-	})
+	read := storeReader(func() { collector1 = sampleUnit(ctx, collectorUnitName) })
 	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error {
 		return read.Read(ctx, waitLimit, before, after)
 	})
+	windows, stealErr := stopSteal()
 	collectorCPU, collectorMem := collectorMeasures(collector0, collector1)
 	nums := counter.Numbers()
-	// Steal under load and while the reader drains, each on its own: a short burst of host contention
-	// in either is INVALID, not diluted by the other into a PASS or a MISS.
-	cpu, steal, loadErr := rangeguest.TickDelta(statBefore, statLoaded)
-	drainCPU, drainSteal, drainErr := drainTicks(statLoaded, idleFrom, idleTo, readTrim("/proc/stat"))
-	tickErr := errors.Join(loadErr, drainErr)
 	switch {
 	case genErr != nil:
 		return fail("generator: " + genErr.Error())
-	case tickErr != nil:
-		return fail("CPU ticks: " + tickErr.Error())
+	case stealErr != nil:
+		return fail("steal: " + stealErr.Error())
 	}
 	follow := "ok"
 	stored, missing, duplicate, outside := uint64(0), generated, uint64(0), uint64(0)
@@ -154,10 +143,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactLostAfter, valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]))
 	add(rangevm.FactOverflowBefore, overflowBefore)
 	add(rangevm.FactOverflowAfter, stateLine(ctx, rangeguest.StateOverflow))
-	add(rangevm.FactCPUTicks, u(cpu))
-	add(rangevm.FactStealTicks, u(steal))
-	add(rangevm.FactDrainCPU, u(drainCPU))
-	add(rangevm.FactDrainSteal, u(drainSteal))
+	add(rangevm.FactStealWindows, windows)
 	add(rangevm.FactFollow, follow)
 	add(rangevm.FactStored, u(stored))
 	add(rangevm.FactMissing, u(missing))
@@ -179,20 +165,21 @@ func stateLine(ctx context.Context, name string) string {
 	return rangeguest.StateValue(state, name)
 }
 
-// drainTicks are a rate trial's CPU and steal ticks from the load's end to after its store read: of the read's wait
-// for an idle audit (idleFrom to idleTo) and of the rest, the one with the larger share of steal, so the wait's idle
-// tail, up to auditd's next state rewrite, cannot dilute steal while the reader drains, nor the read the wait's.
-func drainTicks(loaded, idleFrom, idleTo, after string) (total, steal uint64, err error) {
-	c0, s0, err0 := rangeguest.TickDelta(loaded, idleFrom)
-	c1, s1, err1 := rangeguest.TickDelta(idleTo, after)
-	ci, si, errI := rangeguest.TickDelta(idleFrom, idleTo)
-	if err := errors.Join(err0, err1, errI); err != nil {
-		return 0, 0, fmt.Errorf("drain: %w", err)
+// sampleSteal reads /proc/stat's cpu line now and every second until stop, which reads it once more and returns the
+// spans between the reads for the host to judge steal in each (ADR 0057).
+func sampleSteal(ctx context.Context) (stop func() (string, error)) {
+	var reads []rangeguest.StatSample
+	read := func() bool {
+		line, _, _ := strings.Cut(readTrim("/proc/stat"), "\n")
+		reads = append(reads, rangeguest.StatSample{At: time.Now(), Stat: line})
+		return true
 	}
-	if si*(c0+c1) > (s0+s1)*ci { // a run's ticks stay far below 2^32, so the products cannot overflow
-		return ci, si, nil
+	stopEvery := sampleEvery(ctx, time.Second, read)
+	return func() (string, error) {
+		stopEvery()
+		read()
+		return rangeguest.StealWindows(reads)
 	}
-	return c0 + c1, s0 + s1, nil
 }
 
 // errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
