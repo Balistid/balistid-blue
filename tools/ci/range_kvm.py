@@ -102,30 +102,26 @@ def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpect
 
 # A guest line marked for the host (cmd/balistid-range-guest hostLine): the marker, then printable ASCII only. Guest
 # output is hostile (T30): only whole lines that match are shown, at most HOST_LINES of them from at most SERIAL_MAX
-# bytes of each of the newest run's serial logs, printed while workflow commands are off, never interpreted.
+# bytes of the newest run's serial log, printed while workflow commands are off, never interpreted. A run of the
+# launcher keeps its whole serial output, all boots, beside its result.json (internal/rangevm/session.go, check).
 HOST_LINE = re.compile(r"balistid-range-guest: host: [ -~]{1,300}")
 HOST_LINES = 400
 SERIAL_MAX = 16 << 20
-SERIAL_NAME = re.compile(r"serial(-[0-9]{1,2})?\.txt")
+SERIAL_LOG = "serial.log"
 
 
 def host_lines(state: Path) -> list[str]:
-    """The guest's host lines in the newest run's serial logs, in boot order."""
+    """The guest's host lines in the newest run's serial log, in order."""
     results = newest_results(state)
     if not results:
         return []
     out: list[str] = []
-    try:
-        logs = sorted(p for p in results[-1].parent.iterdir() if SERIAL_NAME.fullmatch(p.name))
-    except OSError:
-        return ["(the run's serial logs could not be listed)"]
-    for p in logs:
-        for raw in (read_regular(p, SERIAL_MAX) or b"").split(b"\n"):
-            line = raw.rstrip(b"\r").decode("ascii", "replace")
-            if HOST_LINE.fullmatch(line):
-                out.append(line)
-                if len(out) == HOST_LINES:
-                    return out
+    for raw in (read_regular(results[-1].parent / SERIAL_LOG, SERIAL_MAX) or b"").split(b"\n"):
+        line = raw.rstrip(b"\r").decode("ascii", "replace")
+        if HOST_LINE.fullmatch(line):
+            out.append(line)
+            if len(out) == HOST_LINES:
+                break
     return out
 
 
