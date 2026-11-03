@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-03 by claude/opus-5.5 (ADR 0051 maps the holes; #222 fixes #219; issues on milestones)
+Updated: 2026-11-03 by claude/opus-5.5 (#229 canary and RSS trials, #230 archive retries, ADR 0052-0055)
 
 ## Where we are
 
@@ -16,19 +16,18 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- #216 (ADR 0050, #206): `shard.Read` reads only an unnamed copy it hashed while making (modernc vfs), so the
-  collector's uid can no longer swap or rewrite what a reader takes as sealed; the guest copies to its /tmp. All 63
-  trials on 2a64d1b: none worse than `main` (full-fs and the 909147-record sustained store read through the copies);
-  Opus critic CLOSED after one reply round; Codex left out by the maintainer (usage against the change's size).
-- #217: the ledger socket's local flood accepted in T2 (#207). #218: shellcheck pinned by sha256 (#208).
-- ADR 0041's checks hold: the bot's direct `PUT .../merge` refused (405, "must be made through the merge queue"),
-  `main` ends at each group's `head_sha` (#195, #214, #215 alone, #216-#218 queued together), history linear.
-- #222 (#219): `record-max` passes again (3 of 3 on KVM): Laurel 0.8.2 writes its state before its SIGHUP flush, so an
-  event in flight is stored twice (T25 residual); the trial now sends SIGHUP before its execs. Opus critic CLOSED.
+- #229 (#199, ADR 0054): range trials decide `canary_interval_s` (CanaryEvery 29 s; Laurel and auditd frozen in turn)
+  and `rss_mib` (rss-1000, rss-burst, rss-large at 1 exec/s of 2 MB, shipped-queue correction, VmHWM, OOM as MISS;
+  control rss-oom-control). KVM: canary, rss-1000, rss-large PASS (~180 MiB with the correction), the control MISS.
+  Store reads wait for an idle audit (rate-burst no longer misses its barrier); trials print host lines in CI logs.
+- #230: archive.archlinux.org downloads (pacman download, mkosi build) get three tries; #225 a flaky freeze test.
+- ADR 0051 (holes to milestones), 0052 (deciders of six metrics), 0053 (FIDO2 ssh-keygen -Y for manifests), 0055
+  (a floor closes with /security-audit and a deletion pass). Laurel upstream #313 (SIGHUP double emit).
 ## Next step
-1. /security-audit of floor 0 (maintainer).
-2. 9.5 (milestone; ADR 0051 maps the 28 holes: T8's x32 and T9 block it, T9 needs a hardware key) when every range
-   metric and the product bar pass: #199, #213 first; #197, #201, #204 the maintainer's; 2026-11-10 C3 (#200).
+1. Range: the collector runs with the shipped 64 MiB queue, loss trials lower it at runtime (rss-burst and rate-burst
+   lose records at the range's 8 MiB, ADR 0039 point 2); then per-second steal windows for the drain guard (an ADR).
+2. 9.5 (ADR 0051): #196 installer (ADR 0053), #197, #198, #201-#204, #213's trial and fact; C3 2026-11-10 (#200).
+   Floor 0 closes with ADR 0055's two passes.
 ## Open decisions (maintainer)
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
