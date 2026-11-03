@@ -55,18 +55,15 @@ func checkSSHSIG(signer Signer, msg, armored []byte) error {
 	if len(point) != ed25519.PublicKeySize || !bytes.Equal(sigType, keyType) {
 		return errors.New("signature: not an ed25519 signature of the allowed key's type")
 	}
-	switch string(keyType) {
-	case "ssh-ed25519":
-	case SKKeyType:
-		app, flags, counter := key.str(), s.next(1), s.next(4)
-		if s.bad || flags[0]&(skPresence|skVerified) != skPresence|skVerified {
-			return errors.New("signature: made without the token's touch and PIN (sk flags)")
-		}
-		appHash, signedHash := sha256.Sum256(app), sha256.Sum256(signed)
-		signed = slices.Concat(appHash[:], flags, counter, signedHash[:])
-	default:
+	if string(keyType) != SKKeyType {
 		return errors.New("signature: of another key type")
 	}
+	app, flags, counter := key.str(), s.next(1), s.next(4)
+	if s.bad || flags[0]&(skPresence|skVerified) != skPresence|skVerified {
+		return errors.New("signature: made without the token's touch and PIN (sk flags)")
+	}
+	appHash, signedHash := sha256.Sum256(app), sha256.Sum256(signed)
+	signed = slices.Concat(appHash[:], flags, counter, signedHash[:])
 	if !key.done() || !s.done() || !ed25519.Verify(point, signed, sig) {
 		return errors.New("signature: does not verify")
 	}
