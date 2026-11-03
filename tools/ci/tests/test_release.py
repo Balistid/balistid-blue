@@ -318,6 +318,7 @@ class BootstrapTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.mark = self.tmp / "ran"
+        self.installed = self.tmp / "installed-balistid-install"
         self.log = self.tmp / "log"
         self.log.write_text("")
         self.key = Key(self.subdir("key"))
@@ -360,6 +361,10 @@ class BootstrapTest(unittest.TestCase):
         self.assertIn("balistid.dev", out[2])
         argv = shlex.split(out[5])
         self.assertEqual(argv[:3], ["/usr/bin/env", "-i", f"PATH={release.ROOT_PATH}"])
+        # The installed installer's path stands in the test's directory, so a test decides whether one exists.
+        script = argv.index("-c") + 1
+        self.assertEqual(argv[script].count(release.INSTALLED), 1)
+        argv[script] = argv[script].replace(release.INSTALLED, str(self.installed))
         return [*argv[:2], f"PATH={self.stubs}:{release.ROOT_PATH}", *argv[3:]]
 
     def run_bootstrap(self, stage: str, argv: list[str] | None = None, env: dict | None = None,
@@ -422,6 +427,15 @@ class BootstrapTest(unittest.TestCase):
         self.bundle.unlink()
         release.bundle(files, self.bundle)
         self.assert_ran_nothing(self.run_bootstrap(str(self.stage)))
+
+    # The command checks no sk flags, so it is the first install only: with an installer in place it reads nothing.
+    def test_an_installed_host_runs_nothing(self):
+        self.installed.write_text("#!/bin/sh\n")
+        r = self.run_bootstrap(str(self.stage))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.mark.exists())
+        self.assertEqual(self.logged("runuser"), [])
+        self.assertIn("logger -s -t balistid-install an installer is installed: run it, not this", self.logged("logger"))
 
     # A verifier that prints the right line and then fails is a failure: its exit status gates, not only its output.
     def test_a_verifier_that_fails_after_saying_good_runs_nothing(self):
