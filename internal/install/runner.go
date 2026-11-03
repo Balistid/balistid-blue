@@ -64,35 +64,50 @@ const (
 // no command. A failed step stops with what was written in place: there is no rollback, as before. It starts
 // nothing. Every outcome is logged through cfg.Log.
 func Runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string) error {
-	d := decision{component: "runner"}
-	err := runner(ctx, cfg, dir, maintainer, fingerprint, &d)
-	cfg.Log(ctx, d.line(err))
+	d := Decision{Outcome: "installed", Component: "runner", Version: buildinfo.Version}
+	writing := false
+	err := runner(ctx, cfg, dir, maintainer, fingerprint, &d, &writing)
+	switch {
+	case err != nil && writing:
+		d.Outcome, d.Reason = "stopped", err.Error()
+	case err != nil:
+		d.Outcome, d.Reason = "refused", err.Error()
+	}
+	cfg.Log(ctx, d)
 	return err
 }
 
-// decision is what one run logs: install or refuse, the reason and what the release was (ENGINEERING.md 3).
-type decision struct {
-	component, commit, manifest, signer string
-	writing                             bool
+// DecisionSchema is the version of the Decision record; a reader rejects another major version (ENGINEERING.md 3).
+const DecisionSchema = 1
+
+// Decision is what one run logs: installed, refused or stopped, the reason and what the release was.
+type Decision struct {
+	Outcome, Component, Commit, ManifestSHA256, Signer, Version, Reason string
 }
 
-func (d decision) line(err error) string {
-	outcome := "installed"
-	switch {
-	case err != nil && d.writing:
-		outcome = "stopped"
-	case err != nil:
-		outcome = "refused"
-	}
-	line := fmt.Sprintf("balistid-install %s component=%s commit=%s manifest_sha256=%s signer=%s version=%s",
-		outcome, d.component, d.commit, d.manifest, d.signer, buildinfo.Version)
-	if err != nil {
-		line += fmt.Sprintf(" reason=%q", err.Error())
-	}
-	return line
+// Attrs are the decision's fields for log/slog, schema_version first.
+func (d Decision) Attrs() []slog.Attr {
+	return []slog.Attr{slog.Int("schema_version", DecisionSchema), slog.String("outcome", d.Outcome),
+		slog.String("component", d.Component), slog.String("commit", d.Commit),
+		slog.String("manifest_sha256", d.ManifestSHA256), slog.String("signer", d.Signer),
+		slog.String("version", d.Version), slog.String("reason", d.Reason)}
 }
 
-func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string, d *decision) error {
+// Line is the decision as one journal line of key=value fields; values are quoted where they need it.
+func (d Decision) Line() string {
+	var b strings.Builder
+	b.WriteString("balistid-install")
+	for _, a := range d.Attrs() {
+		v := a.Value.String()
+		if v == "" || strings.ContainsFunc(v, func(r rune) bool { return r <= ' ' || r == '"' || r == '=' || r > '~' }) {
+			v = strconv.Quote(v)
+		}
+		b.WriteString(" " + a.Key + "=" + v)
+	}
+	return b.String()
+}
+
+func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string, d *Decision, writing *bool) error {
 	host, err := os.OpenRoot(cfg.Root)
 	if err != nil {
 		return fmt.Errorf("open the root: %w", err)
@@ -102,8 +117,8 @@ func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string
 	if err != nil {
 		return err
 	}
-	d.commit, d.manifest, d.signer = r.Manifest.Commit, hex.EncodeToString(r.ManifestSHA256[:]), r.Signer.Fingerprint()
-	if r.Manifest.Component != d.component {
+	d.Commit, d.ManifestSHA256, d.Signer = r.Manifest.Commit, hex.EncodeToString(r.ManifestSHA256[:]), r.Signer.Fingerprint()
+	if r.Manifest.Component != d.Component {
 		return errors.New("the manifest is not of the runner component")
 	}
 	names := make([]string, len(runnerTable))
@@ -124,7 +139,7 @@ func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string
 	if err != nil {
 		return err
 	}
-	d.writing = true
+	*writing = true
 	return apply(ctx, cfg, host, r, maintainer, muid, absent)
 }
 
@@ -380,11 +395,11 @@ func lookupGID(name string) (int, error) {
 	return strconv.Atoi(g.Gid) //nolint:wrapcheck // a number the group file holds
 }
 
-// logDecision writes line to stderr and to the journal through logger; a logger that fails is reported, not
-// hidden.
-func logDecision(ctx context.Context, line string) {
-	slog.InfoContext(ctx, line)
-	if err := runCommand(ctx, []string{"/usr/bin/logger", "-t", "balistid-install", "--", line}); err != nil {
+// logDecision writes d to stderr as structured fields and to the journal through logger; a logger that fails is
+// reported, not hidden.
+func logDecision(ctx context.Context, d Decision) {
+	slog.LogAttrs(ctx, slog.LevelInfo, "balistid-install decision", d.Attrs()...)
+	if err := runCommand(ctx, []string{"/usr/bin/logger", "-t", "balistid-install", "--", d.Line()}); err != nil {
 		slog.ErrorContext(ctx, "the decision did not reach the journal", "err", err)
 	}
 }
