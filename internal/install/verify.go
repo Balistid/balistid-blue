@@ -258,5 +258,5 @@ func verifySignature(ctx context.Context, cfg Config, signer Signer, manifest, s
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("the signature does not verify: ssh-keygen: %w", err)
 	}
-	return nil
+	return checkSSHSIG(signer, manifest, sig)
 }
