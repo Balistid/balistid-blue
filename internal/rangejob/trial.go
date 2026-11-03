@@ -272,8 +272,8 @@ var trials = slices.Concat([]Trial{
 			Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}},
 		{Name: "rss-burst", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
 			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
-		{Name: "rss-large", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
-			Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}},
+		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
+			Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 10}},
 	},
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).

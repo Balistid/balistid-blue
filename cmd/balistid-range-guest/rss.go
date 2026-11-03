@@ -21,6 +21,15 @@ import (
 // rssEvery is how often an RSS trial sums the resident memory of the recorder's units (rss_mib).
 const rssEvery = time.Second
 
+// rssDrainWait is how long an RSS trial waits for the store to catch up with its load: 2 MB records reach it
+// at tens of MB/s, so a large load drains for minutes, and its memory counts until it has.
+func rssDrainWait(kind string) time.Duration {
+	if kind == rangejob.LoadExecLarge {
+		return 3 * time.Minute
+	}
+	return cpuDrainWait
+}
+
 // runRSS generates the trial's load and, every rssEvery from before it until it drained, sums the VmRSS of
 // every process of the image's long-running balistid services, and of auditd's cgroup with Laurel as a trend
 // (rss_mib). A unit whose cgroup cannot be read fails the trial; the host judges the largest sum.
@@ -69,7 +78,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if genErr == nil {
 		drainErr = drained(w, time.Now, func() string {
 			return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
-		})
+		}, rssDrainWait(tr.Load.Kind))
 	}
 	m := stop()
 	switch {

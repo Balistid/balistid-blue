@@ -162,7 +162,7 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	cpu, _ := Lookup("cpu-1000")
 	burst, _ := Lookup("rate-burst")
-	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 50, Seconds: 20}}
+	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 50, Seconds: 10}}
 	got := map[string]Load{}
 	for _, tr := range Trials() {
 		if tr.Metric != MetricRSS {

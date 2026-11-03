@@ -132,7 +132,7 @@ func TestDrained(t *testing.T) {
 	clock := func() time.Time { return now }
 	empty := func() string { return "0" }
 	w := &commitWatch{seq: 5, at: now.Add(-cpuDrainQuiet), done: make(chan struct{})}
-	if err := drained(w, clock, empty); err != nil {
+	if err := drained(w, clock, empty, cpuDrainWait); err != nil {
 		t.Errorf("quiet with an empty backlog: %v", err)
 	}
 	tick := now
@@ -140,15 +140,15 @@ func TestDrained(t *testing.T) {
 		tick = tick.Add(10 * time.Second)
 		return tick
 	}
-	if err := drained(w, moving, func() string { return "12" }); err == nil || !strings.Contains(err.Error(), `backlog was still "12"`) {
+	if err := drained(w, moving, func() string { return "12" }, cpuDrainWait); err == nil || !strings.Contains(err.Error(), `backlog was still "12"`) {
 		t.Errorf("quiet with a backlog: %v", err)
 	}
-	if err := drained(&commitWatch{done: make(chan struct{})}, clock, empty); err == nil || !strings.Contains(err.Error(), "no commit line") {
+	if err := drained(&commitWatch{done: make(chan struct{})}, clock, empty, cpuDrainWait); err == nil || !strings.Contains(err.Error(), "no commit line") {
 		t.Errorf("no commit line: %v", err)
 	}
 	ended := &commitWatch{seq: 5, at: now, done: make(chan struct{})}
 	close(ended.done)
-	if err := drained(ended, clock, empty); err == nil || !strings.Contains(err.Error(), "follower ended") {
+	if err := drained(ended, clock, empty, cpuDrainWait); err == nil || !strings.Contains(err.Error(), "follower ended") {
 		t.Errorf("follower ended: %v", err)
 	}
 	// A backlog seen once, then commits that resume: the wait runs out on the commits, not the backlog.
@@ -158,11 +158,11 @@ func TestDrained(t *testing.T) {
 		reads++
 		resumed.at = now.Add(time.Hour)
 		return "12"
-	}); err == nil || !strings.Contains(err.Error(), "still committed") || reads != 1 {
+	}, cpuDrainWait); err == nil || !strings.Contains(err.Error(), "still committed") || reads != 1 {
 		t.Errorf("backlog then resumed commits: %v after %d reads", err, reads)
 	}
 	busy := &commitWatch{seq: 5, at: now.Add(time.Hour), done: make(chan struct{})} // never a quiet second
-	if err := drained(busy, moving, empty); err == nil || !strings.Contains(err.Error(), "still committed") {
+	if err := drained(busy, moving, empty, cpuDrainWait); err == nil || !strings.Contains(err.Error(), "still committed") {
 		t.Errorf("never quiet: %v", err)
 	}
 }
