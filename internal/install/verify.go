@@ -21,11 +21,10 @@ import (
 )
 
 // Config is where and as whom balistid-install works. DefaultConfig is the host's; tests point it at a fake root
-// owned by their own uid, a software key type and stand-in programs.
+// owned by their own uid and stand-in programs.
 type Config struct {
 	Root          string // the host's "/"
 	UID, GID      int    // owner of every root-owned path it checks or writes
-	KeyType       string // the only key type allowed_signers may hold
 	SSHKeygen     string
 	VerifyTimeout time.Duration
 	Run           func(ctx context.Context, argv []string) error                                // a command that changes the host
@@ -35,9 +34,9 @@ type Config struct {
 	Log           func(ctx context.Context, d Decision) // the decision of a run
 }
 
-// DefaultConfig is the configuration of a real host: root's paths, the sk key type (R2), the real commands.
+// DefaultConfig is the configuration of a real host: root's paths and the real commands.
 func DefaultConfig() Config {
-	return Config{Root: "/", KeyType: SKKeyType, SSHKeygen: "/usr/bin/ssh-keygen", VerifyTimeout: 10 * time.Second,
+	return Config{Root: "/", SSHKeygen: "/usr/bin/ssh-keygen", VerifyTimeout: 10 * time.Second,
 		Run: runCommand, Show: status.Show, LookupUser: lookupUID, LookupGroup: lookupGID, Log: logDecision}
 }
 
@@ -123,7 +122,7 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 	file := path.Join(signersDir, signersName)
 	if fingerprint != "" {
 		if _, err := host.Lstat(file); errors.Is(err, fs.ErrNotExist) {
-			s, err := ParseSigners(bundled, cfg.KeyType)
+			s, err := ParseSigners(bundled)
 			if err != nil {
 				return Signer{}, err
 			}
@@ -149,7 +148,7 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 	if err != nil {
 		return Signer{}, fmt.Errorf("/%s: %w", file, err)
 	}
-	s, err := ParseSigners(data, cfg.KeyType)
+	s, err := ParseSigners(data)
 	if err != nil {
 		return Signer{}, err
 	}

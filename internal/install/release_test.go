@@ -43,7 +43,7 @@ func TestRunnerInstallsWhatReleasePyWrites(t *testing.T) {
 	release("bundle", "--dir", files, "--out", filepath.Join(h.dir, bundleName))
 	m, err := os.ReadFile(filepath.Join(files, manifestName)) //nolint:gosec // test temp dir
 	must(t, err)
-	must(t, os.WriteFile(filepath.Join(h.dir, sigName), h.key.sign(t, m, Namespace), 0o600))
+	must(t, os.WriteFile(filepath.Join(h.dir, sigName), h.key.sign(t, m, Namespace), 0o600)) //nolint:gosec // test temp dir
 	if err := h.install(t, s, maint, ""); err != nil {
 		t.Fatal(err)
 	}

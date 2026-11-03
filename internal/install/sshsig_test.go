@@ -22,8 +22,10 @@ type skKey struct {
 	blob []byte
 }
 
-func newSKKey(seed byte) skKey {
-	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
+func newSKKey(seed byte) skKey { return skKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize)) }
+
+func skKeyFromSeed(seed []byte) skKey {
+	priv := ed25519.NewKeyFromSeed(seed)
 	pub, _ := priv.Public().(ed25519.PublicKey)
 	return skKey{priv: priv, blob: slices.Concat(sshString([]byte(SKKeyType)), sshString(pub), sshString([]byte("ssh:")))}
 }
@@ -61,7 +63,6 @@ func skHost(t *testing.T, flags byte) *fakeHost {
 	t.Helper()
 	h := newHost(t)
 	k := newSKKey(1)
-	h.cfg.KeyType = SKKeyType
 	h.put(t, "etc/balistid/allowed_signers", k.signers(), 0o644)
 	files := runnerFiles(k.signers())
 	m := manifestOf(files)
@@ -97,7 +98,7 @@ func TestCheckVerifiesTheSignatureBesideSshKeygen(t *testing.T) {
 		"garbage":           []byte("x"),
 	} {
 		h := newHost(t)
-		h.cfg.KeyType, h.cfg.SSHKeygen = SKKeyType, stand
+		h.cfg.SSHKeygen = stand
 		h.put(t, "etc/balistid/allowed_signers", k.signers(), 0o644)
 		h.publish(t, files, m, sig)
 		h.refuses(t, label, "", "signature")
@@ -107,7 +108,7 @@ func TestCheckVerifiesTheSignatureBesideSshKeygen(t *testing.T) {
 // Anything but one armored SSHSIG v1 of the allowed key, in the install namespace, is refused.
 func TestCheckSSHSIGRefusesAnythingElse(t *testing.T) {
 	k := newSKKey(1)
-	signer, err := ParseSigners(k.signers(), SKKeyType)
+	signer, err := ParseSigners(k.signers())
 	must(t, err)
 	msg := []byte("MANIFEST\n")
 	good := k.sign(msg, Namespace, 0x05)
@@ -138,7 +139,7 @@ func TestCheckSSHSIGRefusesAnythingElse(t *testing.T) {
 // every other signed byte are bound.
 func FuzzCheckSSHSIG(f *testing.F) {
 	k := newSKKey(1)
-	signer, err := ParseSigners(k.signers(), SKKeyType)
+	signer, err := ParseSigners(k.signers())
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -158,4 +159,20 @@ func FuzzCheckSSHSIG(f *testing.F) {
 			t.Fatalf("accepted another signature %q", b)
 		}
 	})
+}
+
+// Only the token's key type is ever verified: a plain ed25519 key's valid signature, which carries no flags, is not.
+func TestCheckSSHSIGRefusesAPlainKey(t *testing.T) {
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{3}, ed25519.SeedSize))
+	pub, _ := priv.Public().(ed25519.PublicKey)
+	blob := slices.Concat(sshString([]byte("ssh-ed25519")), sshString(pub))
+	msg := []byte("MANIFEST\n")
+	h := sha512.Sum512(msg)
+	tbs := slices.Concat([]byte("SSHSIG"), sshString([]byte(Namespace)), sshString(nil), sshString([]byte("sha512")), sshString(h[:]))
+	sig := slices.Concat(sshString([]byte("ssh-ed25519")), sshString(ed25519.Sign(priv, tbs)))
+	raw := slices.Concat([]byte("SSHSIG"), binary.BigEndian.AppendUint32(nil, 1), sshString(blob), sshString([]byte(Namespace)),
+		sshString(nil), sshString([]byte("sha512")), sshString(sig))
+	if err := checkSSHSIG(Signer{blob: blob}, msg, armor(raw)); err == nil || !strings.Contains(err.Error(), "another key type") {
+		t.Fatalf("a plain ed25519 signature: %v", err)
+	}
 }
