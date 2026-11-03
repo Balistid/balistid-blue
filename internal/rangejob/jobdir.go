@@ -9,7 +9,8 @@ import (
 	"os"
 	"regexp"
 	"slices"
-	"syscall"
+
+	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // MaxProgramBytes caps the program of an exec job; it must fit the job disk.
@@ -103,51 +104,16 @@ func entries(dir *os.Root) ([]string, error) {
 	return names, nil
 }
 
-// readEntry reads at most limit bytes of the regular file name in dir, checked before and after
-// the open; the error names the entry, never its content.
+// readEntry reads the entry name in dir through wholefile.ReadIn; the error names the entry by its role,
+// never by the name the agent chose, nor its content.
 func readEntry(dir *os.Root, name string, limit int64) ([]byte, error) {
 	label := "program"
 	if name == RequestFile {
 		label = RequestFile
 	}
-	before, err := dir.Lstat(name)
+	data, err := wholefile.ReadIn(dir, name, limit)
 	if err != nil {
-		return nil, fmt.Errorf("%s: missing", label)
-	}
-	if err := plainFile(before, limit); err != nil {
 		return nil, fmt.Errorf("%s: %w", label, err)
-	}
-	f, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, fmt.Errorf("%s: cannot open", label)
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	after, err := f.Stat()
-	if err != nil || !os.SameFile(before, after) {
-		return nil, fmt.Errorf("%s: changed while it was opened", label)
-	}
-	if err := plainFile(after, limit); err != nil {
-		return nil, fmt.Errorf("%s: %w", label, err)
-	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("%s: cannot read", label)
-	}
-	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("%s: over %d bytes", label, limit)
 	}
 	return data, nil
-}
-
-func plainFile(fi fs.FileInfo, limit int64) error {
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	switch {
-	case !fi.Mode().IsRegular():
-		return errors.New("not a regular file")
-	case !ok || st.Nlink != 1:
-		return errors.New("must have exactly one link")
-	case fi.Size() > limit:
-		return fmt.Errorf("over %d bytes", limit)
-	}
-	return nil
 }
