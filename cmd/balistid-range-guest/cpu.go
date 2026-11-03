@@ -24,8 +24,9 @@ const (
 	cpuDrainWait   = 60 * time.Second
 )
 
-// unitSample is a unit's cgroup CPU µs and memory peak and the invocation they belong to, or why not.
+// unitSample is a unit's cgroup, its CPU µs and memory peak and the invocation they belong to, or why not.
 type unitSample struct {
+	cgroup     string
 	usec       uint64
 	memPeak    string
 	invocation string
@@ -46,7 +47,7 @@ func sampleUnit(ctx context.Context, unit string) unitSample {
 	if err != nil {
 		return unitSample{err: fmt.Errorf("%s: %w", unit, err)}
 	}
-	return unitSample{usec: usec, memPeak: readTrim("/sys/fs/cgroup" + cg + "/memory.peak"), invocation: inv}
+	return unitSample{cgroup: cg, usec: usec, memPeak: readTrim("/sys/fs/cgroup" + cg + "/memory.peak"), invocation: inv}
 }
 
 // usageUsec is usage_usec of a cgroup's cpu.stat.

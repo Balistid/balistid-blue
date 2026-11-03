@@ -1,9 +1,11 @@
 package rangejob
 
 import (
+	"maps"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -115,6 +117,16 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricStatus, Inject: InjectLedger}, ""},
 		{Trial{Metric: MetricStatus, Inject: InjectStatus, Failure: FailKill}, ""},
 		{Trial{Metric: MetricStatus, Inject: InjectStatus, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600}}, MethodRSS},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}}, MethodRSS},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}}, MethodRSS},
+		{Trial{Metric: MetricRSS}, ""},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}}, ""},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadWrite, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600, Drop: true}}, ""},
+		{Trial{Metric: MetricRSS, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricRSS, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -142,6 +154,40 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 	}
 	if boots < 10 {
 		t.Errorf("%d ready boots; acceptance ready_s asks 10", boots)
+	}
+}
+
+// rss_mib is measured at the three loads the maintainer chose (2026-11-03): cpu-1000's execs, rate-burst's
+// ptrace burst and 50 execs/s of record-max's 2 MB argv, each deciding; acceptance/0.toml names the same.
+func TestRSSTrialsAreTheAcceptance(t *testing.T) {
+	cpu, _ := Lookup("cpu-1000")
+	burst, _ := Lookup("rate-burst")
+	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 50, Seconds: 20}}
+	got := map[string]Load{}
+	for _, tr := range Trials() {
+		if tr.Metric != MetricRSS {
+			continue
+		}
+		got[tr.Name] = tr.Load
+		if tr.Method() != MethodRSS || tr.Trend || tr.Expect != "" {
+			t.Errorf("%s: method %q, trend %v, expect %q", tr.Name, tr.Method(), tr.Trend, tr.Expect)
+		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("rss trials %v, want %v", got, want)
+	}
+	data, err := os.ReadFile("../../acceptance/0.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := regexp.MustCompile(`(?m)^id = "rss_mib"\nmax = 256 .*\nunit = "(.*)"$`).FindSubmatch(data)
+	if unit == nil {
+		t.Fatal("no rss_mib of 256 with a unit in acceptance/0.toml")
+	}
+	for _, load := range []string{"at 1000 execs/s", "at burst_rate with its small ptrace records", "at 50 execs/s with 2 MB argv records"} {
+		if !strings.Contains(string(unit[1]), load) {
+			t.Errorf("rss_mib's unit does not say %q", load)
+		}
 	}
 }
 

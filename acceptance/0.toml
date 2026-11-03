@@ -103,10 +103,10 @@ method = "go test -fuzz in a scheduled CI workflow on main (ADR 0016); only a co
 [[metric]]
 id = "rss_mib"
 max = 256                    # lowered from 512 by ADR 0040 (product bar)
-unit = "MiB, all Balistid Blue processes at 1000 records/s, at burst_rate with 64 KiB records, and at 50 execs/s with 2048 KiB records"
+unit = "MiB, all Balistid Blue processes at 1000 execs/s, at burst_rate with its small ptrace records, and at 50 execs/s with 2 MB argv records (16 arguments of 125000 B under the default stack, record_max_kib's 2 MB case)"
 rows = ["T20"]
 adr = "0007"
-method = "Maximum summed RSS from /proc over each run."
+method = "In the range (rss-1000 for 600 s, rss-burst at 10000 ptrace records/s for 10 s, rss-large for 20 s): every 1 s from before the load until the audit backlog is empty and commits stop for 3 s, the sum of VmRSS (/proc/<pid>/status) of every process in the cgroups of the image's long-running balistid-* services (not balistid-range-*, not oneshots); the maximum sum of a run in KiB. A rate not held in any 10 s window, a record the kernel lost, a restarted unit, a cgroup not read, a unit without a process, or fewer samples than seconds of load is INVALID. auditd's cgroup with Laurel is kept as a trend and never decides."
 
 [[metric]]
 id = "cpu_cores"
