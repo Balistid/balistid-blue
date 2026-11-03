@@ -84,13 +84,22 @@ func manifestOf(files map[string][]byte) []byte {
 
 // runnerFiles is a release of the runner component as release.py bundles it, with signers as its allowed_signers.
 func runnerFiles(signers []byte) map[string][]byte {
-	files := map[string][]byte{"allowed_signers": signers}
+	files := map[string][]byte{"allowed_signers": signers, "tmpfiles.conf": deployTmpfiles}
 	for _, name := range []string{"balistid-runner", "balistid-install", "balistid-runner-build.service",
-		"balistid-runner-tick.service", "balistid-runner-tick.timer", "sysusers.conf", "tmpfiles.conf"} {
+		"balistid-runner-tick.service", "balistid-runner-tick.timer", "sysusers.conf"} {
 		files[name] = []byte(name + " of the release\n")
 	}
 	return files
 }
+
+// deployTmpfiles is the runner's real tmpfiles.conf: the installer checks the directories it names.
+var deployTmpfiles = func() []byte {
+	b, err := os.ReadFile("../../deploy/runner/tmpfiles.conf")
+	if err != nil {
+		panic(err)
+	}
+	return b
+}()
 
 // publish writes the bundle of files with manifest, and sig unless it is nil, into the release directory.
 func (h *fakeHost) publish(t *testing.T, files map[string][]byte, manifest, sig []byte) {
