@@ -29,9 +29,26 @@ const rssEvery = time.Second
 // (SD_MESSAGE_UNIT_OUT_OF_MEMORY): it stays in the journal after systemd restarted the unit and removed its cgroup.
 const unitOOMMessage = "fe6faa94e7774663a0da52717891d8ef"
 
-// oomInjection is rss-oom-control's injection: the ledger's MemoryMax, until the VM ends, far below what it holds,
+// oomInjection is rss-oom-control's injection: its unit's MemoryMax, until the VM ends, far below what it holds,
 // so the kernel OOM-kills it at once and at each restart (ADR 0054).
-var oomInjection = []string{"set-property", "--runtime", ledgerUnit, "MemoryMax=1M"}
+var oomInjection = []string{"set-property", "--runtime", rangevm.OOMControlUnit, "MemoryMax=1M"}
+
+// injectOOM runs oomInjection and returns when in ns it began, or why not, and the OOM events of the unit before it,
+// its cgroup's memory.events and systemd's messages, which must be none for the control's MISS to be the
+// injection's, or why they were not read: then the injection is not tried.
+func injectOOM(ctx context.Context) (injected, before string) {
+	journal, errJ := oomJournal(ctx, []string{rangevm.OOMControlUnit})
+	_, _, events, errE := cgroupSum("/", []string{sampleUnit(ctx, rangevm.OOMControlUnit).cgroup}, "VmRSS")
+	if err := errors.Join(errJ, errE); err != nil {
+		return "not tried: " + err.Error(), "unread: " + err.Error()
+	}
+	before = strconv.FormatUint(journal+events[0], 10)
+	at := time.Now().UnixNano()
+	if err := systemctl(ctx, oomInjection...); err != nil {
+		return "failed: " + err.Error(), before
+	}
+	return strconv.FormatInt(at, 10), before
+}
 
 // rssDrainWait bounds how long an RSS trial waits for the store to catch up with its load. Laurel holds 2 MB records
 // at about 4 MB/s on one core (ADR 0054), so a backlog it builds drains no faster than the load came.
@@ -56,6 +73,10 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	units := longRunning(balistidUnits(ctx), func(u string) string {
 		return strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "Type", u))
 	})
+	control := tr.Inject == rangejob.InjectOOM
+	if control { // the unit it kills proves the OOM path, not memory: neither sampled nor waited for
+		units = slices.DeleteFunc(units, func(u string) bool { return u == rangevm.OOMControlUnit })
+	}
 	if len(units) == 0 {
 		return r.fail("no long-running balistid service")
 	}
@@ -98,9 +119,9 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
 	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
-	var injectErr error
-	if tr.Inject == rangejob.InjectOOM {
-		injectErr = systemctl(ctx, oomInjection...)
+	injected, oomBefore := rangevm.RSSNone, rangevm.RSSNone
+	if control {
+		injected, oomBefore = injectOOM(ctx)
 	}
 	from := time.Now()
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
@@ -123,7 +144,6 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 			runErrs = append(runErrs, what+err.Error())
 		}
 	}
-	note("OOM injection: ", injectErr)
 	note("generator: ", genErr)
 	note("", drainErr)
 	note("rss: ", m.err)
@@ -135,8 +155,16 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 			same = unit + ": " + why
 		}
 	}
-	journalOOM, err := oomJournal(ctx, units)
+	oomUnits := units
+	if control { // only the killed unit's messages, of which there were none before the injection
+		oomUnits = []string{rangevm.OOMControlUnit}
+	}
+	journalOOM, err := oomJournal(ctx, oomUnits)
 	note("OOM journal: ", err)
+	oom := m.oomEvents() + journalOOM // a journal not read cannot unsay the cgroups' events
+	if control {
+		oom = journalOOM
+	}
 	lostAfter, overflowAfter := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	lostRecords, err := storeLosses(ctx, from.UnixNano(), time.Now().UnixNano()) // last: the read stops the collector
 	if err != nil {
@@ -165,7 +193,9 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRSSHWMKiB, u(hwm))
 	// Both counts for the host's log, as the OOM control proves each path in a real kill.
 	hostLine(os.Stdout, "rss oom: %d in the units' memory.events, %d in the journal", m.oomEvents(), journalOOM)
-	r.add(rangevm.FactRSSOOM, u(m.oomEvents()+journalOOM)) // a journal not read cannot unsay the cgroups' events
+	r.add(rangevm.FactRSSOOM, u(oom))
+	r.add(rangevm.FactRSSInjected, injected)
+	r.add(rangevm.FactRSSOOMBefore, oomBefore)
 	r.add(rangevm.FactRSSQueueBytes, queue)
 	audit := u(m.auditKiB)
 	if m.auditWhy != "" {

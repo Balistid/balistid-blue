@@ -367,7 +367,8 @@ func TestOOMInjectionLowersARecordersLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(oomInjection[:3], []string{"set-property", "--runtime", ledgerUnit}) || !rangevm.RSSUnits()[ledgerUnit] ||
+	if !slices.Equal(oomInjection[:3], []string{"set-property", "--runtime", rangevm.OOMControlUnit}) ||
+		rangevm.OOMControlUnit != ledgerUnit || !rangevm.RSSUnits()[ledgerUnit] ||
 		oomInjection[3] != "MemoryMax=1M" || !strings.Contains(string(unit), "\nMemoryMax=128M\n") {
 		t.Errorf("injection %v of a unit installed with another MemoryMax", oomInjection)
 	}

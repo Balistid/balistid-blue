@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Balistid/balistid-blue/internal/collector"
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 const rssUnits = "balistid-auditstat.service,balistid-collector.service,balistid-ledger.service,balistid-pi.service," +
@@ -23,7 +24,11 @@ func rssRun(t *testing.T, name string, change ...string) Outcome {
 		FactLostBefore: "3", FactLostAfter: "3", FactOverflowBefore: "no", FactOverflowAfter: "no", FactLostRecords: "0",
 		FactUnits: "same", FactRSSRun: "ok", FactRSSUnits: rssUnits, FactRSSSamples: strconv.Itoa(tr.Load.Seconds + 5),
 		FactRSSLoadGapMS: "1004", FactRSSProcsMin: "1", FactRSSMaxKiB: "150000", FactRSSHWMKiB: "160000", FactRSSOOM: "0",
-		FactRSSQueueBytes: "8388608", FactRSSAuditKiB: "40000",
+		FactRSSQueueBytes: "8388608", FactRSSAuditKiB: "40000", FactRSSInjected: RSSNone, FactRSSOOMBefore: RSSNone,
+	}
+	if tr.Inject == rangejob.InjectOOM { // the control's sound run: proven, clean before, the other units sampled
+		base[FactRSSUnits] = strings.Replace(rssUnits, "balistid-ledger.service,", "", 1)
+		base[FactRSSInjected], base[FactRSSOOMBefore], base[FactRSSOOM] = "1793686252000000000", "0", "79"
 	}
 	return probeRun(name, rssFacts, base, change...)
 }
@@ -130,13 +135,32 @@ func TestOOMControlMissesOnlyByItsOOM(t *testing.T) {
 	}
 	run := func(change ...string) Outcome { return rssRun(t, "rss-oom-control", change...) }
 	for change, want := range map[string]string{
-		"rss_oom=2": Miss, "rss_oom=1,units=balistid-ledger.service: restarted": Miss,
-		"rss_oom=1,rss_max_kib=300000": Miss,
-		// Without an OOM event the injection proved nothing: a clean run, a restart or a peak over the limit alone.
-		"": Invalid, "units=balistid-ledger.service: restarted": Invalid, "rss_max_kib=300000": Invalid,
-		"rss_hwm_kib=300000,units=balistid-ledger.service: restarted": Invalid, "rss_oom=x": Invalid,
+		"": Miss, "rss_oom=1": Miss, "rss_max_kib=300000": Miss,
+		// No OOM event after the injection, or a peak over the limit alone.
+		"rss_oom=0": Invalid, "rss_oom=0,rss_max_kib=300000": Invalid, "rss_oom=x": Invalid,
+		// The injection not proven, or the unit's OOM events from before it.
+		"rss_injected=failed: exit status 1": Invalid, "rss_injected=not tried: journalctl": Invalid, "rss_injected=0": Invalid,
+		"rss_injected=none": Invalid, "rss_injected": Invalid, "rss_oom_before=1": Invalid, "rss_oom_before=none": Invalid,
+		"rss_oom_before=unread: gone": Invalid, "rss_oom_before": Invalid,
+		// The rest of the run not whole: no load, the run failed or missing, units, samples.
+		"generated=0": Invalid, "rss_run=generator: exec": Invalid, "rss_run": Invalid, "rss_units": Invalid,
+		"rss_units=" + rssUnits: Invalid, "rss_samples=0": Invalid, "units=balistid-collector.service: restarted": Invalid,
+		"overflow_after=yes": Invalid, "lost_records=1": Invalid, "rss_load_gap_ms=5000": Invalid,
 	} {
 		if v, r := JudgeTrial(tr, run(strings.Split(change, ",")...), cleanBuild, cleanBuild); v != want {
+			t.Errorf("%q: %s (%s), want %s", change, v, r, want)
+		}
+	}
+}
+
+// An ordinary RSS trial carries no injection, and still counts an OOM event from any time.
+func TestOrdinaryRSSHasNoInjection(t *testing.T) {
+	tr := trial(t, "rss-burst")
+	for change, want := range map[string]string{
+		"rss_injected=1793686252000000000": Invalid, "rss_oom_before=0": Invalid, "rss_oom=1": Miss,
+		"rss_oom=1,rss_injected=1": Miss,
+	} {
+		if v, r := JudgeTrial(tr, rssRun(t, "rss-burst", strings.Split(change, ",")...), cleanBuild, cleanBuild); v != want {
 			t.Errorf("%q: %s (%s), want %s", change, v, r, want)
 		}
 	}
