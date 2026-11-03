@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -13,12 +14,18 @@ import (
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
-// canaryLaurel is a canary record shaped as Laurel writes it with enrich on: the "PID" object and "UID" name
-// beside the numbers, key and path as given.
+// canaryLaurel is a canary record shaped as Laurel writes it with enrich on and translate.universal off: the
+// syscall's number beside its name, the "PID" object and "UID" name beside the numbers, key and path as given.
 func canaryLaurel(id string, uid, pid int, success, key, path string) rawrecord.Record {
-	line := fmt.Sprintf(`{"ID":%q,"SYSCALL":{"syscall":"openat","success":%q,"uid":%d,"UID":"balistid-collector",`+
-		`"pid":%d,"PID":{"EVENT_ID":"1.1:1","comm":"balistid-collec"},"key":%s},"PATH":[{"name":"/var/lib/balistid/`+
-		`collector/canary","nametype":"PARENT"},{"name":%q,"nametype":"CREATE"}]}`, id, success, uid, pid, key, path)
+	return canaryCall(id, 257, "openat", uid, pid, success, key, path, "CREATE")
+}
+
+// canaryCall is a record of the canary directory's rule: the syscall number and name, and the PATH item's nametype.
+func canaryCall(id string, nr int, call string, uid, pid int, success, key, path, nametype string) rawrecord.Record {
+	line := fmt.Sprintf(`{"ID":%q,"SYSCALL":{"arch":"0xc000003e","ARCH":"x86_64","syscall":%d,"SYSCALL":%q,"success":%q,`+
+		`"uid":%d,"UID":"balistid-collector","pid":%d,"PID":{"EVENT_ID":"1.1:1","comm":"balistid-collec"},"key":%s},`+
+		`"PATH":[{"item":0,"name":"/var/lib/balistid/collector/canary","nametype":"PARENT"},{"item":1,"name":%q,`+
+		`"nametype":%q}]}`, id, nr, call, success, uid, pid, key, path, nametype)
 	return rawrecord.New(1, store.SensorProvider, 1, 1, []byte(line))
 }
 
@@ -69,6 +76,14 @@ func TestCanarySentIgnoresEverythingElse(t *testing.T) {
 		"no ID":              ok(""),
 		"a truncated record": truncated,
 		"a health record":    health,
+		// The next probe's touch removes c-<n-1>: unlinkat with a DELETE item, never a fresh probe.
+		"the cleanup of an older probe": canaryCall("1791460800.123:42", 263, "unlinkat", 998, 4242, "yes", `"balistid-canary"`,
+			"/var/lib/balistid/collector/canary/c-6", "DELETE"),
+		"an openat deleting":   canaryCall("1791460800.123:42", 257, "openat", 998, 4242, "yes", `"balistid-canary"`, "c-7", "DELETE"),
+		"an openat of a file":  canaryCall("1791460800.123:42", 257, "openat", 998, 4242, "yes", `"balistid-canary"`, "c-7", "NORMAL"),
+		"no nametype":          canaryCall("1791460800.123:42", 257, "openat", 998, 4242, "yes", `"balistid-canary"`, "c-7", ""),
+		"another syscall":      canaryCall("1791460800.123:42", 2, "open", 998, 4242, "yes", `"balistid-canary"`, "c-7", "CREATE"),
+		"a rename to the name": canaryCall("1791460800.123:42", 264, "renameat", 998, 4242, "yes", `"balistid-canary"`, "c-7", "CREATE"),
 	} {
 		if n, at, found := canarySent(x, owner); found {
 			t.Errorf("%s: counted as probe %d at %d", name, n, at)
@@ -123,29 +138,53 @@ func TestFreezeFactsTimeTheStage(t *testing.T) {
 		got[f[0]] = f[1]
 	}
 	want := map[string]string{
-		rangevm.CanaryStopped: "yes", rangevm.CanaryHealth: rangevm.StoreOK, rangevm.CanaryFrozenMS: "100000",
-		rangevm.CanaryAfterMS: "45000", rangevm.CanaryFirstMS: "19000", rangevm.CanaryUnknownMS: "77000",
+		rangevm.CanaryStopped: "yes", rangevm.CanaryHealth: rangevm.StoreOK, rangevm.CanaryHeld: rangevm.StoreUnknown,
+		rangevm.CanaryFrozenMS: "100000",
+		rangevm.CanaryAfterMS:  "45000", rangevm.CanaryFirstMS: "19000", rangevm.CanaryUnknownMS: "77000",
 		rangevm.CanaryOKMS: "2000",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("facts %v\nwant  %v", got, want)
 	}
-	// OK while still frozen is no recovery; nothing in the watch leaves each time none.
+	// OK while still frozen is no recovery, and shows the health from UNKNOWN to SIGCONT not held; nothing in the
+	// watch leaves each time none.
 	got = map[string]string{}
 	for _, f := range fr.facts(nil, healthTimeline{h(990, "OK"), h(1060, canaryMissed), h(1090, "OK")}) {
 		got[f[0]] = f[1]
 	}
 	if got[rangevm.CanaryFirstMS] != rangevm.CanaryNone || got[rangevm.CanaryUnknownMS] != "60000" ||
-		got[rangevm.CanaryOKMS] != rangevm.CanaryNone {
+		got[rangevm.CanaryOKMS] != rangevm.CanaryNone || got[rangevm.CanaryHeld] != rangevm.StoreMixed {
 		t.Errorf("facts %v", got)
+	}
+	got = map[string]string{}
+	for _, f := range fr.facts(sent, healthTimeline{h(900, "OK"), h(1058, canaryMissed), h(1070, "OK"), h(1090, canaryMissed),
+		h(1105, "OK")}) {
+		got[f[0]] = f[1]
+	}
+	if got[rangevm.CanaryUnknownMS] != "58000" || got[rangevm.CanaryOKMS] != "5000" || got[rangevm.CanaryHeld] != rangevm.StoreMixed {
+		t.Errorf("OK while frozen after UNKNOWN: facts %v", got)
 	}
 	got = map[string]string{}
 	for _, f := range fr.facts([]int64{sec(1146)}, healthTimeline{h(1000, "OK")}) {
 		got[f[0]] = f[1]
 	}
 	if got[rangevm.CanaryFirstMS] != rangevm.CanaryNone || got[rangevm.CanaryUnknownMS] != rangevm.CanaryNone ||
-		got[rangevm.CanaryHealth] != rangevm.StoreOK {
+		got[rangevm.CanaryHealth] != rangevm.StoreOK || got[rangevm.CanaryHeld] != rangevm.CanaryNone {
 		t.Errorf("facts %v", got)
+	}
+}
+
+// The quiet phase starts only once the floor shows healthy; a floor that does not in time fails the trial.
+func TestHealthyFromNeedsAHealthyFloor(t *testing.T) {
+	exits := func(code int) cliRun {
+		return func(context.Context) (int, []byte, error) { return code, []byte(`{"parts":[]}`), nil }
+	}
+	if at, err := healthyFrom(t.Context(), exits(1), 0); err == nil || at != 0 {
+		t.Errorf("unhealthy floor: from %d, %v", at, err)
+	}
+	start := time.Now().UnixNano()
+	if at, err := healthyFrom(t.Context(), exits(0), 0); err != nil || at < start || at > time.Now().UnixNano() {
+		t.Errorf("healthy floor: from %d (started %d), %v", at, start, err)
 	}
 }
 
