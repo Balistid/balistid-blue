@@ -13,10 +13,13 @@ import (
 
 // The host's configuration requires the token's key type and names its tools by absolute path (R2, ADR 0058).
 func TestDefaultConfigRequiresTheTokensKey(t *testing.T) {
-	want := Config{Root: "/", UID: 0, GID: 0, KeyType: "sk-ssh-ed25519@openssh.com", SSHKeygen: "/usr/bin/ssh-keygen",
-		VerifyTimeout: 10 * time.Second}
-	if got := DefaultConfig(); got != want {
+	got := DefaultConfig()
+	if got.Root != "/" || got.UID != 0 || got.GID != 0 || got.KeyType != "sk-ssh-ed25519@openssh.com" ||
+		got.SSHKeygen != "/usr/bin/ssh-keygen" || got.VerifyTimeout != 10*time.Second {
 		t.Fatalf("%+v", got)
+	}
+	if got.Run == nil || got.Show == nil || got.LookupUser == nil || got.LookupGroup == nil || got.Log == nil {
+		t.Fatal("a host command is missing")
 	}
 }
 

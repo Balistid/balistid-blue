@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/status"
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
@@ -28,11 +29,17 @@ type Config struct {
 	KeyType       string // the only key type allowed_signers may hold
 	SSHKeygen     string
 	VerifyTimeout time.Duration
+	Run           func(ctx context.Context, argv []string) error                                // a command that changes the host
+	Show          func(ctx context.Context, names, props []string) ([]map[string]string, error) // systemctl show
+	LookupUser    func(name string) (uid int, err error)
+	LookupGroup   func(name string) (gid int, err error)
+	Log           func(ctx context.Context, line string) // the decision of a run
 }
 
-// DefaultConfig is the configuration of a real host: root's paths, the token's key type (R2).
+// DefaultConfig is the configuration of a real host: root's paths, the token's key type (R2), the real commands.
 func DefaultConfig() Config {
-	return Config{Root: "/", KeyType: SKKeyType, SSHKeygen: "/usr/bin/ssh-keygen", VerifyTimeout: 10 * time.Second}
+	return Config{Root: "/", KeyType: SKKeyType, SSHKeygen: "/usr/bin/ssh-keygen", VerifyTimeout: 10 * time.Second,
+		Run: runCommand, Show: status.Show, LookupUser: lookupUID, LookupGroup: lookupGID, Log: logDecision}
 }
 
 const (
@@ -135,14 +142,14 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 		}
 		return s, nil
 	}
-	if err := trustedDir(cfg, host, signersDir, 0o755); err != nil {
+	if err := rootDir(cfg, host, signersDir); err != nil {
 		return Signer{}, err
 	}
 	fi, err := host.Lstat(file)
 	if err != nil {
 		return Signer{}, fmt.Errorf("/%s: %w", file, err)
 	}
-	if err := ownedAs(cfg, fi, fs.FileMode(0o644)); err != nil {
+	if err := ownedAs(fi, cfg.UID, cfg.GID, 0o644); err != nil {
 		return Signer{}, fmt.Errorf("/%s: %w", file, err)
 	}
 	data, err := wholefile.ReadIn(host, file, maxSignersBytes)
@@ -159,23 +166,32 @@ func trustedSigner(cfg Config, host *os.Root, bundled []byte, fingerprint string
 	return s, nil
 }
 
-// trustedDir checks every directory from the root down to name: a directory, not a link, owned by cfg.UID, not
-// writable by group or other, not setgid; name itself also has exactly mode. With the root standing for "/",
-// os.Root contains nothing, so this is what keeps a write from being redirected.
-func trustedDir(cfg Config, host *os.Root, name string, mode fs.FileMode) error {
+// trustedPath checks every directory from the root down to name: a directory, not a link, owned by cfg.UID, not
+// writable by group or other, not setgid. With the root standing for "/", os.Root contains nothing, so this is
+// what keeps a write from being redirected. It returns name's own state.
+func trustedPath(cfg Config, host *os.Root, name string) (fs.FileInfo, error) {
 	p := "."
 	var fi fs.FileInfo
 	for _, part := range append([]string{"."}, strings.Split(name, "/")...) {
 		p = path.Join(p, part)
 		var err error
 		if fi, err = host.Lstat(p); err != nil {
-			return fmt.Errorf("/%s: %w", p, err)
+			return nil, fmt.Errorf("/%s: %w", p, err)
 		}
 		if err := trustedAncestor(cfg, fi); err != nil {
-			return fmt.Errorf("/%s: %w", p, err)
+			return nil, fmt.Errorf("/%s: %w", p, err)
 		}
 	}
-	if err := ownedAs(cfg, fi, fs.ModeDir|mode); err != nil {
+	return fi, nil
+}
+
+// rootDir checks name is on a trusted path and exactly root:root 0755, as an install leaves it.
+func rootDir(cfg Config, host *os.Root, name string) error {
+	fi, err := trustedPath(cfg, host, name)
+	if err != nil {
+		return err
+	}
+	if err := ownedAs(fi, cfg.UID, cfg.GID, fs.ModeDir|0o755); err != nil {
 		return fmt.Errorf("/%s: %w", name, err)
 	}
 	return nil
@@ -196,12 +212,12 @@ func trustedAncestor(cfg Config, fi fs.FileInfo) error {
 	return nil
 }
 
-// ownedAs checks fi is cfg.UID:cfg.GID with exactly mode (type bits included) and, for a file, one link.
-func ownedAs(cfg Config, fi fs.FileInfo, mode fs.FileMode) error {
+// ownedAs checks fi is uid:gid with exactly mode (type bits included) and, for a file, one link.
+func ownedAs(fi fs.FileInfo, uid, gid int, mode fs.FileMode) error {
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	switch {
-	case !ok || int64(st.Uid) != int64(cfg.UID) || int64(st.Gid) != int64(cfg.GID):
-		return errors.New("not owned by root:root")
+	case !ok || int64(st.Uid) != int64(uid) || int64(st.Gid) != int64(gid):
+		return fmt.Errorf("not owned by %d:%d", uid, gid)
 	case fi.Mode() != mode:
 		return fmt.Errorf("mode %v, not %v", fi.Mode(), mode)
 	case !fi.IsDir() && st.Nlink != 1:

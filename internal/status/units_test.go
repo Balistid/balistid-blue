@@ -19,6 +19,36 @@ func show(states ...UnitState) string {
 
 var twoNames = []string{"a.service", "b.socket"}
 
+// parseShow reads output as ShowUnits does.
+func parseShow(out []byte, names []string) ([]UnitState, error) {
+	blocks, err := parseProps(out, names, showProps)
+	if err != nil {
+		return nil, err
+	}
+	return unitStates(blocks, names)
+}
+
+// Other properties, such as the paths the installer asks for, are read as they are, empty ones included.
+func TestParsePropsReadsOtherProperties(t *testing.T) {
+	props := []string{"Id", "DropInPaths", "FragmentPath"}
+	out := "Id=a.service\nDropInPaths=/etc/x.d/a.conf /run/y.d/b.conf\nFragmentPath=\n\n" +
+		"FragmentPath=/etc/systemd/system/b.socket\nId=b.socket\nDropInPaths=\n"
+	got, err := parseProps([]byte(out), twoNames, props)
+	if err != nil || got[0]["DropInPaths"] != "/etc/x.d/a.conf /run/y.d/b.conf" || got[0]["FragmentPath"] != "" ||
+		got[1]["FragmentPath"] != "/etc/systemd/system/b.socket" {
+		t.Fatalf("%v, %v", got, err)
+	}
+	for name, bad := range map[string]string{
+		"a property not asked for": strings.Replace(out, "DropInPaths=\n", "DropInPaths=\nActiveState=active\n", 1),
+		"one missing":              strings.Replace(out, "DropInPaths=\n", "", 1),
+		"a status property":        strings.Replace(out, "FragmentPath=\n", "LoadState=loaded\n", 1),
+	} {
+		if got, err := parseProps([]byte(bad), twoNames, props); err == nil {
+			t.Errorf("%s: read %v", name, got)
+		}
+	}
+}
+
 func TestParseShowReadsEachUnitInOrder(t *testing.T) {
 	want := []UnitState{{"a.service", "loaded", "active", "running"}, {"b.socket", "not-found", "inactive", "dead"}}
 	got, err := parseShow([]byte(show(want...)), twoNames)
