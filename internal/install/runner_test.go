@@ -2,6 +2,7 @@ package install
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +35,7 @@ type fakeSystem struct {
 	checkedLate  bool
 	t            *testing.T
 	uid, gid     int
+	runnerUID    int // the runner user's uid, when it is not the test's
 }
 
 // newRunnerHost is a fake host with the directories every Linux host has, the maintainer's key installed and a
@@ -103,7 +105,7 @@ func (s *fakeSystem) show(_ context.Context, names, props []string) ([]map[strin
 
 func (s *fakeSystem) lookupUser(name string) (int, error) {
 	s.noWriteYet()
-	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": s.uid}[name]
+	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": cmp.Or(s.runnerUID, s.uid)}[name]
 	if !ok || name == "balistid-runner" && !s.groupMade {
 		return 0, errors.New("unknown user")
 	}
@@ -493,14 +495,12 @@ func TestRunnerRefusesATrappedResultsDirectory(t *testing.T) {
 		want  string
 	}{
 		"results a link outside": {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o755); h.symlink(t, t.TempDir(), results) }, results + ": mode"},
-		"results 0777":           {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o755); h.mkdir(t, results, 0o777) }, results + ": mode"},
 		"agent a link": {func(h *fakeHost) {
 			exact(h)
 			must(t, os.Remove(filepath.Join(h.cfg.Root, results, "agent")))
 			h.symlink(t, "/etc", results+"/agent")
 		}, "agent: mode"},
-		"evidence without setgid":   {func(h *fakeHost) { exact(h); h.chmod(t, results+"/evidence", 0o750) }, "evidence: mode"},
-		"acceptance group writable": {func(h *fakeHost) { exact(h); h.chmod(t, results+"/acceptance", 0o770|fs.ModeSetgid) }, "acceptance: mode"},
+		"results a file": {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o755); h.put(t, results, nil, 0o750) }, results + ": mode"},
 	} {
 		h, s := newRunnerHost(t)
 		c.spoil(h)
@@ -508,6 +508,10 @@ func TestRunnerRefusesATrappedResultsDirectory(t *testing.T) {
 		h.refusedRun(t, s, label, maint, "", c.want)
 	}
 	h, s := newRunnerHost(t)
+	exact(h)
+	s.groupMade, s.runnerUID = true, s.uid+1
+	h.refusedRun(t, s, "results of another owner", maint, "", results+": not owned by")
+	h, s = newRunnerHost(t)
 	exact(h)
 	h.refusedRun(t, s, "results before the runner's user exists", maint, "", "no user balistid-runner")
 	s.groupMade = true
@@ -569,5 +573,23 @@ func TestRunnerChecksTheStateDirectoryWhateverTmpfilesLists(t *testing.T) {
 		m := manifestOf(files)
 		h.publish(t, files, m, h.key.sign(t, m, Namespace))
 		h.refusedRun(t, s, label, maint, "", c.want)
+	}
+}
+
+// tmpfiles restores the modes of the directories it gives to the runner, which owns them: their owner and type are
+// checked, not their mode, so a mode the runner changed does not block a reinstall.
+func TestRunnerLeavesResultModesToTmpfiles(t *testing.T) {
+	h, s := newRunnerHost(t)
+	results := "var/lib/balistid/results"
+	h.mkdir(t, "var/lib/balistid", 0o755)
+	h.mkdir(t, results, 0o777)
+	for _, d := range []string{"agent", "evidence", "acceptance"} {
+		h.mkdir(t, results+"/"+d, 0o750|fs.ModeSetgid)
+	}
+	h.chmod(t, results+"/agent", 0o700)
+	h.chmod(t, results+"/evidence", 0o750)
+	s.groupMade = true
+	if err := h.install(t, s, maint, ""); err != nil {
+		t.Fatal(err)
 	}
 }
