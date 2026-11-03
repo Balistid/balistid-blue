@@ -164,11 +164,11 @@ func TestCPUAndReadyTrialsAreTheAcceptances(t *testing.T) {
 }
 
 // rss_mib is measured at the three loads the maintainer chose (ADR 0054): cpu-1000's execs, rate-burst's ptrace
-// burst and 2 execs/s of record-max's 2 MB argv, each deciding; acceptance/0.toml names the same.
+// burst and 1 exec/s of record-max's 2 MB argv, each deciding; acceptance/0.toml names the same.
 func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	cpu, _ := Lookup("cpu-1000")
 	burst, _ := Lookup("rate-burst")
-	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 2, Seconds: 30}}
+	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 1, Seconds: 30}}
 	got := map[string]Load{}
 	for _, tr := range Trials() {
 		if tr.Metric != MetricRSS {
@@ -178,7 +178,7 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 		if tr.Method() != MethodRSS || tr.Trend || tr.Expect != "" {
 			t.Errorf("%s: method %q, trend %v, expect %q", tr.Name, tr.Method(), tr.Trend, tr.Expect)
 		}
-		if tr.Name == "rss-large" && tr.Scratch != StoreScratch { // its 120 MB fit the store's disk
+		if tr.Name == "rss-large" && tr.Scratch != StoreScratch { // its 60 MB fit the store's disk
 			t.Errorf("rss-large: scratch disk of %d bytes, want the store's %d", tr.Scratch, StoreScratch)
 		}
 	}
@@ -193,7 +193,7 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	if unit == nil {
 		t.Fatal("no rss_mib of 256 with a unit in acceptance/0.toml")
 	}
-	for _, load := range []string{"at 1000 execs/s", "at burst_rate with its small ptrace records", "at 2 execs/s with 2 MB argv records"} {
+	for _, load := range []string{"at 1000 execs/s", "at burst_rate with its small ptrace records", "at 1 exec/s with 2 MB argv records"} {
 		if !strings.Contains(string(unit[1]), load) {
 			t.Errorf("rss_mib's unit does not say %q", load)
 		}
