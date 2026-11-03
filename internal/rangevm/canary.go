@@ -39,7 +39,7 @@ const (
 )
 
 // How long a canary trial's guest keeps each phase. Quiet, five intervals show four canaries at least. Frozen,
-// the first probe after SIGSTOP goes out within 30 s and it and the next each have 30 s: two misses within 90 s.
+// the first probe after SIGSTOP goes out within 30 s and it and the next each have 29 s: two misses within 90 s.
 // After SIGCONT, longer than canaryRecoverMS.
 const (
 	CanaryQuiet  = 150 * time.Second
