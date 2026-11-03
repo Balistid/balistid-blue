@@ -316,8 +316,9 @@ var mkosiPauses = []time.Duration{30 * time.Second, time.Minute}
 // len(pauses)+1 times, pausing pauses[i] after failed try i+1, and returns the output directory of the try that
 // built the image. archive.archlinux.org, where mkosi downloads the snapshot's packages, often stalls or times
 // out. Each try gets a fresh output directory below cache and a fresh workspace and package cache in its own
-// directory of the stage, and a failed try's are removed: no try reads what another downloaded (ADR 0010). Only
-// mkosi is tried again, never the export, the Go or Laurel build, a boot or a trial; log names each failure.
+// directory of the stage, and a failed try's are removed before the next starts, or the build ends: no try reads
+// what another downloaded (ADR 0010). Only mkosi is tried again, never the export, the Go or Laurel build, a boot
+// or a trial; log names each failure.
 func buildImage(ctx context.Context, cache, stage string, pauses []time.Duration, log io.Writer, run func(try, built string) error) (string, error) {
 	for n := 1; ; n++ {
 		try := filepath.Join(stage, "mkosi-"+strconv.Itoa(n))
@@ -333,9 +334,9 @@ func buildImage(ctx context.Context, cache, stage string, pauses []time.Duration
 		if runErr == nil {
 			return built, nil
 		}
-		err = errors.Join(fmt.Errorf("mkosi: %w", runErr), removeDir(built), removeDir(try))
-		if n > len(pauses) {
-			return "", errors.Join(err, ctx.Err())
+		err = fmt.Errorf("mkosi: %w", runErr)
+		if rmErr := errors.Join(removeDir(built), removeDir(try)); rmErr != nil || n > len(pauses) {
+			return "", errors.Join(err, rmErr, ctx.Err())
 		}
 		_, _ = fmt.Fprintf(log, "balistid-range: mkosi try %d of %d failed, again in %s: %v\n", n, len(pauses)+1, pauses[n-1], err)
 		t := time.NewTimer(pauses[n-1])

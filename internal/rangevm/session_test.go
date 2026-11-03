@@ -1950,3 +1950,21 @@ func TestBuildImageStopsBetweenTries(t *testing.T) {
 		t.Errorf("%d tries, %v", tries, err)
 	}
 }
+
+// A failed try whose directories cannot be removed ends the build: no try starts beside an earlier one's leftovers.
+func TestBuildImageEndsWhenAFailedTryIsNotRemoved(t *testing.T) {
+	tries := 0
+	var log strings.Builder
+	_, err := buildImage(t.Context(), t.TempDir(), t.TempDir(), []time.Duration{0, 0}, &log, func(try, _ string) error {
+		tries++
+		deep := append([]string{try, "pkgcache"}, slices.Repeat([]string{"a"}, maxStageDepth+1)...)
+		if err := os.MkdirAll(filepath.Join(deep...), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("Operation too slow")
+	})
+	if tries != 1 || err == nil || !strings.Contains(err.Error(), "directories deep") ||
+		!strings.Contains(err.Error(), "Operation too slow") || log.Len() != 0 {
+		t.Errorf("%d tries, %v, log %q", tries, err, log.String())
+	}
+}
