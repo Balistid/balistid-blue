@@ -33,7 +33,7 @@ type Config struct {
 	Show          func(ctx context.Context, names, props []string) ([]map[string]string, error) // systemctl show
 	LookupUser    func(name string) (uid int, err error)
 	LookupGroup   func(name string) (gid int, err error)
-	Log           func(ctx context.Context, line string) // the decision of a run
+	Log           func(ctx context.Context, d Decision) // the decision of a run
 }
 
 // DefaultConfig is the configuration of a real host: root's paths, the token's key type (R2), the real commands.
