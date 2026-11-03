@@ -1051,7 +1051,7 @@ func heldTick(r *rig, holding *atomic.Bool, ticks *atomic.Int32, held chan<- str
 }
 
 // A store that opens inside a tick while Laurel connected: the open's probe still runs when the
-// connection's would go out, so that one goes out on the next tick, not 30 s later with the round.
+// connection's would go out, so that one goes out on the next tick, not 29 s later with the round.
 func TestConnectionProbeDroppedBesideTheOpensGoesOutOnTheNextTick(t *testing.T) {
 	r := newRig(t)
 	r.w.Now = func() time.Time { r.advance(time.Microsecond); return r.clock() } // moves on every read
@@ -1141,7 +1141,7 @@ func TestConnectionDuringTheAppendsIsNotProvedByTheOpensProbe(t *testing.T) {
 }
 
 // A connection that comes while the probe of a store opened between ticks still runs gets its probe on
-// the next tick, not with the round 30 s later.
+// the next tick, not with the round 29 s later.
 func TestDroppedConnectionProbeGoesOutOnTheNextTick(t *testing.T) {
 	r := newRig(t)
 	var blocking atomic.Bool
