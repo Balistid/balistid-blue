@@ -94,9 +94,9 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/unixsock/` | What every service needs from its local sockets: the peer's uid from the kernel, messages to systemd (ADR 0007) |
 | `internal/wholefile/` | Files written whole: temp file, fsync, rename, directory fsync (ENGINEERING.md 7) |
 | `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
+| `internal/install/` | `balistid-install`: installs a component only from a MANIFEST the maintainer signed, each file checked (ADR 0053, 0058) |
 | `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
-| `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
-| `deploy/laurel/` | Laurel configuration |
+| `deploy/auditd/`, `deploy/laurel/` | auditd configuration, the Laurel plugin entry and Laurel's configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
 | `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
