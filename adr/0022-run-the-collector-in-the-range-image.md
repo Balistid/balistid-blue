@@ -22,14 +22,14 @@ empty module cache in the stage (`toolEnv`); the collector and a guest that read
    at the installed store path before the collector; it formats only in boot 1 and checks the superblock first in boot 2
    (ADR 0018 point 3). An image drop-in only adds the new `-headroom 67108864` and `-log-commits`, never set on the host;
    cap and shard size stay as installed. The install defaults' fill test decides `headroom_gib` (ADR 0052).
-3. Read: the guest execs `/usr/bin/true <token>` as a barrier and waits, at most `waitLimit` (30 s), until the collector's
-   `committed through` journal line (one `journalctl -f`) moved and then held for 1 s, then stops only `balistid-collector.service`, once. systemd keeps
-   the socket, Laurel reconnects and may start the collector again at once; Close sealed the open shard. `ReadSeals`
-   returns the pending shards, their sidecars, sidecars beside a seal and a torn last line as typed fields: the guest
-   accepts only pending shards (with `-wal`, `-shm`, `-journal`) and a torn line above the last seq of the seal holding
-   the barrier; a sidecar beside a seal is an error. A read without its barrier is `missing`: INVALID for a trial
-   (ADR 0021), not whole for an exec job, never a MISS. An exec window is whole only if every health record from its start to
-   the stopped run's `stopping` (a tick's health follows its lines) is stats without loss, lag, refused, OK, or behind the barrier an eof-only connection; a loss record breaks it (T25).
+3. Read: once the kernel's audit backlog (auditstat's report) and auditd's plugin queue read empty, at most 2 min or the read fails before any stop, the
+   guest execs `/usr/bin/true <token>` as a barrier and waits, at most `waitLimit` (30 s), until the collector's `committed through` journal line (one
+   `journalctl -f`) moved and then held for 1 s, then stops only `balistid-collector.service`, once. systemd keeps the socket, Laurel reconnects and may
+   start the collector again at once; Close sealed the open shard. `ReadSeals` returns the pending shards, their sidecars, sidecars beside a seal and a
+   torn last line as typed fields: the guest accepts only pending shards (with `-wal`, `-shm`, `-journal`) and a torn line above the last seq of the
+   seal holding the barrier; a sidecar beside a seal is an error. A read without its barrier is `missing`: INVALID for a trial (ADR 0021), not whole for
+   an exec job, never a MISS. An exec window is whole only if every health record from its start to the stopped run's `stopping` (a tick's health
+   follows its lines) is stats without loss, lag, refused, OK, or behind the barrier an eof-only connection; a loss record breaks it (T25).
 4. Modules: `toolEnv` sets `GOPROXY=https://proxy.golang.org` without `direct` and `GOSUMDB=sum.golang.org`, keeps
    `-mod=readonly` and sets no `GONOSUMDB`, `GOPRIVATE` or `GOINSECURE`; go.mod and go.sum come from the verified export
    (ADR 0010). Integrity rests on the code-owned go.sum, which every download must match; with it complete go never asks
