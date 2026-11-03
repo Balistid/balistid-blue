@@ -55,8 +55,9 @@ MANIFEST_MAX_BYTES = 64 << 10  # MaxManifestBytes
 # -c) only assigns. The gate is data flow: the installer is renamed to the sha256 of its bytes and run only by the
 # 64-hex digest the MANIFEST gives it, inside the one case arm that a verify exiting 0 with an output ending in the
 # typed fingerprint reaches, so a typo that skips a check finds nothing to run. tar reads the bundle on stdin, so it
-# refuses a compressed one instead of running a decompressor, and prints only the three members, each capped: nothing
-# in the bundle is resolved on disk. This command checks no sk flags (ssh-keygen does not); balistid-install does.
+# refuses a compressed one instead of running a decompressor, and prints only the three members, each capped by
+# ulimit -f (512-byte blocks) with no pipeline, so its status counts: nothing in the bundle is resolved on disk.
+# This command checks no sk flags (ssh-keygen does not); balistid-install does.
 # A hand-typed command cannot be safe against every typo: tests cover every dropped character and the typos review
 # found, and root reads the command against the CI log before Enter. Under `env -i` and `sh -p`: root's shell may
 # carry the maintainer's TMPDIR, PATH or exported functions. runuser -u keeps root's console as the reader's
@@ -67,9 +68,9 @@ BOOTSTRAP = (
     'ro=$(mktemp -d /tmp/balistid-install.XXXXXXXXXX) && '
     f'timeout -k 5 20 runuser -u "$m" -- cat -- "$dl/{BUNDLE}" </dev/null | head -c {BUNDLE_MAX_MIB << 20} > "$ro/{BUNDLE}" && '
     f'timeout -k 5 20 runuser -u "$m" -- cat -- "$dl/{SIG}" </dev/null | head -c {SIG_MAX_BYTES} > "$ro/{SIG}" && '
-    f'timeout 20 tar -xO {SIGNERS} < "$ro/{BUNDLE}" | head -c {SIGNERS_MAX_BYTES} > "$ro/k" && '
-    f'timeout 20 tar -xO MANIFEST < "$ro/{BUNDLE}" | head -c {MANIFEST_MAX_BYTES} > "$ro/m" && '
-    f'timeout 20 tar -xO {INSTALLER} < "$ro/{BUNDLE}" | head -c {BUNDLE_MAX_MIB << 20} > "$ro/i" && '
+    f'( ulimit -f {SIGNERS_MAX_BYTES // 512} && timeout 20 tar -xO {SIGNERS} < "$ro/{BUNDLE}" > "$ro/k" ) && '
+    f'( ulimit -f {MANIFEST_MAX_BYTES // 512} && timeout 20 tar -xO MANIFEST < "$ro/{BUNDLE}" > "$ro/m" ) && '
+    f'( ulimit -f {(BUNDLE_MAX_MIB << 20) // 512} && timeout 20 tar -xO {INSTALLER} < "$ro/{BUNDLE}" > "$ro/i" ) && '
     'h=$(cksum -a sha256 --untagged < "$ro/i") && mv -- "$ro/i" "$ro/${h%% *}" && '
     f'x=$(sed -n "s/^\\([0-9a-f]\\{{64\\}}\\)  {INSTALLER}\\$/\\1/p" "$ro/m") && '
     f'v=$(timeout 20 ssh-keygen -Y verify -f "$ro/k" -I maintainer@balistid.dev -n install@balistid.dev -s "$ro/{SIG}" < "$ro/m") && '
