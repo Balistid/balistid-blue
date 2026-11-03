@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -243,6 +244,14 @@ func TestQueueFlag(t *testing.T) {
 		{argv(bin, "-queue-bytes"), "-queue-bytes without a value"},
 		{argv(bin, "-queue-bytes", "1", "-queue-bytes=2"), "-queue-bytes given 2 times"},
 		{argv(bin, "-queue-bytes-x", "1"), strconv.Itoa(64 << 20)},
+		// The parser stops at the first argument that is no flag, a bool takes no value, any other flag the next.
+		{argv(bin, "-store", "/s", "positional", "-queue-bytes", "1"), strconv.Itoa(64 << 20)},
+		{argv(bin, "-log-commits", "x", "-queue-bytes", "1"), strconv.Itoa(64 << 20)},
+		{argv(bin, "-store", "-queue-bytes", "1"), strconv.Itoa(64 << 20)},
+		{argv(bin, "-", "-queue-bytes", "1"), strconv.Itoa(64 << 20)},
+		{argv(bin, "-log-commits", "-queue-bytes", "1"), "1"}, {argv(bin, "-log-commits=true", "-queue-bytes=1"), "1"},
+		{argv(bin, "-store"), "-store without a value"}, {argv(bin, "---queue-bytes", "1"), `bad flag syntax "---queue-bytes"`},
+		{argv(bin, "-=1", "-queue-bytes", "1"), `bad flag syntax "-=1"`},
 	} {
 		if got := queueFlag(c.cmdline); got != c.want {
 			t.Errorf("%q: %q, want %q", c.cmdline, got, c.want)
@@ -250,6 +259,14 @@ func TestQueueFlag(t *testing.T) {
 	}
 	if rangevm.CollectorQueueBytes != collector.QueueBytes {
 		t.Errorf("the default %d is not the collector's %d", rangevm.CollectorQueueBytes, collector.QueueBytes)
+	}
+	main, err := os.ReadFile("../balistid-collector/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bools := regexp.MustCompile(`flag\.Bool\("([a-z-]+)"`).FindAllSubmatch(main, -1)
+	if len(bools) != 1 || string(bools[0][1]) != collectorBoolFlag || regexp.MustCompile(`flag\.[A-Za-z]*(Var|Func)\(`).Match(main) {
+		t.Errorf("the collector's bool flags %q, want only %s and no flag a Var or Func could make one", bools, collectorBoolFlag)
 	}
 }
 
