@@ -60,7 +60,7 @@ func (h *fakeHost) put(t *testing.T, name string, data []byte, mode fs.FileMode)
 func (k key) sign(t *testing.T, data []byte, namespace string) []byte {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "MANIFEST")
-	if err := os.WriteFile(p, data, 0o600); err != nil {
+	if err := os.WriteFile(p, data, 0o600); err != nil { //nolint:gosec // test temp dir
 		t.Fatal(err)
 	}
 	if out, err := exec.CommandContext(t.Context(), sshKeygen, "-q", "-Y", "sign", "-f", k.path, "-n", namespace, p).CombinedOutput(); err != nil { //nolint:gosec // fixed binary, test temp dir

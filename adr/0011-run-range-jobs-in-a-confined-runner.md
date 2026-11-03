@@ -17,9 +17,8 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
    its timer (`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, `StateDirectory=`, `NoNewPrivileges`, no
    capabilities, user namespaces allowed; the tick's syscalls an allowlist whose text tests pin, each tick probing
    for it as a tripwire), one job at a time under a lock. Everything root installs (binary of
-   `cmd/balistid-runner`; units, timer, sysusers, tmpfiles under `/deploy/`) is one manifest a code-owned CI step
-   hashes with `sha256sum` on a push to `main`; the maintainer reads that sha256 in the CI log and types it into a
-   root shell, which copies the files without following links into a root-only directory, checks and installs them.
+   `cmd/balistid-runner`; units, timer, sysusers, tmpfiles under `/deploy/`) is one MANIFEST a code-owned CI step
+   writes on a push to `main`; the maintainer signs it, and `balistid-install` checks and installs it (ADR 0058).
 2. Its commit is `buildinfo.Version`, set by CI's `-X` (40 hex digits, else refused). At its own uid
    it builds its image: it copies the object files the maintainer drops beside the inbox with the
    ADR 0010 rules, exports its commit checked by hash, and builds there. It runs git only in that
@@ -52,9 +51,8 @@ many runs. Measured 2026-10-04 in user units: build 2 GiB peak in 1 min, run 1.6
 ## Consequences
 
 - ADR 0009 point 6 and ADR 0010 point 1 amended; ADR 0010's confined branch builds are withdrawn.
-- Until `balistid-install` exists this manual root install is an exception to R1 and R8, checked
-  by a written procedure. `cmd/balistid`, `cmd/balistid-runner` and `internal/buildinfo` are
-  code-owned and in the `go list -deps` gate; the inbox needs a sandbox allowWrite. Agents can delay, invalidate or
+- Installed by `balistid-install` (ADR 0058); the R1/R8 exception ended. `cmd/balistid`, `cmd/balistid-runner`
+  and `internal/buildinfo` are code-owned and in the `go list -deps` gate; the inbox needs a sandbox allowWrite. Agents can delay, invalidate or
   (disk full) lose a FAIL of evidence (T36); forging a PASS takes a runner bug or a guest escape past QEMU and bwrap, or past KVM (T31, T37). A newer `main` is a reinstall.
 - Tests: job-dir links, hard links, FIFOs refused unopened; an inbox job builds nothing, is never
-  evidence; the procedure refuses a sha256 CI did not log. T31, T33, T34 change, T35-T37 added.
+  evidence; `balistid-install` refuses an unsigned or altered MANIFEST. T31, T33, T34 change, T35-T37 added.

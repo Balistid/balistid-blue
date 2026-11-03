@@ -79,7 +79,10 @@ LAYOUT: tuple[str, ...] = (
     "deploy/runner/balistid-runner-build.service",
     "deploy/runner/balistid-runner-tick.service",
     "deploy/runner/balistid-runner-tick.timer",
+    # Gone since ADR 0058; --range checks older trees with this list, so the entry leaves after that merge.
     "deploy/runner/install",
+    # The maintainer's public signing key, the first install's trust anchor (ADR 0053, 0058).
+    "deploy/install/allowed_signers",
     # Collector, by exact name (ADR 0016, 0017).
     "deploy/collector/sysusers.conf",
     "deploy/collector/tmpfiles.conf",

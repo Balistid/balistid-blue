@@ -104,7 +104,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/net/` | The firewall that lets only the relay's uid reach the Pi, the WireGuard tunnel to it, and its user (ADR 0032) |
 | `deploy/announce/` | Units that announce a clean shutdown or suspend through the ledger's control socket (ADR 0030) |
 | `deploy/pi/` | The Pi's watcher unit, its failure alert and its user, installed on the Pi by hand (ADR 0031) |
-| `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |
+| `deploy/runner/` | Range runner's build and tick units, timer, users and directories; `balistid-install` installs them (ADR 0011, 0058) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
 | `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go), the runner's release manifest, and their tests |

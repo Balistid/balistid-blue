@@ -388,6 +388,7 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/runner/balistid-runner-build.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.timer": "[Timer]\n",
+            "deploy/install/allowed_signers": "maintainer@balistid.dev\n",
             "deploy/collector/sysusers.conf": "u x -\n",
             "deploy/collector/tmpfiles.conf": "d /x 0700 x x -\n",
             "deploy/collector/balistid-collector.service": "[Service]\n",
@@ -408,6 +409,7 @@ class GoLayoutTest(unittest.TestCase):
                      "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf",
                      "deploy/runner/other.conf", "deploy/runner/balistid-runner.service",
                      "deploy/runner/balistid-runner-tick.socket", "deploy/runner/sub/tmpfiles.conf",
+                     "deploy/install/other", "deploy/install/allowed_signers.pub",
                      "deploy/collector/other.socket", "deploy/collector/other.conf",
                      "deploy/collector/sub/balistid-collector.socket"):
             with self.subTest(name=name):

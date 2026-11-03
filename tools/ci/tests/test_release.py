@@ -1,9 +1,10 @@
-"""Tests for tools/ci/release.py (ADR 0011, point 1): the manifest root checks, the local build that
-must match CI's, and the bootstrap command that refuses a hash CI did not print (T37).
+"""Tests for tools/ci/release.py (ADR 0011, point 1; ADR 0058): MANIFEST v1, the local build that must match CI's,
+and the first-install command that runs only an installer the typed key's signature names (T37).
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import os
 import re
@@ -26,13 +27,16 @@ TRIGGER = ("name: ci\n\non:\n  pull_request:\n    branches: [main]\n  push:\n   
            "  merge_group:\n    types: [checks_requested]\n"
            "  # Weekly on main, so govulncheck sees advisories published without a new commit.\n"
            "  schedule:\n    - cron: \"17 5 * * 1\"\n")
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+SSH_KEYGEN = "/usr/bin/ssh-keygen"
+PRINCIPAL, NAMESPACE = "maintainer@balistid.dev", "install@balistid.dev"
 
 
 def go_code(src: str) -> str:
     """Go source without comments, so a commented-out declaration does not count."""
     return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", src, flags=re.DOTALL))
 
-# ci.yml go-release, the whole job: the build, the bundle, the printed hash and root command, the upload.
+# ci.yml go-release, the whole job: the builds, the bundle, the printed MANIFEST and root command, the upload.
 RELEASE_JOB = """
   go-release:
     needs: [go-static, go-test, go-race, selftest, docs-budget, pin-check, commit-lint, secrets, workflow-lint]
@@ -64,7 +68,7 @@ RELEASE_JOB = """
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
           # balistid-pi runs on the maintainer's arm64 Pi, installed by the hash printed below (ADR 0031).
-          for target in balistid:amd64 balistid-runner:amd64 balistid-pi:arm64; do
+          for target in balistid:amd64 balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
             cmd="${target%:*}" arch="${target#*:}"
             (cd "$a" && GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
             (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \\
@@ -73,75 +77,130 @@ RELEASE_JOB = """
           done
           # No built binary runs in this job: one run here could change what is bundled before it is
           # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
-          for cmd in balistid balistid-runner balistid-pi; do
+          for cmd in balistid balistid-runner balistid-install balistid-pi; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
             sha256sum "$a/$cmd"
           done
-          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --deploy "$a/deploy/runner" \\
+          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --installer "$a/balistid-install" \\
+            --deploy "$a/deploy/runner" --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" \\
             --out "$RUNNER_TEMP/release"
           python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/balistid-runner-bundle.tar"
-      # Root types the hash of this step on a push to main (ADR 0011, point 1). A pull request runs its
-      # own workflow and can print anything, so the main workflow prints no hash there.
-      - name: Install bundle of the range runner
+          cp "$RUNNER_TEMP/release/MANIFEST" "$RUNNER_TEMP/MANIFEST"
+      # The maintainer signs a MANIFEST only if it equals the one this step prints on a push to main (ADR 0058,
+      # point 1). A pull request runs its own workflow and can print anything, so the main workflow prints nothing there.
+      - name: MANIFEST of the range runner and the first-install command
         if: github.event_name == 'push'
         run: |
-          sha=$(sha256sum "$RUNNER_TEMP/balistid-runner-bundle.tar" | cut -d' ' -f1)
-          echo "Bundle sha256 of the runner at $GITHUB_SHA: $sha"
-          python3 tools/ci/release.py bootstrap "$sha"
-      # The maintainer downloads this file and root checks it against the hash above (ADR 0011, point 1).
-      - name: Upload the bundle
+          echo "MANIFEST of the runner at $GITHUB_SHA:"
+          cat "$RUNNER_TEMP/MANIFEST"
+          python3 tools/ci/release.py bootstrap --signers deploy/install/allowed_signers
+      # The maintainer downloads both, signs the MANIFEST and installs with balistid-install (ADR 0058).
+      - name: Upload the bundle and its MANIFEST
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: balistid-runner-bundle
-          path: ${{ runner.temp }}/balistid-runner-bundle.tar
+          path: |
+            ${{ runner.temp }}/balistid-runner-bundle.tar
+            ${{ runner.temp }}/MANIFEST
           if-no-files-found: error
           retention-days: 30
 """
 
 
-def write_inputs(root: Path) -> tuple[Path, Path]:
+class Key:
+    """A software signing key made at test runtime in a temp directory; nothing secret is committed. A missing
+    ssh-keygen fails the test rather than skipping it."""
+
+    def __init__(self, directory: Path):
+        self.path = directory / "k"
+        subprocess.run([SSH_KEYGEN, "-q", "-t", "ed25519", "-N", "", "-C", "", "-f", str(self.path)], check=True)
+        kind, blob = (self.path.parent / "k.pub").read_text().split()[:2]
+        self.signers = f'{PRINCIPAL} namespaces="{NAMESPACE}" {kind} {blob}\n'
+        out = subprocess.run([SSH_KEYGEN, "-l", "-f", f"{self.path}.pub"], check=True, capture_output=True, text=True)
+        self.fingerprint = out.stdout.split()[1]
+
+    def sign(self, manifest: Path, out: Path, namespace: str = NAMESPACE) -> None:
+        sig = manifest.parent / (manifest.name + ".sig")
+        sig.unlink(missing_ok=True)
+        subprocess.run([SSH_KEYGEN, "-q", "-Y", "sign", "-f", str(self.path), "-n", namespace, str(manifest)], check=True)
+        shutil.move(sig, out)
+
+
+def write_inputs(root: Path, signers: str = "maintainer@balistid.dev x\n",
+                 installer: str = "#!/bin/sh\n") -> tuple[Path, Path, Path, Path]:
     binary = root / "bin"
     binary.write_bytes(b"\x7fELF runner")
+    inst = root / "installer"
+    inst.write_text(installer)
     deploy = root / "deploy"
     deploy.mkdir()
     for name in release.DEPLOY:
         (deploy / name).write_text(f"{name}\n")
-    return binary, deploy
+    keys = root / "allowed_signers"
+    keys.write_text(signers)
+    return binary, inst, deploy, keys
 
 
 class ManifestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.binary, self.deploy = write_inputs(self.tmp)
+        self.inputs = write_inputs(self.tmp)
         self.out = self.tmp / "out"
 
-    def test_manifest_lists_every_file_in_order_as_sha256sum_does(self):
-        digest = release.manifest(self.binary, self.deploy, self.out)
+    def test_manifest_is_v1_with_every_file_sorted_as_sha256sum_writes_it(self):
+        digest = release.manifest(*self.inputs, COMMIT, self.out)
         text = (self.out / "MANIFEST").read_text()
         self.assertEqual(digest, hashlib.sha256(text.encode()).hexdigest())
-        self.assertEqual([line.split("  ")[1] for line in text.splitlines()], list(release.FILES))
+        lines = text.splitlines()
+        self.assertEqual(lines[:3], ["balistid-manifest 1", "component runner", f"commit {COMMIT}"])
+        self.assertEqual([line.split("  ")[1] for line in lines[3:]], sorted(release.FILES))
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), sorted([*release.FILES, "MANIFEST"]))
-        check = subprocess.run(["sha256sum", "-c", "--strict", "MANIFEST"], cwd=self.out, capture_output=True)
+        check = subprocess.run(["sha256sum", "-c", "--strict", "-"], cwd=self.out, capture_output=True,
+                               input="\n".join(lines[3:]) + "\n", text=True)
         self.assertEqual(check.returncode, 0, check.stderr)
-        self.assertEqual((self.out / "install").stat().st_mode & 0o777, 0o755)
-        self.assertEqual((self.out / "tmpfiles.conf").stat().st_mode & 0o777, 0o644)
+        for name, mode in (("balistid-runner", 0o755), ("balistid-install", 0o755), ("tmpfiles.conf", 0o644),
+                           ("allowed_signers", 0o644)):
+            self.assertEqual((self.out / name).stat().st_mode & 0o777, mode, name)
 
     def test_symlinked_or_missing_input_fails(self):
-        (self.deploy / "install").unlink()
+        deploy = self.inputs[2]
+        (deploy / "tmpfiles.conf").unlink()
         with self.assertRaises(FileNotFoundError):
-            release.manifest(self.binary, self.deploy, self.out)
-        (self.deploy / "install").symlink_to(self.binary)
+            release.manifest(*self.inputs, COMMIT, self.out)
+        (deploy / "tmpfiles.conf").symlink_to(self.inputs[0])
         with self.assertRaises(ValueError):
-            release.manifest(self.binary, self.deploy, self.tmp / "out2")
+            release.manifest(*self.inputs, COMMIT, self.tmp / "out2")
 
     def test_existing_output_directory_fails(self):
         self.out.mkdir()
         with self.assertRaises(FileExistsError):
-            release.manifest(self.binary, self.deploy, self.out)
+            release.manifest(*self.inputs, COMMIT, self.out)
+
+    def test_a_commit_that_is_not_40_hex_fails(self):
+        for commit in ("main", "4d1be61", "A" * 40, "a" * 41, ""):
+            with self.subTest(commit=commit), self.assertRaises(ValueError):
+                release.manifest(*self.inputs, commit, self.tmp / f"out-{len(commit)}")
 
     def test_manifest_covers_exactly_deploy_runner(self):
         self.assertEqual(set(release.DEPLOY), {p.name for p in (REPO / "deploy" / "runner").iterdir()})
+
+    # What release.py bundles is what the installer's table installs, under the names it reads.
+    def test_files_and_names_are_the_installers(self):
+        runner = go_code((REPO / "internal/install/runner.go").read_text())
+        table = runner[runner.index("var runnerTable = []target{"):]
+        table = table[:table.index("\n}\n")]
+        names = re.findall(r'^\t\{"([a-z0-9._-]+)", ', table, re.M)
+        names += ["allowed_signers"] if "{signersName, " in table else []
+        self.assertEqual(sorted(names), sorted(release.FILES))
+        verify = go_code((REPO / "internal/install/verify.go").read_text())
+        self.assertIn(f'bundleName  = "{release.BUNDLE}"', verify)
+        self.assertIn(f'sigName     = "{release.SIG}"', verify)
+        self.assertIn(f'signersName = "{release.SIGNERS}"', verify)
+        self.assertIn("maxSigBytes = 16 << 10", verify)
+        self.assertEqual(release.SIG_MAX_BYTES, 16 << 10)
+        bundle = go_code((REPO / "internal/install/bundle.go").read_text())
+        self.assertIn(f"MaxBundleBytes = {release.BUNDLE_MAX_MIB} << 20", bundle)
 
     # The local build must produce CI's bytes, and nothing else may run in CI's release job: its tail is
     # pinned whole, and its build lines use release.py's flags.
@@ -155,6 +214,8 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(len(builds), 2)
         for line in builds:
             self.assertTrue(line.endswith("go " + " ".join(release.GO_BUILD) + ' "$flags" -o "$cmd" "./cmd/$cmd")'))
+        for cmd in (release.BINARY, release.INSTALLER):
+            self.assertIn(f" {cmd}:amd64 ", RELEASE_JOB)
         for setting in ("GOFLAGS: -mod=readonly", 'GOWORK: "off"', 'CGO_ENABLED: "0"', "GOTOOLCHAIN: local"):
             self.assertIn(setting, job)
 
@@ -211,8 +272,7 @@ class ManifestTest(unittest.TestCase):
 class BundleTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        binary, deploy = write_inputs(self.tmp)
-        release.manifest(binary, deploy, self.tmp / "files")
+        release.manifest(*write_inputs(self.tmp), COMMIT, self.tmp / "files")
 
     def test_equal_inputs_give_equal_bytes(self):
         a = release.bundle(self.tmp / "files", self.tmp / "a.tar")
@@ -224,28 +284,39 @@ class BundleTest(unittest.TestCase):
         self.assertTrue(all(m.isreg() and m.uid == 0 and m.mtime == 0 for m in members))
 
     def test_a_link_in_the_directory_fails(self):
-        (self.tmp / "files" / "install").unlink()
-        (self.tmp / "files" / "install").symlink_to("/etc/passwd")
+        (self.tmp / "files" / "tmpfiles.conf").unlink()
+        (self.tmp / "files" / "tmpfiles.conf").symlink_to("/etc/passwd")
         with self.assertRaises(ValueError):
             release.bundle(self.tmp / "files", self.tmp / "a.tar")
 
 
+class FingerprintTest(unittest.TestCase):
+    def test_it_is_the_one_ssh_keygen_prints(self):
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        key = Key(tmp)
+        (tmp / "s").write_text(key.signers)
+        self.assertEqual(release.fingerprint(tmp / "s"), key.fingerprint)
+        for bad in ("", key.signers * 2, key.signers.rstrip("\n"), key.signers.replace(" ssh", "  ssh"),
+                    key.signers.replace(key.signers.split()[3], "!!!!")):
+            with self.subTest(bad=bad):
+                (tmp / "s").write_text(bad)
+                with self.assertRaises(ValueError):
+                    release.fingerprint(tmp / "s")
+
+
 class BootstrapTest(unittest.TestCase):
     """Runs the command CI prints, as root types it, with stand-ins for runuser (reads as the caller), logger
-    and tar (both recorded) ahead of its fixed PATH, and a stand-in install that records how it ran."""
+    and tar (both recorded) ahead of its fixed PATH, real ssh-keygen and runtime keys, and a stand-in
+    balistid-install that records how it ran."""
 
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.mark = self.tmp / "ran"
         self.log = self.tmp / "log"
         self.log.write_text("")
-        binary, deploy = write_inputs(self.tmp)
-        (deploy / "install").write_text(f'#!/bin/sh\necho "$0 $1 $2 $3" > {self.mark}\nls "$1" > {self.mark}.ls\n')
-        release.manifest(binary, deploy, self.tmp / "files")
-        self.stage = self.tmp / "stage"
-        self.stage.mkdir()
+        self.key = Key(self.subdir("key"))
+        self.stage = self.release(self.key, self.key, "stage")
         self.bundle = self.stage / release.BUNDLE
-        self.digest = release.bundle(self.tmp / "files", self.bundle)
         # A broken variant may stop before its rm; the test removes every copy it caused.
         before = set(Path("/tmp").glob("balistid-install.*"))
         self.addCleanup(lambda: [shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
@@ -253,131 +324,146 @@ class BootstrapTest(unittest.TestCase):
         self.stubs = self.tmp / "stubs"
         self.stubs.mkdir()
         for name, body in (("runuser", 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'),
-                           ("logger", ":"), ("tar", f'/usr/bin/tar "$@"; r=$?; echo "unpacked $r" >> {self.log}; exit $r'), ("id", "echo 1000")):
+                           ("logger", ":"), ("tar", '/usr/bin/tar "$@"'), ("id", "echo 1000")):
             (self.stubs / name).write_text(f'#!/bin/sh\necho "{name} $*" >> {self.log}\n{body}\n')
             (self.stubs / name).chmod(0o755)
 
-    def printed(self, digest: str) -> list[str]:
-        out = subprocess.run([sys.executable, str(REPO / "tools/ci/release.py"), "bootstrap", digest],
-                             capture_output=True, text=True, check=True).stdout.splitlines()
-        self.assertEqual(len(out), 4)
-        argv = shlex.split(out[3])
+    def subdir(self, name: str) -> Path:
+        d = self.tmp / name
+        d.mkdir()
+        return d
+
+    def release(self, signer: Key, listed: Key, name: str, installer: str | None = None,
+                namespace: str = NAMESPACE) -> Path:
+        """A download directory: the bundle with listed's allowed_signers, its MANIFEST signed by signer."""
+        work = self.subdir(name + "-work")
+        script = installer or f'#!/bin/sh\necho "$0 $*" > {self.mark}\nls "$2" > {self.mark}.ls\n'
+        release.manifest(*write_inputs(work, listed.signers, script), COMMIT, work / "files")
+        stage = self.subdir(name)
+        release.bundle(work / "files", stage / release.BUNDLE)
+        signer.sign(work / "files" / "MANIFEST", stage / release.SIG, namespace)
+        return stage
+
+    def printed(self, signers: str | None = None) -> list[str]:
+        (self.tmp / "signers").write_text(signers or self.key.signers)
+        out = subprocess.run([sys.executable, str(REPO / "tools/ci/release.py"), "bootstrap", "--signers",
+                              str(self.tmp / "signers")], capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(len(out), 5)
+        argv = shlex.split(out[4])
         self.assertEqual(argv[:3], ["/usr/bin/env", "-i", f"PATH={release.ROOT_PATH}"])
         return [*argv[:2], f"PATH={self.stubs}:{release.ROOT_PATH}", *argv[3:]]
 
-    def run_bootstrap(self, stage: str, digest: str, env: dict | None = None,
+    def run_bootstrap(self, stage: str, argv: list[str] | None = None, env: dict | None = None,
                       maintainer: str = "maint") -> subprocess.CompletedProcess:
-        return subprocess.run(self.printed(digest), input=f"dir={stage}\nuser={maintainer}\n",
+        return subprocess.run(argv or self.printed(), input=f"dir={stage}\nuser={maintainer}\n",
                               env=env or {"PATH": os.environ["PATH"]}, capture_output=True, text=True, timeout=90)
 
     def logged(self, name: str) -> list[str]:
         return [line for line in self.log.read_text().splitlines() if line.startswith(name + " ")]
 
-    def assert_ran_nothing(self, r: subprocess.CompletedProcess, mismatch: bool = True):
+    def assert_ran_nothing(self, r: subprocess.CompletedProcess, unsigned: bool = True):
         self.assertNotEqual(r.returncode, 0)
-        self.assertFalse(self.mark.exists())
-        self.assertEqual(self.logged("tar"), [], "tar ran on bytes that failed the hash")
-        want = ["logger -s -t balistid-install bundle does not match the typed sha256"] if mismatch else []
+        self.assertFalse(self.mark.exists(), "an installer ran")
+        want = ["logger -s -t balistid-install the manifest is not signed by the typed key"] if unsigned else []
         want.append(f"logger -s -t balistid-install bootstrap stopped, status {r.returncode}")
         self.assertEqual(self.logged("logger"), want)
         self.log.write_text("")
 
-    def run_variants(self, variants):
-        """Runs each broken text of BOOTSTRAP under a wrong hash with a download that is a shell script:
-        tar may be reached (a typo can skip the if) but never unpacks, install never runs, and nothing runs
-        the download."""
-        evil = self.tmp / "evil"
-        evil.mkdir()
-        hit = self.tmp / "executed"
-        (evil / release.BUNDLE).write_text(f"touch {hit}\n")
-        argv = self.printed("0" * 64)
-        script = argv.index("-c") + 1
-        for label, text in variants:
-            subprocess.run([*argv[:script], text, *argv[script + 1:]], input=f"dir={evil}\nuser=maint\n",
-                           env={"PATH": os.environ["PATH"]}, cwd=self.tmp, capture_output=True, text=True,
-                           timeout=60)
-            self.assertNotIn("unpacked 0", self.logged("unpacked"), label)
-            self.assertFalse(self.mark.exists(), label)
-            self.assertFalse(hit.exists(), label)
-            self.log.write_text("")
-
-    # Root types this by hand: no dropped character anywhere, and none of the typos that turned a test
-    # into a command, a redirect or a background job in the gate, may unpack or run another bundle.
-    def test_no_dropped_or_mistyped_character_passes_another_bundle(self):
-        text = release.BOOTSTRAP
-        variants = [(f"drop {i}: {text[max(0, i - 12):i + 12]!r}", text[:i] + text[i + 1:]) for i in range(len(text))]
-        gate = range(text.index("hash=$("), text.index("else logger"))
-        for c in "!:>&$":
-            variants += [(f"{c!r} at {i}", text[:i] + c + text[i + 1:]) for i in gate]
-            variants += [(f"{c!r} before {i}", text[:i] + c + text[i:]) for i in gate]
-        self.run_variants(variants)
-
-    def test_the_printed_hash_runs_the_checked_install_from_the_copy(self):
-        r = self.run_bootstrap(str(self.stage), self.digest)
+    def test_the_signed_bundle_runs_its_installer_from_the_copy(self):
+        r = self.run_bootstrap(str(self.stage))
         self.assertEqual(r.returncode, 0, r.stderr)
-        script, copy, user, digest = self.mark.read_text().split()
-        self.assertEqual((script, user, digest), (f"{copy}/install", "maint", self.digest))
+        script, verb, copy, user, fp = self.mark.read_text().split()
+        installer = hashlib.sha256((self.tmp / "stage-work" / "files" / "balistid-install").read_bytes()).hexdigest()
+        self.assertEqual((script, verb, user, fp), (f"{copy}/{installer}", "runner", "maint", self.key.fingerprint))
         self.assertTrue(copy.startswith("/tmp/balistid-install."))
         listed = sorted(Path(f"{self.mark}.ls").read_text().split())
-        self.assertEqual(self.logged("tar"), [f"tar -xf {copy}/{self.digest} -C {copy}"])
-        self.assertEqual(listed, sorted(["MANIFEST", self.digest, *release.FILES]))
+        self.assertEqual(listed, sorted([release.BUNDLE, release.SIG, "k", "m", installer]))
         self.assertFalse(Path(copy).exists(), "the root-only copy outlived the bootstrap")
-        self.assertEqual(self.logged("runuser"), [f"runuser -u maint -- cat -- {self.bundle}"])
+        self.assertEqual(self.logged("runuser"), [f"runuser -u maint -- cat -- {self.stage}/{release.BUNDLE}",
+                                                  f"runuser -u maint -- cat -- {self.stage}/{release.SIG}"])
+        self.assertEqual(self.logged("tar"), [f"tar -xOf {copy}/{release.BUNDLE} {m}"
+                                              for m in (release.SIGNERS, "MANIFEST", release.INSTALLER)])
         self.assertEqual(self.logged("logger"), [])
+
+    def test_another_signer_runs_nothing(self):
+        other = Key(self.subdir("other-key"))
+        for label, stage in (("its own key listed", self.release(other, other, "own")),
+                             ("the maintainer's key listed", self.release(other, self.key, "listed"))):
+            with self.subTest(label):
+                self.assert_ran_nothing(self.run_bootstrap(str(stage)))
+
+    def test_another_typed_fingerprint_runs_nothing(self):
+        other = Key(self.subdir("other-key"))
+        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), self.printed(other.signers)))
+
+    def test_another_namespace_runs_nothing(self):
+        stage = self.release(self.key, self.key, "file-ns", namespace="file")
+        self.assert_ran_nothing(self.run_bootstrap(str(stage)))
+
+    def test_unsigned_runs_nothing(self):
+        (self.stage / release.SIG).unlink()
+        self.assert_ran_nothing(self.run_bootstrap(str(self.stage)))
+
+    def test_an_altered_manifest_runs_nothing(self):
+        files = self.tmp / "stage-work" / "files"
+        (files / "MANIFEST").write_text((files / "MANIFEST").read_text().replace("component runner", "component runnes"))
+        self.bundle.unlink()
+        release.bundle(files, self.bundle)
+        self.assert_ran_nothing(self.run_bootstrap(str(self.stage)))
+
+    # The signature binds the MANIFEST; an installer that is not the one it names never runs, signed or not.
+    def test_another_installer_under_a_good_signature_runs_nothing(self):
+        files = self.tmp / "stage-work" / "files"
+        (files / "balistid-install").write_text(f"#!/bin/sh\ntouch {self.mark}\n")
+        self.bundle.unlink()
+        release.bundle(files, self.bundle)
+        r = self.run_bootstrap(str(self.stage))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(self.mark.exists())
 
     def test_typed_stage_and_maintainer_are_never_parsed(self):
         marker = self.tmp / "expanded"
         for stage, user in ((f"/tmp/$(touch {marker})", "maint"), (str(self.stage), f"maint$(touch {marker})"),
                             (f"/tmp/`touch {marker}`", "maint")):
             with self.subTest(stage=stage, user=user):
-                self.run_bootstrap(stage, self.digest, maintainer=user)
+                self.run_bootstrap(stage, maintainer=user)
                 self.assertFalse(marker.exists())
 
+    # Root's shell may carry a PATH, TMPDIR or exported function that answers "Good" for any signature.
     def test_root_shell_environment_does_not_reach_the_check(self):
         tmpdir = self.tmp / "agent-tmp"
         tmpdir.mkdir()
-        (self.tmp / "sha256sum").write_text("#!/bin/sh\nexit 0\n")
-        (self.tmp / "sha256sum").chmod(0o755)
+        good = f'echo "Good \\"{NAMESPACE}\\" signature for {PRINCIPAL} with ED25519 key {self.key.fingerprint}"'
+        (self.tmp / "ssh-keygen").write_text(f"#!/bin/sh\n{good}\n")
+        (self.tmp / "ssh-keygen").chmod(0o755)
+        other = Key(self.subdir("other-key"))
         env = {"PATH": f"{self.tmp}:{os.environ['PATH']}", "TMPDIR": str(tmpdir),
-               "BASH_FUNC_sha256sum%%": "() { return 0; }"}
-        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), "0" * 64, env))
+               "BASH_FUNC_ssh-keygen%%": f"() {{ {good}; }}"}
+        self.assert_ran_nothing(self.run_bootstrap(str(self.release(other, other, "env")), env=env))
         self.assertEqual(list(tmpdir.iterdir()), [])
-
-    def test_a_hash_ci_did_not_print_runs_nothing(self):
-        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), "0" * 64))
-
-    def test_a_changed_bundle_runs_nothing(self):
-        with self.bundle.open("ab") as f:
-            f.write(b"\0" * 512)
-        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), self.digest))
 
     def test_a_fifo_does_not_hang_the_root_shell(self):
         self.bundle.unlink()
         os.mkfifo(self.bundle)
-        r = self.run_bootstrap(str(self.stage), self.digest)
+        r = self.run_bootstrap(str(self.stage))
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(self.mark.exists())
-        self.assertNotIn("unpacked 0", self.logged("unpacked"))
-
-    def test_a_bundle_over_the_cap_is_cut_and_refused(self):
-        with self.bundle.open("r+b") as f:
-            f.truncate((release.BUNDLE_MAX_MIB << 20) + 1)
-        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), release.sha256(self.bundle)))
 
     def test_an_empty_or_relative_stage_runs_nothing(self):
         for stage in ("", "relative/stage", "-"):
             with self.subTest(stage=stage):
-                self.assert_ran_nothing(self.run_bootstrap(stage, self.digest), mismatch=False)
+                self.assert_ran_nothing(self.run_bootstrap(stage))
+                self.assertEqual(self.logged("runuser"), [])
 
     def test_printed_command_has_no_placeholder_and_no_single_quote(self):
         self.assertNotIn("'", release.BOOTSTRAP)
-        self.assertEqual(self.printed(self.digest)[-1], self.digest)
+        self.assertEqual(self.printed()[-1], self.key.fingerprint)
         self.assertNotIn("set -e", release.BOOTSTRAP)
 
     def test_lines_without_their_prefix_run_nothing(self):
-        r = subprocess.run(self.printed(self.digest), input=f"{self.stage}\nmaint\n", env={"PATH": os.environ["PATH"]},
+        r = subprocess.run(self.printed(), input=f"{self.stage}\nmaint\n", env={"PATH": os.environ["PATH"]},
                            capture_output=True, text=True, timeout=60)
-        self.assert_ran_nothing(r, mismatch=False)
+        self.assert_ran_nothing(r)
 
     # A typo in the wrapper may make sh read commands from the typed lines (-s) or treat the script as
     # a file name: the typed lines must only assign, so a program planted at the typed path never runs.
@@ -386,7 +472,7 @@ class BootstrapTest(unittest.TestCase):
         planted = self.tmp / "planted"
         planted.write_text(f"#!/bin/sh\ntouch {hit}\n")
         planted.chmod(0o755)
-        argv = self.printed("0" * 64)
+        argv = self.printed()
         flag = argv.index("-c")
         for letter in "abcdefghijklmnopqrstuvwxyz":
             with self.subTest(letter=letter):
@@ -398,249 +484,43 @@ class BootstrapTest(unittest.TestCase):
 
     def test_a_system_account_never_reads_the_bundle(self):
         (self.stubs / "id").write_text(f'#!/bin/sh\necho "id $*" >> {self.log}\necho 0\n')
-        r = self.run_bootstrap(str(self.stage), self.digest, maintainer="root")
-        self.assert_ran_nothing(r, mismatch=False)
+        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), maintainer="root"))
+        self.assertEqual(self.logged("runuser"), [])
 
+    # Root types this by hand: no dropped character anywhere, and none of the typos that turned a test into a
+    # command, a redirect or a background job in the gate, may run an installer the typed key did not sign.
+    def test_no_dropped_or_mistyped_character_runs_another_installer(self):
+        other = Key(self.subdir("other-key"))
+        hit = self.tmp / "executed"
+        evil = self.release(other, other, "evil", installer=f"#!/bin/sh\ntouch {hit}\n")
+        text = release.BOOTSTRAP
+        variants = [(f"drop {i}: {text[max(0, i - 12):i + 12]!r}", text[:i] + text[i + 1:]) for i in range(len(text))]
+        gate = range(text.index("v=$("), text.index("*) logger"))
+        for c in "!:>&$*":
+            variants += [(f"{c!r} at {i}", text[:i] + c + text[i + 1:]) for i in gate]
+            variants += [(f"{c!r} before {i}", text[:i] + c + text[i:]) for i in gate]
+        # The evil release is live: typed with its own key's fingerprint, the unbroken command runs it.
+        own = self.printed(other.signers)
+        subprocess.run(own, input=f"dir={evil}\nuser=maint\n", env={"PATH": os.environ["PATH"]}, capture_output=True,
+                       text=True, timeout=60)
+        self.assertTrue(hit.exists())
+        hit.unlink()
+        argv = self.printed()
+        script = argv.index("-c") + 1
 
-STUBS = {
-    # stat -c FORMAT -- PATH, exactly as install calls it: the state the test gives PATH; nothing given is
-    # ENOENT as GNU stat words it in the C locale; "ERROR" is any other failure.
-    "stat": '[ "$1" = -c ] && [ "$2" = "%U:%G %a %F" ] && [ "$3" = -- ] || exit 2; echo "stat $4" >> "$STUB_LOG"; '
-            'v=$(/usr/bin/grep -F "$4	" "$STUB_STATE" | /usr/bin/cut -f2); '
-            '[ "$v" = ERROR ] && { echo "stat: cannot statx \'$4\': Permission denied" >&2; exit 1; }; '
-            '[ -n "$v" ] || { echo "stat: cannot statx \'$4\': No such file or directory" >&2; exit 1; }; echo "$v"',
-    # STUB_ID_FAIL: right answer, failed status.
-    "id": '[ $# -eq 1 ] && { echo "$STUB_UID"; [ -z "$STUB_ID_FAIL" ] || exit 7; exit 0; }; '
-          '[ "$2" = ghost ] && exit 1; [ "$2" = daemon ] && { echo 2; exit 0; }; [ "$2" = nobody ] && { echo 65534; exit 0; }; echo 1000',
-    # systemctl show -P PROPERTY UNIT: the value the test gives "PROPERTY UNIT"; nothing given is a unit not
-    # installed yet (ActiveState inactive, every other property empty). STUB_FAIL: "1" no answer, "7" the
-    # answer with a failed status; for every property, or only STUB_FAIL_PROP when that is set.
-    # daemon-reload loads what is on disk: the answers become those of STUB_UNITS_AFTER.
-    "systemctl": 'if [ "$1" = show ]; then [ "$2" = -P ] && [ $# -eq 4 ] || exit 2; f=; '
-                 '[ -z "$STUB_FAIL_PROP" ] || [ "$STUB_FAIL_PROP" = "$3" ] && f=$STUB_FAIL; [ "$f" = 1 ] && exit 1; '
-                 'v=$(/usr/bin/grep -F "$3 $4	" "$STUB_UNITS" | /usr/bin/cut -f2); '
-                 '[ -n "$v" ] || [ "$3" != ActiveState ] || v=inactive; echo "$v"; '
-                 '[ "$f" = 7 ] && exit 7; exit 0; else echo "systemctl $*" >> "$STUB_LOG"; '
-                 '[ "$1" != daemon-reload ] || /usr/bin/cp "$STUB_UNITS_AFTER" "$STUB_UNITS"; fi',
-}
-WRITERS = ("install", "sync", "mv", "systemd-sysusers", "systemd-tmpfiles", "usermod", "logger")
-LIB, STATE = "/usr/local/lib/balistid", "/var/lib/balistid"
-UNITS = ("balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service")
-ETC_DIRS = ("/etc/sysusers.d", "/etc/tmpfiles.d")
+        def run(variant: str) -> None:
+            subprocess.run([*argv[:script], variant, *argv[script + 1:]], input=f"dir={evil}\nuser=maint\n",
+                           env={"PATH": os.environ["PATH"]}, cwd=self.tmp, capture_output=True, text=True, timeout=60)
 
-
-class InstallTest(unittest.TestCase):
-    """Runs deploy/runner/install with only stand-ins on PATH: any other command it ran would fail."""
-
-    def setUp(self):
-        self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bin_ = self.tmp / "bin"
-        bin_.mkdir()
-        for name, body in STUBS.items():
-            (bin_ / name).write_text(f"#!/bin/sh\n{body}\n")
-        for name in WRITERS:
-            (bin_ / name).write_text(f'#!/bin/sh\necho "{name} $*" >> "$STUB_LOG"\n[ "$STUB_FAIL_WRITER" != {name} ]\n')
-        for p in bin_.iterdir():
-            p.chmod(0o755)
-        self.copy = self.tmp / "copy"
-        self.copy.mkdir()
-        self.log = self.tmp / "log"
-        self.log.write_text("")
-        self.state = {str(self.copy): "root:root 700 directory"}
-        self.units: dict[tuple[str, str], str] = {}  # (property, unit): value
-        # After the reload: every unit from the file this install wrote, nothing else.
-        self.after = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
-        self.env = {"PATH": str(bin_), "STUB_LOG": str(self.log), "STUB_UID": "0", "STUB_FAIL": "", "STUB_ID_FAIL": "", "STUB_FAIL_WRITER": "",
-                    "STUB_FAIL_PROP": "",
-                    "STUB_STATE": str(self.tmp / "state"), "STUB_UNITS": str(self.tmp / "units"),
-                    "STUB_UNITS_AFTER": str(self.tmp / "units-after")}
-
-    hash = "ab" * 32
-
-    def run_install(self, maintainer: str = "maint") -> subprocess.CompletedProcess:
-        (self.tmp / "state").write_text("".join(f"{k}\t{v}\n" for k, v in self.state.items()))
-        (self.tmp / "units").write_text("".join(f"{p} {u}\t{v}\n" for (p, u), v in self.units.items()))
-        (self.tmp / "units-after").write_text("".join(f"{p} {u}\t{v}\n" for (p, u), v in self.after.items()))
-        r = subprocess.run(["/bin/sh", str(REPO / "deploy/runner/install"), str(self.copy), maintainer, self.hash],
-                           env=self.env, capture_output=True, text=True, timeout=10)
-        self.assertNotIn("not found", r.stderr, "install ran a command that has no stand-in")
-        return r
-
-    def lines(self, kind: str) -> list[str]:
-        out = []
-        for line in self.log.read_text().splitlines():
-            word = line.split()[0]
-            if (kind == "log") == (word == "logger") and word in (*WRITERS, "systemctl"):
-                out.append(line)
-        return out
-
-    def refused(self, r: subprocess.CompletedProcess, reason: str):
-        self.assertNotEqual(r.returncode, 0)
-        self.assertEqual(self.lines("write"), [], "a refusal wrote to the host")
-        logged = self.lines("log")
-        self.assertEqual(len(logged), 1)
-        self.assertIn("logger -s -t balistid-install install stopped (ADR 0011): ", logged[0])
-        self.assertIn(reason, logged[0])
-        self.log.write_text("")
-
-    def assert_first_install(self, r: subprocess.CompletedProcess):
-        self.assertEqual(r.returncode, 0, r.stderr)
-        c = self.copy
-
-        def put(mode: str, src: str, dst: str) -> list[str]:
-            return [f"install -m {mode} {c}/{src} {dst}.new", f"sync {dst}.new", f"mv -fT {dst}.new {dst}",
-                    f"sync {dst.rsplit('/', 1)[0]}"]
-
-        self.assertEqual(self.lines("write"), [
-            f"install -d -o root -g root -m 0755 {LIB}",
-            *put("0755", "balistid-runner", f"{LIB}/balistid-runner"),
-            *(line for u in UNITS[::-1] for line in put("0644", u, f"/etc/systemd/system/{u}")),
-            "install -d -m 0755 /etc/sysusers.d",
-            "install -d -m 0755 /etc/tmpfiles.d",
-            *put("0644", "sysusers.conf", "/etc/sysusers.d/balistid-runner.conf"),
-            *put("0644", "tmpfiles.conf", "/etc/tmpfiles.d/balistid-runner.conf"),
-            "systemd-sysusers /etc/sysusers.d/balistid-runner.conf",
-            "systemd-tmpfiles --create /etc/tmpfiles.d/balistid-runner.conf",
-            f"install -d -o maint -g balistid-runner -m 2750 {STATE}/inbox",
-            f"install -d -o maint -g balistid-runner -m 2750 {STATE}/objects",
-            "usermod -aG balistid-agents maint",
-            "systemctl daemon-reload"])
-        self.assertEqual(self.lines("log"),
-                         [f"logger -s -t balistid-install installed (ADR 0011) runner bundle sha256 {self.hash} for maint"])
-        self.log.write_text("")
-
-    def test_first_install_writes_exactly_this_after_the_checks(self):
-        self.assert_first_install(self.run_install())
-
-    # A cut copy must never sit at a path systemd or the runner reads: only a rename reaches it.
-    def test_a_target_changes_only_by_rename(self):
-        self.assertEqual(self.run_install().returncode, 0)
-        for target in (f"{LIB}/balistid-runner", *(f"/etc/systemd/system/{u}" for u in UNITS),
-                       "/etc/sysusers.d/balistid-runner.conf", "/etc/tmpfiles.d/balistid-runner.conf"):
-            with self.subTest(target=target):
-                writes = [w for w in self.lines("write") if w.split()[0] in ("install", "mv") and w.split()[-1] == target]
-                self.assertEqual(writes, [f"mv -fT {target}.new {target}"])
-
-    def test_a_failed_write_is_logged_with_its_step(self):
-        self.env["STUB_FAIL_WRITER"] = "systemd-sysusers"
-        self.assertNotEqual(self.run_install().returncode, 0)
-        self.assertEqual(self.lines("log"), ["logger -s -t balistid-install install stopped (ADR 0011): "
-                                             "failed: systemd-sysusers /etc/sysusers.d/balistid-runner.conf, status 1"])
-
-    def test_every_check_precedes_the_first_write(self):
-        self.assertEqual(self.run_install().returncode, 0)
-        words = [line.split()[0] for line in self.log.read_text().splitlines()]
-        self.assertNotIn("stat", words[words.index("install"):])
-
-    def test_reinstall_keeps_inbox_and_objects(self):
-        self.state |= {LIB: "root:root 755 directory", STATE: "root:root 755 directory",
-                       f"{STATE}/inbox": "maint:balistid-runner 2750 directory",
-                       f"{STATE}/objects": "maint:balistid-runner 2750 directory",
-                       **{path: "root:root 755 directory" for path in ETC_DIRS}}
-        r = self.run_install()
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse([w for w in self.lines("write") if "/inbox" in w or "/objects" in w])
-
-    def test_a_running_or_unknown_unit_refuses(self):
-        for unit in UNITS:
-            for active in ("active", "activating", "deactivating", "reloading", "x"):
-                with self.subTest(unit=unit, active=active):
-                    self.units = {("ActiveState", unit): active}
-                    self.refused(self.run_install(), f"{unit} is {active}, not stopped")
-        self.units = {}
-        for fail in ("1", "7"):
-            with self.subTest(fail=fail):
-                self.env["STUB_FAIL"] = fail
-                self.refused(self.run_install(), "cannot query balistid-runner-tick.timer")
-
-    def test_a_drop_in_or_another_fragment_refuses(self):
-        for unit in UNITS:
-            for paths in (f"/etc/systemd/system/{unit}.d/override.conf",
-                          f"/etc/systemd/system.control/{unit}.d/50-RestrictSUIDSGID.conf",
-                          f"/run/systemd/system/{unit}.d/a.conf /usr/lib/systemd/system/{unit}.d/b.conf"):
-                with self.subTest(unit=unit, drop_ins=paths):
-                    self.units = {("DropInPaths", unit): paths}
-                    self.refused(self.run_install(), f"{unit} has drop-ins: {paths}")
-            for path in (f"/run/systemd/system/{unit}", f"/run/systemd/transient/{unit}",
-                         f"/usr/lib/systemd/system/{unit}", f"/etc/systemd/system/{unit}.bak",
-                         f"/x:/etc/systemd/system/{unit}", f"/x/etc/systemd/system/{unit}"):
-                with self.subTest(unit=unit, fragment=path):
-                    self.units = {("FragmentPath", unit): path}
-                    self.refused(self.run_install(), f"{unit} is loaded from {path}, not /etc/systemd/system/{unit}")
-
-    # systemd answers only for what it has loaded, so a drop-in for a unit with no file yet shows only
-    # after the install's own reload; the install must stop there and not report itself installed.
-    def test_a_drop_in_seen_only_after_the_reload_refuses(self):
-        for unit in UNITS:
-            for prop, value, reason in (
-                    ("DropInPaths", f"/etc/systemd/system/{unit}.d/old.conf", f"{unit} has drop-ins"),
-                    ("FragmentPath", f"/run/systemd/system/{unit}", f"{unit} is loaded from /run/systemd/system/{unit}"),
-                    ("FragmentPath", "", f"{unit} is loaded from , not /etc/systemd/system/{unit}")):
-                with self.subTest(unit=unit, prop=prop, value=value):
-                    self.after = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
-                    self.after[(prop, unit)] = value
-                    r = self.run_install()
-                    self.assertNotEqual(r.returncode, 0)
-                    logged = self.lines("log")
-                    self.assertEqual(len(logged), 1, logged)
-                    self.assertIn("install stopped (ADR 0011): ", logged[0])
-                    self.assertIn(reason, logged[0])
-                    self.assertIn("systemctl daemon-reload", self.lines("write"))
-                    self.log.write_text("")
-
-    def test_a_unit_from_this_install_or_none_passes(self):
-        for installed in (UNITS, UNITS[:1], ()):
-            with self.subTest(installed=installed):
-                self.units = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in installed}
-                self.assert_first_install(self.run_install())
-
-    def test_a_failed_unit_query_refuses(self):
-        # "7" answers what passes (empty, or the expected path) and fails; the failure alone must refuse.
-        self.units = {("FragmentPath", u): f"/etc/systemd/system/{u}" for u in UNITS}
-        for prop in ("DropInPaths", "FragmentPath"):
-            for fail in ("1", "7"):
-                with self.subTest(prop=prop, fail=fail):
-                    self.env |= {"STUB_FAIL": fail, "STUB_FAIL_PROP": prop}
-                    self.refused(self.run_install(), f"cannot query {prop} of balistid-runner-tick.timer")
-
-    def test_a_command_that_answers_right_but_fails_refuses(self):
-        self.env["STUB_ID_FAIL"] = "1"
-        self.refused(self.run_install(), "id failed")
-
-    def test_a_stat_error_is_not_absent(self):
-        for path in (LIB, STATE, f"{STATE}/inbox", f"{STATE}/objects", *ETC_DIRS):
-            with self.subTest(path=path):
-                self.state = {str(self.copy): "root:root 700 directory", path: "ERROR"}
-                self.refused(self.run_install(), f"cannot stat {path}")
-
-    def test_a_path_prepared_by_someone_else_refuses(self):
-        for path, value in ((LIB, "maint:maint 755 directory"), (LIB, "root:root 777 directory"),
-                            (LIB, "root:root 777 symbolic link"), (STATE, "maint:root 755 directory"),
-                            (f"{STATE}/inbox", "maint:balistid-runner 777 directory"),
-                            (f"{STATE}/inbox", "maint:balistid-runner 777 symbolic link"),
-                            (f"{STATE}/objects", "other:balistid-runner 2750 directory"),
-                            *((path, value) for path in ETC_DIRS
-                              for value in ("root:root 750 directory", "root:root 644 regular file",
-                                            "root:root 777 symbolic link", "maint:root 755 directory"))):
-            with self.subTest(path=path, value=value):
-                self.state = {str(self.copy): "root:root 700 directory", path: value}
-                self.refused(self.run_install(), f"{path} is {value}, not ")
-
-    def test_a_copy_that_is_not_root_only_refuses(self):
-        for value in ("maint:maint 700 directory", "root:root 755 directory", "root:root 777 symbolic link"):
-            with self.subTest(value=value):
-                self.state = {str(self.copy): value}
-                self.refused(self.run_install(), "is not a root-only copy")
-
-    def test_not_root_or_a_bad_maintainer_refuses(self):
-        for name, reason in (("root", "bad maintainer name"), ("", "bad maintainer name"),
-                             ("MAINTAINER", "bad maintainer name"), ("1x", "bad maintainer name"),
-                             ("a b", "bad maintainer name"), ("ghost", "no user ghost"),
-                             ("daemon", "daemon is not a regular user"), ("nobody", "nobody is not a regular user")):
-            with self.subTest(name=name):
-                self.refused(self.run_install(name), reason)
-        self.env["STUB_UID"] = "1000"
-        self.refused(self.run_install(), "not root")
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            list(pool.map(run, [v for _, v in variants]))
+        if hit.exists() or self.mark.exists():
+            for label, variant in variants:  # name the first variant that ran it
+                hit.unlink(missing_ok=True)
+                self.mark.unlink(missing_ok=True)
+                run(variant)
+                self.assertFalse(hit.exists() or self.mark.exists(), label)
+            self.fail("an installer ran, but no variant alone runs it again")
 
 
 if __name__ == "__main__":
