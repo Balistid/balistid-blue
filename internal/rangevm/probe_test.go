@@ -152,7 +152,18 @@ func TestJudgeCPU(t *testing.T) {
 	}
 	run := func(change ...string) Outcome { return probeRun("cpu-1000", cpuFacts, base, change...) }
 	// Steal over 1 % in one span makes the run INVALID either way (ADR 0057), as does a series not covering the load.
+	// The worst span is kept as a measure, unless the series is malformed or reported twice.
 	tr := trial(t, "cpu-1000")
+	if m := Measures(tr, run(FactStealWindows+"="+windows(600, "7=1000:400:2"))); m[MeasureStealWorstPPM] != 10000 {
+		t.Errorf("CPU worst steal measure %v", m)
+	}
+	twice := run()
+	twice.Facts = append(twice.Facts, Record{Name: FactStealWindows, Value: windows(600)})
+	for name, o := range map[string]Outcome{"malformed": run(FactStealWindows + "=1000:400"), "twice": twice} {
+		if _, ok := Measures(tr, o)[MeasureStealWorstPPM]; ok {
+			t.Errorf("%s series kept a steal measure", name)
+		}
+	}
 	stolen := FactStealWindows + "=" + windows(600, "599=1000:400:5")
 	for change, want := range map[[2]string]string{
 		{stolen, ""}:                         Invalid,
