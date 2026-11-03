@@ -24,15 +24,15 @@ user-db = false
 drop-raw = false
 
 [enrich]
-pid = true
+pid = false
 ppid-verbose = false
-spawned-by = true
-execve-env = [ "LD_PRELOAD", "LD_LIBRARY_PATH" ]
-container = true
+spawned-by = false
+execve-env = [ ]
+container = false
 container_info = false
-systemd = true
-script = true
-user-groups = true
+systemd = false
+script = false
+user-groups = false
 
 [filter]
 filter-null-keys = false
