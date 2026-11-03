@@ -7,13 +7,12 @@
 
 ## Context
 
-The range launcher's `build` (ADR 0009) checked that the work tree matched HEAD, then built from it. Review
-of pull request #22 showed, with probes, that an agent at the maintainer's uid can pass that check
-while the build reads other bytes (`git replace`, `assume-unchanged`, symlinks, forged loose objects),
-and that git run in that repository obeys its configuration, attributes and store metadata, which
-can run programs or print files outside it. Letting a launcher from `main` build another commit
-failed too (Go assembles `.s` files whose `#include` reads host files). Building a commit runs its
-host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that safe (R7).
+The range launcher's `build` (ADR 0009) checked that the work tree matched HEAD, then built from it. Review of pull
+request #22 showed, with probes, that an agent at the maintainer's uid can pass that check while the build reads other
+bytes (`git replace`, `assume-unchanged`, symlinks, forged loose objects), and that git run in that repository obeys
+its configuration, attributes and store metadata, which can run programs or print files outside it. Letting a launcher
+from `main` build another commit failed too (Go assembles `.s` files whose `#include` reads host files). Building a
+commit runs its host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that safe (R7).
 
 ## Decision
 
@@ -29,11 +28,10 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
    refuses malformed trees, into a fresh repository where all must be present, so a forged object is
    refused. These git runs have a data-size limit (object headers can claim any size), their
    messages reach the log only as printable text, and the copy has a time limit.
-3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty
-   directory. Only regular files (modes 100644 and 100755) with plain relative paths are accepted:
-   no symlink, submodule, `..` or `.git`. Every file is created (never opened if it exists) with mode
-   0644 or 0755. Pack size, listing size, entry count, file size, export size, path length and depth
-   are capped (R5).
+3. The commit is exported from that repository file by file (`git cat-file blob`) into an empty directory. Only
+   regular files (modes 100644 and 100755) with plain relative paths are accepted: no symlink, submodule, `..` or
+   `.git`. Every file is created (never opened if it exists) with mode 0644 or 0755. Pack size, listing size, entry
+   count, file size, export size, path length and depth are capped (R5).
 4. Every tool runs in the export with one fixed environment (go also without the caller's proxy variables, and only
    with the export's own go.mod; amended by ADR 0022), caches in the build directory,
    `-buildvcs=false` and no git repository above it (the build directory sits inside the maintainer's home repository).
@@ -51,9 +49,11 @@ host-side inputs (PKGBUILD, `mkosi.conf`, `go.mod`), and no file list makes that
 - Building a commit runs its PKGBUILD and mkosi configuration with the maintainer's rights. The
   launcher is only as clean as the checkout it was built from and the place it is stored (T34).
 - An agent's branch is built by the maintainer only after review, until the runner confines builds.
-- mkosi downloads the package snapshot on every build (no shared cache to poison), up to three tries of the same
-  snapshot, each with a fresh workspace, package cache and output; workspace, package cache and TMPDIR are in the
-  build directory (mkosi 27.1 code, not run); a small pack can still inflate (DoS, T34).
+- mkosi downloads the package snapshot on every build (no shared cache to poison); workspace, package cache and TMPDIR
+  are in the build directory (mkosi 27.1 code, not run); a small pack can still inflate (DoS, T34). mkosi has no
+  download-only mode, so any failed run is retried, up to three runs of the same snapshot 30 s and 60 s apart, each
+  logged, with a fresh workspace, package cache and output. At worst that adds about 13 min to CI's 45 min range-kvm
+  job (with pacman's download retries) and two runs and 90 s to the runner's 1 min build (ADR 0011; limit 30 min).
 - Tests: the source's configuration, attributes, replace refs, index, work tree and store links are not read; the copy
   has a time limit and ends on failure; forged objects and sizes, malformed trees, symlinks, submodules, unsafe paths,
   existing files and every limit are refused; unusual names and modes survive; no history is copied; an unstamped
