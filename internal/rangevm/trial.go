@@ -53,7 +53,8 @@ var counts = []string{
 // maxStealWindows bounds a report's spans: 68 min of reads every second, for runs that end within 40 min.
 const maxStealWindows = 4096
 
-// stealWindow is one span of FactStealWindows; the digits cap keeps steal*100 far below 2^64.
+// stealWindow is one span of FactStealWindows; the digits cap keeps steal*1_000_000 below 2^64 (one more digit
+// would overflow it).
 var stealWindow = regexp.MustCompile(`^(0|[1-9][0-9]{0,8}):(0|[1-9][0-9]{0,11}):(0|[1-9][0-9]{0,11})$`)
 
 // hostSteal is why host steal leaves the run unproven either way (ADR 0057): the first span with more than 1 % of
