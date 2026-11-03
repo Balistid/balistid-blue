@@ -180,8 +180,13 @@ func loadAndFail(ctx context.Context, tr rangejob.Trial, r *report, env failEnv)
 	if err := send(rangeguest.Freeze); err != nil {
 		return fail("freeze writer: " + err.Error())
 	}
+	asked := time.Now()
 	select {
 	case <-frozen:
+		// select takes either of two ready cases at random: an answer is in time only within freezeWait.
+		if time.Since(asked) > env.freezeWait {
+			return fail("the writer did not freeze")
+		}
 	case <-waited:
 		return fail("the writer ended before it froze")
 	case <-time.After(env.freezeWait):
