@@ -315,3 +315,60 @@ func TestUntilRunningWaitsForEveryUnit(t *testing.T) {
 		}
 	}
 }
+
+// An OOM event that only the final read sees, after the last sample, counts as much as one a sample saw: the run
+// otherwise passes over a recorder that hit its limit.
+func TestFinalReadKeepsItsOOMEvents(t *testing.T) {
+	files := rssTree()
+	root := fakeRoot(t, files)
+	var m rssMax
+	m.sample(root, []string{collectorCG, ledgerCG}, []string{auditdCG})
+	if m.oomEvents() != 0 {
+		t.Fatalf("oom %d before the event", m.oomEvents())
+	}
+	if err := os.WriteFile(filepath.Join(root, "sys/fs/cgroup"+ledgerCG+"/memory.events"), []byte("oom 1\noom_kill 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hwm, err := m.final(root, []string{collectorCG, ledgerCG})
+	if err != nil || hwm != 190009 || m.oomEvents() != 1 {
+		t.Errorf("final read: %d KiB, %v, oom %d; want 190009, oom 1", hwm, err, m.oomEvents())
+	}
+}
+
+// A cgroup that cannot be read makes the read an error, but what the other cgroups showed still counts: a peak
+// over the limit or an OOM event read before the failure stays, so the judge's MISS outranks the INVALID.
+func TestPartialReadsKeepAdverseEvidence(t *testing.T) {
+	files := rssTree()
+	files["sys/fs/cgroup"+ledgerCG+"/memory.events"] = "oom 1\noom_kill 1\n"
+	root := fakeRoot(t, files)
+	gone := "/system.slice/balistid-relay.service"
+	kib, _, oom, err := cgroupSum(root, []string{collectorCG, gone, ledgerCG}, "VmRSS")
+	if err == nil || kib != 130005 || !slices.Equal(oom, []uint64{0, 0, 2}) {
+		t.Errorf("a cgroup gone in the middle: %d KiB, oom %v, %v; want 130005, [0 0 2], an error", kib, oom, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "proc/10/status"), []byte("VmRSS:\t300000 kB\nVmHWM:\t310000 kB\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var m rssMax
+	m.sample(root, []string{collectorCG, gone, ledgerCG}, nil)
+	if m.err == nil || m.kib != 330005 || m.oomEvents() != 2 || m.samples != 0 {
+		t.Errorf("a failed sample: %+v; want 330005 KiB, oom 2, no sample counted", m)
+	}
+	var f rssMax
+	hwm, err := f.final(root, []string{gone, collectorCG, ledgerCG})
+	if err == nil || hwm != 350009 || f.oomEvents() != 2 {
+		t.Errorf("a failed final read: %d KiB, oom %d, %v; want 350009, 2, an error", hwm, f.oomEvents(), err)
+	}
+}
+
+// The OOM control lowers, for this boot only, the MemoryMax of a unit rss_mib sums, far below the installed one.
+func TestOOMInjectionLowersARecordersLimit(t *testing.T) {
+	unit, err := os.ReadFile("../../deploy/ledger/balistid-ledger.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(oomInjection[:3], []string{"set-property", "--runtime", ledgerUnit}) || !rangevm.RSSUnits()[ledgerUnit] ||
+		oomInjection[3] != "MemoryMax=1M" || !strings.Contains(string(unit), "\nMemoryMax=128M\n") {
+		t.Errorf("injection %v of a unit installed with another MemoryMax", oomInjection)
+	}
+}

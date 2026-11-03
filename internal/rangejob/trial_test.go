@@ -126,6 +126,11 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricRSS, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 600, Drop: true}}, ""},
 		{Trial{Metric: MetricRSS, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
 		{Trial{Metric: MetricRSS, Inject: InjectLedger}, ""},
+		{Trial{Metric: MetricRSS, Expect: ExpectMiss, Inject: InjectOOM, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30}}, MethodRSS},
+		{Trial{Metric: MetricRSS, Inject: InjectOOM, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30}}, ""},
+		{Trial{Metric: MetricRSS, Expect: ExpectPass, Inject: InjectOOM, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30}}, ""},
+		{Trial{Metric: MetricCPU, Expect: ExpectMiss, Inject: InjectOOM, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30}}, ""},
+		{Trial{Metric: MetricRSS, Expect: ExpectMiss, Inject: InjectOOM, Load: Load{Kind: LoadConnect, Rate: 100, Seconds: 150}}, ""},
 		{Trial{Metric: MetricCPU, Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 20}}, ""},
 		{Trial{Metric: MetricCanary}, MethodCanary},
 		{Trial{Metric: MetricCanary, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
@@ -171,7 +176,7 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 	want := map[string]Load{"rss-1000": cpu.Load, "rss-burst": burst.Load, "rss-large": {Kind: LoadExecLarge, Rate: 1, Seconds: 30}}
 	got := map[string]Load{}
 	for _, tr := range Trials() {
-		if tr.Metric != MetricRSS {
+		if tr.Metric != MetricRSS || tr.Expect != "" {
 			continue
 		}
 		got[tr.Name] = tr.Load
@@ -197,6 +202,20 @@ func TestRSSTrialsAreTheAcceptance(t *testing.T) {
 		if !strings.Contains(string(unit[1]), load) {
 			t.Errorf("rss_mib's unit does not say %q", load)
 		}
+	}
+}
+
+// rss_mib's OOM path has one control, which the OOM injection makes miss: it never counts for the metric.
+func TestRSSHasAnOOMControl(t *testing.T) {
+	var controls []Trial
+	for _, tr := range Trials() {
+		if tr.Inject == InjectOOM || tr.Metric == MetricRSS && tr.Expect != "" {
+			controls = append(controls, tr)
+		}
+	}
+	if len(controls) != 1 || controls[0].Name != "rss-oom-control" || controls[0].Expect != ExpectMiss ||
+		controls[0].Method() != MethodRSS || controls[0].Count < 1 {
+		t.Errorf("rss controls %+v", controls)
 	}
 }
 
