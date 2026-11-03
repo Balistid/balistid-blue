@@ -546,3 +546,28 @@ func TestDecisionIsARecordWithItsSchema(t *testing.T) {
 		t.Fatalf("line %q", line)
 	}
 }
+
+// The state directory is checked whatever tmpfiles.conf lists, and every directory it lists has its parent listed
+// too, so no directory tmpfiles makes is reached through an unchecked link.
+func TestRunnerChecksTheStateDirectoryWhateverTmpfilesLists(t *testing.T) {
+	without := strings.Replace(string(deployTmpfiles), "d /var/lib/balistid 0755 root root -\n", "", 1)
+	orphan := strings.Replace(string(deployTmpfiles), "d /var/lib/balistid/results 0750 balistid-runner balistid-agents -\n", "", 1)
+	for label, c := range map[string]struct {
+		conf, want string
+		link       bool
+	}{
+		"no state line, the state a link": {without, "/var/lib/balistid: mode", true},
+		"no results line":                 {orphan, "its parent directory is not listed", false},
+	} {
+		h, s := newRunnerHost(t)
+		if c.link {
+			h.mkdir(t, "var/lib/other", 0o755)
+			h.symlink(t, "other", "var/lib/balistid")
+		}
+		files := runnerFiles(h.key.signers)
+		files["tmpfiles.conf"] = []byte(c.conf)
+		m := manifestOf(files)
+		h.publish(t, files, m, h.key.sign(t, m, Namespace))
+		h.refusedRun(t, s, label, maint, "", c.want)
+	}
+}

@@ -46,7 +46,7 @@ var (
 	unitProps   = []string{"Id", "ActiveState", "DropInPaths", "FragmentPath"}
 	// trustedDirs exist on every host; they and every directory above them are only checked, never changed.
 	trustedDirs = []string{"etc/systemd/system", "usr/local/lib", "var/lib"}
-	// createdDirs are absent or exactly root:root 0755; tmpfiles.conf names the directories it makes.
+	// createdDirs and stateDir are absent or exactly root:root 0755, whatever tmpfiles.conf (which makes stateDir) says.
 	createdDirs    = []string{"usr/local/lib/balistid", "etc/sysusers.d", "etc/tmpfiles.d", signersDir}
 	maintainerDirs = []string{stateDir + "/inbox", stateDir + "/objects"}
 	maintainerName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
@@ -198,7 +198,7 @@ func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string
 		return nil, err
 	}
 	var dirs []wantDir
-	for _, dir := range createdDirs {
+	for _, dir := range append(slices.Clone(createdDirs), stateDir) {
 		dirs = append(dirs, wantDir{dir, "root", "root", fs.ModeDir | 0o755})
 	}
 	for _, dir := range maintainerDirs {
@@ -291,7 +291,13 @@ func tmpfilesDirs(conf []byte) ([]wantDir, error) {
 		if bits&0o2000 != 0 {
 			mode |= fs.ModeSetgid
 		}
-		dirs = append(dirs, wantDir{strings.TrimPrefix(m[1], "/"), m[3], m[4], mode})
+		name := strings.TrimPrefix(m[1], "/")
+		// Preflight checks what tmpfiles will make; a directory whose parent it does not make is not checked whole.
+		if parent := path.Dir(name); name != stateDir && parent != stateDir &&
+			!slices.ContainsFunc(dirs, func(d wantDir) bool { return d.name == parent }) {
+			return nil, fmt.Errorf("tmpfiles.conf: line %d: its parent directory is not listed before it", i+1)
+		}
+		dirs = append(dirs, wantDir{name, m[3], m[4], mode})
 	}
 	return dirs, nil
 }
