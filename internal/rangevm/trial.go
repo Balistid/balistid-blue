@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
@@ -27,10 +28,9 @@ const (
 	FactStealTicks     = "steal_ticks"
 	FactDrainCPU       = "drain_cpu_ticks"
 	FactDrainSteal     = "drain_steal_ticks"
-	// FactGuardCPU and FactGuardSteal are the part of the drain the steal guard judges: of the store read's wait
-	// for an idle audit and the rest, the one with the larger share of steal. The drain's totals stay measures.
-	FactGuardCPU   = "drain_guard_cpu_ticks"
-	FactGuardSteal = "drain_guard_steal_ticks"
+	// FactDrainParts is "cpu:steal;..." of each part of the drain, which the steal guard judges one by one; the
+	// drain's totals are measures.
+	FactDrainParts = "drain_parts"
 	FactFollow     = "follow"
 	FactStored     = "stored"
 	FactMissing    = "missing"
@@ -44,8 +44,8 @@ const (
 // only, not judged, a number or why there is none.
 var rateFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter,
-	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactDrainCPU, FactDrainSteal, FactGuardCPU,
-	FactGuardSteal, FactFollow, FactStored, FactMissing, FactDuplicate, FactOutside, FactCollectorUS, FactCollectorMem,
+	FactOverflowBefore, FactOverflowAfter, FactCPUTicks, FactStealTicks, FactDrainCPU, FactDrainSteal, FactDrainParts,
+	FactFollow, FactStored, FactMissing, FactDuplicate, FactOutside, FactCollectorUS, FactCollectorMem,
 }
 
 // counts are the rate facts that must be plain decimal numbers.
@@ -73,7 +73,7 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		return Invalid, fmt.Sprintf("trial report has %d of %d facts", len(f), len(rateFacts))
 	}
 	n := map[string]uint64{}
-	for _, name := range append(slices.Clone(counts), FactGuardCPU, FactGuardSteal) {
+	for _, name := range counts {
 		v, err := strconv.ParseUint(f[name], 10, 64)
 		if err != nil || strconv.FormatUint(v, 10) != f[name] {
 			return Invalid, fmt.Sprintf("fact %s is not a plain number", name)
@@ -90,11 +90,10 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		return Invalid, fmt.Sprintf("the reader did not see the whole run: \"%s\"", Printable(f[FactFollow], 256))
 	case f[FactOverflowBefore] != "no" || (f[FactOverflowAfter] != "no" && f[FactOverflowAfter] != "yes"):
 		return Invalid, "the plugin queue state is unknown"
-	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100 || n[FactGuardSteal] > n[FactGuardCPU]/100 ||
-		n[FactGuardCPU] > n[FactDrainCPU] || n[FactGuardSteal] > n[FactDrainSteal] || !worstPart(n) ||
-		n[FactGuardCPU] == 0 && n[FactDrainCPU] > 0:
-		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks under load, %d of %d in the worse part of the drain (%d of %d)",
-			n[FactStealTicks], n[FactCPUTicks], n[FactGuardSteal], n[FactGuardCPU], n[FactDrainSteal], n[FactDrainCPU])
+	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100:
+		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks under load", n[FactStealTicks], n[FactCPUTicks])
+	case drainStealWhy(f[FactDrainParts], n[FactDrainCPU], n[FactDrainSteal]) != "":
+		return Invalid, drainStealWhy(f[FactDrainParts], n[FactDrainCPU], n[FactDrainSteal])
 	case n[FactGenerated] == 0 || n[FactGenerated] > planned || n[FactStored] > n[FactGenerated] ||
 		n[FactMissing] != n[FactGenerated]-n[FactStored]:
 		return Invalid, fmt.Sprintf("generated %d of %d planned, stored %d and missing %d do not add up",
@@ -119,11 +118,33 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 	return Pass, loss
 }
 
-// worstPart reports whether the guard's part of the drain has at least the whole drain's share of steal, as the
-// part with the larger share of two must; the ticks of one run are far below 2^32, so no product overflows.
-func worstPart(n map[string]uint64) bool {
-	return n[FactDrainCPU] < 1<<32 && n[FactDrainSteal] < 1<<32 &&
-		n[FactGuardSteal]*n[FactDrainCPU] >= n[FactDrainSteal]*n[FactGuardCPU]
+// drainStealWhy is why the drain's parts do not show at most 1 % steal in each, or "": each part "cpu:steal"
+// has CPU ticks and no more steal than them, at most 1 %, and the parts add up to the drain's totals. A part
+// with no ticks, or one over 1 %, is never made good by the others.
+func drainStealWhy(parts string, cpu, steal uint64) string {
+	list := strings.Split(parts, ";")
+	if len(list) > 8 {
+		return fmt.Sprintf("%d parts of the drain, more than the guest has", len(list))
+	}
+	var sumCPU, sumSteal uint64
+	for _, p := range list {
+		c, s, ok := strings.Cut(p, ":")
+		pc, errC := plainNumber(c)
+		ps, errS := plainNumber(s)
+		switch {
+		case !ok || errC != nil || errS != nil || pc >= 1<<40:
+			return fmt.Sprintf("a part of the drain \"%s\" is not cpu:steal", Printable(p, 64))
+		case pc == 0 || ps > pc:
+			return fmt.Sprintf("a part of the drain with %d steal in %d ticks", ps, pc)
+		case ps > pc/100:
+			return fmt.Sprintf("guest steal over 1 %%: %d of %d ticks in a part of the drain", ps, pc)
+		}
+		sumCPU, sumSteal = sumCPU+pc, sumSteal+ps
+	}
+	if sumCPU != cpu || sumSteal != steal {
+		return fmt.Sprintf("the drain's parts \"%s\" do not add up to its %d of %d ticks", Printable(parts, 128), steal, cpu)
+	}
+	return ""
 }
 
 // ExpectedVerdict is what a sound run of tr gives: a control's Expect, else PASS.

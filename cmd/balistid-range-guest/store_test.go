@@ -68,13 +68,12 @@ func TestLossLogShowsTheFirstAndACount(t *testing.T) {
 	}
 }
 
-// The read's wait for an idle audit is told to around as it begins and when it returned, also on an error, and
-// runs without one.
-func TestIdleThenTellsAroundTheWait(t *testing.T) {
+// After the read's wait for an idle audit, also a failed one, after runs; the wait runs without one too.
+func TestIdleThenRunsAfterTheWait(t *testing.T) {
 	var steps []string
 	wait := func(context.Context) error { steps = append(steps, "wait"); return errors.New("not idle") }
-	err := idleThen(wait, func(done bool) { steps = append(steps, map[bool]string{false: "begin", true: "end"}[done]) })(t.Context())
-	if err == nil || strings.Join(steps, ",") != "begin,wait,end" {
+	err := idleThen(wait, func() { steps = append(steps, "after") })(t.Context())
+	if err == nil || strings.Join(steps, ",") != "wait,after" {
 		t.Errorf("%v, steps %v", err, steps)
 	}
 	if err := idleThen(func(context.Context) error { return nil }, nil)(t.Context()); err != nil {
@@ -101,28 +100,18 @@ func TestBacklogAfterTakesOnlyALaterReport(t *testing.T) {
 	}
 }
 
-// Of the drain after a rate trial's load, the store read's wait for an idle audit and the rest each keep their own
-// steal: the one with the larger share is reported, so an idle tail dilutes neither.
-func TestDrainTicksKeepTheIdleWaitApart(t *testing.T) {
+// The drain's parts are the ticks between each two reads, each its own: the store read's wait for an idle audit
+// and the rest of the read; a read missing, as when the wait never ran, fails them.
+func TestDrainPartsKeepEachInterval(t *testing.T) {
 	stat := func(user, steal int) string { return fmt.Sprintf("cpu  %d 0 0 0 0 0 0 %d 0 0\n", user, steal) }
-	loaded, idleFrom, idleTo, after := stat(1000, 10), stat(1100, 13), stat(2100, 13), stat(2200, 14)
-	cpu, steal, err := drainTicks(loaded, idleFrom, idleTo, after)
-	wantCPU, wantSteal, _ := rangeguest.TickDelta(loaded, idleFrom)
-	more, moreSteal, _ := rangeguest.TickDelta(idleTo, after)
-	if err != nil || cpu != wantCPU+more || steal != wantSteal+moreSteal {
-		t.Errorf("steal outside the wait: %d of %d, %v; want %d of %d", steal, cpu, err, wantSteal+moreSteal, wantCPU+more)
+	loaded, idleTo, after := stat(1000, 10), stat(1100, 12), stat(11100, 12)
+	c0, s0, _ := rangeguest.TickDelta(loaded, idleTo)
+	c1, s1, _ := rangeguest.TickDelta(idleTo, after)
+	if got, err := drainParts(loaded, idleTo, after); err != nil || got != fmt.Sprintf("%d:%d;%d:%d", c0, s0, c1, s1) {
+		t.Errorf("parts %q, %v", got, err)
 	}
-	idleFrom, idleTo = stat(1100, 10), stat(1300, 15)
-	cpu, steal, err = drainTicks(loaded, idleFrom, idleTo, stat(1400, 15))
-	if want, wantSteal, _ := rangeguest.TickDelta(idleFrom, idleTo); err != nil || cpu != want || steal != wantSteal {
-		t.Errorf("steal in the wait: %d of %d, %v; want %d of %d", steal, cpu, err, wantSteal, want)
-	}
-	idleFrom, idleTo = stat(1000, 10), stat(1100, 100) // the wait holds every tick of the drain, the rest none
-	if cpu, steal, err := drainTicks(loaded, idleFrom, idleTo, idleTo); err != nil || cpu == 0 || steal != 90 {
-		t.Errorf("a rest without ticks: %d of %d, %v; want the wait's", steal, cpu, err)
-	}
-	if _, _, err := drainTicks(loaded, "", "", after); err == nil {
-		t.Error("a drain without the wait's ticks counted")
+	if _, err := drainParts(loaded, "", after); err == nil {
+		t.Error("a drain without the wait's end counted")
 	}
 }
 
