@@ -1,7 +1,6 @@
 package rangevm
 
 import (
-	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -15,7 +14,9 @@ import (
 // whole; the units sampled, comma-separated; how many samples, one a second from before the load until it drained,
 // and the longest time in ms no sample covered of the load; the fewest processes any unit held in a sample; the
 // largest summed VmRSS of a sample and the summed VmHWM at the end, in KiB; the OOM events of the units' cgroups;
-// the collector's -queue-bytes; and the largest sum of auditd's cgroup with Laurel, a trend, a number or why not.
+// the collector's -queue-bytes; the largest sum of auditd's cgroup with Laurel, a trend, a number or why not; and of
+// the OOM control alone, else RSSNone, when in ns it lowered OOMControlUnit's MemoryMax or why not, and that unit's
+// OOM events before it.
 const (
 	FactRSSRun        = "rss_run"
 	FactRSSUnits      = "rss_units"
@@ -27,7 +28,14 @@ const (
 	FactRSSOOM        = "rss_oom"
 	FactRSSQueueBytes = "rss_queue_bytes"
 	FactRSSAuditKiB   = "rss_auditd_max_kib"
+	FactRSSInjected   = "rss_injected"
+	FactRSSOOMBefore  = "rss_oom_before"
+	RSSNone           = "none"
 )
+
+// OOMControlUnit is the unit rss-oom-control OOM-kills, neither sampled nor waited for in that trial: it proves the
+// OOM path, not memory.
+const OOMControlUnit = "balistid-ledger.service"
 
 // CollectorQueueBytes is collector.QueueBytes, the queue the shipped collector holds; the range runs a smaller one
 // (ADR 0039, point 2). The judge does not link the collector; a test pins the two.
@@ -43,7 +51,8 @@ const (
 var rssFacts = []string{
 	FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactLostBefore, FactLostAfter, FactOverflowBefore,
 	FactOverflowAfter, FactLostRecords, FactUnits, FactRSSRun, FactRSSUnits, FactRSSSamples, FactRSSLoadGapMS,
-	FactRSSProcsMin, FactRSSMaxKiB, FactRSSHWMKiB, FactRSSOOM, FactRSSQueueBytes, FactRSSAuditKiB,
+	FactRSSProcsMin, FactRSSMaxKiB, FactRSSHWMKiB, FactRSSOOM, FactRSSQueueBytes, FactRSSAuditKiB, FactRSSInjected,
+	FactRSSOOMBefore,
 }
 
 // rssCounts are the RSS facts that must be plain numbers.
@@ -97,6 +106,12 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 	if queueRead {
 		queueKiB = (CollectorQueueBytes - n[FactRSSQueueBytes] + 1023) >> 10
 	}
+	if tr.Inject == rangejob.InjectOOM {
+		return oomControl(tr, f, n, unproven)
+	}
+	if f[FactRSSInjected] != RSSNone || f[FactRSSOOMBefore] != RSSNone {
+		bad("an injection in a trial without one: \"%s\", \"%s\"", Printable(f[FactRSSInjected], 64), Printable(f[FactRSSOOMBefore], 64))
+	}
 	peak := max(n[FactRSSMaxKiB], n[FactRSSHWMKiB])
 	if n[FactRSSOOM] > 0 {
 		misses = append(misses, fmt.Sprintf("%d OOM events in the units' cgroups", n[FactRSSOOM]))
@@ -105,15 +120,10 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 		misses = append(misses, fmt.Sprintf("%d KiB resident at most and %d KiB of the shipped collector's larger queue, over %d",
 			peak, queueKiB, rssLimitKiB))
 	}
-	switch {
-	case tr.Inject == rangejob.InjectOOM && n[FactRSSOOM] == 0:
-		// The OOM control proves only the OOM path: a peak over the limit without an OOM event shows nothing of it.
-		bad("the OOM injection showed no OOM event: %s", cmp.Or(strings.Join(misses, "; "), "no MISS"))
-		return Invalid, strings.Join(unproven, "; ")
-	case len(misses) > 0:
+	if len(misses) > 0 {
 		return Miss, strings.Join(misses, "; ")
 	}
-	rssUnproven(tr, f, n, bad)
+	rssUnproven(tr, f, n, RSSUnits(), bad)
 	if len(unproven) > 0 {
 		return Invalid, strings.Join(unproven, "; ")
 	}
@@ -123,15 +133,15 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 
 // rssUnproven calls bad for each reason an RSS run proves nothing: another set of units, a run not whole, a load not
 // held or not delivered, a restart, too few samples or a gap in them, a unit without a process or no memory read.
-func rssUnproven(tr rangejob.Trial, f map[string]string, n map[string]uint64, bad func(string, ...any)) {
+func rssUnproven(tr rangejob.Trial, f map[string]string, n map[string]uint64, want map[string]bool, bad func(string, ...any)) {
 	sampled := strings.Split(f[FactRSSUnits], ",")
 	units := map[string]bool{}
 	for _, u := range sampled {
 		units[u] = true
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
-	if len(sampled) != len(units) || !maps.Equal(units, RSSUnits()) {
-		bad("sampled units \"%s\", want exactly %v", Printable(f[FactRSSUnits], 256), slices.Sorted(maps.Keys(RSSUnits())))
+	if len(sampled) != len(units) || !maps.Equal(units, want) {
+		bad("sampled units \"%s\", want exactly %v", Printable(f[FactRSSUnits], 256), slices.Sorted(maps.Keys(want)))
 	}
 	if f[FactRSSRun] != "ok" {
 		bad("the run: \"%s\"", Printable(f[FactRSSRun], 256))
@@ -164,4 +174,27 @@ func rssUnproven(tr rangejob.Trial, f map[string]string, n map[string]uint64, ba
 	if n[FactRSSMaxKiB] == 0 || n[FactRSSHWMKiB] == 0 {
 		bad("no resident memory read: %d KiB sampled, %d KiB of peaks", n[FactRSSMaxKiB], n[FactRSSHWMKiB])
 	}
+}
+
+// oomControl judges rss-oom-control from evidence of its own injection only: a whole run of the other units, as an
+// RSS trial must be, the injection proven by its time, no OOM event of OOMControlUnit before it, and then one after
+// it, the expected MISS. Anything missing or failed is INVALID, never that MISS; peaks are not looked at.
+func oomControl(tr rangejob.Trial, f map[string]string, n map[string]uint64, unproven []string) (string, string) {
+	bad := func(format string, a ...any) { unproven = append(unproven, fmt.Sprintf(format, a...)) }
+	others := RSSUnits()
+	delete(others, OOMControlUnit)
+	rssUnproven(tr, f, n, others, bad)
+	if at, err := plainNumber(f[FactRSSInjected]); err != nil || at == 0 {
+		bad("the OOM injection is not proven: \"%s\"", Printable(f[FactRSSInjected], 256))
+	}
+	if f[FactRSSOOMBefore] != "0" {
+		bad("OOM events of %s before the injection: \"%s\"", OOMControlUnit, Printable(f[FactRSSOOMBefore], 256))
+	}
+	switch {
+	case len(unproven) > 0:
+		return Invalid, strings.Join(unproven, "; ")
+	case n[FactRSSOOM] == 0:
+		return Invalid, "no OOM event of " + OOMControlUnit + " after the injection"
+	}
+	return Miss, fmt.Sprintf("%d OOM events of %s after the injection", n[FactRSSOOM], OOMControlUnit)
 }
