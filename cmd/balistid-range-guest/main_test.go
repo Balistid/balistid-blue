@@ -240,7 +240,9 @@ func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
 		t.Fatal(err)
 	}
 	lost := false
-	fn := rateRecords(c, &lost)
+	var shown strings.Builder
+	log := &lossLog{w: &shown}
+	fn := rateRecords(c, &lost, log)
 	line := `{"EXECVE":{"argc":2,"ARGV":["/usr/bin/true","balistid-n-1"]}}`
 	for _, r := range []rawrecord.Record{
 		rawrecord.New(0, store.SensorProvider, 1, 1, []byte(line)),
@@ -257,7 +259,7 @@ func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
 		t.Fatalf("a store loss record: %v, lost %v", err, lost)
 	}
 	behind := false
-	after := storeLoss(&behind)
+	after := storeLoss(&behind, log)
 	for _, r := range []rawrecord.Record{rawrecord.New(0, store.SensorProvider, 1, 4, []byte(line)), rawrecord.New(0, store.LossProvider, 0, 5, []byte("{}")),
 		rawrecord.New(0, store.HealthProvider, 0, 6, []byte(`{"schema_version":1,"kind":"stats"}`))} {
 		if err := after(r); err != nil {
@@ -266,6 +268,9 @@ func TestRateRecordsCountNumbersAndNoteAStoreLoss(t *testing.T) {
 	}
 	if !behind {
 		t.Error("a store loss record behind the barrier was not noted")
+	}
+	if n := strings.Count(shown.String(), hostPrefix+"loss record "); n != 2 {
+		t.Errorf("%d loss records shown in the host's log, want 2: %q", n, shown.String())
 	}
 }
 

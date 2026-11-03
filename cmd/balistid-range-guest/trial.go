@@ -100,15 +100,26 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
 	genErr = errors.Join(genErr, wait())
 	statLoaded := readTrim("/proc/stat")
-	// The collector's CPU over the load, read before the store read stops it and its cgroup.
-	collectorCPU, collectorMem := collectorMeasures(collector0, sampleUnit(ctx, collectorUnitName))
-
-	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error { return readStore(ctx, before, after) })
+	// The collector's CPU and memory peak over the load and its drain: sampled once the read's wait for an
+	// idle audit is over, before its barrier and stop end the collector and its cgroup (measures only).
+	var idleFrom, idleTo string
+	collector1 := unitSample{err: errors.New("no sample after the drain")}
+	read := storeReader(func(done bool) {
+		if !done {
+			idleFrom = readTrim("/proc/stat")
+			return
+		}
+		idleTo, collector1 = readTrim("/proc/stat"), sampleUnit(ctx, collectorUnitName)
+	})
+	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error {
+		return read.Read(ctx, waitLimit, before, after)
+	})
+	collectorCPU, collectorMem := collectorMeasures(collector0, collector1)
 	nums := counter.Numbers()
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.
 	cpu, steal, loadErr := rangeguest.TickDelta(statBefore, statLoaded)
-	drainCPU, drainSteal, drainErr := rangeguest.TickDelta(statLoaded, readTrim("/proc/stat"))
+	drainCPU, drainSteal, drainErr := drainTicks(statLoaded, idleFrom, idleTo, readTrim("/proc/stat"))
 	tickErr := errors.Join(loadErr, drainErr)
 	switch {
 	case genErr != nil:
@@ -164,6 +175,22 @@ func stateLine(ctx context.Context, name string) string {
 	return rangeguest.StateValue(state, name)
 }
 
+// drainTicks are a rate trial's CPU and steal ticks from the load's end to after its store read: of the read's wait
+// for an idle audit (idleFrom to idleTo) and of the rest, the one with the larger share of steal, so the wait's idle
+// tail, up to auditd's next state rewrite, cannot dilute steal while the reader drains, nor the read the wait's.
+func drainTicks(loaded, idleFrom, idleTo, after string) (total, steal uint64, err error) {
+	c0, s0, err0 := rangeguest.TickDelta(loaded, idleFrom)
+	c1, s1, err1 := rangeguest.TickDelta(idleTo, after)
+	ci, si, errI := rangeguest.TickDelta(idleFrom, idleTo)
+	if err := errors.Join(err0, err1, errI); err != nil {
+		return 0, 0, fmt.Errorf("drain: %w", err)
+	}
+	if si*(c0+c1) > (s0+s1)*ci { // a run's ticks stay far below 2^32, so the products cannot overflow
+		return ci, si, nil
+	}
+	return c0 + c1, s0 + s1, nil
+}
+
 // errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
 // scratch disk drops, which says the range sized it wrong, not that the collector lost them: INVALID.
 var errStoreLost = errors.New("the store dropped records: the scratch disk is full")
@@ -171,8 +198,9 @@ var errStoreLost = errors.New("the store dropped records: the scratch disk is fu
 // rateRead counts a rate trial's numbers from one store read and fails it with errStoreLost when
 // the store dropped records, on either side of the barrier.
 func rateRead(c *rangeguest.Counter, read storeRead) error {
-	storeLost := false
-	err := read(rateRecords(c, &storeLost), storeLoss(&storeLost))
+	storeLost, log := false, &lossLog{w: os.Stdout}
+	err := read(rateRecords(c, &storeLost, log), storeLoss(&storeLost, log))
+	log.done()
 	if err == nil && storeLost {
 		return errStoreLost
 	}
@@ -181,11 +209,11 @@ func rateRead(c *rangeguest.Counter, read storeRead) error {
 
 // storeLoss sets *storeLost at a loss record of the store behind the barrier too: the store records a
 // drop before the record after it, so one there dropped only later records, yet the disk was full.
-func storeLoss(storeLost *bool) func(rawrecord.Record) error {
+func storeLoss(storeLost *bool, log *lossLog) func(rawrecord.Record) error {
 	return func(r rawrecord.Record) error {
 		if r.Provider == store.LossProvider {
 			*storeLost = true
-			hostLine(os.Stdout, "%s", lossLine(r))
+			log.add(r)
 		}
 		return nil
 	}
@@ -193,14 +221,14 @@ func storeLoss(storeLost *bool) func(rawrecord.Record) error {
 
 // rateRecords counts a rate trial's numbers in the Laurel lines and sets *storeLost at a loss record of
 // the store.
-func rateRecords(c *rangeguest.Counter, storeLost *bool) func(rawrecord.Record) error {
+func rateRecords(c *rangeguest.Counter, storeLost *bool, log *lossLog) func(rawrecord.Record) error {
 	return func(r rawrecord.Record) error {
 		switch r.Provider {
 		case store.SensorProvider:
 			c.Line(r.Data)
 		case store.LossProvider:
 			*storeLost = true
-			hostLine(os.Stdout, "%s", lossLine(r))
+			log.add(r)
 		}
 		return nil
 	}

@@ -1,6 +1,7 @@
 package rangeguest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -199,36 +200,41 @@ func FreshState(ctx context.Context, path string, signal func(context.Context) e
 }
 
 // stateRewrite covers auditd's own rewrite of its state file, every report_interval (5 s in
-// deploy/auditd/auditd.conf), so a wait for a fresh one needs no signal and so no audited exec.
+// deploy/auditd/auditd.conf): a wait for a fresh one sends no signal.
 const stateRewrite = 7 * time.Second
 
 // AuditIdle waits up to wait until backlog, the kernel's audit backlog, reads "0" and then a rewrite of
 // auditd's state file at path shows its plugin queue empty: the kernel's backlog empties first, while
-// records still wait in auditd's queue for Laurel, so a barrier exec'd then queues behind them. It
-// returns how long it waited, or what still waited when the wait ran out.
-func AuditIdle(ctx context.Context, path string, backlog func() string, wait, poll time.Duration) (time.Duration, error) {
-	start, last := time.Now(), ""
+// records still wait in auditd's queue for Laurel, so a barrier exec'd then queues behind them. backlog
+// gets a context that ends a poll after the wait, so a reading that hangs cannot hold it longer. It returns how long it waited, or which stage was last seen not idle when the wait ran out:
+// the kernel until its backlog read "0", then auditd's queue, or no fresh state when neither showed.
+func AuditIdle(ctx context.Context, path string, backlog func(context.Context) string, wait, poll time.Duration) (time.Duration, error) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, wait+poll) // each rewrite wait ends by then too
+	defer cancel()
+	kernel, queue := "", ""
 	for deadline := start.Add(wait); ; {
-		if b := backlog(); b != "0" {
-			last = fmt.Sprintf("the kernel's audit backlog %q", b)
+		if b := backlog(ctx); b != "0" {
+			kernel = fmt.Sprintf("the kernel's audit backlog %q", b)
 		} else {
+			kernel = ""
 			state, ok := FreshState(ctx, path, func(context.Context) error { return nil }, min(stateRewrite, max(time.Until(deadline), poll)), poll)
-			d := StateValue(state, StateQueueDepth)
-			switch {
+			switch d := StateValue(state, StateQueueDepth); {
 			case ok && d == "0":
 				return time.Since(start), nil
 			case ok:
-				last = fmt.Sprintf("auditd's plugin queue depth %q", d)
-			case last == "": // a rewrite missed at the deadline does not hide what an earlier one showed
-				last = "no fresh auditd state"
+				queue = fmt.Sprintf("auditd's plugin queue depth %q", d)
 			}
 		}
-		if !time.Now().Before(deadline) {
-			return time.Since(start), fmt.Errorf("audit not idle %s after the load: %s", wait, last)
+		if !time.Now().Before(deadline) || ctx.Err() != nil {
+			why := cmp.Or(kernel, queue, "no fresh auditd state")
+			if err := ctx.Err(); err != nil && time.Now().Before(deadline) {
+				return time.Since(start), fmt.Errorf("waiting for audit to be idle (%s): %w", why, err)
+			}
+			return time.Since(start), fmt.Errorf("audit not idle %s after the load: %s", wait, why)
 		}
 		select {
 		case <-ctx.Done():
-			return time.Since(start), fmt.Errorf("waiting for audit to be idle: %w", ctx.Err())
 		case <-time.After(poll):
 		}
 	}

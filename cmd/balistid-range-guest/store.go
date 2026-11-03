@@ -15,10 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/auditstat"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/shard"
 	"github.com/Balistid/balistid-blue/internal/store"
+	"github.com/Balistid/balistid-blue/internal/unixsock"
 )
 
 const collectorUnitName = "balistid-collector.service"
@@ -147,23 +149,76 @@ func (collectorUnit) Stop(ctx context.Context) error {
 }
 
 // readStore reads every record the collector stored before a fresh barrier, and after it the rest
-// of the run the read stopped (ADR 0022, point 3); after may be nil. Its barrier waits for an idle
-// audit first, up to idleWait, and the host's log shows how long that took.
+// of the run the read stopped (ADR 0022, point 3); after may be nil.
 func readStore(ctx context.Context, before, after func(rawrecord.Record) error) error {
-	sr := rangeguest.StoreRead{
+	return storeReader(nil).Read(ctx, waitLimit, before, after) //nolint:wrapcheck // the reader's errors name the step
+}
+
+// storeReader is the guest's read of the collector's store. Its barrier waits for an idle audit first
+// (auditIdle); around, when not nil, is told when that wait begins (false) and ends (true): a rate trial
+// keeps the wait apart in its drain's steal and samples the collector once the drain is over.
+func storeReader(around func(done bool)) rangeguest.StoreRead {
+	return rangeguest.StoreRead{
 		Dir: storeDir, Scratch: shard.Scratch{Dir: shardCopyDir, Max: shardCopyMax}, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Idle: func(ctx context.Context) error {
-			waited, err := rangeguest.AuditIdle(ctx, auditdState, func() string {
-				return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"])
-			}, idleWait, 200*time.Millisecond)
-			hostLine(os.Stdout, "store read: audit idle after %s, %v", waited.Round(time.Millisecond), err)
-			return err //nolint:wrapcheck // the reader wraps it
-		},
+		Idle: idleThen(auditIdle, around),
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},
 	}
-	return sr.Read(ctx, waitLimit, before, after) //nolint:wrapcheck // the reader's errors name the step
+}
+
+// idleThen is wait with around, if not nil, told as it begins and when it returned.
+func idleThen(wait func(context.Context) error, around func(done bool)) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if around != nil {
+			around(false)
+			defer around(true)
+		}
+		return wait(ctx)
+	}
+}
+
+// auditIdle waits up to idleWait for an idle audit (rangeguest.AuditIdle) and shows in the host's log how
+// long that took. It reads the kernel's backlog from balistid-auditstat's reports, not by exec: an exec of
+// auditctl is audited, so each would land before the barrier, in an exec job's window and its Laurel cap.
+func auditIdle(ctx context.Context) error {
+	var waited time.Duration
+	backlog, err := reportBacklog()
+	if err == nil {
+		waited, err = rangeguest.AuditIdle(ctx, auditdState, backlog, idleWait, time.Second)
+	}
+	hostLine(os.Stdout, "store read: audit idle after %s, %v", waited.Round(time.Millisecond), err)
+	return err //nolint:wrapcheck // the reader wraps it
+}
+
+// reportBacklog reads the kernel's audit backlog from balistid-auditstat's report as the collector reads
+// it (auditstat.ReadReport, ADR 0038), counting only a report of a poll after this call.
+func reportBacklog() (func(context.Context) string, error) {
+	uid, err := unixsock.LookupUID("balistid-auditstat")
+	if err != nil {
+		return nil, fmt.Errorf("auditstat's uid: %w", err)
+	}
+	read := func() (auditstat.Report, error) { return auditstat.ReadReport(auditstat.ReportPath, uid) }
+	first, err := read()
+	if err != nil {
+		return nil, err
+	}
+	return backlogAfter(first.Seq, read), nil
+}
+
+// backlogAfter is the backlog of the report read returns once its seq passed seq, "stale" before that, or
+// why it could not be read: a report every auditstat.Interval, so a backlog read before the wait never counts.
+func backlogAfter(seq uint64, read func() (auditstat.Report, error)) func(context.Context) string {
+	return func(context.Context) string {
+		r, err := read()
+		switch {
+		case err != nil:
+			return err.Error()
+		case r.Seq <= seq:
+			return "stale"
+		}
+		return strconv.FormatUint(uint64(r.Status.Backlog), 10)
+	}
 }
 
 // idleWait bounds how long a store read waits for the kernel's backlog and auditd's plugin queue to
@@ -200,6 +255,29 @@ func hostLine(w io.Writer, format string, args ...any) {
 		}
 	}
 	_, _ = fmt.Fprintf(w, "%s%s\n", hostPrefix, b[:min(len(b), hostLineMax)])
+}
+
+// lossLinesMax bounds the loss records one read shows in the host's log: a store with thousands of them
+// would spend the serial budget, which ends the run without facts; the host shows 400 lines at most.
+const lossLinesMax = 20
+
+// lossLog shows in the host's log the first lossLinesMax loss records a read counted, and done how many
+// there were when it counted more.
+type lossLog struct {
+	w io.Writer
+	n int
+}
+
+func (l *lossLog) add(x rawrecord.Record) {
+	if l.n++; l.n <= lossLinesMax {
+		hostLine(l.w, "%s", lossLine(x))
+	}
+}
+
+func (l *lossLog) done() {
+	if l.n > lossLinesMax {
+		hostLine(l.w, "%d loss records counted, the first %d shown", l.n, lossLinesMax)
+	}
 }
 
 // lossLine is what the host's log shows of a loss record a read counted: its seq and provider, and the
