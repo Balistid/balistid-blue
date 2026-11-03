@@ -23,26 +23,27 @@ to R1 and R8 (ADR 0011), with no R2 key (T9). ADR 0053 picked an `ed25519-sk` ke
    it parses the MANIFEST. A table in its code maps each name to its destination (binaries to
    `/usr/local/lib/balistid/`, units, the two `.conf`s, `allowed_signers`); tar, manifest and table name the same files.
 3. `/etc/balistid/allowed_signers` is one line: `maintainer@balistid.dev`, exactly `namespaces="install@balistid.dev"`
-   and a `sk-ssh-ed25519@openssh.com` key (a config field tests set to a software type), root:root 0644 in a 0755
-   directory, never links. The type is a label: that the key lives on a token is the maintainer's word, unattested.
-4. `verify <dir> [<fingerprint>]` is the unprivileged dry run and writes nothing. `runner <dir> <maintainer>
-   [<fingerprint>]` runs as root and keeps every check of the shell script, adding the signature, the hashes, each
-   destination's path (no link, owned by root, not group or other writable, not setgid), each target and each
-   directory tmpfiles.conf names, before its first write. It writes files whole, runs `systemd-sysusers`,
-   `systemd-tmpfiles --create`, `usermod -aG balistid-agents` and `systemctl daemon-reload` by absolute path, checks
-   the units again, writes itself last and starts nothing. Each run logs a record (`schema_version`, outcome, reason,
-   manifest sha256, commit, signer fingerprint, version) to stderr and `logger`.
-5. First install, trust on first use (ADR 0053 point 4): CI prints a root command taking the fingerprint README.md
-   and balistid.dev publish. In a root-only directory it reads `allowed_signers`, MANIFEST and `balistid-install` with
-   `tar -xO` from stdin, each capped; ssh-keygen must exit 0 with an output ending in the typed fingerprint; it runs
-   only the file named by the MANIFEST's 64-hex digest, the installer renamed to its own sha256. It trusts ssh-keygen,
-   which does not check sk flags: a T9 residual until OpenSSH does. Given a fingerprint, the runner takes the bundle's
+   and a `sk-ssh-ed25519@openssh.com` key (tests use software sk keys), root:root 0644 in a 0755 directory, never
+   links. The type is a label: that the key lives on a token is the maintainer's word, unattested.
+4. `verify <dir> [<fingerprint>]` is the unprivileged dry run. `runner <dir> <maintainer> [<fingerprint>]` runs as
+   root, keeps every check of the shell script and adds the signature, the hashes, each destination's path (no link,
+   owned by root, not group or other writable, not setgid), each target, `/var/lib/balistid` and each directory
+   tmpfiles.conf names with its parent (type and owner only where tmpfiles gives it to another user and restores its
+   mode), all before its first write. It writes files whole, runs `systemd-sysusers`, `systemd-tmpfiles --create`,
+   `usermod -aG balistid-agents` and `systemctl daemon-reload` by absolute path, checks the units again, writes itself
+   last and starts nothing. Each run logs a record (`schema_version`, outcome, reason, manifest sha256, commit, signer
+   fingerprint, version) to stderr and `logger`.
+5. First install only, trust on first use (ADR 0053 point 4): CI prints a root command taking the fingerprint
+   README.md and balistid.dev publish; it refuses while `/usr/local/lib/balistid/balistid-install` exists. In a
+   root-only directory tar reads `allowed_signers`, MANIFEST and `balistid-install` from stdin under `ulimit -f`, its
+   status checked; ssh-keygen must exit 0 with an output ending in the typed fingerprint; only the file named by the
+   MANIFEST's 64-hex digest runs, the installer renamed to its sha256. It trusts ssh-keygen, which does not check sk
+   flags: a T9 residual of the first install until OpenSSH does. Given a fingerprint, the runner takes the bundle's
    key if it has it and none is installed, or an installed key that passes every check, equals the bundle's and has
    it (a stopped first install runs again). Without one, another `allowed_signers` in the bundle is refused.
 6. An older signed MANIFEST still verifies: replay is a residual of T9 until the 9.5 components add a stored,
    increasing release number. ADR 0034 point 4 (install time and steps) moves to the ADR of the 9.5 components.
-7. `deploy/runner/install` leaves the tree; its layout entry goes after this merge (`--range` reads older trees with
-   the current list). `deploy/install/allowed_signers` joins, committed by the maintainer with its README map row.
+7. `deploy/runner/install` goes (its layout entry after merge: `--range`); `deploy/install/allowed_signers` comes later.
 
 ## Alternatives considered
 
@@ -51,10 +52,9 @@ to R1 and R8 (ADR 0011), with no R2 key (T9). ADR 0053 picked an `ed25519-sk` ke
 
 ## Consequences
 
-- Tests (fake root, runtime software keys, fake commands); each refusal leaves the tree (path, mode, owner, sha256)
+- Tests (fake root, runtime software sk keys, fake commands); a refusal leaves the tree (path, mode, owner, sha256)
   as it was and runs no command: unsigned, altered, other namespace or signer, sk flags without touch and PIN, sha256
-  mismatch, a file outside manifest or table, missing, duplicate, `..`, `/` or a link in the tar; a linked, foreign
-  or writable destination or tmpfiles directory; a linked, FIFO, hard-linked or oversized input; allowed_signers
-  linked, foreign, writable, two lines, a wildcard, `cert-authority`, other namespaces or key type; ssh-keygen
-  failing, hanging or missing; every `InstallTest` case. `BootstrapTest` covers every dropped character.
-- The release job fails until the key is committed. Revert: revert the pull request (ADR 0011 point 1 applies again).
+  mismatch, a file outside manifest or table, missing, duplicate, `..`, `/` or a link in the tar; a linked, foreign or
+  writable destination or tmpfiles directory; a linked, FIFO, hard-linked or oversized input; a bad allowed_signers;
+  ssh-keygen failing, hanging or missing; every `InstallTest` case. `BootstrapTest` covers every dropped character.
+  The release job fails until the key comes with its README row. Revert: revert the pull request (ADR 0011 pt 1).
