@@ -73,7 +73,6 @@ BOOTSTRAP = (
     'r=$?; rm -rf -- "$ro" || r=9; [ $r = 0 ] || logger -s -t balistid-install "bootstrap stopped, status $r"; exit $r'
 )
 ROOT_PATH = "/usr/bin:/usr/sbin"
-FINGERPRINT = re.compile(r"SHA256:[A-Za-z0-9+/]{43}")
 
 
 def sha256(path: Path) -> str:
@@ -172,8 +171,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.cmd == "bootstrap":
             fp = fingerprint(args.signers)
-            if not FINGERPRINT.fullmatch(fp):
-                raise ValueError(f"{args.signers}: not a key")
             print("First install only, as root at a console login (not sudo or su from a desktop session an agent can")
             print("control), read on another device; the fingerprint at its end must be the one README.md publishes.")
             print(f"Then type two lines, dir=<the directory with {BUNDLE} and {SIG}> and user=<the maintainer, uid")
