@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
@@ -45,7 +46,7 @@ var (
 	unitProps   = []string{"Id", "ActiveState", "DropInPaths", "FragmentPath"}
 	// trustedDirs exist on every host; they and every directory above them are only checked, never changed.
 	trustedDirs = []string{"etc/systemd/system", "usr/local/lib", "var/lib"}
-	// createdDirs and stateDir are absent or exactly root:root 0755; tmpfiles makes stateDir.
+	// createdDirs are absent or exactly root:root 0755; tmpfiles.conf names the directories it makes.
 	createdDirs    = []string{"usr/local/lib/balistid", "etc/sysusers.d", "etc/tmpfiles.d", signersDir}
 	maintainerDirs = []string{stateDir + "/inbox", stateDir + "/objects"}
 	maintainerName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
@@ -119,7 +120,7 @@ func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string
 	if err := unitsAsWritten(ctx, cfg, false); err != nil {
 		return err
 	}
-	absent, err := preflight(cfg, host, muid)
+	absent, err := preflight(cfg, host, muid, r.Files["tmpfiles.conf"])
 	if err != nil {
 		return err
 	}
@@ -168,35 +169,43 @@ func unitsAsWritten(ctx context.Context, cfg Config, reloaded bool) error {
 	return nil
 }
 
-// preflight checks every path the install writes or creates, before the first write, and returns those absent.
+// preflight checks every path the install writes or creates, or tmpfiles makes, before the first write, and returns those absent.
 // Absent means only "does not exist": any other error refuses. Nothing found is repaired, since others may
 // have prepared it.
-func preflight(cfg Config, host *os.Root, muid int) (map[string]bool, error) {
+func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string]bool, error) {
 	for _, dir := range trustedDirs {
 		if _, err := trustedPath(cfg, host, dir); err != nil {
 			return nil, err
 		}
 	}
+	made, err := tmpfilesDirs(tmpfiles)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []wantDir
+	for _, dir := range createdDirs {
+		dirs = append(dirs, wantDir{dir, "root", "root", fs.ModeDir | 0o755})
+	}
+	for _, dir := range maintainerDirs {
+		dirs = append(dirs, wantDir{dir, maintainerOwner, runnerGroup, fs.ModeDir | fs.ModeSetgid | 0o750})
+	}
 	absent := map[string]bool{}
-	for _, dir := range slices.Concat(createdDirs, []string{stateDir}, maintainerDirs) {
-		fi, err := host.Lstat(dir)
+	for _, d := range slices.Concat(dirs, made) {
+		fi, err := host.Lstat(d.name)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			absent[dir] = true
+			absent[d.name] = true
 			continue
 		case err != nil:
-			return nil, fmt.Errorf("cannot stat /%s: %w", dir, err)
+			return nil, fmt.Errorf("cannot stat /%s: %w", d.name, err)
 		}
-		uid, gid, mode := cfg.UID, cfg.GID, fs.ModeDir|0o755
-		// The group is looked up only for an inbox or objects that exist: before sysusers it may not.
-		if slices.Contains(maintainerDirs, dir) {
-			if gid, err = cfg.LookupGroup(runnerGroup); err != nil {
-				return nil, fmt.Errorf("no group %s: %w", runnerGroup, err)
-			}
-			uid, mode = muid, fs.ModeDir|fs.ModeSetgid|0o750
+		// Owners are looked up only for what exists: before sysusers they may not.
+		uid, gid, err := d.owner(cfg, muid)
+		if err != nil {
+			return nil, fmt.Errorf("/%s: %w", d.name, err)
 		}
-		if err := ownedAs(fi, uid, gid, mode); err != nil {
-			return nil, fmt.Errorf("/%s: %w", dir, err)
+		if err := ownedAs(fi, uid, gid, d.mode); err != nil {
+			return nil, fmt.Errorf("/%s: %w", d.name, err)
 		}
 	}
 	for _, f := range runnerTable {
@@ -215,6 +224,61 @@ func preflight(cfg Config, host *os.Root, muid int) (map[string]bool, error) {
 		}
 	}
 	return absent, nil
+}
+
+// wantDir is a directory the install creates, or tmpfiles makes, as it must be when it exists already.
+type wantDir struct {
+	name, user, group string
+	mode              fs.FileMode
+}
+
+// maintainerOwner stands for the maintainer's uid; it is no valid user name.
+const maintainerOwner = "<maintainer>"
+
+func (d wantDir) owner(cfg Config, muid int) (uid, gid int, err error) {
+	uid, gid = cfg.UID, cfg.GID
+	switch d.user {
+	case "root":
+	case maintainerOwner:
+		uid = muid
+	default:
+		if uid, err = cfg.LookupUser(d.user); err != nil {
+			return 0, 0, fmt.Errorf("no user %s: %w", d.user, err)
+		}
+	}
+	if d.group != "root" {
+		if gid, err = cfg.LookupGroup(d.group); err != nil {
+			return 0, 0, fmt.Errorf("no group %s: %w", d.group, err)
+		}
+	}
+	return uid, gid, nil
+}
+
+var tmpfilesLine = regexp.MustCompile(`^d (/var/lib/balistid(?:/[a-z0-9_-]+)*) ([0-7]{4}) ([a-z_][a-z0-9_-]*) ([a-z_][a-z0-9_-]*) -$`)
+
+// tmpfilesDirs are the directories the release's tmpfiles.conf makes, all under /var/lib/balistid. Any other line
+// but a comment or a blank one is refused: the installer checks before tmpfiles runs only what it can read here.
+func tmpfilesDirs(conf []byte) ([]wantDir, error) {
+	var dirs []wantDir
+	for i, line := range strings.Split(strings.TrimSuffix(string(conf), "\n"), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		m := tmpfilesLine.FindStringSubmatch(line)
+		if m == nil {
+			return nil, fmt.Errorf("tmpfiles.conf: line %d is not a directory the installer can check", i+1)
+		}
+		bits, err := strconv.ParseUint(m[2], 8, 32)
+		if err != nil || bits&^0o2777 != 0 {
+			return nil, fmt.Errorf("tmpfiles.conf: line %d: a mode other than permissions and setgid", i+1)
+		}
+		mode := fs.ModeDir | fs.FileMode(bits&0o777)
+		if bits&0o2000 != 0 {
+			mode |= fs.ModeSetgid
+		}
+		dirs = append(dirs, wantDir{strings.TrimPrefix(m[1], "/"), m[3], m[4], mode})
+	}
+	return dirs, nil
 }
 
 // apply writes as the shell installer did: directories, then each file whole, then systemd's users, directories

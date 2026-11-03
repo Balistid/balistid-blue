@@ -23,6 +23,9 @@ func TestRunnerInstallsWhatReleasePyWrites(t *testing.T) {
 			p = filepath.Join(in, signersName)
 			must(t, os.WriteFile(p, h.key.signers, 0o600))
 			continue
+		case "tmpfiles.conf":
+			must(t, os.WriteFile(p, deployTmpfiles, 0o600))
+			continue
 		}
 		must(t, os.WriteFile(p, []byte(f.name+" from release.py\n"), 0o600))
 	}
@@ -47,8 +50,8 @@ func TestRunnerInstallsWhatReleasePyWrites(t *testing.T) {
 	if !slices.Equal(s.cmds, wantCmds) {
 		t.Fatalf("ran %q", s.cmds)
 	}
-	got, err := os.ReadFile(filepath.Join(h.cfg.Root, "etc/tmpfiles.d/balistid-runner.conf"))
-	if err != nil || string(got) != "tmpfiles.conf from release.py\n" {
+	got, err := os.ReadFile(filepath.Join(h.cfg.Root, "etc/sysusers.d/balistid-runner.conf"))
+	if err != nil || string(got) != "sysusers.conf from release.py\n" {
 		t.Fatalf("%q, %v", got, err)
 	}
 }
