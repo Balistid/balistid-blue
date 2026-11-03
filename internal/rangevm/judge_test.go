@@ -80,6 +80,7 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 			"drain_guard_steal_ticks=31", "drain_guard_cpu_ticks=0,drain_guard_steal_ticks=1", "drain_guard_cpu_ticks=5001",
 			"drain_guard_steal_ticks=51", "drain_guard_cpu_ticks=x", "drain_guard_steal_ticks=", "drain_guard_steal_ticks=29",
 			"drain_steal_ticks=51", "drain_cpu_ticks=4294967296,drain_guard_cpu_ticks=3000",
+			"drain_guard_cpu_ticks=0,drain_guard_steal_ticks=0", "drain_steal_ticks=4000,drain_guard_cpu_ticks=0,drain_guard_steal_ticks=0",
 		},
 	}
 	for want, changes := range cases {

@@ -117,6 +117,10 @@ func TestDrainTicksKeepTheIdleWaitApart(t *testing.T) {
 	if want, wantSteal, _ := rangeguest.TickDelta(idleFrom, idleTo); err != nil || cpu != want || steal != wantSteal {
 		t.Errorf("steal in the wait: %d of %d, %v; want %d of %d", steal, cpu, err, wantSteal, want)
 	}
+	idleFrom, idleTo = stat(1000, 10), stat(1100, 100) // the wait holds every tick of the drain, the rest none
+	if cpu, steal, err := drainTicks(loaded, idleFrom, idleTo, idleTo); err != nil || cpu == 0 || steal != 90 {
+		t.Errorf("a rest without ticks: %d of %d, %v; want the wait's", steal, cpu, err)
+	}
 	if _, _, err := drainTicks(loaded, "", "", after); err == nil {
 		t.Error("a drain without the wait's ticks counted")
 	}
