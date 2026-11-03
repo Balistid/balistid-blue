@@ -95,10 +95,18 @@ func TestJudgeRSS(t *testing.T) {
 	}
 }
 
-// The judge's shipped queue is the collector's.
+// The judge's shipped queue is the collector's, and the image runs it unless a trial lowers it.
 func TestCollectorQueueBytesIsTheCollectors(t *testing.T) {
 	if CollectorQueueBytes != collector.QueueBytes {
 		t.Errorf("the judge wants a queue of %d bytes, the collector holds %d", CollectorQueueBytes, collector.QueueBytes)
+	}
+	conf, err := os.ReadFile("../../range/balistid-collector-range.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^Environment=BALISTID_RANGE_QUEUE=(\d+)$`).FindSubmatch(conf)
+	if m == nil || string(m[1]) != strconv.Itoa(collector.QueueBytes) {
+		t.Errorf("the image's queue default %q is not the collector's %d", m, collector.QueueBytes)
 	}
 }
 

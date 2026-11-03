@@ -40,10 +40,11 @@ const (
 	execveChunk = 7500
 	queueExecs  = 16
 	// smallQueue is the queue the loss-queue trial alone runs, so Laurel's stream fills it under a frozen store
-	// before auditd's dispatcher overflows (ADR 0039, point 2); queueDropInPath sorts after the image's range.conf.
+	// before auditd's dispatcher overflows (ADR 0039, point 2). queueDropIn sets it through the variable of
+	// range/balistid-collector-range.conf; its path sorts after the image's range.conf.
 	smallQueue      = 8 << 20
 	queueDropInPath = "/run/systemd/system/balistid-collector.service.d/zz-queue.conf"
-	execArgChars    = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._,:=+-"
+	queueDropIn     = "[Service]\nEnvironment=BALISTID_RANGE_QUEUE=8388608\n"
 	// crashExecs of them pass auditd's plugin queue at the fewest kernel records each, total bytes over
 	// execveChunk; crashFlood bounds the flood and kill after a fresh state write, under its 5 s report_interval.
 	crashExecs = 128
@@ -451,29 +452,17 @@ func freezeStore(ctx context.Context) (time.Duration, error) {
 	return end, nil
 }
 
-// lowerQueue restarts the collector with its argv and -queue-bytes smallQueue, for this boot only, waits until
-// the floor shows healthy and proves the running collector's argv is that one (ADR 0039, point 2).
+// lowerQueue sets the range's queue variable to smallQueue for this boot only, restarts the collector, waits until
+// the floor shows healthy and proves from its argv that the running collector holds that queue (ADR 0039, point 2).
 func lowerQueue(ctx context.Context) error {
 	cred, err := credential(statusUser)
-	if err != nil {
-		return err
-	}
-	owner, err := collectorProcess(ctx)
-	if err != nil {
-		return err
-	}
-	cmdline, err := os.ReadFile("/proc/" + owner.pid + "/cmdline")
-	if err != nil {
-		return fmt.Errorf("the collector's argv: %w", err)
-	}
-	body, want, err := queueDropIn(string(cmdline))
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(queueDropInPath), 0o755); err != nil { //nolint:gosec // systemd reads its drop-in directory
 		return fmt.Errorf("drop-in: %w", err)
 	}
-	if err := os.WriteFile(queueDropInPath, []byte(body), 0o644); err != nil { //nolint:gosec // as above
+	if err := os.WriteFile(queueDropInPath, []byte(queueDropIn), 0o644); err != nil { //nolint:gosec // as above
 		return fmt.Errorf("drop-in: %w", err)
 	}
 	if err := errors.Join(systemctl(ctx, "daemon-reload"), systemctl(ctx, "restart", collectorUnitName)); err != nil {
@@ -482,42 +471,21 @@ func lowerQueue(ctx context.Context) error {
 	if err := untilCLI(ctx, func(ctx context.Context) (int, []byte, error) { return runCLI(ctx, cred) }, 0, statusWait); err != nil {
 		return err
 	}
-	if owner, err = collectorProcess(ctx); err != nil {
+	owner, err := collectorProcess(ctx)
+	if err != nil {
 		return err
 	}
-	return runsArgv("/proc", owner.pid, want)
+	return runsQueue("/proc", owner.pid)
 }
 
-// queueDropIn is a runtime drop-in that runs cmdline, the collector's NUL-separated argv, with -queue-bytes
-// smallQueue added, and the argv it starts. An argv whose queue the flag would not set, or with a byte outside
-// execArgChars, which systemd could expand, unquote or split, is an error.
-func queueDropIn(cmdline string) (body, want string, err error) {
-	args := strings.Split(strings.TrimSuffix(cmdline, "\x00"), "\x00")
-	if !strings.HasSuffix(cmdline, "\x00") || !strings.HasPrefix(args[0], "/") {
-		return "", "", fmt.Errorf("the collector's argv %q does not start with an absolute path", rangevm.Printable(cmdline, 64))
-	}
-	for _, a := range args {
-		if a == "" || strings.Trim(a, execArgChars) != "" {
-			return "", "", fmt.Errorf("the collector's argument %q is not plain", rangevm.Printable(a, 64))
-		}
-	}
-	args = append(args, "-queue-bytes", strconv.Itoa(smallQueue))
-	want = strings.Join(args, "\x00") + "\x00"
-	if q := queueFlag(want); q != strconv.Itoa(smallQueue) {
-		return "", "", fmt.Errorf("-queue-bytes after the collector's argv reads %q", rangevm.Printable(q, 64))
-	}
-	return "[Service]\nExecStart=\nExecStart=" + strings.Join(args, " ") + "\n", want, nil
-}
-
-// runsArgv proves the process pid under proc runs want, a NUL-separated argv, by its cmdline.
-func runsArgv(proc, pid, want string) error {
+// runsQueue proves by its cmdline that the process pid under proc parsed -queue-bytes smallQueue.
+func runsQueue(proc, pid string) error {
 	got, err := os.ReadFile(filepath.Join(proc, pid, "cmdline")) //nolint:gosec // a pid's cmdline under /proc, or a test's
-	switch {
-	case err != nil:
+	if err != nil {
 		return fmt.Errorf("the collector's argv: %w", err)
-	case string(got) != want:
-		return fmt.Errorf("the collector runs -queue-bytes %q in argv %q, not %d", rangevm.Printable(queueFlag(string(got)), 64),
-			rangevm.Printable(string(got), 256), smallQueue)
+	}
+	if q := queueFlag(string(got)); q != strconv.Itoa(smallQueue) {
+		return fmt.Errorf("the collector runs -queue-bytes %q, not %d", rangevm.Printable(q, 64), smallQueue)
 	}
 	return nil
 }
