@@ -113,7 +113,7 @@ func runCPU(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	if err := drained(w, time.Now, func() string {
 		return rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["backlog"]
-	}); err != nil {
+	}, cpuDrainWait); err != nil {
 		return r.fail(err.Error())
 	}
 	collectorUS, whyC := used(collector0, sampleUnit(ctx, collectorUnitName))
@@ -156,12 +156,12 @@ func unitsState(collector, auditd string) string {
 }
 
 // drained returns once the kernel's audit backlog is "0" and no commit line came for cpuDrainQuiet, or
-// fails after cpuDrainWait, without any commit line, or once the journal follower ended: CPU sampled
+// fails after wait, without any commit line, or once the journal follower ended: CPU sampled
 // before auditd, Laurel and the collector caught up would understate their cost. What Laurel holds
 // without sending is not seen (ADR 0023).
-func drained(w *commitWatch, now func() time.Time, backlog func() string) error {
+func drained(w *commitWatch, now func() time.Time, backlog func() string, wait time.Duration) error {
 	last := ""
-	for deadline := now().Add(cpuDrainWait); now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+	for deadline := now().Add(wait); now().Before(deadline); time.Sleep(100 * time.Millisecond) {
 		seq, at := w.last()
 		switch {
 		case closed(w.done):
@@ -177,7 +177,7 @@ func drained(w *commitWatch, now func() time.Time, backlog func() string) error 
 		}
 	}
 	if last != "" {
-		return fmt.Errorf("the kernel's audit backlog was still %q %s after the load", last, cpuDrainWait)
+		return fmt.Errorf("the kernel's audit backlog was still %q %s after the load", last, wait)
 	}
-	return fmt.Errorf("the collector still committed %s after the load", cpuDrainWait)
+	return fmt.Errorf("the collector still committed %s after the load", wait)
 }
