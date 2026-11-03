@@ -32,7 +32,7 @@ max = 30
 unit = "s between canaries; two missed canaries set health UNKNOWN"
 rows = ["T25"]
 adr = "0004"
-method = "A canary process makes an audited syscall that must come back through kernel, auditd and Laurel; the test drops canaries at each stage."
+method = "In the range (canary): once the floor shows healthy, 150 s without load, the longest time between the audit timestamps of the collector's stored canary syscalls, the phase's start and end included; then Laurel and then auditd frozen by SIGSTOP for 100 s each: health reads UNKNOWN canary-missed within 61 s of the first canary sent while frozen and OK again within 40 s of SIGCONT. The kernel stage is not dropped: the rules are locked by -e 2, so the canary's rule stays. A freeze not proven, not begun OK or too short for two misses is INVALID."
 
 [[metric]]
 id = "loss_per_day"
