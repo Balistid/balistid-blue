@@ -47,7 +47,7 @@ GO_BUILD = ("build", "-trimpath", "-buildvcs=false", "-ldflags")
 BUNDLE = "balistid-runner-bundle.tar"
 BUNDLE_MAX_MIB = 64
 SIG = "MANIFEST.sig"
-SIG_MAX_BYTES = 16 << 10  # internal/install's maxSigBytes
+SIG_MAX_BYTES = 4 << 10  # internal/install's maxSigBytes
 # $1 is the key's fingerprint. The bundle's directory and the maintainer are read as data, typed as dir=... and
 # user=...: nothing typed is parsed by a shell, and a typo that makes sh read its commands from that input (-s for
 # -c) only assigns. The gate is data flow: the binary is renamed to its own sha256 and run only by the name the

@@ -197,8 +197,8 @@ class ManifestTest(unittest.TestCase):
         self.assertIn(f'bundleName  = "{release.BUNDLE}"', verify)
         self.assertIn(f'sigName     = "{release.SIG}"', verify)
         self.assertIn(f'signersName = "{release.SIGNERS}"', verify)
-        self.assertIn("maxSigBytes = 16 << 10", verify)
-        self.assertEqual(release.SIG_MAX_BYTES, 16 << 10)
+        self.assertIn("maxSigBytes = 4 << 10", verify)
+        self.assertEqual(release.SIG_MAX_BYTES, 4 << 10)
         bundle = go_code((REPO / "internal/install/bundle.go").read_text())
         self.assertIn(f"MaxBundleBytes = {release.BUNDLE_MAX_MIB} << 20", bundle)
 
