@@ -25,8 +25,9 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
    from its argv, in KiB. A peak over 256 MiB is a MISS; a queue not read is INVALID.
 3. An OOM event of a recorder unit, from its cgroup's `memory.events` (`oom`, `oom_kill`) or systemd's OOM message,
    which outlives the restart, is a MISS. A MISS outranks every INVALID of the run.
-4. A load not delivered, shown by auditd's overflow flag or a loss or stats record of the collector or the store,
-   or not covered, the first sample after the load's start or a gap over 2 s during it, is INVALID.
+4. A load not delivered, shown by auditd's overflow flag, a loss record of the store or a collector's lost record
+   from the load's start to the store read, or not covered, the first sample after the load's start or a gap over
+   2 s during it, is INVALID. The drain waits for auditd's plugin queue too, as the kernel's backlog empties first.
 5. The collector sends its canary every 29 s (`CanaryEvery`), a second inside 30 s. A frozen stage passes only with
    its first canary within 30 s of the freeze, UNKNOWN no earlier than that canary's deadline less a second (28 s)
    and within 61 s of it, health UNKNOWN from then to SIGCONT and OK within 40 s after; the quiet phase must be OK
