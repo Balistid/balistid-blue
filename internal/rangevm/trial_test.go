@@ -408,13 +408,16 @@ func TestAStartFailureIsTheHosts(t *testing.T) {
 
 // Only the image build tries again: a boot whose QEMU fails runs once and the run is INVALID.
 func TestAFailedBootIsNotTriedAgain(t *testing.T) {
-	calls := 0
+	boots := 0
 	out, _ := runFake(t, Limits{Trial: "rate-burst", Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1},
-		func(context.Context, []string, time.Duration, int64, io.Writer) string {
-			calls++
+		func(_ context.Context, argv []string, _ time.Duration, _ int64, _ io.Writer) string {
+			if !slices.Contains(argv, qemuPath) {
+				return ""
+			}
+			boots++
 			return "exit: Connection timed out"
 		})
-	if calls != 1 || out.Invalid == "" {
-		t.Errorf("%d boots, invalid %q", calls, out.Invalid)
+	if boots != 1 || !strings.HasPrefix(out.Invalid, "vm: ") {
+		t.Errorf("%d boots, invalid %q", boots, out.Invalid)
 	}
 }
