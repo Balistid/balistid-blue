@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-03 by claude/opus-5.5 (#233 trials at the shipped queue, ADR 0056)
+Updated: 2026-11-04 by claude/opus-5.5 (#236 steal per second, #237, #238 installer draft)
 
 ## Where we are
 
@@ -16,19 +16,19 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- #233: trials run the shipped 64 MiB queue, only `loss-queue` lowers it at runtime (ADR 0039 pt 2); `rss_mib` needs
-  it. KVM: rss-burst ~113 MiB, rss-1000 ~123 MiB, loss-queue-1/-2 PASS; rate trials INVALID only on GitHub's steal.
-- #229 (#199, ADR 0054): range trials decide `canary_interval_s` (CanaryEvery 29 s; Laurel and auditd frozen in turn)
-  and `rss_mib` (rss-1000, rss-burst, rss-large at 1 exec/s of 2 MB, VmHWM, OOM as MISS, control rss-oom-control
-  MISS). Store reads wait for an idle audit (rate-burst no longer misses its barrier); host lines in CI logs.
-- #230: archive.archlinux.org downloads (pacman download, mkosi build) get three tries; #225 a flaky freeze test.
-- ADR 0051 (holes to milestones), 0052 (metric deciders), 0053 (FIDO2 manifests), 0055 (a floor closes with
-  /security-audit and a deletion pass), 0056 (9.5 on the maintainer's host first). Laurel upstream #313, #314.
+- #236 (ADR 0057): rate and CPU trials judge guest steal per span of 1-2 s and void PASS and MISS alike (voiding only
+  a MISS let reruns pick the PASSes); measure `steal_worst_ppm`. GitHub's runner steals in most seconds: INVALID there.
+- #238 (draft, ADR 0058, #196): `balistid-install` installs the runner from MANIFEST v1 signed by the maintainer's sk
+  key, flags 0x05 checked in Go; critic CLOSED, Codex findings fixed. CI red until the key commit (no placeholder).
+- #233 trials at the shipped 64 MiB queue; #229 canary and RSS trials (ADR 0054); #237 the collector unit's rss_mib
+  comment (192 MiB heap kept, #199); record-max PASS on main, #219 closed (cause fixed in Laurel upstream #313).
+- ADR 0051-0056 as before; Laurel #313 merged upstream, #314 left to Laurel's next release.
 ## Next step
-1. Range: per-second steal windows for the rate and CPU trials, judged only against a MISS (an ADR first); today a
-   steal-heavy part of a run can hide in the sum of the rest.
-2. 9.5 (ADR 0051): #196 installer (ADR 0053), #197, #198, #201-#204, #213's trial and fact; C3 2026-11-10 (#200).
-   Floor 0 closes with ADR 0055's two passes.
+1. #238: the maintainer's FIDO2 key, `deploy/install/allowed_signers`, README row and fingerprint (from 2026-11-07),
+   CI, approve, merge, first install; then 9.5's components on the installer with the install ADR (#197 x32 as a
+   named, visible gap; #202 caps).
+2. 9.5 (ADR 0051): #198, #201 (a timer under its own uid), #203, #204 (range proof, phone and dead-man as L12
+   residuals), #213; C3 2026-11-10 (#200). Floor 0 closes with ADR 0055's two passes.
 ## Open decisions (maintainer)
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
