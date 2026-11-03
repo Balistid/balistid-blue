@@ -21,7 +21,7 @@ empty module cache in the stage (`toolEnv`); the collector and a guest that read
    `MaxScratch`). An image-only oneshot mounts it `noexec,nosuid,nodev` (plus `commit=300` in a failure trial, ADR 0020)
    at the installed store path before the collector; it formats only in boot 1 and checks the superblock first in boot 2
    (ADR 0018 point 3). An image drop-in only adds the new `-headroom 67108864` and `-log-commits`, never set on the host;
-   cap and shard size stay as installed. B5 measures `headroom_gib` with the installed value.
+   cap and shard size stay as installed. The install defaults' fill test decides `headroom_gib` (ADR 0052).
 3. Read: the guest execs `/usr/bin/true <token>` as a barrier and waits, at most `waitLimit` (30 s), until the collector's
    `committed through` journal line (one `journalctl -f`) moved and then held for 1 s, then stops only `balistid-collector.service`, once. systemd keeps
    the socket, Laurel reconnects and may start the collector again at once; Close sealed the open shard. `ReadSeals`
