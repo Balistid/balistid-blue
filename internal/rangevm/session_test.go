@@ -1937,17 +1937,40 @@ func TestBuildImageTriesMkosiAgainInFreshDirectories(t *testing.T) {
 	}
 }
 
+// cancelOnWrite is a log that stops the build when buildImage logs a failed try, so the stop lands in the pause.
+type cancelOnWrite func()
+
+func (c cancelOnWrite) Write(p []byte) (int, error) {
+	c()
+	return len(p), nil
+}
+
 // A build stopped while it waits for its next try ends at once with the failure and the stop.
 func TestBuildImageStopsBetweenTries(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	tries := 0
-	_, err := buildImage(ctx, t.TempDir(), t.TempDir(), []time.Duration{time.Hour, time.Hour}, io.Discard, func(string, string) error {
+	_, err := buildImage(ctx, t.TempDir(), t.TempDir(), []time.Duration{time.Hour, time.Hour}, cancelOnWrite(cancel), func(string, string) error {
 		tries++
-		cancel()
 		return errors.New("Connection timed out")
 	})
 	if tries != 1 || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "Connection timed out") {
 		t.Errorf("%d tries, %v", tries, err)
+	}
+}
+
+// A build stopped during a try ends with that try: it starts no other and logs no further try.
+func TestBuildImageStoppedDuringATryEndsThere(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	tries := 0
+	var log strings.Builder
+	_, err := buildImage(ctx, t.TempDir(), t.TempDir(), []time.Duration{0, 0}, &log, func(string, string) error {
+		tries++
+		cancel()
+		return errors.New("signal: killed")
+	})
+	if tries != 1 || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "signal: killed") ||
+		strings.Contains(log.String(), "again in") {
+		t.Errorf("%d tries, %v, log %q", tries, err, log.String())
 	}
 }
 
