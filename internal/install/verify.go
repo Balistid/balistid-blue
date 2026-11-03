@@ -35,7 +35,7 @@ type Config struct {
 	Log           func(ctx context.Context, d Decision) // the decision of a run
 }
 
-// DefaultConfig is the configuration of a real host: root's paths, the token's key type (R2), the real commands.
+// DefaultConfig is the configuration of a real host: root's paths, the sk key type (R2), the real commands.
 func DefaultConfig() Config {
 	return Config{Root: "/", KeyType: SKKeyType, SSHKeygen: "/usr/bin/ssh-keygen", VerifyTimeout: 10 * time.Second,
 		Run: runCommand, Show: status.Show, LookupUser: lookupUID, LookupGroup: lookupGID, Log: logDecision}
