@@ -38,8 +38,8 @@ const (
 // OOM path, not memory.
 const OOMControlUnit = "balistid-ledger.service"
 
-// CollectorQueueBytes is collector.QueueBytes, the queue the shipped collector holds; the range runs a smaller one
-// (ADR 0039, point 2). The judge does not link the collector; a test pins the two.
+// CollectorQueueBytes is collector.QueueBytes, the queue the shipped collector holds and an RSS trial must run; only
+// the loss-queue trial lowers it (ADR 0039, point 2). The judge does not link the collector; a test pins the two.
 const CollectorQueueBytes = 64 << 20
 
 const (
@@ -74,9 +74,9 @@ func RSSUnits() map[string]bool {
 }
 
 // judgeRSS: an OOM event in a unit's cgroup, or a peak over 256 MiB, is a MISS whatever else the report shows. The
-// peak is the larger of the sampled sum and the summed VmHWM, plus the queue the shipped collector holds beyond the
-// range's. Otherwise exactly the RSSUnits sampled, each with a process in every sample, the load covered by samples
-// at most 2 s apart and its rate held in every 10 s window, no record dropped by the kernel, auditd's dispatcher, the
+// peak is the larger of the sampled sum and the summed VmHWM. Otherwise the collector's queue the shipped one, exactly
+// the RSSUnits sampled, each with a process in every sample, the load covered by samples at most 2 s apart and its
+// rate held in every 10 s window, no record dropped by the kernel, auditd's dispatcher, the
 // collector or the store, and no unit restarted, else INVALID: a lighter load or a unit left out would understate
 // the memory. The auditd trend must be reported but is never judged.
 func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
@@ -98,14 +98,8 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 		}
 		n[name] = v
 	}
-	_, queueRead := n[FactRSSQueueBytes]
-	if queueRead && n[FactRSSQueueBytes] > CollectorQueueBytes {
-		bad("the collector's queue of %d bytes is over the shipped %d", n[FactRSSQueueBytes], CollectorQueueBytes)
-		queueRead = false
-	}
-	queueKiB := uint64(0)
-	if queueRead {
-		queueKiB = (CollectorQueueBytes - n[FactRSSQueueBytes] + 1023) >> 10
+	if q, read := n[FactRSSQueueBytes]; read && q != CollectorQueueBytes {
+		bad("the collector's queue of %d bytes is not the shipped %d", q, CollectorQueueBytes)
 	}
 	if tr.Inject == rangejob.InjectOOM {
 		return oomControl(tr, f, n, unproven)
@@ -117,9 +111,8 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 	if n[FactRSSOOM] > 0 {
 		misses = append(misses, fmt.Sprintf("%d OOM events in the units' cgroups", n[FactRSSOOM]))
 	}
-	if peak > rssLimitKiB || queueKiB > rssLimitKiB-peak {
-		misses = append(misses, fmt.Sprintf("%d KiB resident at most and %d KiB of the shipped collector's larger queue, over %d",
-			peak, queueKiB, rssLimitKiB))
+	if peak > rssLimitKiB {
+		misses = append(misses, fmt.Sprintf("%d KiB resident at most, over %d", peak, rssLimitKiB))
 	}
 	if len(misses) > 0 {
 		return Miss, strings.Join(misses, "; ")
@@ -128,8 +121,7 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 	if len(unproven) > 0 {
 		return Invalid, strings.Join(unproven, "; ")
 	}
-	return Pass, fmt.Sprintf("%d KiB at most with %d KiB of the shipped queue over %d samples", peak, queueKiB,
-		n[FactRSSSamples])
+	return Pass, fmt.Sprintf("%d KiB at most with the shipped queue over %d samples", peak, n[FactRSSSamples])
 }
 
 // rssUnproven calls bad for each reason an RSS run proves nothing: another set of units, a run not whole, a load not

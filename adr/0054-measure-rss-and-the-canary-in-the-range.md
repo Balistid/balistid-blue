@@ -13,18 +13,18 @@
 `rss_mib` (256 MiB, ADR 0040) and `canary_interval_s` (30 s) had no range trial. Two loads the acceptance named
 cannot run: rate-burst's 10000 records/s at 64 KiB is 640 MB/s, and a DIAG run measured Laurel at one core for about
 4 MB/s of 2 MB records, so 50 execs/s of them only measures a backlog; at 2 execs/s auditd's dispatcher overflowed
-(KVM, dec2a4b, GitHub run 41567155763). The range's collector holds an 8 MiB queue
-(ADR 0039, point 2), the shipped one 64 MiB; 1 s VmRSS samples can miss a peak between them; a recorder killed by
-its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A canary sent every 30 s puts a gap over
-30 s on any late writer tick.
+(KVM, dec2a4b, GitHub run 41567155763). An 8 MiB queue in the range lost about 15000 records of rss-burst at the
+queue (run 41585851808), the shipped one holds 64 MiB; 1 s VmRSS samples can miss a peak between them; a recorder
+killed by its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A canary sent every 30 s puts a
+gap over 30 s on any late writer tick.
 
 ## Decision
 
 1. `rss_mib` is decided by three trials: 1000 execs/s for 600 s (cpu-1000's load), the ptrace burst of 10000/s for
    10 s with its small records (rate-burst's), and 1 exec/s of 2 MB argv for 30 s, below the dispatcher's overflow.
 2. A run's peak is the larger of the largest 1 s VmRSS sum and the summed VmHWM of the recorder's processes at the
-   end (each trial boots a fresh VM), plus `collector.QueueBytes` less the collector's own `-queue-bytes`, read
-   from its argv, in KiB. A peak over 256 MiB is a MISS; a queue not read is INVALID.
+   end (each trial boots a fresh VM). A peak over 256 MiB is a MISS. The collector runs the shipped queue,
+   `collector.QueueBytes`, read from its argv: another, or one not read, is INVALID (ADR 0039, point 2).
 3. An OOM event of a recorder unit, from its cgroup's `memory.events` (`oom`, `oom_kill`) or systemd's OOM message,
    which outlives the restart, is a MISS. A MISS outranks every INVALID of the run. The control `rss-oom-control` sets
    the ledger's MemoryMax to 1 MiB at runtime under 1000 execs/s for 30 s and stops it after the load (each restart
@@ -40,16 +40,15 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
 
 ## Alternatives considered
 
-- Run RSS trials with the shipped queue (a drop-in and a restart, or a second image): the correction bounds it
-  from above without another unit file in the range.
+- A smaller queue with `collector.QueueBytes` less its bytes added to the peak: it dropped part of rss-burst's
+  load, and the Go heap can hold up to twice the queue (GOGC 100), so the sum bounds nothing.
 - 64 KiB records at 10000/s, or 2 MB ones at 50/s or 2/s: a stage drops or backs them up, so no run is whole.
 - Sample faster than 1 s: costs CPU under the load it measures; VmHWM bounds what falls between samples.
 - A restart as a MISS: it has causes other than memory; it stays INVALID unless an OOM event shows.
 
 ## Consequences
 
-- VmHWM sums peaks that need not coincide, an upper bound. The queue correction is an approximation, not an upper
-  bound: it counts the shipped queue's bytes, while the Go heap can hold up to twice them (GOGC 100) below the
+- VmHWM sums peaks that need not coincide, an upper bound. The queue's bytes are measured with the rest, below the
   collector's 192 MiB soft limit.
 - rss-large at 1/s drives Laurel at half its ~4 MB/s, below the collector's worst case: 2/s measured about 126 MB
   (67b19f2) against 122-124 MB at 1/s. An overflow stays INVALID: dropped records leave the load that reached the
