@@ -103,15 +103,15 @@ func (s *fakeSystem) show(_ context.Context, names, props []string) ([]map[strin
 
 func (s *fakeSystem) lookupUser(name string) (int, error) {
 	s.noWriteYet()
-	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534}[name]
-	if !ok {
+	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": s.uid}[name]
+	if !ok || name == "balistid-runner" && !s.groupMade {
 		return 0, errors.New("unknown user")
 	}
 	return uid, nil
 }
 
 func (s *fakeSystem) lookupGroup(name string) (int, error) {
-	if name != runnerGroup || !s.groupMade {
+	if name != runnerGroup && name != agentsGroup || !s.groupMade {
 		return 0, errors.New("unknown group")
 	}
 	return s.gid, nil
@@ -450,4 +450,56 @@ func (h *fakeHost) prepare(t *testing.T, name string, mode fs.FileMode) {
 	h.mkdir(t, path.Dir(name), 0o755)
 	must(t, os.Mkdir(filepath.Join(h.cfg.Root, name), 0o700))
 	h.chmod(t, name, mode)
+}
+
+// tmpfiles makes the runner's result directories; one prepared as a link or with other modes or owners before the
+// install refuses before its first write, since tmpfiles would create directories through it first.
+func TestRunnerRefusesATrappedResultsDirectory(t *testing.T) {
+	results := "var/lib/balistid/results"
+	exact := func(h *fakeHost) {
+		h.mkdir(t, "var/lib/balistid", 0o755)
+		h.mkdir(t, results, 0o750)
+		for _, d := range []string{"agent", "evidence", "acceptance"} {
+			h.mkdir(t, results+"/"+d, 0o750|fs.ModeSetgid)
+		}
+	}
+	for label, c := range map[string]struct {
+		spoil func(h *fakeHost)
+		want  string
+	}{
+		"results a link outside": {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o755); h.symlink(t, t.TempDir(), results) }, results + ": mode"},
+		"results 0777":           {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o755); h.mkdir(t, results, 0o777) }, results + ": mode"},
+		"agent a link": {func(h *fakeHost) {
+			exact(h)
+			must(t, os.Remove(filepath.Join(h.cfg.Root, results, "agent")))
+			h.symlink(t, "/etc", results+"/agent")
+		}, "agent: mode"},
+		"evidence without setgid":   {func(h *fakeHost) { exact(h); h.chmod(t, results+"/evidence", 0o750) }, "evidence: mode"},
+		"acceptance group writable": {func(h *fakeHost) { exact(h); h.chmod(t, results+"/acceptance", 0o770|fs.ModeSetgid) }, "acceptance: mode"},
+	} {
+		h, s := newRunnerHost(t)
+		c.spoil(h)
+		s.groupMade = true
+		h.refusedRun(t, s, label, maint, "", c.want)
+	}
+	h, s := newRunnerHost(t)
+	exact(h)
+	h.refusedRun(t, s, "results before the runner's user exists", maint, "", "no user balistid-runner")
+	s.groupMade = true
+	if err := h.install(t, s, maint, ""); err != nil {
+		t.Fatalf("results exactly as tmpfiles makes them: %v", err)
+	}
+}
+
+// The installer checks before tmpfiles runs only what it can read in tmpfiles.conf.
+func TestRunnerRefusesATmpfilesLineItCannotCheck(t *testing.T) {
+	for _, line := range []string{"L /etc/x - - - - /tmp", "d /etc/balistid 0755 root root -", "d /var/lib/balistid/../x 0755 root root -",
+		"d /var/lib/balistid/x 4755 root root -", "d /var/lib/balistid/x 0755 root root 1d", "D /var/lib/balistid/x 0755 root root -"} {
+		h, s := newRunnerHost(t)
+		files := runnerFiles(h.key.signers)
+		files["tmpfiles.conf"] = append(slices.Clone(deployTmpfiles), line+"\n"...)
+		m := manifestOf(files)
+		h.publish(t, files, m, h.key.sign(t, m, Namespace))
+		h.refusedRun(t, s, line, maint, "", "tmpfiles.conf: line 10")
+	}
 }
