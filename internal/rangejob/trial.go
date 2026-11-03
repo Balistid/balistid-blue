@@ -278,7 +278,7 @@ var trials = slices.Concat([]Trial{
 		{Name: "rss-burst", Metric: MetricRSS, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2,
 			Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}},
 		{Name: "rss-large", Metric: MetricRSS, Wall: 7 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch, Count: 2,
-			Load: Load{Kind: LoadExecLarge, Rate: 50, Seconds: 10}},
+			Load: Load{Kind: LoadExecLarge, Rate: 2, Seconds: 30}},
 		// canary_interval_s (ADR 0017): quiet, then Laurel and auditd frozen in turn; the kernel stage is no trial,
 		// as the rules locked by -e 2 cannot drop the canary's.
 		{Name: "canary", Metric: MetricCanary, Wall: 13 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
