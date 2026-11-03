@@ -1250,7 +1250,7 @@ func rateReport(tr rangejob.Trial, missing int) rangevm.Outcome {
 		{rangevm.FactGenerated, planned}, {rangevm.FactWindowMin, strconv.Itoa(tr.Load.Rate * 10)},
 		{rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"}, {rangevm.FactOverflowBefore, "no"},
 		{rangevm.FactOverflowAfter, "no"}, {rangevm.FactCPUTicks, "10000"}, {rangevm.FactStealTicks, "7"},
-		{rangevm.FactDrainCPU, "5000"}, {rangevm.FactDrainSteal, "3"}, {rangevm.FactGuardCPU, "5000"}, {rangevm.FactGuardSteal, "3"},
+		{rangevm.FactDrainCPU, "5000"}, {rangevm.FactDrainSteal, "3"}, {rangevm.FactDrainParts, "4000:3;1000:0"},
 		{rangevm.FactFollow, "ok"},
 		{rangevm.FactStored, stored}, {rangevm.FactMissing, strconv.Itoa(missing)}, {rangevm.FactDuplicate, "0"}, {rangevm.FactOutside, "0"},
 		{rangevm.FactCollectorUS, "1"}, {rangevm.FactCollectorMem, "1"},
