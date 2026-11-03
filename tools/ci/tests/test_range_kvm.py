@@ -317,6 +317,25 @@ class HostLines(unittest.TestCase):
         self.assertEqual(range_kvm.host_lines(self.state), [])
         self.assertEqual(range_kvm.host_lines(self.work / "none"), [])
 
+    def test_a_planted_run_or_results_directory_is_not_followed(self) -> None:
+        mark = b"[   10.408037] guest[555]: balistid-range-guest: host: "
+        self.run_dir("20261103T010000Z-11111111", mark + b"the real run\n")
+        elsewhere = self.work / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "result.json").write_text('{"verdict": "PASS", "reason": "planted"}', encoding="utf-8")
+        (elsewhere / "serial.log").write_bytes(mark + b"from a planted directory\n")
+        results = self.state / "balistid-range" / "results"
+        (results / "20991231T235959Z-ffffffff").symlink_to(elsewhere, target_is_directory=True)
+        self.assertEqual(range_kvm.host_lines(self.state), [])
+        self.assertIn("could not be read", range_kvm.verdict_annotation(self.state))
+        (results / "20991231T235959Z-ffffffff").unlink()
+        self.assertEqual(range_kvm.host_lines(self.state), ["balistid-range-guest: host: the real run"])
+        moved = self.work / "moved-results"
+        results.rename(moved)
+        results.symlink_to(moved, target_is_directory=True)
+        self.assertEqual(range_kvm.host_lines(self.state), [])
+        self.assertIn("could not be read", range_kvm.verdict_annotation(self.state))
+
     def test_a_trial_prints_them_while_commands_are_off_a_self_test_does_not(self) -> None:
         self.run_dir("20261103T010000Z-11111111", b"[   10.408037] guest[555]: balistid-range-guest: host: ::error::not a command\n")
         for argv, shown in ((["--trial", "rate-burst"], True), ([], False)):
