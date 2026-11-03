@@ -92,7 +92,9 @@ func runRecord(ctx context.Context, r *report) error {
 	}
 	time.Sleep(statsWait)
 	scan := newRecordScan(token)
-	if err := readStore(ctx, scan.add, scan.after); err != nil {
+	err = readStore(ctx, scan.add, scan.after)
+	scan.losses.done()
+	if err != nil {
 		return r.fail("store: " + err.Error())
 	}
 	scan.report(r)
@@ -232,6 +234,7 @@ type recordScan struct {
 	lines     []string // the malformed lines sent, by marker below
 	markers   []string
 	lost      uint64
+	losses    lossLog // what the host's log shows of them
 	cases     map[string]string
 	ours      uint64 // the highest seq of a record of this trial
 	malformed map[string]bool
@@ -248,7 +251,7 @@ type scanned struct {
 }
 
 func newRecordScan(token string) *recordScan {
-	return &recordScan{token: token, lines: malformedLines(token), markers: malformedMarkers(token), cases: map[string]string{},
+	return &recordScan{losses: lossLog{w: os.Stdout}, token: token, lines: malformedLines(token), markers: malformedMarkers(token), cases: map[string]string{},
 		malformed: map[string]bool{}}
 }
 
@@ -298,7 +301,7 @@ func (s *recordScan) after(x rawrecord.Record) error {
 func (s *recordScan) countLoss(x rawrecord.Record) {
 	if x.Provider == store.LossProvider || healthKind(x) == "lost" {
 		s.lost++
-		hostLine(os.Stdout, "%s", lossLine(x))
+		s.losses.add(x)
 	}
 }
 

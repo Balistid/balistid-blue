@@ -136,7 +136,7 @@ func TestAuditIdleWaitsForTheKernelAndAuditdsQueue(t *testing.T) {
 	write("0") // left from before: never fresh enough
 	backlogs := []string{"12", "3", "0"}
 	calls := 0
-	backlog := func() string { calls++; return backlogs[min(calls-1, len(backlogs)-1)] }
+	backlog := func(context.Context) string { calls++; return backlogs[min(calls-1, len(backlogs)-1)] }
 	stop := rewrite("7", "1", "0")
 	waited, err := AuditIdle(t.Context(), path, backlog, 5*time.Second, 5*time.Millisecond)
 	stop()
@@ -144,23 +144,49 @@ func TestAuditIdleWaitsForTheKernelAndAuditdsQueue(t *testing.T) {
 		t.Fatalf("idle after a backlog and a queue: %s, %v after %d backlog reads", waited, err, calls)
 	}
 	stop = rewrite("9")
-	_, err = AuditIdle(t.Context(), path, func() string { return "0" }, 200*time.Millisecond, 5*time.Millisecond)
+	_, err = AuditIdle(t.Context(), path, func(context.Context) string { return "0" }, 200*time.Millisecond, 5*time.Millisecond)
 	stop()
 	if err == nil || !strings.Contains(err.Error(), `auditd's plugin queue depth "9"`) {
 		t.Errorf("a queue that holds records: %v", err)
 	}
-	if _, err = AuditIdle(t.Context(), path, func() string { return "40" }, 50*time.Millisecond, 5*time.Millisecond); err == nil ||
+	if _, err = AuditIdle(t.Context(), path, func(context.Context) string { return "40" }, 50*time.Millisecond, 5*time.Millisecond); err == nil ||
 		!strings.Contains(err.Error(), `backlog "40"`) {
 		t.Errorf("a backlog never empty: %v", err)
 	}
-	if _, err = AuditIdle(t.Context(), path, func() string { return "0" }, 100*time.Millisecond, 5*time.Millisecond); err == nil ||
+	if _, err = AuditIdle(t.Context(), path, func(context.Context) string { return "0" }, 100*time.Millisecond, 5*time.Millisecond); err == nil ||
 		!strings.Contains(err.Error(), "no fresh auditd state") {
 		t.Errorf("no rewrite: %v", err)
 	}
 	stop = rewrite("none")
-	_, err = AuditIdle(t.Context(), path, func() string { return "0" }, 100*time.Millisecond, 5*time.Millisecond)
+	_, err = AuditIdle(t.Context(), path, func(context.Context) string { return "0" }, 100*time.Millisecond, 5*time.Millisecond)
 	stop()
 	if err == nil {
 		t.Error("a depth that is no number counted as idle")
+	}
+}
+
+// The error names the stage last seen not idle: a backlog that read "0" since is no longer the reason, and a backlog
+// reading that hangs ends with the wait.
+func TestAuditIdleNamesTheStageLastNotIdle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "auditd.state")
+	if err := os.WriteFile(path, []byte("current plugin queue depth = 0\nplugin queue overflow detected = no\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	once := func(context.Context) string {
+		if calls++; calls == 1 {
+			return "12"
+		}
+		return "0"
+	}
+	_, err := AuditIdle(t.Context(), path, once, 100*time.Millisecond, 5*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "no fresh auditd state") || strings.Contains(err.Error(), "backlog") {
+		t.Errorf("a backlog that emptied, then no rewrite: %v", err)
+	}
+	hang := func(ctx context.Context) string { <-ctx.Done(); return "missing" }
+	start := time.Now()
+	_, err = AuditIdle(t.Context(), path, hang, 50*time.Millisecond, 5*time.Millisecond)
+	if err == nil || time.Since(start) > time.Second {
+		t.Errorf("a backlog reading that hangs: %v after %s", err, time.Since(start))
 	}
 }
