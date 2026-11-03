@@ -31,7 +31,7 @@ StateDirectoryMode=0700
 RuntimeDirectory=balistid-collector
 RuntimeDirectoryMode=0755
 UMask=0077
-# rss_mib (512 MiB for all of floor 0): the binary's own 192 MiB heap limit, the 64 MiB queue twice
+# rss_mib (256 MiB for all of floor 0, ADR 0040): the binary's own 192 MiB heap limit, the 64 MiB queue twice
 # while it drains, SQLite's pages and /tmp, with room. No swap.
 MemoryMax=384M
 MemorySwapMax=0
