@@ -165,10 +165,15 @@ func TestRSSSamples(t *testing.T) {
 // stops at the first error.
 func TestSampleRSSRunsUntilStopped(t *testing.T) {
 	calls := 0
-	stop := sampleRSS(t.Context(), time.Millisecond, time.Now, func(m *rssMax) { calls++; m.samples++ })
-	if calls != 1 {
+	stop := sampleRSS(t.Context(), time.Hour, time.Now, func(m *rssMax) { calls++; m.samples++ })
+	if calls != 1 { // no tick within the hour, so only the first sample has run
 		t.Fatalf("%d samples when sampleRSS returned, want 1", calls)
 	}
+	if m := stop(); m.samples != 1 || len(m.at) != 1 {
+		t.Errorf("stopped before a tick: %+v", m)
+	}
+	calls = 0
+	stop = sampleRSS(t.Context(), time.Millisecond, time.Now, func(m *rssMax) { calls++; m.samples++ })
 	time.Sleep(20 * time.Millisecond)
 	if m := stop(); m.samples < 2 || m.samples != uint64(calls) || len(m.at) != calls ||
 		!slices.IsSortedFunc(m.at, func(a, b time.Time) int { return a.Compare(b) }) {
