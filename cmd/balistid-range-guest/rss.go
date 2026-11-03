@@ -255,6 +255,9 @@ func untilRunning(ctx context.Context, units []string, state func(string) string
 	}
 }
 
+// collectorBoolFlag is the collector's one bool flag, which takes no separate value (cmd/balistid-collector).
+const collectorBoolFlag = "log-commits"
+
 // collectorQueue is the -queue-bytes of the collector's running process, read from its argv, or why not.
 func collectorQueue(ctx context.Context) string {
 	owner, err := collectorProcess(ctx)
@@ -268,24 +271,27 @@ func collectorQueue(ctx context.Context) string {
 	return queueFlag(string(argv))
 }
 
-// queueFlag is the -queue-bytes value in a NUL-separated argv, as Go's flag package takes "-name value",
-// "-name=value" and two dashes, up to "--"; absent, the collector's default, rangevm.CollectorQueueBytes. Given twice
-// or without a value it is why not.
+// queueFlag is the -queue-bytes value in a NUL-separated argv as Go's flag package parses the collector's: "-name
+// value" and "-name=value" with one or two dashes, but collectorBoolFlag without a value, up to "--", a lone "-" or
+// the first argument that is no flag; absent, the collector's default, rangevm.CollectorQueueBytes. Given twice, without
+// a value or after a flag the parser refuses it is why not.
 func queueFlag(cmdline string) string {
 	args := strings.Split(strings.TrimSuffix(cmdline, "\x00"), "\x00")
 	var values []string
-	for i := 1; i < len(args) && args[i] != "--"; i++ {
-		name, value, inline := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(args[i], "-"), "-"), "=")
-		if !strings.HasPrefix(args[i], "-") || name != "queue-bytes" {
-			continue
-		}
-		if !inline {
+	for i := 1; i < len(args) && len(args[i]) > 1 && args[i][0] == '-' && args[i] != "--"; i++ {
+		name, value, inline := strings.Cut(strings.TrimPrefix(args[i][1:], "-"), "=")
+		switch {
+		case name == "" || name[0] == '-':
+			return fmt.Sprintf("bad flag syntax %q", rangevm.Printable(args[i], 64))
+		case !inline && name != collectorBoolFlag:
 			if i++; i >= len(args) {
-				return "-queue-bytes without a value"
+				return fmt.Sprintf("-%s without a value", rangevm.Printable(name, 64))
 			}
 			value = args[i]
 		}
-		values = append(values, value)
+		if name == "queue-bytes" {
+			values = append(values, value)
+		}
 	}
 	switch len(values) {
 	case 0:
