@@ -2,7 +2,9 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-03
-- Decided-by: alex (2026-11-03: the loads, the queue and peak bounds, CanaryEvery 29 s); claude/opus-5.5 the rest
+- Decided-by: alex (2026-11-03: the 1000 execs/s and burst loads, the queue and peak rules, CanaryEvery 29 s);
+  claude/opus-5.5 rss-large's 1 exec/s from his intent, "the rate Laurel holds", after 2/s overflowed (run 41567155763),
+  confirmed by his approval of this pull request, and the rest
 - Agent: claude/opus-5.5
 - Closes the decisions of issue #199; amends the methods of `rss_mib` (ADR 0007) and `canary_interval_s` (ADR 0017).
 
@@ -24,7 +26,8 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
    end (each trial boots a fresh VM), plus `collector.QueueBytes` less the collector's own `-queue-bytes`, read
    from its argv, in KiB. A peak over 256 MiB is a MISS; a queue not read is INVALID.
 3. An OOM event of a recorder unit, from its cgroup's `memory.events` (`oom`, `oom_kill`) or systemd's OOM message,
-   which outlives the restart, is a MISS. A MISS outranks every INVALID of the run.
+   which outlives the restart, is a MISS. A MISS outranks every INVALID of the run. The control `rss-oom-control` sets
+   the ledger's MemoryMax to 1 MiB at runtime under 1000 execs/s for 30 s and must give MISS by that event alone.
 4. A load not delivered, shown by auditd's overflow flag, a loss record of the store or a collector's lost record
    from the load's start to the store read, or not covered, the first sample after the load's start or a gap over
    2 s during it, is INVALID. The drain waits for auditd's plugin queue too, as the kernel's backlog empties first.
@@ -43,7 +46,12 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
 
 ## Consequences
 
-- An RSS PASS is an upper bound: VmHWM sums peaks that need not coincide, and the correction assumes a full queue.
+- VmHWM sums peaks that need not coincide, an upper bound. The queue correction is an approximation, not one: it
+  counts the shipped queue's bytes, while the Go heap can hold up to twice them (GOGC 100) below the collector's
+  192 MiB soft limit.
+- rss-large at 1/s drives Laurel at half its ~4 MB/s, below the collector's worst case: 2/s measured about 126 MB
+  (67b19f2) against 122-124 MB at 1/s. An overflow stays INVALID: dropped records leave the load that reached the
+  recorder unknown, and no count of the load's records after the dispatcher shows how much it was.
 - An UNKNOWN before the first frozen canary's deadline needs a probe missed outside the injection: a MISS.
 - The OOM message is trusted to carry the unit's name; `memory.events` covers a unit systemd did not restart.
 - Revert: a pull request removing this file and restoring the two methods in `acceptance/0.toml`.
