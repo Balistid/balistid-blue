@@ -123,8 +123,10 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	// Steal under load and while the reader drains, each on its own: a short burst of host contention
 	// in either is INVALID, not diluted by the other into a PASS or a MISS.
 	cpu, steal, loadErr := rangeguest.TickDelta(statBefore, statLoaded)
-	drainCPU, drainSteal, drainErr := drainTicks(statLoaded, idleFrom, idleTo, readTrim("/proc/stat"))
-	tickErr := errors.Join(loadErr, drainErr)
+	statRead := readTrim("/proc/stat")
+	drainCPU, drainSteal, drainErr := rangeguest.TickDelta(statLoaded, statRead)
+	guardCPU, guardSteal, guardErr := drainTicks(statLoaded, idleFrom, idleTo, statRead)
+	tickErr := errors.Join(loadErr, drainErr, guardErr)
 	switch {
 	case genErr != nil:
 		return fail("generator: " + genErr.Error())
@@ -158,6 +160,8 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactStealTicks, u(steal))
 	add(rangevm.FactDrainCPU, u(drainCPU))
 	add(rangevm.FactDrainSteal, u(drainSteal))
+	add(rangevm.FactGuardCPU, u(guardCPU))
+	add(rangevm.FactGuardSteal, u(guardSteal))
 	add(rangevm.FactFollow, follow)
 	add(rangevm.FactStored, u(stored))
 	add(rangevm.FactMissing, u(missing))
@@ -179,9 +183,10 @@ func stateLine(ctx context.Context, name string) string {
 	return rangeguest.StateValue(state, name)
 }
 
-// drainTicks are a rate trial's CPU and steal ticks from the load's end to after its store read: of the read's wait
-// for an idle audit (idleFrom to idleTo) and of the rest, the one with the larger share of steal, so the wait's idle
-// tail, up to auditd's next state rewrite, cannot dilute steal while the reader drains, nor the read the wait's.
+// drainTicks are the steal guard's CPU and steal ticks of a rate trial's drain, from the load's end to after its
+// store read (drain_guard_*; drain_* keep the whole drain's as measures): of the read's wait for an idle audit
+// (idleFrom to idleTo) and of the rest, the one with the larger share of steal, so the wait's idle tail, up to
+// auditd's next state rewrite, cannot dilute steal while the reader drains, nor the read the wait's.
 func drainTicks(loaded, idleFrom, idleTo, after string) (total, steal uint64, err error) {
 	c0, s0, err0 := rangeguest.TickDelta(loaded, idleFrom)
 	c1, s1, err1 := rangeguest.TickDelta(idleTo, after)

@@ -40,7 +40,7 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 		FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel,
 		FactGenerated: planned, FactWindowMin: strconv.Itoa(tr.Load.Rate * 10), FactLostBefore: "0", FactLostAfter: "0",
 		FactOverflowBefore: "no", FactOverflowAfter: "no", FactCPUTicks: "10000", FactStealTicks: "100", FactFollow: "ok",
-		FactDrainCPU: "5000", FactDrainSteal: "50",
+		FactDrainCPU: "5000", FactDrainSteal: "50", FactGuardCPU: "3000", FactGuardSteal: "30",
 		FactStored: planned, FactMissing: "0", FactDuplicate: "0", FactOutside: "0",
 		FactCollectorUS: "9000000", FactCollectorMem: "unknown",
 	}
@@ -77,8 +77,9 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 			"stored=18446744073709551615,missing=1200001",
 			"stored=1200001,missing=0",
 			"audit_lost_before=10,audit_lost_after=0",
-			"drain_steal_ticks=51",
-			"drain_cpu_ticks=0,drain_steal_ticks=1",
+			"drain_guard_steal_ticks=31", "drain_guard_cpu_ticks=0,drain_guard_steal_ticks=1", "drain_guard_cpu_ticks=5001",
+			"drain_guard_steal_ticks=51", "drain_guard_cpu_ticks=x", "drain_guard_steal_ticks=", "drain_guard_steal_ticks=29",
+			"drain_steal_ticks=51", "drain_cpu_ticks=4294967296,drain_guard_cpu_ticks=3000",
 		},
 	}
 	for want, changes := range cases {
@@ -218,5 +219,16 @@ func TestTrialLabelIsNeverBaseline(t *testing.T) {
 		if got := TrialLabel(tr); got != want {
 			t.Errorf("%s: label %q, want %q", tr.Name, got, want)
 		}
+	}
+}
+
+// A rate trial's measures keep the whole drain's ticks; the guard's part of it is judged, never a measure.
+func TestRateMeasuresKeepTheWholeDrain(t *testing.T) {
+	tr := trial(t, "rate-burst")
+	m := Measures(tr, report(tr))
+	_, guardCPU := m[FactGuardCPU]
+	_, guardSteal := m[FactGuardSteal]
+	if m[FactDrainCPU] != 5000 || m[FactDrainSteal] != 50 || guardCPU || guardSteal {
+		t.Errorf("measures %v", m)
 	}
 }
