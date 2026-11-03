@@ -91,7 +91,8 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 	case f[FactOverflowBefore] != "no" || (f[FactOverflowAfter] != "no" && f[FactOverflowAfter] != "yes"):
 		return Invalid, "the plugin queue state is unknown"
 	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100 || n[FactGuardSteal] > n[FactGuardCPU]/100 ||
-		n[FactGuardCPU] > n[FactDrainCPU] || n[FactGuardSteal] > n[FactDrainSteal] || !worstPart(n):
+		n[FactGuardCPU] > n[FactDrainCPU] || n[FactGuardSteal] > n[FactDrainSteal] || !worstPart(n) ||
+		n[FactGuardCPU] == 0 && n[FactDrainCPU] > 0:
 		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks under load, %d of %d in the worse part of the drain (%d of %d)",
 			n[FactStealTicks], n[FactCPUTicks], n[FactGuardSteal], n[FactGuardCPU], n[FactDrainSteal], n[FactDrainCPU])
 	case n[FactGenerated] == 0 || n[FactGenerated] > planned || n[FactStored] > n[FactGenerated] ||

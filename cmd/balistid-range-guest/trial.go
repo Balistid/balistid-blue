@@ -194,7 +194,8 @@ func drainTicks(loaded, idleFrom, idleTo, after string) (total, steal uint64, er
 	if err := errors.Join(err0, err1, errI); err != nil {
 		return 0, 0, fmt.Errorf("drain: %w", err)
 	}
-	if si*(c0+c1) > (s0+s1)*ci { // a run's ticks stay far below 2^32, so the products cannot overflow
+	// A rest without ticks has no share to compare; a run's ticks stay far below 2^32, so no product overflows.
+	if c0+c1 == 0 || si*(c0+c1) > (s0+s1)*ci {
 		return ci, si, nil
 	}
 	return c0 + c1, s0 + s1, nil
