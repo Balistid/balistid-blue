@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,8 +40,7 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 	values := map[string]string{
 		FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel,
 		FactGenerated: planned, FactWindowMin: strconv.Itoa(tr.Load.Rate * 10), FactLostBefore: "0", FactLostAfter: "0",
-		FactOverflowBefore: "no", FactOverflowAfter: "no", FactCPUTicks: "10000", FactStealTicks: "100", FactFollow: "ok",
-		FactDrainCPU: "5000", FactDrainSteal: "50",
+		FactOverflowBefore: "no", FactOverflowAfter: "no", FactStealWindows: windows(tr.Load.Seconds), FactFollow: "ok",
 		FactStored: planned, FactMissing: "0", FactDuplicate: "0", FactOutside: "0",
 		FactCollectorUS: "9000000", FactCollectorMem: "unknown",
 	}
@@ -57,6 +57,68 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 	return o
 }
 
+// windows is a steal series of a load of seconds and 30 s of drain on 4 vCPUs, the last second at exactly 1 %
+// steal, with spans replaced by the given index=span pairs.
+func windows(seconds int, change ...string) string {
+	spans := slices.Repeat([]string{"1000:400:0"}, seconds+30)
+	spans[len(spans)-1] = "1000:400:4"
+	for _, c := range change {
+		i, span, _ := strings.Cut(c, "=")
+		n, _ := strconv.Atoi(i)
+		spans[n] = span
+	}
+	return strings.Join(spans, ",")
+}
+
+// Host steal only makes a MISS INVALID, never a PASS (ADR 0057): judged second by second, so one stolen second
+// is not diluted by the rest of the run, nor a second the guest did not measure. A series that is malformed or
+// does not cover the load is INVALID whatever the verdict.
+func TestJudgeRateStealDecidesOnlyAMiss(t *testing.T) {
+	tr := trial(t, "rate-sustained")
+	miss := []string{FactMissing + "=1", FactStored + "=1199999"}
+	cases := []struct {
+		name, series string
+		miss         bool
+		want         string
+	}{
+		{"clean", windows(600), false, Pass},
+		{"clean miss", windows(600), true, Miss},
+		{"stolen second", windows(600, "300=1000:400:5"), false, Pass},
+		{"stolen second, miss", windows(600, "300=1000:400:5"), true, Invalid},
+		{"stolen second in the drain, miss", windows(600, "620=1000:100:2"), true, Invalid},
+		{"stolen short span, miss", windows(600, "0=10:4:1"), true, Invalid},
+		{"unmeasured, miss", windows(600, "300=2001:800:0"), true, Invalid},
+		{"unmeasured", windows(600, "300=2001:800:0"), false, Pass},
+		{"two seconds, miss", windows(600, "300=2000:800:8"), true, Miss},
+		{"no ticks in a second, miss", windows(600, "300=1000:0:0"), true, Invalid},
+		{"no ticks in a short last span, miss", windows(600, "629=999:0:0"), true, Miss},
+		{"empty", "", false, Invalid},
+		{"no steal", windows(600, "3=1000:400"), false, Invalid},
+		{"steal over its ticks", windows(600, "3=1000:400:401"), false, Invalid},
+		{"padded", windows(600, "3=01000:400:0"), false, Invalid},
+		{"signed", windows(600, "3=1000:400:-1"), false, Invalid},
+		{"spaced", windows(600, "3=1000:400:0 "), false, Invalid},
+		{"overlong", windows(600, "3=1000:4000000000000:0"), false, Invalid},
+		{"short of the load", strings.Join(slices.Repeat([]string{"1000:400:0"}, 599), ","), false, Invalid},
+		{"too many spans", strings.Join(slices.Repeat([]string{"1000:400:0"}, maxStealWindows+1), ","), false, Invalid},
+	}
+	for _, c := range cases {
+		change := []string{FactStealWindows + "=" + c.series}
+		if c.miss {
+			change = append(change, miss...)
+		}
+		if v, r := JudgeTrial(tr, report(tr, change...), cleanBuild, cleanBuild); v != c.want {
+			t.Errorf("%s: %s (%s); want %s", c.name, v, r, c.want)
+		}
+	}
+	// The control's dropped number under steal proves nothing either.
+	control := trial(t, "rate-control-drop")
+	stolen := report(control, FactMissing+"=1", FactStored+"=29999", FactStealWindows+"="+windows(30, "10=1000:400:5"))
+	if v, r := JudgeTrial(control, stolen, cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "host steal") {
+		t.Errorf("control under steal: %s (%s); want INVALID", v, r)
+	}
+}
+
 func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 	tr := trial(t, "rate-sustained")
 	if v, r := JudgeTrial(tr, report(tr), cleanBuild, cleanBuild); v != Pass {
@@ -68,17 +130,14 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 			"window_min=19999", "generated=1199999,stored=1199999,window_min=19999",
 		},
 		Invalid: {
-			"follow=barrier missing", "steal_ticks=101", "cpu_ticks=0", "kernel=6.0.0", "overflow_after=stale",
+			"follow=barrier missing", "kernel=6.0.0", "overflow_after=stale",
 			"overflow_before=yes", "overflow_after=maybe", "generated=1200001,stored=1200001", "stored=1199999",
 			"generated=", "duplicate=00", "missing=-1", "missing=1 ", "trial=rate-burst",
-			"cpu_ticks=0,steal_ticks=0",
 			// Codex round 1 on #100: contradictions get no binding verdict.
 			"window_min=120001",
 			"stored=18446744073709551615,missing=1200001",
 			"stored=1200001,missing=0",
 			"audit_lost_before=10,audit_lost_after=0",
-			"drain_steal_ticks=51",
-			"drain_cpu_ticks=0,drain_steal_ticks=1",
 		},
 	}
 	for want, changes := range cases {
@@ -201,7 +260,7 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		if stored.Trial != name || stored.Label != want || stored.Verdict != Pass {
 			t.Errorf("%s stored trial %q, label %q, verdict %q; want label %q", name, stored.Trial, stored.Label, stored.Verdict, want)
 		}
-		if stored.SchemaVersion != 2 || stored.Measures[FactStealTicks] != 100 || len(stored.Measures) != len(counts)+1 {
+		if stored.SchemaVersion != 2 || stored.Measures[FactCollectorUS] != 9000000 || len(stored.Measures) != len(counts)+1 {
 			t.Errorf("%s stored schema %d, measures %v", name, stored.SchemaVersion, stored.Measures)
 		}
 	}

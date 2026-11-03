@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,36 +162,39 @@ func TestRSSSamples(t *testing.T) {
 	}
 }
 
-// The sampler takes its first sample before it returns, then samples until stopped, noting when each began, and
-// stops at the first error.
-func TestSampleRSSRunsUntilStopped(t *testing.T) {
+// The sampler takes its first sample before it returns, then samples until stopped, and stops at the first sample
+// that returns false.
+func TestSampleEveryRunsUntilStopped(t *testing.T) {
 	calls := 0
-	stop := sampleRSS(t.Context(), time.Hour, time.Now, func(m *rssMax) { calls++; m.samples++ })
+	stop := sampleEvery(t.Context(), time.Hour, func() bool { calls++; return true })
 	if calls != 1 { // no tick within the hour, so only the first sample has run
-		t.Fatalf("%d samples when sampleRSS returned, want 1", calls)
+		t.Fatalf("%d samples when sampleEvery returned, want 1", calls)
 	}
-	if m := stop(); m.samples != 1 || len(m.at) != 1 {
-		t.Errorf("stopped before a tick: %+v", m)
+	if stop(); calls != 1 {
+		t.Errorf("stopped before a tick after %d samples", calls)
 	}
 	calls = 0
-	stop = sampleRSS(t.Context(), time.Millisecond, time.Now, func(m *rssMax) { calls++; m.samples++ })
+	stop = sampleEvery(t.Context(), time.Millisecond, func() bool { calls++; return true })
 	time.Sleep(20 * time.Millisecond)
-	if m := stop(); m.samples < 2 || m.samples != uint64(calls) || len(m.at) != calls ||
-		!slices.IsSortedFunc(m.at, func(a, b time.Time) int { return a.Compare(b) }) {
-		t.Errorf("%d samples of %d calls at %v", m.samples, calls, m.at)
+	if stop(); calls < 2 {
+		t.Errorf("%d samples in 20 ms at 1 ms", calls)
 	}
-	stop = sampleRSS(t.Context(), time.Millisecond, time.Now, func(m *rssMax) {
-		if m.samples++; m.samples == 3 {
-			m.err = errors.New("gone")
-		}
-	})
+	after := calls
+	time.Sleep(5 * time.Millisecond)
+	if calls != after {
+		t.Errorf("%d samples after stop returned", calls-after)
+	}
+	calls = 0
+	stop = sampleEvery(t.Context(), time.Millisecond, func() bool { calls++; return calls < 3 })
 	time.Sleep(20 * time.Millisecond)
-	if m := stop(); m.err == nil || m.samples != 3 || len(m.at) != 3 {
-		t.Errorf("after an error: %+v", m)
+	if stop(); calls != 3 {
+		t.Errorf("%d samples, want 3: the third returned false", calls)
 	}
-	stop = sampleRSS(t.Context(), time.Hour, time.Now, func(m *rssMax) { m.err = errors.New("gone") })
-	if m := stop(); m.err == nil || len(m.at) != 1 {
-		t.Errorf("an error in the first sample: %+v", m)
+	calls = 0
+	stop = sampleEvery(t.Context(), time.Millisecond, func() bool { calls++; return false })
+	time.Sleep(5 * time.Millisecond)
+	if stop(); calls != 1 {
+		t.Errorf("%d samples after the first returned false", calls)
 	}
 }
 

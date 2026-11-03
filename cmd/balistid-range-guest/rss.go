@@ -132,7 +132,12 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 	lost := func() string { return valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]) }
 	lostBefore, overflowBefore := lost(), stateLine(ctx, rangeguest.StateOverflow)
 	auditd := []string{sampleUnit(ctx, auditdUnitName).cgroup}
-	stop := sampleRSS(ctx, rssEvery, time.Now, func(m *rssMax) { m.sample("/", cgroups, auditd) })
+	var m rssMax
+	stop := sampleEvery(ctx, rssEvery, func() bool {
+		m.at = append(m.at, time.Now())
+		m.sample("/", cgroups, auditd)
+		return m.err == nil
+	})
 	injectStart, injectedAt, injected := int64(0), int64(0), rangevm.RSSNone
 	if control {
 		injectStart, injectedAt, injected = injectOOM(ctx)
@@ -157,7 +162,7 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 			}, rssDrainWait(tr.Load.Kind))
 		}
 	}
-	m := stop()
+	stop()
 	var runErrs []string
 	note := func(what string, err error) {
 		if err != nil {
@@ -464,30 +469,26 @@ func (m rssMax) oomEvents() uint64 {
 	return n
 }
 
-// sampleRSS samples once before it returns, so before the load the caller starts next, then every every until stop,
-// which returns what the samples found and when each began by now; an error ends them early.
-func sampleRSS(ctx context.Context, every time.Duration, now func() time.Time, sample func(*rssMax)) (stop func() rssMax) {
-	var m rssMax
-	m.at = append(m.at, now())
-	sample(&m)
+// sampleEvery samples once before it returns, so before the load the caller starts next, then every every until
+// stop, which returns once no sample runs any more; a sample that returns false ends them early.
+func sampleEvery(ctx context.Context, every time.Duration, sample func() bool) (stop func()) {
+	ok := sample()
 	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan rssMax, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		tick := time.NewTicker(every)
 		defer tick.Stop()
-		for m.err == nil {
+		for ok {
 			select {
 			case <-ctx.Done():
-				done <- m
 				return
 			case <-tick.C:
 			}
-			m.at = append(m.at, now())
-			sample(&m)
+			ok = sample()
 		}
-		done <- m
 	}()
-	return func() rssMax { cancel(); return <-done }
+	return func() { cancel(); <-done }
 }
 
 // loadGap is the longest time in ms from the load's start to its end that lies between two samples, or why the

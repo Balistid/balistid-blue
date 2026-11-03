@@ -155,24 +155,23 @@ func readStore(ctx context.Context, before, after func(rawrecord.Record) error) 
 }
 
 // storeReader is the guest's read of the collector's store. Its barrier waits for an idle audit first
-// (auditIdle); around, when not nil, is told when that wait begins (false) and ends (true): a rate trial
-// keeps the wait apart in its drain's steal and samples the collector once the drain is over.
-func storeReader(around func(done bool)) rangeguest.StoreRead {
+// (auditIdle); after, when not nil, runs once that wait returned: a rate trial samples the collector
+// there, once the drain is over.
+func storeReader(after func()) rangeguest.StoreRead {
 	return rangeguest.StoreRead{
 		Dir: storeDir, Scratch: shard.Scratch{Dir: shardCopyDir, Max: shardCopyMax}, Collector: collectorUnit{}, Clock: rangeguest.WallClock, Settle: time.Second, Poll: 100 * time.Millisecond,
-		Idle: idleThen(func(ctx context.Context) error { return auditIdle(ctx, "store read", idleWait) }, around),
+		Idle: idleThen(func(ctx context.Context) error { return auditIdle(ctx, "store read", idleWait) }, after),
 		Mark: func(ctx context.Context, token string) error {
 			return exec.CommandContext(ctx, "/usr/bin/true", token).Run() //nolint:gosec // our own random token
 		},
 	}
 }
 
-// idleThen is wait with around, if not nil, told as it begins and when it returned.
-func idleThen(wait func(context.Context) error, around func(done bool)) func(context.Context) error {
+// idleThen is wait, then after, if not nil, once it returned.
+func idleThen(wait func(context.Context) error, after func()) func(context.Context) error {
 	return func(ctx context.Context) error {
-		if around != nil {
-			around(false)
-			defer around(true)
+		if after != nil {
+			defer after()
 		}
 		return wait(ctx)
 	}

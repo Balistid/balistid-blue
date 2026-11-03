@@ -1249,8 +1249,9 @@ func rateReport(tr rangejob.Trial, missing int) rangevm.Outcome {
 		{rangevm.FactTrial, tr.Name}, {rangevm.FactPhase, "1"}, {rangevm.FactKernel, rangevm.TargetKernel},
 		{rangevm.FactGenerated, planned}, {rangevm.FactWindowMin, strconv.Itoa(tr.Load.Rate * 10)},
 		{rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"}, {rangevm.FactOverflowBefore, "no"},
-		{rangevm.FactOverflowAfter, "no"}, {rangevm.FactCPUTicks, "10000"}, {rangevm.FactStealTicks, "7"},
-		{rangevm.FactDrainCPU, "5000"}, {rangevm.FactDrainSteal, "3"}, {rangevm.FactFollow, "ok"},
+		{rangevm.FactOverflowAfter, "no"},
+		{rangevm.FactStealWindows, strings.Join(slices.Repeat([]string{"1000:400:0"}, tr.Load.Seconds), ",")},
+		{rangevm.FactFollow, "ok"},
 		{rangevm.FactStored, stored}, {rangevm.FactMissing, strconv.Itoa(missing)}, {rangevm.FactDuplicate, "0"}, {rangevm.FactOutside, "0"},
 		{rangevm.FactCollectorUS, "1"}, {rangevm.FactCollectorMem, "1"},
 	}
@@ -1280,7 +1281,7 @@ func TestTickRunsATrialJob(t *testing.T) {
 		res[0].Job.Kind != rangejob.KindTrial || res[0].Job.Trial != "rate-burst" {
 		t.Fatalf("agent results %+v", res)
 	}
-	if m := res[0].Runs[1].Measures; m[rangevm.FactStealTicks] != 7 || m[rangevm.FactMissing] != 0 || len(m) == 0 {
+	if m := res[0].Runs[1].Measures; m[rangevm.FactCollectorUS] != 1 || m[rangevm.FactMissing] != 0 || len(m) == 0 {
 		t.Fatalf("measures %v", m)
 	}
 	if l := res[0].Limits; l.RunTimeoutS != int(burst.Wall/time.Second) || l.SerialBudget != int(burst.Serial) {
@@ -1384,7 +1385,7 @@ func TestASlotWithoutAJobRunsABatch(t *testing.T) {
 	}
 	res := tr.results(t, LabelAcceptance)
 	if len(res) != 2 || res[0].Runs[0].Label != "" || res[0].Verdict != rangevm.Pass ||
-		res[0].Runs[0].Measures[rangevm.FactStealTicks] != 7 || res[0].Job.Trial != "rate-sustained" {
+		res[0].Runs[0].Measures[rangevm.FactCollectorUS] != 1 || res[0].Job.Trial != "rate-sustained" {
 		t.Fatalf("acceptance results %+v", res)
 	}
 	if a := tr.acceptance(t); a.Commit != testCommit || a.Trials["rate-sustained"].Valid != 2 || a.Trials["rate-sustained"].Passed != 2 ||

@@ -187,7 +187,7 @@ const (
 var (
 	readyFacts    = []string{FactTrial, FactPhase, FactKernel, FactReadyMS}
 	exposureFacts = []string{FactTrial, FactPhase, FactKernel, FactExposure}
-	cpuFacts      = []string{FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
+	cpuFacts      = []string{FactTrial, FactPhase, FactKernel, FactGenerated, FactWindowMin, FactStealWindows,
 		FactCollectorUS, FactAuditdUS, FactUnits, FactStored, FactMissing}
 	exposureValue = regexp.MustCompile(`^(balistid-[a-z0-9-]{1,64}\.service)=([0-9]{1,2})\.([0-9])$`)
 )
@@ -273,14 +273,18 @@ func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 	return Pass, fmt.Sprintf("the worst unit, %s, has exposure %d.%d", worstUnit, worst/10, worst%10)
 }
 
-// judgeCPU: the load held its rate in every 10 s window, steal stayed within 1 %, neither unit restarted
-// and every record was stored, else INVALID: a lighter or broken load would understate the cost. CPU of
-// collector, auditd and Laurel over the load's seconds above 1.0 core is a MISS (ADR 0046).
+// judgeCPU: the load held its rate in every 10 s window, neither unit restarted and every record was stored,
+// else INVALID: a lighter or broken load would understate the cost. CPU of collector, auditd and Laurel over
+// the load's seconds above 1.0 core is a MISS (ADR 0046), unless host steal may have caused it (ADR 0057).
 func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
-	f, n, why := probeFacts(tr, o, cpuFacts, []string{FactGenerated, FactWindowMin, FactCPUTicks, FactStealTicks,
-		FactCollectorUS, FactAuditdUS, FactStored, FactMissing})
+	f, n, why := probeFacts(tr, o, cpuFacts, []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS,
+		FactStored, FactMissing})
 	if why != "" {
 		return Invalid, why
+	}
+	steal, err := stealOverMiss(f[FactStealWindows], tr.Load.Seconds)
+	if err != nil {
+		return Invalid, err.Error()
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds)                                                           //nolint:gosec // positive table values
 	if limit := uint64(tr.Load.Seconds) * 1_000_000 * maxCores; n[FactCollectorUS] > limit || n[FactAuditdUS] > limit { //nolint:gosec // positive table value
@@ -291,14 +295,12 @@ func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 	switch {
 	case n[FactGenerated] != planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10 || n[FactWindowMin] > n[FactGenerated]: //nolint:gosec // positive table value
 		return Invalid, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin])
-	case n[FactCPUTicks] == 0 || n[FactStealTicks] > n[FactCPUTicks]/100:
-		return Invalid, fmt.Sprintf("guest steal over 1 %%: %d of %d ticks", n[FactStealTicks], n[FactCPUTicks])
 	case f[FactUnits] != "same":
 		return Invalid, fmt.Sprintf("units changed during the load: %q", Printable(f[FactUnits], 64))
 	case n[FactMissing] != 0 || n[FactStored] != n[FactGenerated]:
 		return Invalid, fmt.Sprintf("stored %d of %d, missing %d", n[FactStored], n[FactGenerated], n[FactMissing])
 	case used > uint64(tr.Load.Seconds)*1_000_000: //nolint:gosec // positive table value
-		return Miss, fmt.Sprintf("%d.%03d cores at %d records/s, over 1.0", milli/1000, milli%1000, tr.Load.Rate)
+		return missUnlessSteal(steal, fmt.Sprintf("%d.%03d cores at %d records/s, over 1.0", milli/1000, milli%1000, tr.Load.Rate))
 	}
 	return Pass, fmt.Sprintf("%d.%03d cores at %d records/s", milli/1000, milli%1000, tr.Load.Rate)
 }
