@@ -64,7 +64,7 @@ func stealOverMiss(series string, loadSeconds int) (string, error) {
 	if len(spans) > maxStealWindows {
 		return "", fmt.Errorf("%d steal windows, at most %d", len(spans), maxStealWindows)
 	}
-	why, covered := "", uint64(0)
+	why, covered, bad := "", uint64(0), 0
 	for i, span := range spans {
 		m := stealWindow.FindStringSubmatch(span)
 		if m == nil {
@@ -76,19 +76,28 @@ func stealOverMiss(series string, loadSeconds int) (string, error) {
 		if steal > total {
 			return "", fmt.Errorf("steal window %d has %d steal of %d ticks", i, steal, total)
 		}
+		issue := ""
 		switch {
-		case why != "":
 		case ms > 2000:
-			why = fmt.Sprintf("%d ms unmeasured from %d ms on", ms, covered)
+			issue = fmt.Sprintf("%d ms unmeasured from %d ms on", ms, covered)
 		case total == 0 && ms >= 1000:
-			why = fmt.Sprintf("no CPU ticks in %d ms from %d ms on", ms, covered)
+			issue = fmt.Sprintf("no CPU ticks in %d ms from %d ms on", ms, covered)
 		case steal*100 > total:
-			why = fmt.Sprintf("guest steal %d of %d ticks in %d ms from %d ms on", steal, total, ms, covered)
+			issue = fmt.Sprintf("guest steal %d of %d ticks in %d ms from %d ms on", steal, total, ms, covered)
+		}
+		if issue != "" {
+			bad++
+			if why == "" {
+				why = issue
+			}
 		}
 		covered += ms
 	}
 	if covered < uint64(loadSeconds)*1000 { //nolint:gosec // positive table value
 		return "", fmt.Errorf("steal windows cover %d ms of a %d s load", covered, loadSeconds)
+	}
+	if bad > 1 {
+		why = fmt.Sprintf("%s; %d of %d spans", why, bad, len(spans))
 	}
 	return why, nil
 }

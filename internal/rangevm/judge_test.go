@@ -111,6 +111,11 @@ func TestJudgeRateStealDecidesOnlyAMiss(t *testing.T) {
 			t.Errorf("%s: %s (%s); want %s", c.name, v, r, c.want)
 		}
 	}
+	// The reason names the first stolen span and how many there were, so a log shows how noisy the host was.
+	two := report(tr, append(miss, FactStealWindows+"="+windows(600, "5=1000:400:5", "9=2500:1000:0"))...)
+	if v, r := JudgeTrial(tr, two, cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "steal 5 of 400 ticks in 1000 ms from 5000 ms on; 2 of 630 spans") {
+		t.Errorf("two stolen spans: %s (%s)", v, r)
+	}
 	// The control's dropped number under steal proves nothing either.
 	control := trial(t, "rate-control-drop")
 	stolen := report(control, FactMissing+"=1", FactStored+"=29999", FactStealWindows+"="+windows(30, "10=1000:400:5"))
