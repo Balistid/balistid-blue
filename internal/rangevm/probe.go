@@ -63,23 +63,39 @@ var refusalFacts = []string{
 
 // probeFacts maps the closed facts of a one-boot run of tr on the target kernel, with nums plain numbers.
 func probeFacts(tr rangejob.Trial, o Outcome, names, nums []string) (map[string]string, map[string]uint64, string) {
-	f, err := closedFacts(o.Facts, names)
-	if err != nil {
-		return nil, nil, err.Error()
-	}
-	if f[FactTrial] != tr.Name {
-		return nil, nil, "the guest ran another trial"
-	}
-	if f[FactKernel] != TargetKernel {
-		return nil, nil, fmt.Sprintf("guest kernel \"%s\" is not the target %s", Printable(f[FactKernel], 128), TargetKernel)
+	f, missing, why := knownFacts(tr, o, names)
+	switch {
+	case why != "":
+		return nil, nil, why
+	case missing != "":
+		return nil, nil, missing
 	}
 	n := map[string]uint64{}
 	for _, name := range nums {
+		var err error
 		if n[name], err = plainNumber(f[name]); err != nil {
 			return nil, nil, fmt.Sprintf("fact %s is not a plain number", name)
 		}
 	}
 	return f, n, ""
+}
+
+// knownFacts maps the facts of a one-boot run of tr on the target kernel for a judge that finds a MISS in what a
+// report holds: an unknown or repeated fact, another trial or kernel is why the report proves nothing (why); a
+// missing fact is only named (missing) and reads as "", which is no number and no state.
+func knownFacts(tr rangejob.Trial, o Outcome, names []string) (f map[string]string, missing, why string) {
+	f, absent, err := namedFacts(o.Facts, names)
+	switch {
+	case err != nil:
+		return nil, "", err.Error()
+	case f[FactTrial] != tr.Name:
+		return nil, "", "the guest ran another trial"
+	case f[FactKernel] != TargetKernel:
+		return nil, "", fmt.Sprintf("guest kernel \"%s\" is not the target %s", Printable(f[FactKernel], 128), TargetKernel)
+	case len(absent) > 0:
+		missing = fmt.Sprintf("report has %d of %d facts, not %s", len(f), len(names), strings.Join(absent, ", "))
+	}
+	return f, missing, ""
 }
 
 // judgeRecord: the 131 KB and 2 MB execs stored whole, the 6 MB one truncated with its length, head and
