@@ -70,10 +70,10 @@ func windows(seconds int, change ...string) string {
 	return strings.Join(spans, ",")
 }
 
-// Host steal only makes a MISS INVALID, never a PASS (ADR 0057): judged second by second, so one stolen second
-// is not diluted by the rest of the run, nor a second the guest did not measure. A series that is malformed or
-// does not cover the load is INVALID whatever the verdict.
-func TestJudgeRateStealDecidesOnlyAMiss(t *testing.T) {
+// Host steal makes a run INVALID whatever it would have given (ADR 0057), so rerunning INVALID runs cannot pick
+// the PASSes: judged second by second, one stolen second is not diluted by the rest of the run, nor a second the
+// guest did not measure. A series that is malformed or does not cover the load is INVALID too.
+func TestJudgeRateStealVoidsEitherVerdict(t *testing.T) {
 	tr := trial(t, "rate-sustained")
 	miss := []string{FactMissing + "=1", FactStored + "=1199999"}
 	cases := []struct {
@@ -83,12 +83,14 @@ func TestJudgeRateStealDecidesOnlyAMiss(t *testing.T) {
 	}{
 		{"clean", windows(600), false, Pass},
 		{"clean miss", windows(600), true, Miss},
-		{"stolen second", windows(600, "300=1000:400:5"), false, Pass},
+		{"stolen second", windows(600, "300=1000:400:5"), false, Invalid},
 		{"stolen second, miss", windows(600, "300=1000:400:5"), true, Invalid},
 		{"stolen second in the drain, miss", windows(600, "620=1000:100:2"), true, Invalid},
 		{"stolen short span, miss", windows(600, "0=10:4:1"), true, Invalid},
 		{"unmeasured, miss", windows(600, "300=2001:800:0"), true, Invalid},
-		{"unmeasured", windows(600, "300=2001:800:0"), false, Pass},
+		{"unmeasured", windows(600, "300=2001:800:0"), false, Invalid},
+		{"one long span", "600000:240000:0", false, Invalid},
+		{"two seconds", windows(600, "300=2000:800:8"), false, Pass},
 		{"two seconds, miss", windows(600, "300=2000:800:8"), true, Miss},
 		{"no ticks in a second, miss", windows(600, "300=1000:0:0"), true, Invalid},
 		{"no ticks in a short last span, miss", windows(600, "629=999:0:0"), true, Miss},
@@ -115,6 +117,13 @@ func TestJudgeRateStealDecidesOnlyAMiss(t *testing.T) {
 	two := report(tr, append(miss, FactStealWindows+"="+windows(600, "5=1000:400:5", "9=2500:1000:0"))...)
 	if v, r := JudgeTrial(tr, two, cleanBuild, cleanBuild); v != Invalid || !strings.Contains(r, "steal 5 of 400 ticks in 1000 ms from 5000 ms on; 2 of 630 spans") {
 		t.Errorf("two stolen spans: %s (%s)", v, r)
+	}
+	// A run keeps its worst span as a measure: 5 of 400 ticks is 12500 ppm; the clean series' worst is 1 %.
+	if m := Measures(tr, two); m[MeasureStealWorstPPM] != 12500 {
+		t.Errorf("worst steal measure %v", m)
+	}
+	if m := Measures(tr, report(tr)); m[MeasureStealWorstPPM] != 10000 {
+		t.Errorf("clean worst steal measure %v", m)
 	}
 	// The control's dropped number under steal proves nothing either.
 	control := trial(t, "rate-control-drop")
@@ -265,7 +274,7 @@ func TestCheckStoresTheTrialAndItsLabel(t *testing.T) {
 		if stored.Trial != name || stored.Label != want || stored.Verdict != Pass {
 			t.Errorf("%s stored trial %q, label %q, verdict %q; want label %q", name, stored.Trial, stored.Label, stored.Verdict, want)
 		}
-		if stored.SchemaVersion != 2 || stored.Measures[FactCollectorUS] != 9000000 || len(stored.Measures) != len(counts)+1 {
+		if stored.SchemaVersion != 2 || stored.Measures[FactCollectorUS] != 9000000 || len(stored.Measures) != len(counts)+2 {
 			t.Errorf("%s stored schema %d, measures %v", name, stored.SchemaVersion, stored.Measures)
 		}
 	}

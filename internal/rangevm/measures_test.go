@@ -11,9 +11,10 @@ import (
 func TestMeasuresOfARateTrialAreItsCounts(t *testing.T) {
 	tr := trial(t, "rate-burst")
 	m := Measures(tr, report(tr))
-	// The collector's CPU is a measure too; its memory peak, reported as unknown, is left out.
-	if len(m) != len(counts)+1 || m[FactWindowMin] != 100000 || m[FactGenerated] != 100000 ||
-		m[FactCollectorUS] != 9000000 {
+	// The collector's CPU and the worst span of steal are measures too; the memory peak, reported as unknown, is
+	// left out.
+	if len(m) != len(counts)+2 || m[FactWindowMin] != 100000 || m[FactGenerated] != 100000 ||
+		m[FactCollectorUS] != 9000000 || m[MeasureStealWorstPPM] != 10000 {
 		t.Fatalf("measures %v", m)
 	}
 	if _, ok := m[FactCollectorMem]; ok {
@@ -42,7 +43,7 @@ func TestMeasuresLeaveOutABadCount(t *testing.T) {
 		"missing": report(tr, FactWindowMin+"="),
 	} {
 		m := Measures(tr, o)
-		if _, ok := m[FactWindowMin]; ok || len(m) != len(counts) {
+		if _, ok := m[FactWindowMin]; ok || len(m) != len(counts)+1 {
 			t.Errorf("%s: measures %v", name, m)
 		}
 	}

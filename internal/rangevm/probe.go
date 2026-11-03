@@ -273,18 +273,21 @@ func judgeExposure(tr rangejob.Trial, o Outcome) (string, string) {
 	return Pass, fmt.Sprintf("the worst unit, %s, has exposure %d.%d", worstUnit, worst/10, worst%10)
 }
 
-// judgeCPU: the load held its rate in every 10 s window, neither unit restarted and every record was stored,
-// else INVALID: a lighter or broken load would understate the cost. CPU of collector, auditd and Laurel over
-// the load's seconds above 1.0 core is a MISS (ADR 0046), unless host steal may have caused it (ADR 0057).
+// judgeCPU: the load held its rate in every 10 s window, no span had host steal (ADR 0057), neither unit
+// restarted and every record was stored, else INVALID: a lighter or broken load would understate the cost.
+// CPU of collector, auditd and Laurel over the load's seconds above 1.0 core is a MISS (ADR 0046).
 func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, cpuFacts, []string{FactGenerated, FactWindowMin, FactCollectorUS, FactAuditdUS,
 		FactStored, FactMissing})
 	if why != "" {
 		return Invalid, why
 	}
-	steal, err := stealOverMiss(f[FactStealWindows], tr.Load.Seconds)
-	if err != nil {
+	steal, _, err := hostSteal(f[FactStealWindows], tr.Load.Seconds)
+	switch {
+	case err != nil:
 		return Invalid, err.Error()
+	case steal != "":
+		return Invalid, "host steal: " + steal
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds)                                                           //nolint:gosec // positive table values
 	if limit := uint64(tr.Load.Seconds) * 1_000_000 * maxCores; n[FactCollectorUS] > limit || n[FactAuditdUS] > limit { //nolint:gosec // positive table value
@@ -300,7 +303,7 @@ func judgeCPU(tr rangejob.Trial, o Outcome) (string, string) {
 	case n[FactMissing] != 0 || n[FactStored] != n[FactGenerated]:
 		return Invalid, fmt.Sprintf("stored %d of %d, missing %d", n[FactStored], n[FactGenerated], n[FactMissing])
 	case used > uint64(tr.Load.Seconds)*1_000_000: //nolint:gosec // positive table value
-		return missUnlessSteal(steal, fmt.Sprintf("%d.%03d cores at %d records/s, over 1.0", milli/1000, milli%1000, tr.Load.Rate))
+		return Miss, fmt.Sprintf("%d.%03d cores at %d records/s, over 1.0", milli/1000, milli%1000, tr.Load.Rate)
 	}
 	return Pass, fmt.Sprintf("%d.%03d cores at %d records/s", milli/1000, milli%1000, tr.Load.Rate)
 }

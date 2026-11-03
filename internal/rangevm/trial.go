@@ -56,25 +56,29 @@ const maxStealWindows = 4096
 // stealWindow is one span of FactStealWindows; the digits cap keeps steal*100 far below 2^64.
 var stealWindow = regexp.MustCompile(`^(0|[1-9][0-9]{0,8}):(0|[1-9][0-9]{0,11}):(0|[1-9][0-9]{0,11})$`)
 
-// stealOverMiss is why host steal leaves a MISS of the run unproven (ADR 0057): the first span with more than 1 % of
+// hostSteal is why host steal leaves the run unproven either way (ADR 0057): the first span with more than 1 % of
 // its ticks stolen, of 1 s or more without ticks, or over 2 s, which leaves its seconds unmeasured; "" when none.
-// A series not of that form, with steal over its ticks, too many spans or covering less than the load is an error.
-func stealOverMiss(series string, loadSeconds int) (string, error) {
+// worst is the largest share of steal in any span, in parts per million. A series not of that form, with steal
+// over its ticks, too many spans or covering less than the load is an error.
+func hostSteal(series string, loadSeconds int) (why string, worst uint64, err error) {
 	spans := strings.Split(series, ",")
 	if len(spans) > maxStealWindows {
-		return "", fmt.Errorf("%d steal windows, at most %d", len(spans), maxStealWindows)
+		return "", 0, fmt.Errorf("%d steal windows, at most %d", len(spans), maxStealWindows)
 	}
-	why, covered, bad := "", uint64(0), 0
+	covered, bad := uint64(0), 0
 	for i, span := range spans {
 		m := stealWindow.FindStringSubmatch(span)
 		if m == nil {
-			return "", fmt.Errorf("steal window %d \"%s\" is not ms:total:steal", i, Printable(span, 64))
+			return "", 0, fmt.Errorf("steal window %d \"%s\" is not ms:total:steal", i, Printable(span, 64))
 		}
 		ms, _ := strconv.ParseUint(m[1], 10, 64)
 		total, _ := strconv.ParseUint(m[2], 10, 64)
 		steal, _ := strconv.ParseUint(m[3], 10, 64)
 		if steal > total {
-			return "", fmt.Errorf("steal window %d has %d steal of %d ticks", i, steal, total)
+			return "", 0, fmt.Errorf("steal window %d has %d steal of %d ticks", i, steal, total)
+		}
+		if total > 0 {
+			worst = max(worst, steal*1_000_000/total)
 		}
 		issue := ""
 		switch {
@@ -94,27 +98,19 @@ func stealOverMiss(series string, loadSeconds int) (string, error) {
 		covered += ms
 	}
 	if covered < uint64(loadSeconds)*1000 { //nolint:gosec // positive table value
-		return "", fmt.Errorf("steal windows cover %d ms of a %d s load", covered, loadSeconds)
+		return "", 0, fmt.Errorf("steal windows cover %d ms of a %d s load", covered, loadSeconds)
 	}
 	if bad > 1 {
 		why = fmt.Sprintf("%s; %d of %d spans", why, bad, len(spans))
 	}
-	return why, nil
-}
-
-// missUnlessSteal is a MISS for reason, or INVALID when host steal (stealOverMiss) may have caused it.
-func missUnlessSteal(steal, reason string) (string, string) {
-	if steal != "" {
-		return Invalid, fmt.Sprintf("a MISS under host steal (%s): %s", steal, reason)
-	}
-	return Miss, reason
+	return why, worst, nil
 }
 
 // judgeRate judges a run of rate trial tr. The guest's facts form a closed set, each once, as plain
-// values; anything else, another kernel or a reader that did not see the run's end is INVALID. Loss, a
-// changed audit lost counter, a plugin-queue overflow or a rate not held in every 10 s window is a MISS,
-// so a control, whose reader drops one number, must come out MISS (ADR 0018, point 4), unless host
-// steal may have caused it: then INVALID (ADR 0057).
+// values; anything else, another kernel, a reader that did not see the run's end or host steal in any
+// span (ADR 0057) is INVALID. Loss, a changed audit lost counter, a plugin-queue overflow or a rate not
+// held in every 10 s window is a MISS, so a control, whose reader drops one number, must come out MISS
+// (ADR 0018, point 4).
 func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 	f := map[string]string{}
 	for _, r := range o.Facts {
@@ -138,10 +134,12 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		n[name] = v
 	}
 	planned := uint64(tr.Load.Rate) * uint64(tr.Load.Seconds) //nolint:gosec // positive table values
-	steal, stealErr := stealOverMiss(f[FactStealWindows], tr.Load.Seconds)
+	steal, _, stealErr := hostSteal(f[FactStealWindows], tr.Load.Seconds)
 	switch {
 	case stealErr != nil:
 		return Invalid, stealErr.Error()
+	case steal != "":
+		return Invalid, "host steal: " + steal
 	case f[FactTrial] != tr.Name:
 		return Invalid, "the guest ran another trial"
 	case f[FactKernel] != TargetKernel:
@@ -163,13 +161,13 @@ func judgeRate(tr rangejob.Trial, o Outcome) (verdict, reason string) {
 		n[FactGenerated], n[FactStored], n[FactMissing], n[FactDuplicate], n[FactOutside])
 	switch {
 	case n[FactMissing] > 0 || n[FactDuplicate] > 0 || n[FactOutside] > 0:
-		return missUnlessSteal(steal, loss)
+		return Miss, loss
 	case n[FactLostAfter] != n[FactLostBefore]:
-		return missUnlessSteal(steal, fmt.Sprintf("audit lost %d before, %d after", n[FactLostBefore], n[FactLostAfter]))
+		return Miss, fmt.Sprintf("audit lost %d before, %d after", n[FactLostBefore], n[FactLostAfter])
 	case f[FactOverflowAfter] == "yes":
-		return missUnlessSteal(steal, "the plugin queue overflowed")
+		return Miss, "the plugin queue overflowed"
 	case n[FactGenerated] < planned || n[FactWindowMin] < uint64(tr.Load.Rate)*10: //nolint:gosec // positive table value
-		return missUnlessSteal(steal, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin]))
+		return Miss, fmt.Sprintf("rate not held: generated %d of %d, %d in the slowest 10 s", n[FactGenerated], planned, n[FactWindowMin])
 	}
 	return Pass, loss
 }
@@ -191,6 +189,8 @@ const (
 	MeasureCommitted       = "committed_seq"
 	MeasureExitAfterFail   = "exit_after_fail_us"
 	MeasureKilledAfterFail = "killed_after_fail_us"
+	// MeasureStealWorstPPM is the largest share of steal in any span of a rate or CPU run, in parts per million.
+	MeasureStealWorstPPM = "steal_worst_ppm"
 )
 
 // Measures returns the measures of a run of tr; a count missing, repeated or not a plain number is
@@ -238,6 +238,8 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		alarmMeasures(tr, o, m)
 	case rangejob.MethodLoss:
 		lossMeasures(tr, o, m)
+	case rangejob.MethodRate, rangejob.MethodCPU:
+		stealMeasure(tr, o, m)
 	}
 	if tr.Failure == "" || o.Marks.Fail.IsZero() {
 		return m
@@ -256,6 +258,23 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 	after(MeasureExitAfterFail, o.Marks.Exited)
 	after(MeasureKilledAfterFail, o.Marks.Killed)
 	return m
+}
+
+// stealMeasure keeps a run's worst span of steal, so a result shows how close it came to the limit; a series
+// reported other than once, or not well formed, is left out.
+func stealMeasure(tr rangejob.Trial, o Outcome, m map[string]uint64) {
+	var series []string
+	for _, r := range o.Facts {
+		if r.Name == FactStealWindows {
+			series = append(series, r.Value)
+		}
+	}
+	if len(series) != 1 {
+		return
+	}
+	if _, worst, err := hostSteal(series[0], tr.Load.Seconds); err == nil {
+		m[MeasureStealWorstPPM] = worst
+	}
 }
 
 // Facts of a failure trial (ADR 0018, point 3): after a reset the second boot reports the scratch
