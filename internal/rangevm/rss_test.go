@@ -8,7 +8,7 @@ import (
 )
 
 const rssUnits = "balistid-auditstat.service,balistid-collector.service,balistid-ledger.service,balistid-pi.service," +
-	"balistid-relay.service"
+	"balistid-range-witness-agent.service,balistid-range-witness.service,balistid-relay.service"
 
 // rssRun is a sound report of RSS trial name, its load held, changed by name=value; a name without "=" is left
 // out, an unknown one added.

@@ -105,11 +105,13 @@ func runRSS(ctx context.Context, tr rangejob.Trial, r *report) error {
 }
 
 // longRunning are the services of units, the comma-separated unit files balistidUnits lists, that rss_mib
-// sums: not the range's own and not a oneshot, by the Type typeOf reads.
+// sums: not a oneshot, by the Type typeOf reads, and not the range's own but its litewitness and the agent's
+// stand-in, which local mode puts on the host (ADR 0043).
 func longRunning(units string, typeOf func(string) string) []string {
 	var out []string
 	for _, u := range strings.Split(units, ",") {
-		if strings.HasSuffix(u, ".service") && !strings.HasPrefix(u, "balistid-range-") && typeOf(u) != "oneshot" {
+		ours := !strings.HasPrefix(u, "balistid-range-") || rangevm.RSSUnits()[u]
+		if strings.HasSuffix(u, ".service") && ours && typeOf(u) != "oneshot" {
 			out = append(out, u)
 		}
 	}
