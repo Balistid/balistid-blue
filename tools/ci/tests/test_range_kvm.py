@@ -264,6 +264,71 @@ class FailsClosed(unittest.TestCase):
         self.assertRegex(lines[-2], r"::[0-9a-f]{32}::")
 
 
+class HostLines(unittest.TestCase):
+    """Only the guest's whole marked lines of printable ASCII reach a trial's log, bounded, from the newest run, while
+    workflow commands are off (T30)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.work = Path(self.tmp.name)
+        self.state = self.work / "w" / "state"
+        patch = mock.patch.object(range_kvm, "MIN_FREE", 0)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def run_dir(self, run_id: str, **serials: bytes) -> Path:
+        out = self.state / "balistid-range" / "results" / run_id
+        out.mkdir(parents=True)
+        (out / "result.json").write_text('{"verdict": "INVALID", "reason": "r"}', encoding="utf-8")
+        for name, data in serials.items():
+            (out / name.replace("_", "-").replace("-txt", ".txt")).write_bytes(data)
+        return out
+
+    def test_only_whole_marked_printable_lines(self) -> None:
+        mark = b"balistid-range-guest: host: "
+        self.run_dir("20261103T000000Z-00000000", serial_txt=mark + b"old run\n")
+        self.run_dir("20261103T010000Z-11111111", serial_1_txt=b"\n".join([
+            mark + b"store read: audit idle after 3.2s, <nil>\r",
+            b"[  9.1] kernel: " + mark + b"inside another line",
+            mark + b"caf\xc3\xa9", mark + b"bell\x07", mark + b"x" * 301, mark,
+            b"balistid-range-guest: collector \"x\"",
+            mark + b"loss record seq 7 balistid-loss",
+        ]), serial_2_txt=mark + b"second boot\n")
+        self.assertEqual(range_kvm.host_lines(self.state), [
+            "balistid-range-guest: host: store read: audit idle after 3.2s, <nil>",
+            "balistid-range-guest: host: loss record seq 7 balistid-loss",
+            "balistid-range-guest: host: second boot",
+        ])
+
+    def test_bounded_and_no_planted_link_or_fifo(self) -> None:
+        out = self.run_dir("20261103T010000Z-11111111", serial_txt=b"balistid-range-guest: host: y\n" * 1000)
+        self.assertEqual(len(range_kvm.host_lines(self.state)), range_kvm.HOST_LINES)
+        (out / "serial.txt").unlink()
+        secret = self.work / "secret"
+        secret.write_bytes(b"balistid-range-guest: host: from outside\n")
+        (out / "serial.txt").symlink_to(secret)
+        os.mkfifo(out / "serial-1.txt")
+        self.assertEqual(range_kvm.host_lines(self.state), [])
+        self.assertEqual(range_kvm.host_lines(self.work / "none"), [])
+
+    def test_a_trial_prints_them_while_commands_are_off_a_self_test_does_not(self) -> None:
+        self.run_dir("20261103T010000Z-11111111", serial_txt=b"balistid-range-guest: host: ::error::not a command\n")
+        for argv, shown in ((["--trial", "rate-burst"], True), ([], False)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                range_kvm.main(["--work", str(self.work / "w"), "--repo", str(self.work), *argv], env=HOSTED,
+                               run=Recorder(exit=1), kvm=Path("/dev/null"), sysctl=self.work / "no-sysctl")
+            lines = out.getvalue().splitlines()
+            guest = "guest: balistid-range-guest: host: ::error::not a command"
+            self.assertEqual(guest in lines, shown, lines)
+            if shown:
+                stop = next(i for i, line in enumerate(lines) if line.startswith("::stop-commands::"))
+                resume = next(i for i, line in enumerate(lines) if re.fullmatch(r"::[0-9a-f]{32}::", line))
+                self.assertLess(stop, lines.index(guest))
+                self.assertLess(lines.index(guest), resume)
+
+
 class Workflow(unittest.TestCase):
     def test_job_runs_the_script_with_no_secret_or_write_permission(self) -> None:
         job = ci_job("range-kvm")

@@ -71,23 +71,34 @@ RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 TRIAL_NAME = re.compile(r"[a-z0-9-]{1,32}")
 
 
+def newest_results(state: Path) -> list[Path]:
+    """The result.json of each run the launcher left, oldest first by run id."""
+    return sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json") if RESULT_ID.fullmatch(p.parent.name))
+
+
+def read_regular(path: Path, limit: int) -> bytes | None:
+    """At most limit bytes of path, or None unless it is a regular file: container root can write the state
+    directory, so no symlink and no FIFO."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            return f.read(limit) if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else None
+    except OSError:
+        return None
+
+
 def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpected: bool = False) -> str | None:
     """The newest run's verdict and reason as an ::error:: command, or None when it left none or passed and
     unexpected is false; with unexpected the launcher refused the verdict, so even a control's PASS is shown."""
-    results = sorted(p for p in (state / "balistid-range" / "results").glob("*/result.json")
-                     if RESULT_ID.fullmatch(p.parent.name))
+    results = newest_results(state)
     if not results:
         return None
     unreadable = f"::error title={title}::the result could not be read"
-    # Container root can write the state directory: no symlink, no FIFO, a regular file only.
+    raw = read_regular(results[-1], 1 << 20)
     try:
-        fd = os.open(results[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as f:
-            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
-                return unreadable
-            data = json.loads(f.read(1 << 20))
-    except (OSError, ValueError):
-        return unreadable
+        data = json.loads(raw) if raw is not None else None
+    except ValueError:
+        data = None
     if not isinstance(data, dict):
         return unreadable
     verdict, reason = data.get("verdict"), data.get("reason")
@@ -95,6 +106,35 @@ def verdict_annotation(state: Path, title: str = "range-kvm self-test", unexpect
         return None
     text = f"{verdict}: {reason}"[:ANNOTATION_MAX]
     return f"::error title={title}::" + text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+
+# A guest line marked for the host (cmd/balistid-range-guest hostLine): the marker, then printable ASCII only. Guest
+# output is hostile (T30): only whole lines that match are shown, at most HOST_LINES of them from at most SERIAL_MAX
+# bytes of each of the newest run's serial logs, printed while workflow commands are off, never interpreted.
+HOST_LINE = re.compile(r"balistid-range-guest: host: [ -~]{1,300}")
+HOST_LINES = 400
+SERIAL_MAX = 16 << 20
+SERIAL_NAME = re.compile(r"serial(-[0-9]{1,2})?\.txt")
+
+
+def host_lines(state: Path) -> list[str]:
+    """The guest's host lines in the newest run's serial logs, in boot order."""
+    results = newest_results(state)
+    if not results:
+        return []
+    out: list[str] = []
+    try:
+        logs = sorted(p for p in results[-1].parent.iterdir() if SERIAL_NAME.fullmatch(p.name))
+    except OSError:
+        return ["(the run's serial logs could not be listed)"]
+    for p in logs:
+        for raw in (read_regular(p, SERIAL_MAX) or b"").split(b"\n"):
+            line = raw.rstrip(b"\r").decode("ascii", "replace")
+            if HOST_LINE.fullmatch(line):
+                out.append(line)
+                if len(out) == HOST_LINES:
+                    return out
+    return out
 
 
 class RangeError(Exception):
@@ -191,6 +231,9 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
     print(f"::stop-commands::{token}", flush=True)
     try:
         done = run(docker_argv(args.repo.resolve(), state.resolve(), cache.resolve(), os.getuid(), trial), check=False)
+        if trial:
+            for line in host_lines(state):
+                print(f"guest: {line}", flush=True)
     finally:
         # On a line of its own: the runner resumes commands only on a line that starts with "::".
         print(f"\n::{token}::", flush=True)
