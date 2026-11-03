@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -104,7 +105,12 @@ func judgeRSS(tr rangejob.Trial, o Outcome) (string, string) {
 		misses = append(misses, fmt.Sprintf("%d KiB resident at most and %d KiB of the shipped collector's larger queue, over %d",
 			peak, queueKiB, rssLimitKiB))
 	}
-	if len(misses) > 0 {
+	switch {
+	case tr.Inject == rangejob.InjectOOM && n[FactRSSOOM] == 0:
+		// The OOM control proves only the OOM path: a peak over the limit without an OOM event shows nothing of it.
+		bad("the OOM injection showed no OOM event: %s", cmp.Or(strings.Join(misses, "; "), "no MISS"))
+		return Invalid, strings.Join(unproven, "; ")
+	case len(misses) > 0:
 		return Miss, strings.Join(misses, "; ")
 	}
 	rssUnproven(tr, f, n, bad)

@@ -121,7 +121,8 @@ func TestMeasuresOfAnRSSTrial(t *testing.T) {
 	}
 }
 
-// The OOM control gives its expected MISS through rss_oom alone, and a run without the event fails the control.
+// The OOM control gives its expected MISS only through rss_oom: a run without the event, even one over the limit,
+// is INVALID and so fails the control.
 func TestOOMControlMissesOnlyByItsOOM(t *testing.T) {
 	tr := trial(t, "rss-oom-control")
 	if ExpectedVerdict(tr) != Miss {
@@ -129,8 +130,11 @@ func TestOOMControlMissesOnlyByItsOOM(t *testing.T) {
 	}
 	run := func(change ...string) Outcome { return rssRun(t, "rss-oom-control", change...) }
 	for change, want := range map[string]string{
-		"rss_oom=2": Miss, "rss_oom=1,units=balistid-ledger.service: restarted": Miss, "": Pass,
-		"units=balistid-ledger.service: restarted": Invalid,
+		"rss_oom=2": Miss, "rss_oom=1,units=balistid-ledger.service: restarted": Miss,
+		"rss_oom=1,rss_max_kib=300000": Miss,
+		// Without an OOM event the injection proved nothing: a clean run, a restart or a peak over the limit alone.
+		"": Invalid, "units=balistid-ledger.service: restarted": Invalid, "rss_max_kib=300000": Invalid,
+		"rss_hwm_kib=300000,units=balistid-ledger.service: restarted": Invalid, "rss_oom=x": Invalid,
 	} {
 		if v, r := JudgeTrial(tr, run(strings.Split(change, ",")...), cleanBuild, cleanBuild); v != want {
 			t.Errorf("%q: %s (%s), want %s", change, v, r, want)
