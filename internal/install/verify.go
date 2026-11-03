@@ -47,9 +47,8 @@ const (
 	sigName     = "MANIFEST.sig"
 	signersName = "allowed_signers"
 	signersDir  = "etc/balistid"
-	// maxSigBytes keeps the signature, like allowed_signers, within one pipe buffer (64 KiB on Linux), so both
-	// are written before ssh-keygen starts and nothing waits on it.
-	maxSigBytes = 16 << 10
+	// maxSigBytes is about ten times an armored ed25519-sk signature, and the bootstrap's cap (release.py SIG_MAX_BYTES).
+	maxSigBytes = 4 << 10
 )
 
 // fingerprintForm is the form ssh-keygen prints a key's SHA256 fingerprint in.
@@ -232,31 +231,47 @@ func ownedAs(fi fs.FileInfo, uid, gid int, mode fs.FileMode) error {
 func verifySignature(ctx context.Context, cfg Config, signer Signer, manifest, sig []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, cfg.VerifyTimeout)
 	defer cancel()
-	var extra []*os.File
+	var readers, writers []*os.File
 	defer func() {
-		for _, f := range extra {
-			_ = f.Close()
+		for _, f := range slices.Concat(readers, writers) {
+			_ = f.Close() // closing twice only reports os.ErrClosed
 		}
 	}()
-	for _, data := range [][]byte{signer.Line, sig} {
+	for range 2 {
 		r, w, err := os.Pipe()
 		if err != nil {
 			return fmt.Errorf("ssh-keygen: %w", err)
 		}
-		extra = append(extra, r)
-		_, werr := w.Write(data)
-		if err := errors.Join(werr, w.Close()); err != nil {
-			return fmt.Errorf("ssh-keygen: %w", err)
-		}
+		readers, writers = append(readers, r), append(writers, w)
 	}
 	cmd := exec.CommandContext(ctx, cfg.SSHKeygen, "-Y", "verify", "-f", "/dev/fd/3", "-I", Principal, //nolint:gosec // a fixed binary and argv
 		"-n", Namespace, "-s", "/dev/fd/4")
 	cmd.Env = []string{"LC_ALL=C"}
 	cmd.Stdin = bytes.NewReader(manifest)
-	cmd.ExtraFiles = extra
+	cmd.ExtraFiles = readers
 	cmd.WaitDelay = time.Second
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("the signature does not verify: ssh-keygen: %w", err)
+	}
+	// A pipe can hold less than the input when the uid's pipe budget is spent, so ssh-keygen must already read it;
+	// once it exits or is killed, a blocked write fails and its goroutine ends.
+	for _, r := range readers {
+		_ = r.Close()
+	}
+	written := make(chan error, len(writers))
+	for i, data := range [][]byte{signer.Line, sig} {
+		go func() {
+			_, err := writers[i].Write(data)
+			written <- errors.Join(err, writers[i].Close())
+		}()
+	}
+	err := cmd.Wait()
+	werr := errors.Join(<-written, <-written)
+	if err != nil {
+		return fmt.Errorf("the signature does not verify: ssh-keygen: %w", err)
+	}
+	if werr != nil {
+		return fmt.Errorf("the signature does not verify: writing to ssh-keygen: %w", werr)
 	}
 	return checkSSHSIG(signer, manifest, sig)
 }
