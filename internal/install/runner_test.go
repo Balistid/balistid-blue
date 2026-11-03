@@ -117,7 +117,7 @@ func (s *fakeSystem) lookupGroup(name string) (int, error) {
 	return s.gid, nil
 }
 
-func (s *fakeSystem) log(_ context.Context, line string) { s.logs = append(s.logs, line) }
+func (s *fakeSystem) log(_ context.Context, d Decision) { s.logs = append(s.logs, d.Line()) }
 
 // install runs Runner on the fake host, the root first recorded so that a check seeing a write shows.
 func (h *fakeHost) install(t *testing.T, s *fakeSystem, maintainer, fingerprint string) error {
@@ -139,7 +139,7 @@ func (h *fakeHost) refusedRun(t *testing.T, s *fakeSystem, label, maintainer, fi
 	if len(s.cmds) != 0 {
 		t.Errorf("%s: ran %q", label, s.cmds)
 	}
-	if len(s.logs) != 1 || !strings.HasPrefix(s.logs[0], "balistid-install refused component=runner") {
+	if len(s.logs) != 1 || !strings.HasPrefix(s.logs[0], "balistid-install schema_version=1 outcome=refused component=runner") {
 		t.Errorf("%s: logged %q", label, s.logs)
 	}
 }
@@ -192,8 +192,8 @@ func TestRunnerInstallsExactlyTheRunner(t *testing.T) {
 	}
 	m := manifestOf(files)
 	sum := sha256.Sum256(m)
-	if want := fmt.Sprintf("balistid-install installed component=runner commit=%s manifest_sha256=%s signer=%s version=dev",
-		testCommit, hex.EncodeToString(sum[:]), h.key.fingerprint(t)); !slices.Equal(s.logs, []string{want}) {
+	if want := fmt.Sprintf("balistid-install schema_version=1 outcome=installed component=runner commit=%s "+
+		"manifest_sha256=%s signer=%s version=dev reason=\"\"", testCommit, hex.EncodeToString(sum[:]), h.key.fingerprint(t)); !slices.Equal(s.logs, []string{want}) {
 		t.Fatalf("logged %q, want %q", s.logs, want)
 	}
 }
@@ -388,7 +388,7 @@ func TestRunnerStopsOnAUnitSeenOnlyAfterTheReload(t *testing.T) {
 			if err := h.install(t, s, maint, ""); err == nil || !strings.Contains(err.Error(), "step check after the reload") {
 				t.Fatalf("%s %s: %v", u, prop, err)
 			}
-			if !slices.Equal(s.cmds, wantCmds) || len(s.logs) != 1 || !strings.HasPrefix(s.logs[0], "balistid-install stopped") {
+			if !slices.Equal(s.cmds, wantCmds) || len(s.logs) != 1 || !strings.HasPrefix(s.logs[0], "balistid-install schema_version=1 outcome=stopped") {
 				t.Fatalf("%s %s: ran %q, logged %q", u, prop, s.cmds, s.logs)
 			}
 			if _, err := os.Lstat(filepath.Join(h.cfg.Root, "usr/local/lib/balistid/balistid-install")); !errors.Is(err, fs.ErrNotExist) {
@@ -403,7 +403,7 @@ func TestRunnerLogsAFailedStep(t *testing.T) {
 	h, s := newRunnerHost(t)
 	s.failCmd = "systemd-sysusers"
 	err := h.install(t, s, maint, "")
-	if err == nil || len(s.logs) != 1 || !strings.Contains(s.logs[0], `stopped`) ||
+	if err == nil || len(s.logs) != 1 || !strings.Contains(s.logs[0], `outcome=stopped`) ||
 		!strings.Contains(s.logs[0], `reason="step systemd-sysusers: exit status 1"`) {
 		t.Fatalf("%v, logged %q", err, s.logs)
 	}
@@ -526,5 +526,23 @@ func TestRunnerRefusesATmpfilesLineItCannotCheck(t *testing.T) {
 		m := manifestOf(files)
 		h.publish(t, files, m, h.key.sign(t, m, Namespace))
 		h.refusedRun(t, s, line, maint, "", "tmpfiles.conf: line 10")
+	}
+}
+
+// The decision is a record: schema_version first, then fixed fields, for slog as attributes and for the journal as
+// one line whose values cannot split it.
+func TestDecisionIsARecordWithItsSchema(t *testing.T) {
+	d := Decision{Outcome: "refused", Component: "runner", Version: "dev", Reason: "bad maintainer name"}
+	var keys []string
+	for _, a := range d.Attrs() {
+		keys = append(keys, a.Key)
+	}
+	want := []string{"schema_version", "outcome", "component", "commit", "manifest_sha256", "signer", "version", "reason"}
+	if !slices.Equal(keys, want) || d.Attrs()[0].Value.Int64() != 1 {
+		t.Fatalf("attributes %v", d.Attrs())
+	}
+	d.Reason = "a\nb=\"c\" d"
+	if line := d.Line(); strings.Count(line, "\n") != 0 || !strings.HasSuffix(line, ` reason="a\nb=\"c\" d"`) {
+		t.Fatalf("line %q", line)
 	}
 }
