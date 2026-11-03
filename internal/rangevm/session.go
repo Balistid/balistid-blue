@@ -165,11 +165,12 @@ type buildConfig struct {
 	afterCap    func(stage string) // a test seam: runs after the cap, before go build
 	afterTree   func(tree string)  // a test seam: runs once the tree mkosi copies into the image is complete
 	programs    []imageProgram
+	mkosiPauses []time.Duration // after each failed mkosi try but the last: their count+1 bounds the tries
 }
 
 func defaultBuild() buildConfig {
 	return buildConfig{copyTimeout: fetchTimeout, proxy: moduleProxy, moduleCache: maxModuleCache,
-		programs: slices.Concat(guestPrograms, witnessPrograms)}
+		programs: slices.Concat(guestPrograms, witnessPrograms), mkosiPauses: []time.Duration{30 * time.Second, time.Minute}}
 }
 
 // BuildCommit is Build for a commit named by the caller instead of the launcher's VCS stamp: the
@@ -276,22 +277,21 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("makepkg laurel: %w", err)
 	}
 
-	built, err := os.MkdirTemp(cache, "build-")
+	built, err := buildImage(ctx, cache, stage, cfg.mkosiPauses, log, func(try, built string) error {
+		mkosi := mkosiCommand(tool, stage, try, built)
+		// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
+		// and the next invocation never sweeps a build directory mkosi still writes.
+		mkosi.ExtraFiles = []*os.File{held}
+		return mkosi.Run()
+	})
 	if err != nil {
-		return "", fmt.Errorf("build directory: %w", err)
+		return "", err
 	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, removeDir(built))
 		}
 	}()
-	mkosi := mkosiCommand(tool, stage, built)
-	// mkosi inherits the lock, so it stays held while mkosi runs even if this process is killed
-	// and the next invocation never sweeps a build directory mkosi still writes.
-	mkosi.ExtraFiles = []*os.File{held}
-	if err := mkosi.Run(); err != nil {
-		return "", fmt.Errorf("mkosi: %w", err)
-	}
 	if err := wholefile.Write(filepath.Join(built, "commit"), []byte(commit+"\n"), 0o600); err != nil {
 		return "", fmt.Errorf("image commit: %w", err)
 	}
@@ -308,6 +308,42 @@ func buildCommit(ctx context.Context, root, cache string, log io.Writer, commit 
 		return "", fmt.Errorf("store image: %w", err)
 	}
 	return filepath.Join(dest, "image.raw"), prune(images, keepImages)
+}
+
+// buildImage runs mkosi (run, with a try's directory and its output directory) until it succeeds, at most
+// len(pauses)+1 times, pausing pauses[i] after failed try i+1, and returns the output directory of the try that
+// built the image. archive.archlinux.org, where mkosi downloads the snapshot's packages, often stalls or times
+// out. Each try gets a fresh output directory below cache and a fresh workspace and package cache in its own
+// directory of the stage, and a failed try's are removed: no try reads what another downloaded (ADR 0010). Only
+// mkosi is tried again, never the export, the Go or Laurel build, a boot or a trial; log names each failure.
+func buildImage(ctx context.Context, cache, stage string, pauses []time.Duration, log io.Writer, run func(try, built string) error) (string, error) {
+	for n := 1; ; n++ {
+		try := filepath.Join(stage, "mkosi-"+strconv.Itoa(n))
+		if err := errors.Join(os.Mkdir(try, 0o700), os.Mkdir(filepath.Join(try, "workspace"), 0o700),
+			os.Mkdir(filepath.Join(try, "pkgcache"), 0o700)); err != nil {
+			return "", fmt.Errorf("mkosi directories: %w", err)
+		}
+		built, err := os.MkdirTemp(cache, "build-")
+		if err != nil {
+			return "", fmt.Errorf("build directory: %w", err)
+		}
+		runErr := run(try, built)
+		if runErr == nil {
+			return built, nil
+		}
+		err = errors.Join(fmt.Errorf("mkosi: %w", runErr), removeDir(built), removeDir(try))
+		if n > len(pauses) || ctx.Err() != nil {
+			return "", errors.Join(err, ctx.Err())
+		}
+		_, _ = fmt.Fprintf(log, "balistid-range: mkosi try %d of %d failed, again in %s: %v\n", n, len(pauses)+1, pauses[n-1], err)
+		t := time.NewTimer(pauses[n-1])
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return "", errors.Join(err, ctx.Err())
+		case <-t.C:
+		}
+	}
 }
 
 // maxGoModJSON caps what `go mod edit -json` may print for the export's go.mod.
@@ -406,7 +442,7 @@ func refusePathReplace(tool toolFunc, src string) error {
 }
 
 // stageDirs are created in every build's stage before any tool runs.
-var stageDirs = []string{"home", "src", "src-pkg", "build", "log", "pkg", "tmp", "mkosi-workspace", "mkosi-pkgcache"}
+var stageDirs = []string{"home", "src", "src-pkg", "build", "log", "pkg", "tmp"}
 
 // prepareStage creates stageDirs in stage and turns the go command's telemetry off in the stage's
 // HOME. Left at its default, go starts a detached sidecar that outlives the build and writes below
@@ -427,15 +463,16 @@ func prepareStage(stage string) error {
 	return nil
 }
 
-// mkosiCommand builds the image from the export in stage into built. mkosi's defaults are /var/tmp
-// for the workspace (shared on the host for the maintainer, T34) and, at a system uid, /var/cache
-// for packages (read-only under the runner's ProtectSystem=strict).
-func mkosiCommand(tool toolFunc, stage, built string) *exec.Cmd {
+// mkosiCommand builds the image from the export in stage into built, with its workspace and package
+// cache in try, the build try's own directory in the stage (mkosiTryDirs). mkosi's defaults are
+// /var/tmp for the workspace (shared on the host for the maintainer, T34) and, at a system uid,
+// /var/cache for packages (read-only under the runner's ProtectSystem=strict).
+func mkosiCommand(tool toolFunc, stage, try, built string) *exec.Cmd {
 	src := filepath.Join(stage, "src")
 	cmd := tool(src, "/usr/bin/mkosi", "--directory="+filepath.Join(src, "range"), "--extra-tree="+filepath.Join(stage, "tree"),
 		"--package-directory="+filepath.Join(stage, "pkg"), "--output-directory="+built,
-		"--workspace-directory="+filepath.Join(stage, "mkosi-workspace"),
-		"--package-cache-directory="+filepath.Join(stage, "mkosi-pkgcache"), "build")
+		"--workspace-directory="+filepath.Join(try, "workspace"),
+		"--package-cache-directory="+filepath.Join(try, "pkgcache"), "build")
 	// One uid mapped: no foreign or delegated uid ranges, and ForeignUIDRange=yes fails the build
 	// instead of leaving output that the sweep and prune could never remove.
 	cmd.Env = append(cmd.Env, "MKOSI_FORCE_USERNS_FALLBACK=1")
