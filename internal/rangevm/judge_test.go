@@ -40,7 +40,7 @@ func report(tr rangejob.Trial, change ...string) Outcome {
 		FactTrial: tr.Name, FactPhase: "1", FactKernel: TargetKernel,
 		FactGenerated: planned, FactWindowMin: strconv.Itoa(tr.Load.Rate * 10), FactLostBefore: "0", FactLostAfter: "0",
 		FactOverflowBefore: "no", FactOverflowAfter: "no", FactCPUTicks: "10000", FactStealTicks: "100", FactFollow: "ok",
-		FactDrainCPU: "5000", FactDrainSteal: "50", FactDrainParts: "3000:30;2000:20",
+		FactDrainCPU: "5000", FactDrainSteal: "50",
 		FactStored: planned, FactMissing: "0", FactDuplicate: "0", FactOutside: "0",
 		FactCollectorUS: "9000000", FactCollectorMem: "unknown",
 	}
@@ -63,7 +63,6 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 		t.Fatalf("clean run: %s (%s); want PASS", v, r)
 	}
 	cases := map[string][]string{
-		Pass: {"drain_parts=5000:50", "drain_parts=4000:40;1000:10", "drain_parts=2500:25;2500:25", "drain_parts=4900:49;100:1"},
 		Miss: {
 			"missing=1,stored=1199999", "duplicate=1", "outside=1", "audit_lost_after=1", "overflow_after=yes",
 			"window_min=19999", "generated=1199999,stored=1199999,window_min=19999",
@@ -78,16 +77,8 @@ func TestJudgeTrialPassesOnlyACompleteRun(t *testing.T) {
 			"stored=18446744073709551615,missing=1200001",
 			"stored=1200001,missing=0",
 			"audit_lost_before=10,audit_lost_after=0",
-			// The drain's parts: each with ticks, no more steal than ticks, at most 1 %, adding up to the totals.
-			"drain_parts=3000:31;2000:19", "drain_parts=3000:30;2000:21,drain_steal_ticks=51", "drain_parts=3000:30",
-			"drain_parts=0:0;5000:50", "drain_parts=0:1;5000:49", "drain_parts=", "drain_parts=x",
-			"drain_parts=3000:30;2000", "drain_parts=3000:30;2000:20;", "drain_parts=3000:30;2000:x", "drain_parts=3000:30;2000:020",
-			"drain_parts=1:2;4999:48", "drain_steal_ticks=51", "drain_cpu_ticks=5001",
-			"drain_cpu_ticks=2000000000000,drain_parts=1999999997000:30;3000:20",
-			"drain_parts=1:0;1:0;1:0;1:0;1:0;1:0;1:0;1:0;4992:50",
-			// A drain without ticks but with steal; one part at 2 % diluted by the others.
-			"drain_cpu_ticks=0,drain_steal_ticks=1,drain_parts=0:1", "drain_cpu_ticks=0,drain_steal_ticks=0,drain_parts=0:0",
-			"drain_cpu_ticks=10200,drain_steal_ticks=2,drain_parts=100:2;100:0;10000:0",
+			"drain_steal_ticks=51",
+			"drain_cpu_ticks=0,drain_steal_ticks=1",
 		},
 	}
 	for want, changes := range cases {
@@ -227,15 +218,5 @@ func TestTrialLabelIsNeverBaseline(t *testing.T) {
 		if got := TrialLabel(tr); got != want {
 			t.Errorf("%s: label %q, want %q", tr.Name, got, want)
 		}
-	}
-}
-
-// A rate trial's measures keep the whole drain's ticks; its parts are judged, never a measure.
-func TestRateMeasuresKeepTheWholeDrain(t *testing.T) {
-	tr := trial(t, "rate-burst")
-	m := Measures(tr, report(tr))
-	_, parts := m[FactDrainParts]
-	if m[FactDrainCPU] != 5000 || m[FactDrainSteal] != 50 || parts {
-		t.Errorf("measures %v", m)
 	}
 }
