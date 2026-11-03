@@ -4,8 +4,11 @@ and the first-install command that runs only an installer the typed key's signat
 
 from __future__ import annotations
 
+import bz2
 import concurrent.futures
+import gzip
 import hashlib
+import lzma
 import os
 import re
 import shlex
@@ -199,6 +202,9 @@ class ManifestTest(unittest.TestCase):
         self.assertIn(f'signersName = "{release.SIGNERS}"', verify)
         self.assertIn("maxSigBytes = 4 << 10", verify)
         self.assertEqual(release.SIG_MAX_BYTES, 4 << 10)
+        self.assertIn(f"maxSignersBytes = {release.SIGNERS_MAX_BYTES}", (REPO / "internal/install/signers.go").read_text())
+        self.assertIn("const MaxManifestBytes = 64 << 10", (REPO / "internal/install/manifest.go").read_text())
+        self.assertEqual(release.MANIFEST_MAX_BYTES, 64 << 10)
         bundle = go_code((REPO / "internal/install/bundle.go").read_text())
         self.assertIn(f"MaxBundleBytes = {release.BUNDLE_MAX_MIB} << 20", bundle)
 
@@ -325,7 +331,8 @@ class BootstrapTest(unittest.TestCase):
         self.stubs = self.tmp / "stubs"
         self.stubs.mkdir()
         for name, body in (("runuser", 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'),
-                           ("logger", ":"), ("tar", '/usr/bin/tar "$@"'), ("id", "echo 1000")):
+                           ("logger", ":"), ("tar", '/usr/bin/tar "$@"'), ("head", '/usr/bin/head "$@"'),
+                           ("id", "echo 1000")):
             (self.stubs / name).write_text(f'#!/bin/sh\necho "{name} $*" >> {self.log}\n{body}\n')
             (self.stubs / name).chmod(0o755)
 
@@ -349,8 +356,10 @@ class BootstrapTest(unittest.TestCase):
         (self.tmp / "signers").write_text(signers or self.key.signers)
         out = subprocess.run([sys.executable, str(REPO / "tools/ci/release.py"), "bootstrap", "--signers",
                               str(self.tmp / "signers")], capture_output=True, text=True, check=True).stdout.splitlines()
-        self.assertEqual(len(out), 5)
-        argv = shlex.split(out[4])
+        self.assertEqual(len(out), 6)
+        self.assertIn("README.md and", out[1])
+        self.assertIn("balistid.dev", out[2])
+        argv = shlex.split(out[5])
         self.assertEqual(argv[:3], ["/usr/bin/env", "-i", f"PATH={release.ROOT_PATH}"])
         return [*argv[:2], f"PATH={self.stubs}:{release.ROOT_PATH}", *argv[3:]]
 
@@ -362,10 +371,11 @@ class BootstrapTest(unittest.TestCase):
     def logged(self, name: str) -> list[str]:
         return [line for line in self.log.read_text().splitlines() if line.startswith(name + " ")]
 
-    def assert_ran_nothing(self, r: subprocess.CompletedProcess, unsigned: bool = True):
+    def assert_ran_nothing(self, r: subprocess.CompletedProcess, mismatch: bool = False):
+        """mismatch: ssh-keygen verified, but with a key other than the typed one."""
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(self.mark.exists(), "an installer ran")
-        want = ["logger -s -t balistid-install the manifest is not signed by the typed key"] if unsigned else []
+        want = ["logger -s -t balistid-install the manifest is not signed by the typed key"] if mismatch else []
         want.append(f"logger -s -t balistid-install bootstrap stopped, status {r.returncode}")
         self.assertEqual(self.logged("logger"), want)
         self.log.write_text("")
@@ -382,20 +392,23 @@ class BootstrapTest(unittest.TestCase):
         self.assertFalse(Path(copy).exists(), "the root-only copy outlived the bootstrap")
         self.assertEqual(self.logged("runuser"), [f"runuser -u maint -- cat -- {self.stage}/{release.BUNDLE}",
                                                   f"runuser -u maint -- cat -- {self.stage}/{release.SIG}"])
-        self.assertEqual(self.logged("tar"), [f"tar -xOf {copy}/{release.BUNDLE} {m}"
-                                              for m in (release.SIGNERS, "MANIFEST", release.INSTALLER)])
+        self.assertEqual(self.logged("tar"), [f"tar -xO {m}" for m in (release.SIGNERS, "MANIFEST", release.INSTALLER)])
+        cap = release.BUNDLE_MAX_MIB << 20
+        self.assertEqual(self.logged("head"), [f"head -c {n}" for n in (cap, release.SIG_MAX_BYTES,
+                                                                         release.SIGNERS_MAX_BYTES,
+                                                                         release.MANIFEST_MAX_BYTES, cap)])
         self.assertEqual(self.logged("logger"), [])
 
     def test_another_signer_runs_nothing(self):
         other = Key(self.subdir("other-key"))
-        for label, stage in (("its own key listed", self.release(other, other, "own")),
-                             ("the maintainer's key listed", self.release(other, self.key, "listed"))):
+        for label, stage, mismatch in (("its own key listed", self.release(other, other, "own"), True),
+                                       ("the maintainer's key listed", self.release(other, self.key, "listed"), False)):
             with self.subTest(label):
-                self.assert_ran_nothing(self.run_bootstrap(str(stage)))
+                self.assert_ran_nothing(self.run_bootstrap(str(stage)), mismatch)
 
     def test_another_typed_fingerprint_runs_nothing(self):
         other = Key(self.subdir("other-key"))
-        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), self.printed(other.signers)))
+        self.assert_ran_nothing(self.run_bootstrap(str(self.stage), self.printed(other.signers)), mismatch=True)
 
     def test_another_namespace_runs_nothing(self):
         stage = self.release(self.key, self.key, "file-ns", namespace="file")
@@ -411,6 +424,46 @@ class BootstrapTest(unittest.TestCase):
         self.bundle.unlink()
         release.bundle(files, self.bundle)
         self.assert_ran_nothing(self.run_bootstrap(str(self.stage)))
+
+    # A verifier that prints the right line and then fails is a failure: its exit status gates, not only its output.
+    def test_a_verifier_that_fails_after_saying_good_runs_nothing(self):
+        (self.stubs / "ssh-keygen").write_text('#!/bin/sh\n/usr/bin/ssh-keygen "$@"\nexit 7\n')
+        (self.stubs / "ssh-keygen").chmod(0o755)
+        r = self.run_bootstrap(str(self.stage))
+        self.assertEqual(r.returncode, 7)
+        self.assertFalse(self.mark.exists())
+
+    # tar reads the bundle on stdin: a compressed bundle is refused, never handed to a decompressor as root.
+    def test_a_compressed_bundle_runs_no_decompressor(self):
+        data = self.bundle.read_bytes()
+        for name, packed in (("gzip", gzip.compress(data)), ("bzip2", bz2.compress(data)), ("xz", lzma.compress(data))):
+            with self.subTest(name):
+                for tool in ("gzip", "bzip2", "xz", "zstd", "lzip", "lzma", "lzop", "compress", "uncompress"):
+                    (self.stubs / tool).write_text(f'#!/bin/sh\necho "decompressor {tool} $*" >> {self.log}\nexit 1\n')
+                    (self.stubs / tool).chmod(0o755)
+                self.bundle.write_bytes(packed)
+                r = self.run_bootstrap(str(self.stage))
+                self.assertEqual(self.logged("decompressor"), [])
+                self.assert_ran_nothing(r)
+
+    # Only a 64-hex digest names what runs: a signed MANIFEST whose installer line holds a path runs nothing outside.
+    def test_a_signed_manifest_naming_a_path_runs_nothing(self):
+        outside = Path(tempfile.mkdtemp(dir="/tmp", prefix="balistid-test-"))
+        self.addCleanup(shutil.rmtree, outside)
+        hit = self.tmp / "executed"
+        (outside / "evil").write_text(f"#!/bin/sh\ntouch {hit}\n")
+        (outside / "evil").chmod(0o755)
+        files = self.tmp / "stage-work" / "files"
+        text = re.sub(r"(?m)^[0-9a-f]{64}(  balistid-install)$", rf"../{outside.name}/evil\1", (files / "MANIFEST").read_text())
+        self.assertIn(f"../{outside.name}/evil  balistid-install", text)
+        (files / "MANIFEST").write_text(text)
+        self.bundle.unlink()
+        release.bundle(files, self.bundle)
+        self.key.sign(files / "MANIFEST", self.stage / release.SIG)
+        r = self.run_bootstrap(str(self.stage))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(hit.exists(), "a file the MANIFEST named by path ran")
+        self.assertFalse(self.mark.exists())
 
     # The signature binds the MANIFEST; an installer that is not the one it names never runs, signed or not.
     def test_another_installer_under_a_good_signature_runs_nothing(self):
@@ -440,7 +493,7 @@ class BootstrapTest(unittest.TestCase):
         other = Key(self.subdir("other-key"))
         env = {"PATH": f"{self.tmp}:{os.environ['PATH']}", "TMPDIR": str(tmpdir),
                "BASH_FUNC_ssh-keygen%%": f"() {{ {good}; }}"}
-        self.assert_ran_nothing(self.run_bootstrap(str(self.release(other, other, "env")), env=env))
+        self.assert_ran_nothing(self.run_bootstrap(str(self.release(other, other, "env")), env=env), mismatch=True)
         self.assertEqual(list(tmpdir.iterdir()), [])
 
     def test_a_fifo_does_not_hang_the_root_shell(self):
