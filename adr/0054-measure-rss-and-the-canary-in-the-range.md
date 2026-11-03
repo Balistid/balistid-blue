@@ -46,9 +46,9 @@ its MemoryMax is restarted by systemd, which read as INVALID and was rerun. A ca
 
 ## Consequences
 
-- VmHWM sums peaks that need not coincide, an upper bound. The queue correction is an approximation, not one: it
-  counts the shipped queue's bytes, while the Go heap can hold up to twice them (GOGC 100) below the collector's
-  192 MiB soft limit.
+- VmHWM sums peaks that need not coincide, an upper bound. The queue correction is an approximation, not an upper
+  bound: it counts the shipped queue's bytes, while the Go heap can hold up to twice them (GOGC 100) below the
+  collector's 192 MiB soft limit.
 - rss-large at 1/s drives Laurel at half its ~4 MB/s, below the collector's worst case: 2/s measured about 126 MB
   (67b19f2) against 122-124 MB at 1/s. An overflow stays INVALID: dropped records leave the load that reached the
   recorder unknown, and no count of the load's records after the dispatcher shows how much it was.
