@@ -236,7 +236,10 @@ func TestCheckFirstInstallTrustsOnlyTheTypedFingerprint(t *testing.T) {
 	h := newHost(t)
 	h.release(t)
 	fp := h.key.fingerprint(t)
-	h.refuses(t, "a key is installed", fp, "already installed")
+	if _, err := Check(t.Context(), h.cfg, h.dir, fp); err != nil {
+		t.Fatalf("the same key installed: %v", err)
+	}
+	h.refuses(t, "another fingerprint, the key installed", newKey(t).fingerprint(t), "installed key does not have")
 	must(t, os.Remove(filepath.Join(h.cfg.Root, "etc/balistid/allowed_signers")))
 	if _, err := Check(t.Context(), h.cfg, h.dir, fp); err != nil {
 		t.Fatalf("first install: %v", err)
