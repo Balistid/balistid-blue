@@ -40,6 +40,9 @@ type StoreRead struct {
 	// Scratch takes shard.Read's copy of each shard, never on the store's disk: a full-fs trial fills it.
 	Scratch   shard.Scratch
 	Collector Collector
+	// Idle returns once the stages before Laurel hold nothing of the run, so the barrier queues behind
+	// nothing the read would have to wait out (AuditIdle), or why not.
+	Idle func(ctx context.Context) error
 	// Mark execs /usr/bin/true with token as its one argument: the barrier.
 	Mark  func(ctx context.Context, token string) error
 	Clock Clock
@@ -52,13 +55,20 @@ type StoreRead struct {
 // its Laurel lines, and the rest of the stopped run at its stop, so what happened before the barrier
 // can be stored behind it. It reads only sealed shards (store.ReadSeals, shard.Read; never
 // store.Open): it execs the barrier, waits at most wait until the commit line moved and then stayed
-// for Settle, and stops the collector once. A barrier not in the shards sealed then is
+// for Settle, and stops the collector once; first it waits for Idle, as a barrier behind records still in
+// auditd's queue may come later than the commit line settles. A barrier not in the shards sealed then is
 // ErrBarrierMissing: a second stop would lose what Laurel had sent and not been read (T25). Only
 // shards a newer collector run is writing may be beside the seals: unindexed shards above the last
 // seal, their sidecars and a torn last index line; a sidecar beside a seal is an error.
 func (sr StoreRead) Read(ctx context.Context, wait time.Duration, before, after func(rawrecord.Record) error) error {
-	if sr.Settle <= 0 || sr.Poll <= 0 {
+	switch {
+	case sr.Settle <= 0 || sr.Poll <= 0:
 		return errors.New("store read: settle and poll must be positive")
+	case sr.Idle == nil:
+		return errors.New("store read: no wait for an idle audit")
+	}
+	if err := sr.Idle(ctx); err != nil {
+		return fmt.Errorf("store read: %w", err)
 	}
 	if after == nil {
 		after = func(rawrecord.Record) error { return nil }

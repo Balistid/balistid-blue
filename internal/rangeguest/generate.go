@@ -170,24 +170,24 @@ func TickDelta(before, after string) (total, steal uint64, err error) {
 	return t1 - t0, s1 - s0, nil
 }
 
-// FreshState reads auditd's plugin-queue overflow flag from the state file at path, only once
-// auditd rewrote it after signal asked it to: a file left from before would report "no" for an
-// overflow it never saw, and auditd truncates the file before it writes it, so only "yes" or "no"
-// ends the wait. One deadline of wait bounds the signal and the wait for the rewrite; a failed
-// signal or no complete rewrite in time reads "stale", which the host judges INVALID.
-func FreshState(ctx context.Context, path string, signal func(context.Context) error, wait, poll time.Duration) string {
+// FreshState returns auditd's state file at path, only once auditd rewrote it after signal asked it
+// to: a file left from before would report no overflow it never saw and an old queue depth, and auditd
+// truncates the file before it writes it, so only a rewrite whose overflow flag reads "yes" or "no" ends
+// the wait. One deadline of wait bounds the signal and the wait for the rewrite; a failed signal or no
+// complete rewrite in time is not ok, which the guest reports as "stale" and the host judges INVALID.
+func FreshState(ctx context.Context, path string, signal func(context.Context) error, wait, poll time.Duration) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	old, errOld := os.Stat(path)
 	if signal(ctx) != nil {
-		return "stale"
+		return "", false
 	}
 	for ctx.Err() == nil {
 		now, err := os.Stat(path)
 		if err == nil && (errOld != nil || !os.SameFile(old, now) || !now.ModTime().Equal(old.ModTime()) || now.Size() != old.Size()) {
 			data, err := os.ReadFile(path) //nolint:gosec // auditd's fixed state file, or a test's
-			if v := OverflowDetected(string(data)); err == nil && (v == "yes" || v == "no") {
-				return v
+			if v := StateValue(string(data), StateOverflow); err == nil && (v == "yes" || v == "no") {
+				return string(data), true
 			}
 		}
 		select {
@@ -195,5 +195,41 @@ func FreshState(ctx context.Context, path string, signal func(context.Context) e
 		case <-time.After(poll):
 		}
 	}
-	return "stale"
+	return "", false
+}
+
+// stateRewrite covers auditd's own rewrite of its state file, every report_interval (5 s in
+// deploy/auditd/auditd.conf), so a wait for a fresh one needs no signal and so no audited exec.
+const stateRewrite = 7 * time.Second
+
+// AuditIdle waits up to wait until backlog, the kernel's audit backlog, reads "0" and then a rewrite of
+// auditd's state file at path shows its plugin queue empty: the kernel's backlog empties first, while
+// records still wait in auditd's queue for Laurel, so a barrier exec'd then queues behind them. It
+// returns how long it waited, or what still waited when the wait ran out.
+func AuditIdle(ctx context.Context, path string, backlog func() string, wait, poll time.Duration) (time.Duration, error) {
+	start, last := time.Now(), ""
+	for deadline := start.Add(wait); ; {
+		if b := backlog(); b != "0" {
+			last = fmt.Sprintf("the kernel's audit backlog %q", b)
+		} else {
+			state, ok := FreshState(ctx, path, func(context.Context) error { return nil }, min(stateRewrite, max(time.Until(deadline), poll)), poll)
+			d := StateValue(state, StateQueueDepth)
+			switch {
+			case ok && d == "0":
+				return time.Since(start), nil
+			case ok:
+				last = fmt.Sprintf("auditd's plugin queue depth %q", d)
+			case last == "": // a rewrite missed at the deadline does not hide what an earlier one showed
+				last = "no fresh auditd state"
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return time.Since(start), fmt.Errorf("audit not idle %s after the load: %s", wait, last)
+		}
+		select {
+		case <-ctx.Done():
+			return time.Since(start), fmt.Errorf("waiting for audit to be idle: %w", ctx.Err())
+		case <-time.After(poll):
+		}
+	}
 }

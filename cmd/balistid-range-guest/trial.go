@@ -80,7 +80,7 @@ func runTrial(ctx context.Context, name, phase string) error {
 func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add, fail := r.add, r.fail
 	lostBefore := valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
-	overflowBefore := freshOverflow(ctx)
+	overflowBefore := stateLine(ctx, rangeguest.StateOverflow)
 	collector0 := sampleUnit(ctx, collectorUnitName)
 
 	var skip uint64
@@ -138,7 +138,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactLostBefore, lostBefore)
 	add(rangevm.FactLostAfter, valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"]))
 	add(rangevm.FactOverflowBefore, overflowBefore)
-	add(rangevm.FactOverflowAfter, freshOverflow(ctx))
+	add(rangevm.FactOverflowAfter, stateLine(ctx, rangeguest.StateOverflow))
 	add(rangevm.FactCPUTicks, u(cpu))
 	add(rangevm.FactStealTicks, u(steal))
 	add(rangevm.FactDrainCPU, u(drainCPU))
@@ -153,11 +153,15 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	return r.send(r.facts)
 }
 
-// freshOverflow asks auditd to rewrite its state file and reads the overflow flag from that rewrite.
-func freshOverflow(ctx context.Context) string {
-	return rangeguest.FreshState(ctx, auditdState, func(ctx context.Context) error {
+// stateLine asks auditd to rewrite its state file and reads the line name from that rewrite, or "stale".
+func stateLine(ctx context.Context, name string) string {
+	state, ok := rangeguest.FreshState(ctx, auditdState, func(ctx context.Context) error {
 		return exec.CommandContext(ctx, "/usr/bin/auditctl", "--signal", "state").Run()
 	}, stateWait, 50*time.Millisecond)
+	if !ok {
+		return "stale"
+	}
+	return rangeguest.StateValue(state, name)
 }
 
 // errStoreLost is a rate trial whose store dropped records: its cap is the host's, so only a full
@@ -179,7 +183,10 @@ func rateRead(c *rangeguest.Counter, read storeRead) error {
 // drop before the record after it, so one there dropped only later records, yet the disk was full.
 func storeLoss(storeLost *bool) func(rawrecord.Record) error {
 	return func(r rawrecord.Record) error {
-		*storeLost = *storeLost || r.Provider == store.LossProvider
+		if r.Provider == store.LossProvider {
+			*storeLost = true
+			hostLine(os.Stdout, "%s", lossLine(r))
+		}
 		return nil
 	}
 }
@@ -193,6 +200,7 @@ func rateRecords(c *rangeguest.Counter, storeLost *bool) func(rawrecord.Record) 
 			c.Line(r.Data)
 		case store.LossProvider:
 			*storeLost = true
+			hostLine(os.Stdout, "%s", lossLine(r))
 		}
 		return nil
 	}

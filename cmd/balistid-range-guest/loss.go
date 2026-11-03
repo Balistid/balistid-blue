@@ -117,7 +117,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", collectorUnitName)))
 	}
 	lostBefore, restartsBefore := auditLost(), restarts()
-	overflowBefore := rangeguest.OverflowDetected(readTrim(auditdState))
+	overflowBefore := rangeguest.StateValue(readTrim(auditdState), rangeguest.StateOverflow)
 	from, err := uptime()
 	if err != nil {
 		return r.fail(err.Error())
@@ -168,7 +168,7 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowBefore, overflowBefore)
-	r.add(rangevm.FactOverflowAfter, freshOverflow(ctx))
+	r.add(rangevm.FactOverflowAfter, stateLine(ctx, rangeguest.StateOverflow))
 	r.add(rangevm.FactCollectorRestarts, restartsBefore+" "+restarts())
 	if inj.originNs != 0 {
 		fromNs = inj.originNs
@@ -1058,7 +1058,7 @@ func readState() (stateRead, error) {
 	case !after.ModTime().Equal(before.ModTime()):
 		return stateRead{value: stateChanged}, nil
 	}
-	value := rangeguest.OverflowDetected(string(data))
+	value := rangeguest.StateValue(string(data), rangeguest.StateOverflow)
 	if value == "missing" { // truncated and not yet written: a read under a change
 		value = stateChanged
 	}

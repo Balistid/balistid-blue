@@ -272,7 +272,7 @@ func runJob(ctx context.Context, dev string) error {
 	}
 	// The store's clock is this guest's: what it received from here on is the job's window.
 	sample := func() lossSample {
-		overflow := freshOverflow(ctx) // first: its auditctl signal is not the job's
+		overflow := stateLine(ctx, rangeguest.StateOverflow) // first: its auditctl signal is not the job's
 		return lossSample{lost: rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"], overflow: overflow}
 	}
 	before := sample()
@@ -589,7 +589,7 @@ func overflow(ctx context.Context, pid string) (before, after, lost, journal str
 	state := func() string {
 		_ = exec.CommandContext(ctx, "/usr/bin/auditctl", "--signal", "state").Run()
 		time.Sleep(200 * time.Millisecond)
-		return rangeguest.OverflowDetected(readTrim(auditdState))
+		return rangeguest.StateValue(readTrim(auditdState), rangeguest.StateOverflow)
 	}
 	before = state()
 	cursor := journalCursor(output(ctx, "/usr/bin/journalctl", "-q", "-n", "0", "--show-cursor"))
