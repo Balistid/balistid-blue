@@ -22,7 +22,7 @@ accepted rows fail that test: the fix needs neither the Pi nor detection, only o
 
    | Closes at | Rows (issue or ADR) |
    |---|---|
-   | 9.5 | as ADR 0051, and T2: the ledger's socket admits only the collector's group (#207 reopened); T3: rules record `io_uring_setup`, `io_uring_register` and, in the `io_uring` filter, the ops the exec rules cover, so an io_uring root re-enabled is recorded (#241); T10: the store on a filesystem of its own, btrfs refused, in the install ADR; T25's double store: Laurel with laurel#313 (dec7cf0) in `packaging/laurel` |
+   | 9.5 | as ADR 0051, and T2: the ledger's socket admits only the collector's group (#207 reopened); T3: rules record `io_uring_setup` and `io_uring_register`, so an io_uring root re-enabled is recorded when set up (#241); T10: the store on a filesystem of its own, btrfs refused, in the install ADR; T25's double store: Laurel with laurel#313 (dec7cf0) in `packaging/laurel` |
    | floor 0 | T4's and T25's uncounted losses: measure in the range whether gaps in the kernel's event serials count them (a backlog drop takes no serial, `lost` counts it), then decide; T29: CI builds and vets every commit of a pull request; T33: `designed` (ADR 0051's consequence); T36: GOCACHE and inodes capped; T8: `mmap` with `PROT_EXEC` and the middle of truncated argv recorded, or named as a kernel limit |
    | L12 | as ADR 0051, and T13: the window is bounded by the checkpoint interval and the Pi's silence alarm; T22: the Pi's time from an authenticated source of its own |
    | floor 1 | as ADR 0051 |
