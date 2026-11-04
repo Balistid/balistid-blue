@@ -222,6 +222,8 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		for _, s := range SensorStages() {
 			names = append(names, SensorFact(s.Name, SensorUnknownMS))
 		}
+	case rangejob.MethodSensorDownRules:
+		names = []string{FactRulesDifferMS}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {

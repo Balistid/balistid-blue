@@ -93,7 +93,10 @@ func failStage(ctx context.Context, kind string, cli cliRun) (sensorFailure, err
 	if err != nil {
 		return sensorFailure{}, fmt.Errorf("pidfd of %d: %w", pid, err)
 	}
-	defer unix.Close(pidfd) //nolint:errcheck // a pidfd holds nothing to flush
+	defer unix.Close(pidfd)                                                //nolint:errcheck // a pidfd holds nothing to flush
+	if again, err := frozenTarget(ctx, kind); err != nil || again != pid { // the pidfd holds the process found again
+		return sensorFailure{}, fmt.Errorf("pid %d is not %s once its pidfd is open", pid, kind)
+	}
 	sig := unix.SIGKILL
 	if kind == rangevm.StatusFreezeAuditd {
 		sig = unix.SIGTERM

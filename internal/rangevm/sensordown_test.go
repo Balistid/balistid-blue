@@ -134,6 +134,8 @@ func TestJudgeRulesDiffer(t *testing.T) {
 		join("GARBAGE", stateRulesDiffer), join("OK ", stateRulesDiffer), join("", stateRulesDiffer),
 		join(pending, "UNKNOWN store: ", stateRulesDiffer), join(pending, "UNKNOWN store: x\x00", stateRulesDiffer),
 		join(pending, "unknown audit-stale", stateRulesDiffer),
+		// A time with no canary-pending before rules-differ comes from no stored canary.
+		join(stateRulesDiffer), join(stateRulesDiffer, pending, stateRulesDiffer),
 	}
 	invalid = append(invalid, rulesFacts()...)
 	miss := []string{
@@ -146,7 +148,7 @@ func TestJudgeRulesDiffer(t *testing.T) {
 		join("OK") + ",rules_proof=no", join(pending) + ",rules_watch_ms=1", "rules_differ_ms=10001,rules_proof=no",
 	}
 	pass := []string{
-		join(pending, stateRulesDiffer), join(stateRulesDiffer), "rules_differ_ms=10000", "rules_differ_ms=0",
+		join(pending, stateRulesDiffer), "rules_differ_ms=10000", "rules_differ_ms=0",
 		join(pending, stateRulesDiffer, "UNKNOWN laurel-disconnected", pending, stateRulesDiffer),
 		join(pending, "UNKNOWN store: starting", "UNKNOWN ledger-stream", "UNKNOWN auditd-restarted", stateRulesDiffer),
 		"rules_watch_ms=60000",
@@ -176,5 +178,16 @@ func TestRulesStatesAreTheCollectorsHealth(t *testing.T) {
 		if !strings.Contains(src.String(), strconv.Quote(s)) {
 			t.Errorf("the collector sets no health %q", s)
 		}
+	}
+}
+
+// A rules run keeps its time from the first stored canary, but not one that is none.
+func TestMeasuresOfARulesTrial(t *testing.T) {
+	tr := trial(t, "sensor-down-rules-extra-1")
+	if m := Measures(tr, rulesRun()); len(m) != 1 || m[FactRulesDifferMS] != 1250 {
+		t.Errorf("measures %v", m)
+	}
+	if m := Measures(tr, rulesRun(FactRulesDifferMS+"=none")); len(m) != 0 {
+		t.Errorf("measures with a time that is none %v", m)
 	}
 }
