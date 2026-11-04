@@ -23,6 +23,9 @@ const (
 	rulesFile     = "/etc/audit/rules.d/zz-balistid-range.rules"
 	// extraKey names the rule the extra file adds, so auditctl -l proves it loaded.
 	extraKey = "balistid-range-extra"
+	// The collector's health while it waits for the first canary over a connection, and for rules not shipped.
+	canaryPending = "UNKNOWN canary-pending"
+	rulesDiffer   = "UNKNOWN rules-differ"
 )
 
 // injectedRules is the rules file of each rules injection: a rule added, the b32 memfd rule deleted (never the
@@ -79,9 +82,10 @@ func runSensorDownRules(ctx context.Context, tr rangejob.Trial, r *report) error
 	if err := readStore(ctx, each, each); err != nil {
 		return r.fail("store: " + err.Error())
 	}
-	watch, states := timeline.states(until)
+	watch, states, differ := timeline.states(until)
 	r.add(rangevm.FactRulesWatchMS, watch)
 	r.add(rangevm.FactRulesStates, states)
+	r.add(rangevm.FactRulesDifferMS, differ)
 	return r.send(r.facts)
 }
 
@@ -117,11 +121,14 @@ func rulesProof(inject, list string, status map[string]string) string {
 	return "yes"
 }
 
-// states is how long the timeline runs from its first record to until, in ms, and its states up to until, each once
-// per change, joined by rangevm.StatesSep.
-func (t healthTimeline) states(until int64) (string, string) {
+// states is how long the timeline runs from its first record to until, in ms; its states up to until, each once per
+// change, joined by rangevm.StatesSep; and the ms from the first stored canary to the first rules-differ, or
+// rangevm.CanaryNone. The canary is stored at the change away from the last canary-pending before that rules-differ:
+// the tick that stored it ends the wait.
+func (t healthTimeline) states(until int64) (watch, states, differ string) {
 	var out []string
-	var from int64
+	var from, pending, stored int64
+	differ = rangevm.CanaryNone
 	for _, h := range t {
 		if h.at <= 0 || h.at > until {
 			continue
@@ -129,12 +136,23 @@ func (t healthTimeline) states(until int64) (string, string) {
 		if from == 0 {
 			from = h.at
 		}
-		if len(out) == 0 || out[len(out)-1] != h.state {
-			out = append(out, h.state)
+		if len(out) > 0 && out[len(out)-1] == h.state {
+			continue
 		}
+		switch {
+		case differ != rangevm.CanaryNone:
+		case h.state == canaryPending:
+			pending, stored = h.at, 0
+		case pending != 0 && stored == 0:
+			stored = h.at
+		}
+		if h.state == rulesDiffer && differ == rangevm.CanaryNone && stored != 0 {
+			differ = msString(h.at - stored)
+		}
+		out = append(out, h.state)
 	}
 	if from == 0 {
-		return rangevm.CanaryNone, ""
+		return rangevm.CanaryNone, "", differ
 	}
-	return msString(until - from), strings.Join(out, rangevm.StatesSep)
+	return msString(until - from), strings.Join(out, rangevm.StatesSep), differ
 }

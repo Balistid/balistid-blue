@@ -15,8 +15,9 @@ import (
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
-// How long a sensor-down trial waits for a signalled process to exit, and keeps auditd stopped: past sensor_down_s,
-// so an UNKNOWN late by a few seconds is timed, not lost when the floor recovers.
+// How long a sensor-down trial waits for a signalled process to exit, and watches before it waits for the floor's
+// recovery, auditd stopped: past sensor_down_s, as the CLI can read the collector's report of OK before its next tick
+// saw the failure, and an UNKNOWN late by a few seconds is then timed, not lost.
 const (
 	sensorExitWait = 30 * time.Second
 	sensorDownHold = 20 * time.Second
@@ -81,7 +82,7 @@ type sensorFailure struct {
 }
 
 // failStage signals the process of kind (rangevm.StatusFreezeLaurel or StatusFreezeAuditd) through a pidfd, SIGKILL
-// for Laurel and SIGTERM for auditd, waits for its exit, starts auditd again after sensorDownHold and waits for the
+// for Laurel and SIGTERM for auditd, waits for its exit and sensorDownHold, starts auditd again and waits for the
 // floor healthy. A failure it cannot cause is an error; one whose aftermath it cannot prove is in done.
 func failStage(ctx context.Context, kind string, cli cliRun) (sensorFailure, error) {
 	pid, err := frozenTarget(ctx, kind)
@@ -105,16 +106,19 @@ func failStage(ctx context.Context, kind string, cli cliRun) (sensorFailure, err
 		return sensorFailure{}, fmt.Errorf("pid %d: %w", pid, err)
 	}
 	fl.done = "yes"
+	if !pause(ctx, sensorDownHold) {
+		return sensorFailure{}, fmt.Errorf("after the signal: %w", ctx.Err())
+	}
 	if kind == rangevm.StatusFreezeAuditd {
-		if !pause(ctx, sensorDownHold) {
-			return sensorFailure{}, fmt.Errorf("auditd stopped: %w", ctx.Err())
-		}
 		output(ctx, "/usr/bin/systemctl", "start", auditdUnitName)
 	}
 	if err := untilCLI(ctx, cli, 0, statusWait); err != nil {
 		fl.done = "the floor not healthy again: " + err.Error()
 	}
 	fl.until = time.Now().UnixNano()
+	if watched := time.Duration(fl.until - fl.at); fl.done == "yes" && watched < sensorDownHold {
+		fl.done = fmt.Sprintf("watched %s, under %s", watched, sensorDownHold)
+	}
 	return fl, nil
 }
 
