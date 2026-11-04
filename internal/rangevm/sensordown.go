@@ -139,8 +139,25 @@ const (
 // RulesWatch is how long a rules trial's guest watches the collector's health: two canaries' deadlines.
 const RulesWatch = 60 * time.Second
 
-// stateRulesDiffer is the collector's health a rules trial waits for.
-const stateRulesDiffer = "UNKNOWN rules-differ"
+// stateRulesDiffer is the collector's health a rules trial waits for; storeState begins the store's, which names
+// the store's reason after it.
+const (
+	stateRulesDiffer = "UNKNOWN rules-differ"
+	storeState       = "UNKNOWN store: "
+)
+
+// collectorState reports whether s is a health state the collector writes (internal/collector: setHealth, audit.go,
+// ledger.go), so a state no collector writes proves nothing (R6, R7).
+func collectorState(s string) bool {
+	switch s {
+	case "OK", "UNKNOWN starting", "UNKNOWN laurel-disconnected", "UNKNOWN canary-missed", "UNKNOWN canary-pending",
+		"UNKNOWN dispatcher-overflow", stateRulesDiffer, "UNKNOWN auditd-down", "UNKNOWN auditd-restarted",
+		"UNKNOWN audit-stale", "UNKNOWN ledger-stream":
+		return true
+	}
+	reason, store := strings.CutPrefix(s, storeState)
+	return store && reason != "" && Printable(reason, 256) == reason
+}
 
 func rulesFacts() []string {
 	return []string{FactTrial, FactPhase, FactKernel, FactRulesProof, FactRulesWatchMS, FactRulesStates, FactRulesDifferMS}
@@ -149,7 +166,8 @@ func rulesFacts() []string {
 // judgeRulesDiffer judges a sensor-down rules trial. A report with an unknown or repeated fact, or of another trial
 // or kernel, is INVALID. Health OK at any time, no rules-differ, none timed from a stored canary or one over 10 s
 // after it, or a last state other than rules-differ is a MISS, its reason quoting the states. A fact missing, a time
-// not a number, the injection not proven or a watch under RulesWatch is INVALID, after every MISS.
+// not a number, a state no collector writes, the injection not proven or a watch under RulesWatch is INVALID, after
+// every MISS.
 func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 	f, missing, why := knownFacts(tr, o, rulesFacts())
 	if why != "" {
@@ -172,6 +190,9 @@ func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 		differ, err := msOrNone(f[FactRulesDifferMS])
 		_, timed := f[FactRulesDifferMS]
 		seen := fmt.Sprintf(" (states \"%s\")", Printable(s, 512))
+		if slices.ContainsFunc(states, func(st string) bool { return !collectorState(st) }) {
+			unproven = append(unproven, "a state no collector writes"+seen)
+		}
 		switch {
 		case slices.Contains(states, "OK"):
 			misses = append(misses, "health OK with rules that differ"+seen)
