@@ -199,6 +199,8 @@ func (a *Audit) reason(now time.Time) string {
 	switch {
 	case stateFresh && a.overflow:
 		return auditOverflow
+	case !a.haveReport: // nothing yet says which rules are loaded (ADR 0059, point 3)
+		return auditStale
 	case reportFresh && a.report.Loaded() != a.shipped:
 		return rulesDiffer
 	case warm && reportFresh && (a.report.Status.PID == 0 || a.report.Status.Enabled != 2):

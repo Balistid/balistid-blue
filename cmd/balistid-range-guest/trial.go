@@ -78,6 +78,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runCanary(ctx, r)
 	case rangejob.MethodSensorDown:
 		return runSensorDown(ctx, r)
+	case rangejob.MethodSensorDownRules:
+		return runSensorDownRules(ctx, tr, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }

@@ -1,6 +1,7 @@
 package rangejob
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"regexp"
@@ -143,6 +144,13 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricSensorDown, Failure: FailKill}, ""},
 		{Trial{Metric: MetricSensorDown, Inject: InjectAuditdCrash}, ""},
 		{Trial{Metric: MetricSensorDown, Inject: InjectStatus}, ""},
+		{Trial{Metric: MetricSensorDown, Inject: InjectRulesExtra}, MethodSensorDownRules},
+		{Trial{Metric: MetricSensorDown, Inject: InjectRulesMissing}, MethodSensorDownRules},
+		{Trial{Metric: MetricSensorDown, Inject: InjectRulesStatus}, MethodSensorDownRules},
+		{Trial{Metric: MetricSensorDown, Inject: InjectRulesStatus, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricSensorDown, Inject: InjectRulesStatus, Failure: FailReset}, ""},
+		{Trial{Metric: MetricLoss, Inject: InjectRulesExtra}, ""},
+		{Trial{Metric: MetricStatus, Inject: InjectRulesExtra}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -224,20 +232,25 @@ func TestRSSHasAnOOMControl(t *testing.T) {
 	}
 }
 
-// sensor_down_s's sensor-down rows run the 21 its method names, each deciding, not a control or a trend.
+// sensor_down_s's rows run the 21 sensor-down runs and the 8 boots of each rules file its method names, each
+// deciding, not a control or a trend.
 func TestSensorDownTrialsAreTheAcceptance(t *testing.T) {
-	runs := 0
+	runs := map[string]int{}
 	for _, tr := range Trials() {
-		if tr.Metric != MetricSensorDown || !strings.HasPrefix(tr.Name, "sensor-down-") {
+		if tr.Metric != MetricSensorDown {
 			continue
 		}
-		if tr.Method() != MethodSensorDown || tr.Trend || tr.Expect != "" || tr.Count > MaxTrials || len(tr.Name) > 32 {
-			t.Errorf("%s: method %q, trend %v, expect %q, count %d", tr.Name, tr.Method(), tr.Trend, tr.Expect, tr.Count)
+		m := tr.Method()
+		if m != MethodSensorDown && m != MethodSensorDownRules || tr.Trend || tr.Expect != "" || tr.Count > MaxTrials ||
+			len(tr.Name) > 32 || !strings.HasPrefix(tr.Name, "sensor-down-") {
+			t.Errorf("%s: method %q, trend %v, expect %q, count %d", tr.Name, m, tr.Trend, tr.Expect, tr.Count)
 		}
-		runs += tr.Count
+		runs[m+" "+tr.Inject] += tr.Count
 	}
-	if runs != 21 {
-		t.Errorf("sensor-down runs %d, not 21", runs)
+	want := map[string]int{MethodSensorDown + " ": 21, MethodSensorDownRules + " " + InjectRulesExtra: 8,
+		MethodSensorDownRules + " " + InjectRulesMissing: 8, MethodSensorDownRules + " " + InjectRulesStatus: 8}
+	if fmt.Sprint(runs) != fmt.Sprint(want) {
+		t.Errorf("sensor_down_s runs %v, want %v", runs, want)
 	}
 }
 

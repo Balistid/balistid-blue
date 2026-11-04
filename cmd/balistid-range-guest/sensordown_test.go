@@ -2,9 +2,11 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
@@ -55,6 +57,70 @@ func TestRefusedDisableIsTheKernelsRefusal(t *testing.T) {
 	} {
 		if _, ok := refusedDisable(x); ok {
 			t.Errorf("%s: counted as the refusal", name)
+		}
+	}
+}
+
+// The proof needs audit locked and auditctl's list to show exactly the injected change, and nothing else of them.
+func TestRulesProofShowsTheInjection(t *testing.T) {
+	shipped := strings.Join([]string{
+		"-a always,exit -F arch=b64 -S execve,execveat -F key=balistid-exec",
+		"-a always,exit -F arch=b32 -S execve,execveat -F key=balistid-exec",
+		"-a always,exit -F arch=b64 -S ptrace,process_vm_writev -F key=balistid-inject",
+		"-a always,exit -F arch=b32 -S ptrace,process_vm_writev -F key=balistid-inject",
+		"-a always,exit -F arch=b64 -S memfd_create -F key=balistid-memfd",
+		"-a always,exit -F arch=b32 -S memfd_create -F key=balistid-memfd",
+		"-w /var/lib/balistid/collector/canary -p w -k balistid-canary",
+	}, "\n")
+	extra := shipped + "\n-a always,exit -F arch=b64 -S openat -F uid=4242 -F key=" + extraKey
+	missing := strings.Replace(shipped, "-a always,exit -F arch=b32 -S memfd_create -F key=balistid-memfd\n", "", 1)
+	locked := map[string]string{"enabled": "2", "backlog_limit": "65536"}
+	small := map[string]string{"enabled": "2", "backlog_limit": "8192"}
+	for _, c := range []struct {
+		inject, list string
+		status       map[string]string
+		want         string
+	}{
+		{rangejob.InjectRulesExtra, extra, locked, "yes"},
+		{rangejob.InjectRulesMissing, missing, locked, "yes"},
+		{rangejob.InjectRulesStatus, shipped, small, "yes"},
+		{rangejob.InjectRulesExtra, shipped, locked, "7 rules loaded, not 8"},
+		{rangejob.InjectRulesExtra, strings.Replace(extra, extraKey, "other", 1), locked, "extra rule loaded no"},
+		{rangejob.InjectRulesMissing, shipped, locked, "7 rules loaded, not 6"},
+		{rangejob.InjectRulesMissing, strings.Replace(shipped, "-a always,exit -F arch=b64 -S memfd_create -F key=balistid-memfd\n", "", 1),
+			locked, "b32 memfd rule loaded yes"},
+		{rangejob.InjectRulesStatus, shipped, locked, "backlog_limit"},
+		{rangejob.InjectRulesExtra, extra, small, "backlog_limit"},
+		{rangejob.InjectRulesExtra, extra, map[string]string{"enabled": "1", "backlog_limit": "65536"}, "not locked"},
+		{rangejob.InjectRulesStatus, "No rules", small, "0 rules loaded"},
+	} {
+		if got := rulesProof(c.inject, c.list, c.status); !strings.Contains(got, c.want) || (c.want == "yes") != (got == "yes") {
+			t.Errorf("%s: %q, want %q", c.inject, got, c.want)
+		}
+	}
+}
+
+// The states are each change once, up to until, and the watch runs from the first record.
+func TestHealthStatesOnceEachUpToTheWatchEnd(t *testing.T) {
+	sec := func(v int64) int64 { return v * int64(time.Second) }
+	h := func(at int64, state string) health { return health{kind: "health", state: state, at: sec(at)} }
+	watch, states := healthTimeline{h(0, "UNKNOWN x"), h(10, "UNKNOWN store: starting"), h(11, "UNKNOWN canary-pending"),
+		h(12, "UNKNOWN canary-pending"), h(13, "UNKNOWN rules-differ"), h(80, "OK")}.states(sec(71))
+	if watch != "61000" || states != "UNKNOWN store: starting|UNKNOWN canary-pending|UNKNOWN rules-differ" {
+		t.Errorf("watch %s, states %q", watch, states)
+	}
+	if watch, states := (healthTimeline{}).states(sec(71)); watch != rangevm.CanaryNone || states != "" {
+		t.Errorf("no records: %s %q", watch, states)
+	}
+}
+
+// Every rules trial of the table writes its file, and nothing else does: a self-test or another trial loads only
+// the repository's rules.
+func TestOnlyRulesTrialsWriteRules(t *testing.T) {
+	for _, tr := range append(rangejob.Trials(), rangejob.Trial{}) {
+		text, ok := rulesFor(tr)
+		if want := tr.Method() == rangejob.MethodSensorDownRules; ok != want || want && text == "" {
+			t.Errorf("%s: writes %v %q", tr.Name, ok, text)
 		}
 	}
 }

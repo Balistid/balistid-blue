@@ -87,6 +87,19 @@ const InjectOOM = "oom"
 // under -e 2; the trial records which the kernel still allows (ADR 0038, Consequences).
 const InjectAuditSet = "audit-set"
 
+// Injections of a sensor-down rules trial (ADR 0059, point 5): a last rules file before -e 2 that adds a rule,
+// deletes one or changes -b.
+const (
+	InjectRulesExtra   = "rules-extra"
+	InjectRulesMissing = "rules-missing"
+	InjectRulesStatus  = "rules-status"
+)
+
+// RulesInject reports whether inject is one of a sensor-down rules trial.
+func RulesInject(inject string) bool {
+	return inject == InjectRulesExtra || inject == InjectRulesMissing || inject == InjectRulesStatus
+}
+
 // Methods: how the guest runs a trial and the host judges it, one per trial. A rate trial counts
 // numbered events in the store; a writer failure kills or resets the measured writer of a control; a
 // collector failure kills or resets the collector under load; a record trial stores oversized and
@@ -98,7 +111,7 @@ const InjectAuditSet = "audit-set"
 // the CLI unprivileged after each break of the floor (ADR 0048), an RSS trial samples the resident memory of the
 // recorder's units under load (rss_mib), a canary trial times the collector's canary quiet and with Laurel and then
 // auditd frozen (ADR 0017), a sensor-down trial times health UNKNOWN after Laurel is killed and auditd stopped and
-// tries auditctl -e 0 (ADR 0059).
+// tries auditctl -e 0, a sensor-down rules trial boots with rules that differ from the repository (ADR 0059).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -116,12 +129,17 @@ const (
 	MethodRSS              = "rss"
 	MethodCanary           = "canary"
 	MethodSensorDown       = "sensor-down"
+	MethodSensorDownRules  = "sensor-down-rules"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
 // judges the run INVALID.
 func (tr Trial) Method() string {
 	switch {
+	case RulesInject(tr.Inject) && tr.Metric == MetricSensorDown && tr.Load == (Load{}) && tr.Failure == "":
+		return MethodSensorDownRules
+	case RulesInject(tr.Inject) || tr.Metric == MetricSensorDown && tr.Inject != "":
+		return ""
 	case tr.Inject == InjectAuditSet && tr.Metric == MetricExposureAuditstat && tr.Load == (Load{}) && tr.Failure == "":
 		return MethodAuditSet
 	case tr.Inject == InjectStatus && tr.Metric == MetricStatus && tr.Load == (Load{}) && tr.Failure == "":
@@ -305,9 +323,16 @@ var trials = slices.Concat([]Trial{
 		// as the rules locked by -e 2 cannot drop the canary's.
 		{Name: "canary", Metric: MetricCanary, Wall: 13 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
 	},
-	// sensor_down_s (ADR 0059): each run kills Laurel, stops auditd and tries -e 0; 21 runs for the method's 20.
+	// sensor_down_s (ADR 0059): each run kills Laurel, stops auditd and tries -e 0, 21 runs for the method's 20;
+	// and 8 boots of each rules file that differs.
 	repeated(Trial{Name: "sensor-down", Metric: MetricSensorDown, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1,
 		Scratch: StoreScratch, Count: 3}, 7),
+	repeated(Trial{Name: "sensor-down-rules-extra", Metric: MetricSensorDown, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 2, Inject: InjectRulesExtra}, 4),
+	repeated(Trial{Name: "sensor-down-rules-missing", Metric: MetricSensorDown, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 2, Inject: InjectRulesMissing}, 4),
+	repeated(Trial{Name: "sensor-down-rules-status", Metric: MetricSensorDown, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 2, Inject: InjectRulesStatus}, 4),
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).
 	[]Trial{

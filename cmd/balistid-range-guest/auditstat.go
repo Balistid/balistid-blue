@@ -41,6 +41,28 @@ func auditstatReport(ctx context.Context) string {
 	return reportAgrees(first, second, rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s")))
 }
 
+// auditRules is "pinned" when auditstat's report shows the rules and status fields auditstat.Shipped pins, read
+// after auditstatReport waited for a report; else what it shows, the values a renewed pin takes (ADR 0059, point 3).
+func auditRules() string {
+	uid, err := unixsock.LookupUID("balistid-auditstat")
+	if err != nil {
+		return err.Error()
+	}
+	r, err := auditstat.ReadReport(auditstat.ReportPath, uid)
+	if err != nil {
+		return err.Error()
+	}
+	return loadedAgrees(r.Loaded())
+}
+
+func loadedAgrees(l auditstat.Loaded) string {
+	if l == auditstat.Shipped() {
+		return "pinned"
+	}
+	return fmt.Sprintf("count %d digest %x failure %d rate_limit %d backlog_limit %d backlog_wait_time %d", l.Rules.Count,
+		l.Rules.Digest, l.Failure, l.RateLimit, l.BacklogLimit, l.BacklogWaitTime)
+}
+
 // reportAgrees is "yes" when second is a later report than first that matches the kernel's status as auditctl -s
 // prints it, with audit locked and auditd running; else what differs.
 func reportAgrees(first, second auditstat.Report, kernel map[string]string) string {

@@ -96,6 +96,9 @@ LAYOUT: tuple[str, ...] = (
     # The collector in the range image (ADR 0022).
     "range/balistid-range-store.service",
     "range/balistid-collector-range.conf",
+    # A rules trial's differing rules before audit-rules.service (ADR 0059, point 5).
+    "range/balistid-range-rules.service",
+    "range/audit-rules-range.conf",
     # The ledger in the range image, with a key made in the VM (ADR 0027).
     "range/balistid-range-ledger-key.service",
     "range/balistid-ledger-range.conf",
