@@ -29,9 +29,20 @@
 -a never,exit -F arch=b32 -S bpf -F pid=1
 -a always,exit -F arch=b64 -S init_module,finit_module,delete_module,kexec_load,kexec_file_load,bpf -k balistid-kernel
 -a always,exit -F arch=b32 -S init_module,finit_module,delete_module,sys_kexec_load,bpf -k balistid-kernel
+## Borrowed identity or capabilities, which would pass the never rules and the mounts' euid=0 below: an exe taken
+## over (PR_SET_MM, 35), capabilities kept across a uid change (PR_SET_SECUREBITS, 28; PR_SET_KEEPCAPS, 8).
+-a always,exit -F arch=b64 -S prctl -F a0=35 -k balistid-inject
+-a always,exit -F arch=b32 -S prctl -F a0=35 -k balistid-inject
+-a always,exit -F arch=b64 -S prctl -F a0=28 -k balistid-inject
+-a always,exit -F arch=b32 -S prctl -F a0=28 -k balistid-inject
+-a always,exit -F arch=b64 -S prctl -F a0=8 -k balistid-inject
+-a always,exit -F arch=b32 -S prctl -F a0=8 -k balistid-inject
 ## Mounts by root: an unprivileged sandbox mounts hundreds of times in its own namespace, which hides nothing.
--a always,exit -F arch=b64 -S mount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree -F euid=0 -k balistid-kernel
--a always,exit -F arch=b32 -S mount,umount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree -F euid=0 -k balistid-kernel
+-a always,exit -F arch=b64 -S mount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree,open_tree_attr -F euid=0 -k balistid-kernel
+-a always,exit -F arch=b32 -S mount,umount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree,open_tree_attr -F euid=0 -k balistid-kernel
+## An open by handle carries no path a tree sees: every one that writes, creates or truncates (0x243), anywhere.
+-a always,exit -F arch=b64 -S open_by_handle_at -F a2&0x243 -k balistid-handle
+-a always,exit -F arch=b32 -S open_by_handle_at -F a2&0x243 -k balistid-handle
 ## io_uring is disabled (deploy/sysctl); one that root re-enabled is recorded when set up, and its path and
 ## allocation ops (audit skips its reads and writes).
 -a always,exit -F arch=b64 -S io_uring_setup,io_uring_register -k balistid-uring
@@ -88,8 +99,10 @@
 -a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/var/lib/balistid -k balistid-state
 -a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/var/lib/balistid -k balistid-state
 -a always,exit -F arch=b32 -S openat2 -F dir=/var/lib/balistid -k balistid-state
-## journald's binary: any call on it, so no open mode empties it unrecorded.
+## The sensor's and journald's binaries: any call on them, so no open mode empties them unrecorded.
 -a always,exit -F path=/usr/lib/systemd/systemd-journald -k balistid-config
+-a always,exit -F path=/usr/bin/auditd -k balistid-config
+-a always,exit -F path=/usr/bin/laurel -k balistid-config
 
 ## Last: no rule or state change until reboot.
 -e 2

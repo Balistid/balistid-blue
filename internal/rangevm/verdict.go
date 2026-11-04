@@ -63,7 +63,8 @@ const (
 	TracksAllYes = "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes," +
 		"finit_module=yes,delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,mount=yes,umount2=yes," +
 		"move_mount=yes,fsmount=yes,fsconfig=yes,fspick=yes,mount_setattr=yes,open_tree=yes,pidfd_getfd=yes," +
-		"io_uring_setup=yes,io_uring_register=yes,modprobe=yes,quiet=yes"
+		"io_uring_setup=yes,io_uring_register=yes,open_tree_attr=yes,prctl_set_mm=yes,prctl_securebits=yes," +
+		"prctl_keepcaps=yes,open_by_handle_at=yes,modprobe=yes,quiet=yes"
 )
 
 // Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at

@@ -28,6 +28,7 @@ const (
 	keyLogs   = "balistid-logs"
 	keyConfig = "balistid-config"
 	keyState  = "balistid-state"
+	keyHandle = "balistid-handle"
 	// tracksModule is a module the range's kernel builds as one and nothing loads at boot (ADR 0061, point 3).
 	tracksModule = "dummy"
 	// archB64 is the audit arch of x86-64, the guest's; its file ops are what the probe credits.
@@ -59,11 +60,15 @@ var tracksLeftOut = []string{
 type tracksCall struct {
 	part string
 	nr   uint64
+	a0   uint64 // the first argument a record must carry, or anyArg
 	key  string
 	call func() error
 }
 
-const badFD = ^uintptr(0) // fd -1
+const (
+	badFD  = ^uintptr(0) // fd -1
+	anyArg = ^uint64(0)
+)
 
 func errnoOf(_, _ uintptr, e syscall.Errno) error {
 	if e != 0 {
@@ -78,28 +83,39 @@ func refused(nr uintptr) func() error {
 }
 
 var tracksCalls = []tracksCall{
-	{"init_module", unix.SYS_INIT_MODULE, keyKernel, func() error { return unix.InitModule(nil, "") }},
-	{"finit_module", unix.SYS_FINIT_MODULE, keyKernel, func() error { return unix.FinitModule(-1, "", 0) }},
-	{"delete_module", unix.SYS_DELETE_MODULE, keyKernel, func() error { return unix.DeleteModule("balistid_none", unix.O_NONBLOCK) }},
+	{"init_module", unix.SYS_INIT_MODULE, anyArg, keyKernel, func() error { return unix.InitModule(nil, "") }},
+	{"finit_module", unix.SYS_FINIT_MODULE, anyArg, keyKernel, func() error { return unix.FinitModule(-1, "", 0) }},
+	{"delete_module", unix.SYS_DELETE_MODULE, anyArg, keyKernel, func() error { return unix.DeleteModule("balistid_none", unix.O_NONBLOCK) }},
 	// 0x8000 is no kexec flag: refused before any segment or file is read.
-	{"kexec_load", unix.SYS_KEXEC_LOAD, keyKernel, func() error {
+	{"kexec_load", unix.SYS_KEXEC_LOAD, anyArg, keyKernel, func() error {
 		return errnoOf(unix.Syscall6(unix.SYS_KEXEC_LOAD, 0, 0, 0, 0x8000, 0, 0))
 	}},
-	{"kexec_file_load", unix.SYS_KEXEC_FILE_LOAD, keyKernel, func() error { return unix.KexecFileLoad(-1, -1, "", 0x8000) }},
+	{"kexec_file_load", unix.SYS_KEXEC_FILE_LOAD, anyArg, keyKernel, func() error { return unix.KexecFileLoad(-1, -1, "", 0x8000) }},
 	// BPF_PROG_LOAD without an attribute: no program type, no instructions.
-	{"bpf", unix.SYS_BPF, keyKernel, func() error { return errnoOf(unix.Syscall(unix.SYS_BPF, unix.BPF_PROG_LOAD, 0, 0)) }},
-	{"mount", unix.SYS_MOUNT, keyKernel, func() error { return unix.Mount("none", "/balistid-none", "tmpfs", 0, "") }},
-	{"umount2", unix.SYS_UMOUNT2, keyKernel, func() error { return unix.Unmount("/balistid-none", 0) }},
-	{"move_mount", unix.SYS_MOVE_MOUNT, keyKernel, refused(unix.SYS_MOVE_MOUNT)},
-	{"fsmount", unix.SYS_FSMOUNT, keyKernel, refused(unix.SYS_FSMOUNT)},
-	{"fsconfig", unix.SYS_FSCONFIG, keyKernel, refused(unix.SYS_FSCONFIG)},
-	{"fspick", unix.SYS_FSPICK, keyKernel, refused(unix.SYS_FSPICK)},
-	{"mount_setattr", unix.SYS_MOUNT_SETATTR, keyKernel, refused(unix.SYS_MOUNT_SETATTR)},
-	{"open_tree", unix.SYS_OPEN_TREE, keyKernel, refused(unix.SYS_OPEN_TREE)},
-	{"pidfd_getfd", unix.SYS_PIDFD_GETFD, rangeguest.InjectKey, refused(unix.SYS_PIDFD_GETFD)},
+	{"bpf", unix.SYS_BPF, anyArg, keyKernel, func() error { return errnoOf(unix.Syscall(unix.SYS_BPF, unix.BPF_PROG_LOAD, 0, 0)) }},
+	{"mount", unix.SYS_MOUNT, anyArg, keyKernel, func() error { return unix.Mount("none", "/balistid-none", "tmpfs", 0, "") }},
+	{"umount2", unix.SYS_UMOUNT2, anyArg, keyKernel, func() error { return unix.Unmount("/balistid-none", 0) }},
+	{"move_mount", unix.SYS_MOVE_MOUNT, anyArg, keyKernel, refused(unix.SYS_MOVE_MOUNT)},
+	{"fsmount", unix.SYS_FSMOUNT, anyArg, keyKernel, refused(unix.SYS_FSMOUNT)},
+	{"fsconfig", unix.SYS_FSCONFIG, anyArg, keyKernel, refused(unix.SYS_FSCONFIG)},
+	{"fspick", unix.SYS_FSPICK, anyArg, keyKernel, refused(unix.SYS_FSPICK)},
+	{"mount_setattr", unix.SYS_MOUNT_SETATTR, anyArg, keyKernel, refused(unix.SYS_MOUNT_SETATTR)},
+	{"open_tree", unix.SYS_OPEN_TREE, anyArg, keyKernel, refused(unix.SYS_OPEN_TREE)},
+	{"pidfd_getfd", unix.SYS_PIDFD_GETFD, anyArg, rangeguest.InjectKey, refused(unix.SYS_PIDFD_GETFD)},
 	// io_uring is disabled: refused before the entries are read; a huge count is refused too.
-	{"io_uring_setup", unix.SYS_IO_URING_SETUP, keyUring, refused(unix.SYS_IO_URING_SETUP)},
-	{"io_uring_register", unix.SYS_IO_URING_REGISTER, keyUring, refused(unix.SYS_IO_URING_REGISTER)},
+	{"io_uring_setup", unix.SYS_IO_URING_SETUP, anyArg, keyUring, refused(unix.SYS_IO_URING_SETUP)},
+	{"io_uring_register", unix.SYS_IO_URING_REGISTER, anyArg, keyUring, refused(unix.SYS_IO_URING_REGISTER)},
+	{"open_tree_attr", unix.SYS_OPEN_TREE_ATTR, anyArg, keyKernel, refused(unix.SYS_OPEN_TREE_ATTR)},
+	// prctl with options that borrow an exe or keep capabilities, each refused: a bad fd, an unknown bit, a bad flag.
+	{"prctl_set_mm", unix.SYS_PRCTL, unix.PR_SET_MM, rangeguest.InjectKey, func() error {
+		return unix.Prctl(unix.PR_SET_MM, unix.PR_SET_MM_EXE_FILE, badFD, 0, 0)
+	}},
+	{"prctl_securebits", unix.SYS_PRCTL, unix.PR_SET_SECUREBITS, rangeguest.InjectKey, func() error {
+		return unix.Prctl(unix.PR_SET_SECUREBITS, 1<<31, 0, 0, 0)
+	}},
+	{"prctl_keepcaps", unix.SYS_PRCTL, unix.PR_SET_KEEPCAPS, rangeguest.InjectKey, func() error {
+		return unix.Prctl(unix.PR_SET_KEEPCAPS, 2, 0, 0, 0)
+	}},
 }
 
 // tracksProbe is what the guest did to cover its tracks and how to find it in the store.
@@ -123,6 +139,9 @@ func coverTracks(ctx context.Context) tracksProbe {
 		if err := createTruncateRemove(filepath.Join(tr.dir, t)); err != nil {
 			p.failed[tr.part] = err.Error()
 		}
+	}
+	if err := truncateByHandle(filepath.Join("/var/lib/balistid", t+"-h")); err != nil {
+		p.failed["open_by_handle_at"] = err.Error()
 	}
 	for _, c := range tracksCalls {
 		if c.call() == nil {
@@ -153,10 +172,40 @@ func createTruncateRemove(path string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("truncate: %w", err)
 	}
+	fd, err := unix.Openat2(unix.AT_FDCWD, path, &unix.OpenHow{Flags: unix.O_RDONLY | unix.O_TRUNC | unix.O_CLOEXEC})
+	if err != nil {
+		return fmt.Errorf("openat2: %w", err)
+	}
+	if err := unix.Close(fd); err != nil {
+		return fmt.Errorf("openat2: %w", err)
+	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("remove: %w", err)
 	}
 	return nil
+}
+
+// truncateByHandle creates path, opens it by its handle for writing with O_TRUNC, which carries no path a tree rule
+// sees (ADR 0061, point 2), and removes it.
+func truncateByHandle(path string) error {
+	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	defer os.Remove(path) //nolint:errcheck // the tree rule records the removal; a leftover file fails nothing
+	h, _, err := unix.NameToHandleAt(unix.AT_FDCWD, path, 0)
+	if err != nil {
+		return fmt.Errorf("handle: %w", err)
+	}
+	mount, err := unix.Open(filepath.Dir(path), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("mount fd: %w", err)
+	}
+	defer unix.Close(mount) //nolint:errcheck // a read-only directory
+	fd, err := unix.OpenByHandleAt(mount, h, unix.O_WRONLY|unix.O_TRUNC|unix.O_CLOEXEC)
+	if err != nil {
+		return fmt.Errorf("open by handle: %w", err)
+	}
+	return unix.Close(fd) //nolint:wrapcheck // the probe's own file
 }
 
 // tracksParts is the order of the fact's parts.
@@ -168,7 +217,7 @@ func tracksParts() []string {
 	for _, c := range tracksCalls {
 		parts = append(parts, c.part)
 	}
-	return append(parts, "modprobe", "quiet")
+	return append(parts, "open_by_handle_at", "modprobe", "quiet")
 }
 
 // tracksFound is the fact tracks: per part "yes" when the store's Laurel lines hold its records, else why not.
@@ -198,7 +247,7 @@ func tracksFound(lines []byte, p tracksProbe) string {
 		}
 	}
 	for _, tr := range tracksTrees {
-		seen[tr.part] = seen[tr.part+":CREATE"] && seen[tr.part+":TRUNC"] && seen[tr.part+":DELETE"]
+		seen[tr.part] = seen[tr.part+":CREATE"] && seen[tr.part+":TRUNC"] && seen[tr.part+":TRUNC2"] && seen[tr.part+":DELETE"]
 	}
 	seen["modprobe"] = seen["modprobe:load"] && seen["modprobe:remove"]
 	quiet := "yes"
@@ -234,68 +283,66 @@ func printable(r rune) rune {
 	return r
 }
 
-// tracksRecord is a SYSCALL or URINGOP event of Laurel's, its keys matched exactly: Laurel puts an enriched "PID"
-// beside "pid" and the name "SYSCALL" beside the number "syscall".
+// tracksRecord is a SYSCALL event of Laurel's, its keys matched exactly: Laurel puts an enriched "PID" beside "pid"
+// and the name "SYSCALL" beside the number "syscall".
 type tracksRecord struct {
-	uring          bool
-	arch, pid, exe string
-	success        string
-	nr, a2         uint64
-	keys           []string
-	paths          map[string]string // name: nametype
+	arch, pid, exe, success string
+	nr                      uint64
+	args                    []uint64 // a0 to a3, from Laurel's SYSCALL.ARGV
+	keys                    []string
+	paths                   map[string]string // name: nametype
 }
 
 // tracksKeys are the keys quiet judges.
-var tracksKeys = []string{keyKernel, keyUring, keyLogs, keyConfig, keyState}
+var tracksKeys = []string{keyKernel, keyUring, keyLogs, keyConfig, keyState, keyHandle}
 
-// parseTracksRecord reads one Laurel line. ours is whether it is under a key of ADR 0061; an error is a line that is
-// no JSON object, or one under such a key without the fields a judgement needs: quiet must not read it as silence.
+// parseTracksRecord reads one Laurel line. ours is whether it is under a key of ADR 0061 or the inject key; an error
+// is a line that is no JSON object, a SYSCALL that is no object, or a record of ours without the fields a judgement
+// needs, each of the right type: quiet must not read any of them as silence.
 func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 	var top map[string]json.RawMessage
-	if json.Unmarshal(line, &top) != nil {
+	if json.Unmarshal(line, &top) != nil || top == nil {
 		return r, false, errors.New("a line that is no JSON object")
 	}
-	ev, ok := top["SYSCALL"]
+	raw, ok := top["SYSCALL"]
 	if !ok {
-		ev, r.uring = top["URINGOP"], true
-	}
-	var sc map[string]json.RawMessage
-	if ev == nil || json.Unmarshal(ev, &sc) != nil {
 		return r, false, nil // another event type
 	}
+	var sc map[string]json.RawMessage
+	if json.Unmarshal(raw, &sc) != nil || sc == nil {
+		return r, false, errors.New("a SYSCALL that is no object")
+	}
 	r.keys = rangeguest.AuditKeys(sc["key"])
-	ours = slices.ContainsFunc(r.keys, func(k string) bool { return slices.Contains(tracksKeys, k) })
-	nrField := "syscall"
-	if r.uring {
-		nrField = "uring_op"
-	}
-	nr, errNr := strconv.ParseUint(string(sc[nrField]), 10, 64)
+	ours = slices.ContainsFunc(r.keys, func(k string) bool { return slices.Contains(tracksKeys, k) || k == rangeguest.InjectKey })
+	var argv []string
+	okArch, okExe, okSuccess := jsonString(sc["arch"], &r.arch), jsonString(sc["exe"], &r.exe), jsonString(sc["success"], &r.success)
+	nr, errNr := strconv.ParseUint(string(sc["syscall"]), 10, 64)
 	r.nr, r.pid = nr, string(sc["pid"])
-	errExe := json.Unmarshal(sc["exe"], &r.exe)
-	errOK := json.Unmarshal(sc["success"], &r.success)
-	if !r.uring {
-		if json.Unmarshal(sc["arch"], &r.arch) != nil && ours {
-			return r, ours, fmt.Errorf("a record of %v without arch", r.keys)
-		}
-		var argv []string // a0 to a3
-		if json.Unmarshal(sc["ARGV"], &argv) == nil && len(argv) > 2 {
-			r.a2, _ = rangeguest.ArgHex(argv[2])
-		}
+	okArgs := json.Unmarshal(sc["ARGV"], &argv) == nil && len(argv) == 4
+	for _, a := range argv {
+		n, ok := rangeguest.ArgHex(a)
+		okArgs = okArgs && ok
+		r.args = append(r.args, n)
 	}
-	if ours && (errExe != nil || errOK != nil || errNr != nil || !decimal(r.pid)) {
-		return r, ours, fmt.Errorf("a record of %v without its number, pid, exe or success", r.keys)
+	if ours && (!okArch || !okExe || !okSuccess || errNr != nil || !decimal(r.pid) || !okArgs) {
+		return r, ours, fmt.Errorf("a record of %v without its arch, number, pid, exe, outcome or arguments", r.keys)
 	}
 	var paths []map[string]json.RawMessage
 	if raw, ok := top["PATH"]; ok && json.Unmarshal(raw, &paths) == nil {
 		r.paths = map[string]string{}
 		for _, item := range paths {
 			var name, nametype string
-			if json.Unmarshal(item["name"], &name) == nil && json.Unmarshal(item["nametype"], &nametype) == nil {
+			if jsonString(item["name"], &name) && jsonString(item["nametype"], &nametype) {
 				r.paths[name] = nametype
 			}
 		}
 	}
 	return r, ours, nil
+}
+
+// jsonString decodes raw into s only when it is a JSON string: null and other types are not.
+func jsonString(raw json.RawMessage, s *string) bool {
+	return len(raw) > 0 && raw[0] == '"' && json.Unmarshal(raw, s) == nil
 }
 
 func decimal(s string) bool {
@@ -307,8 +354,6 @@ func decimal(s string) bool {
 // pid 1, openat2 of pid 1.
 func (r tracksRecord) leftOutLeak() string {
 	switch {
-	case r.uring:
-		return ""
 	case r.pid == "1" && r.nr == unix.SYS_BPF:
 		return "bpf of pid 1"
 	case r.pid == "1" && r.nr == unix.SYS_OPENAT2:
@@ -324,11 +369,14 @@ func (r tracksRecord) leftOutLeak() string {
 // guest under its key; modprobe's own load and removal.
 func (r tracksRecord) matches(p tracksProbe) []string {
 	if r.arch != archB64 {
-		return nil // URINGOP events carry no arch: none proves a part
+		return nil
 	}
 	var out []string
 	has := func(k string) bool { return slices.Contains(r.keys, k) }
 	switch {
+	case r.pid == p.pid && r.success == "yes" && has(keyHandle) && r.nr == unix.SYS_OPEN_BY_HANDLE_AT &&
+		r.args[2]&oTrunc != 0:
+		out = append(out, "open_by_handle_at")
 	case r.pid == p.pid && r.success == "yes":
 		for _, tr := range tracksTrees {
 			t := r.paths[filepath.Join(tr.dir, p.token)]
@@ -336,15 +384,17 @@ func (r tracksRecord) matches(p tracksProbe) []string {
 			case !has(tr.key):
 			case t == "CREATE" && r.nr == unix.SYS_OPENAT:
 				out = append(out, tr.part+":CREATE")
-			case t == "NORMAL" && r.nr == unix.SYS_OPENAT && r.a2&oTrunc != 0:
+			case t == "NORMAL" && r.nr == unix.SYS_OPENAT && r.args[2]&oTrunc != 0:
 				out = append(out, tr.part+":TRUNC")
+			case t == "NORMAL" && r.nr == unix.SYS_OPENAT2:
+				out = append(out, tr.part+":TRUNC2") // its flags are behind a pointer the record does not show
 			case t == "DELETE" && r.nr == unix.SYS_UNLINKAT:
 				out = append(out, tr.part+":DELETE")
 			}
 		}
 	case r.pid == p.pid && r.success == "no":
 		for _, c := range tracksCalls {
-			if has(c.key) && r.nr == c.nr {
+			if has(c.key) && r.nr == c.nr && (c.a0 == anyArg || r.args[0] == c.a0) {
 				out = append(out, c.part)
 			}
 		}
