@@ -218,6 +218,10 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		for _, s := range CanaryStages() {
 			names = append(names, CanaryFact(s.Name, CanaryFirstMS), CanaryFact(s.Name, CanaryUnknownMS), CanaryFact(s.Name, CanaryOKMS))
 		}
+	case rangejob.MethodSensorDown:
+		for _, s := range SensorStages() {
+			names = append(names, SensorFact(s.Name, SensorUnknownMS))
+		}
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -325,6 +329,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeRSS(tr, o)
 	case rangejob.MethodCanary:
 		return judgeCanary(tr, o)
+	case rangejob.MethodSensorDown:
+		return judgeSensorDown(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

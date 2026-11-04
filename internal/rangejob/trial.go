@@ -45,6 +45,7 @@ const (
 	MetricStatus            = "status_false_ok"
 	MetricRSS               = "rss_mib"
 	MetricCanary            = "canary_interval_s"
+	MetricSensorDown        = "sensor_down_s"
 )
 
 // InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
@@ -96,7 +97,8 @@ const InjectAuditSet = "audit-set"
 // audit-set trial asks the kernel for audit changes as auditstat's uid under -e 2 (ADR 0038), a status trial runs
 // the CLI unprivileged after each break of the floor (ADR 0048), an RSS trial samples the resident memory of the
 // recorder's units under load (rss_mib), a canary trial times the collector's canary quiet and with Laurel and then
-// auditd frozen (ADR 0017).
+// auditd frozen (ADR 0017), a sensor-down trial times health UNKNOWN after Laurel is killed and auditd stopped and
+// tries auditctl -e 0 (ADR 0059).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -113,6 +115,7 @@ const (
 	MethodStatus           = "status"
 	MethodRSS              = "rss"
 	MethodCanary           = "canary"
+	MethodSensorDown       = "sensor-down"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -157,6 +160,8 @@ func (tr Trial) Method() string {
 		return rssMethod(tr, true)
 	case tr.Metric == MetricCanary && tr.Load == (Load{}):
 		return MethodCanary
+	case tr.Metric == MetricSensorDown && tr.Load == (Load{}):
+		return MethodSensorDown
 	}
 	return ""
 }
@@ -300,6 +305,9 @@ var trials = slices.Concat([]Trial{
 		// as the rules locked by -e 2 cannot drop the canary's.
 		{Name: "canary", Metric: MetricCanary, Wall: 13 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch, Count: 2},
 	},
+	// sensor_down_s (ADR 0059): each run kills Laurel, stops auditd and tries -e 0; 21 runs for the method's 20.
+	repeated(Trial{Name: "sensor-down", Metric: MetricSensorDown, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1,
+		Scratch: StoreScratch, Count: 3}, 7),
 	// silence_alarm_s at its real limit, one trial per cause; announced_quiet_max_h with the range's 20 min
 	// cap, a trend, as its 24 h are decided on the Pi (ADR 0036, points 2 and 3).
 	[]Trial{

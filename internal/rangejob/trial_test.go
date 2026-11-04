@@ -138,6 +138,11 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricCanary, Failure: FailKill}, ""},
 		{Trial{Metric: MetricCanary, Inject: InjectDispatcher}, ""},
 		{Trial{Metric: MetricCanary, Inject: InjectStatus}, ""},
+		{Trial{Metric: MetricSensorDown}, MethodSensorDown},
+		{Trial{Metric: MetricSensorDown, Load: Load{Kind: LoadExec, Rate: 1, Seconds: 10}}, ""},
+		{Trial{Metric: MetricSensorDown, Failure: FailKill}, ""},
+		{Trial{Metric: MetricSensorDown, Inject: InjectAuditdCrash}, ""},
+		{Trial{Metric: MetricSensorDown, Inject: InjectStatus}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -216,6 +221,23 @@ func TestRSSHasAnOOMControl(t *testing.T) {
 	if len(controls) != 1 || controls[0].Name != "rss-oom-control" || controls[0].Expect != ExpectMiss ||
 		controls[0].Method() != MethodRSS || controls[0].Count < 1 {
 		t.Errorf("rss controls %+v", controls)
+	}
+}
+
+// sensor_down_s's sensor-down rows run the 21 its method names, each deciding, not a control or a trend.
+func TestSensorDownTrialsAreTheAcceptance(t *testing.T) {
+	runs := 0
+	for _, tr := range Trials() {
+		if tr.Metric != MetricSensorDown || !strings.HasPrefix(tr.Name, "sensor-down-") {
+			continue
+		}
+		if tr.Method() != MethodSensorDown || tr.Trend || tr.Expect != "" || tr.Count > MaxTrials || len(tr.Name) > 32 {
+			t.Errorf("%s: method %q, trend %v, expect %q, count %d", tr.Name, tr.Method(), tr.Trend, tr.Expect, tr.Count)
+		}
+		runs += tr.Count
+	}
+	if runs != 21 {
+		t.Errorf("sensor-down runs %d, not 21", runs)
 	}
 }
 
