@@ -102,7 +102,8 @@ const (
 // cannot read the store's leaves, or is still reading back the ledger's last batch. ReasonLogCap: the ledger's log
 // reached host_log_cap_gib; only the ledger logs it (ADR 0036). ReasonAuditStale: auditstat's report or auditd's
 // state is not fresh; ReasonDispatcher: auditd's dispatcher overflowed; ReasonAuditd: auditd is not running, audit is
-// not locked, or auditd restarted (ADR 0038, point 4). A new reason widens Decode: the Pi gets it first.
+// not locked, or auditd restarted (ADR 0038, point 4); ReasonRulesDiffer: the loaded rules or the status fields a
+// rules file sets are not the shipped ones (ADR 0059). A new reason widens Decode: the Pi gets it first.
 type Reason byte
 
 // The reasons of the collector's health (ADR 0017, ADR 0027 point 6).
@@ -118,6 +119,7 @@ const (
 	ReasonAuditStale         Reason = 8
 	ReasonDispatcher         Reason = 9
 	ReasonAuditd             Reason = 10
+	ReasonRulesDiffer        Reason = 11
 )
 
 // Health is the collector's state, sent beside the store (ADR 0017, point 7); Unstored counts the
@@ -191,7 +193,7 @@ func (l Loss) check() error {
 func (h Health) check() error {
 	switch {
 	case h.State == StateOK && h.Reason == ReasonNone:
-	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonAuditd:
+	case h.State == StateUnknown && h.Reason >= ReasonStarting && h.Reason <= ReasonRulesDiffer:
 	default:
 		return errors.New("entry: health state and reason do not match")
 	}

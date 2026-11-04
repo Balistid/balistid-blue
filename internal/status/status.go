@@ -147,4 +147,6 @@ var reasons = map[entry.Reason]struct{ name, hint string }{
 		"auditd's dispatcher dropped events before Laurel: records were lost; journalctl -u auditd.service"},
 	entry.ReasonAuditd: {"auditd",
 		"auditd is not running, restarted, or audit is not locked; systemctl status auditd.service"},
+	entry.ReasonRulesDiffer: {"rules-differ",
+		"the loaded audit rules or -b, -f, -r differ from the installed balistid.rules; auditctl -l, auditctl -s, then reboot"},
 }

@@ -730,7 +730,7 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-missed"
 	case !w.Canary.SeenSince(later(w.connectedAt, w.openedAt)):
 		h = "UNKNOWN canary-pending"
-	case audit != "": // ADR 0038, point 4: 9, 10, 8, then the stream's 6
+	case audit != "": // ADR 0038, point 4, and ADR 0059: 9, 11, 10, 8, then the stream's 6
 		h = audit
 	case w.streamFault(): // last: every other reason stays recorded as it changes (ADR 0017, point 5)
 		h = streamUnknown

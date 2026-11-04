@@ -2,6 +2,7 @@ package collector
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +27,11 @@ type auditFake struct {
 	stateErr  error
 }
 
-// newAuditFake is a healthy auditd 100 with the rules locked, no loss and no overflow.
+// newAuditFake is a healthy auditd 100 with the shipped rules locked, no loss and no overflow.
 func newAuditFake() *auditFake {
-	return &auditFake{report: auditstat.Report{Seq: 1, Status: auditstat.Status{PID: 100, Enabled: 2}}, mtime: 1}
+	sh := auditstat.Shipped()
+	return &auditFake{report: auditstat.Report{Seq: 1, Rules: sh.Rules, Status: auditstat.Status{PID: 100, Enabled: 2,
+		Failure: sh.Failure, RateLimit: sh.RateLimit, BacklogLimit: sh.BacklogLimit, BacklogWaitTime: sh.BacklogWaitTime}}, mtime: 1}
 }
 
 func (f *auditFake) set(fn func(*auditFake)) {
@@ -52,6 +55,7 @@ func (f *auditFake) audit(seenPath, bootID string) *Audit {
 			defer f.mu.Unlock()
 			return f.overflow, f.mtime, f.stateErr
 		},
+		shipped:  auditstat.Shipped(),
 		seenPath: seenPath, bootID: bootID,
 	}
 }
@@ -429,6 +433,89 @@ func TestOverflowHoldsWhileTheFlagReadsYes(t *testing.T) {
 	}
 }
 
+// A fresh report of other rules is 11 at once, without the first 15 s, and journaled with what it shows; the
+// shipped rules again end it. A stale one is 8, whatever it says.
+func TestRulesDifferAtOnce(t *testing.T) {
+	f := newAuditFake()
+	f.set(func(f *auditFake) { f.report.Rules.Digest[0] ^= 1 })
+	r := newRig(t)
+	j := &journal{}
+	r.w.Log = slog.New(slog.NewTextHandler(j, nil))
+	r.w.Audit = f.audit(seenPath(t), "boot")
+	r.start(nil)
+	r.settle()
+	healthy(r)
+	r.step(time.Second)
+	if health(r) != rulesDiffer {
+		t.Fatalf("health %q 1 s after the start with other rules", health(r))
+	}
+	if s := j.String(); strings.Count(s, "the loaded audit rules differ") != 1 || !strings.Contains(s, "digest=01") {
+		t.Errorf("journaled once with the digest: %s", s)
+	}
+	f.set(func(f *auditFake) { f.report.Rules = auditstat.Shipped().Rules })
+	stepFresh(r, f, 5*time.Second)
+	if health(r) != "OK" {
+		t.Fatalf("health %q with the shipped rules", health(r))
+	}
+	f.set(func(f *auditFake) { f.report.Rules.Count++ })
+	stepFresh(r, f, 15*time.Second)
+	r.step(16 * time.Second) // auditstat stopped: the report is not fresh
+	if health(r) != auditStale {
+		t.Fatalf("health %q with a stale report of other rules", health(r))
+	}
+}
+
+// Each of the rule list and the four status fields a rules file sets is 11 alone; what the kernel counts is not.
+func TestRulesDifferOnEachLoadedField(t *testing.T) {
+	for name, c := range map[string]struct {
+		change func(*auditstat.Report)
+		want   string
+	}{
+		"count":             {func(r *auditstat.Report) { r.Rules.Count = 6 }, rulesDiffer},
+		"digest":            {func(r *auditstat.Report) { r.Rules.Digest[31] ^= 0x80 }, rulesDiffer},
+		"failure":           {func(r *auditstat.Report) { r.Status.Failure = 2 }, rulesDiffer},
+		"rate limit":        {func(r *auditstat.Report) { r.Status.RateLimit = 100 }, rulesDiffer},
+		"backlog limit":     {func(r *auditstat.Report) { r.Status.BacklogLimit = 8192 }, rulesDiffer},
+		"backlog wait time": {func(r *auditstat.Report) { r.Status.BacklogWaitTime = 0 }, rulesDiffer},
+		"lost":              {func(r *auditstat.Report) { r.Status.Lost = 0 }, "OK"},
+		"backlog":           {func(r *auditstat.Report) { r.Status.Backlog = 900 }, "OK"},
+		"wait actual":       {func(r *auditstat.Report) { r.Status.BacklogWaitTimeActual = 9 }, "OK"},
+		"mask":              {func(r *auditstat.Report) { r.Status.Mask = 4 }, "OK"},
+	} {
+		f := newAuditFake()
+		r := auditRig(t, f, seenPath(t), "boot")
+		healthy(r)
+		f.set(func(f *auditFake) { c.change(&f.report) })
+		stepFresh(r, f, 5*time.Second)
+		if health(r) != c.want {
+			t.Errorf("%s: health %q, want %q", name, health(r), c.want)
+		}
+	}
+}
+
+// 11 comes after the dispatcher's 9 and before 10, and only where health would otherwise be OK.
+func TestRulesDifferInOrder(t *testing.T) {
+	f := newAuditFake()
+	f.set(func(f *auditFake) { f.report.Rules.Count++ })
+	r := auditRig(t, f, seenPath(t), "boot")
+	healthy(r)
+	f.set(func(f *auditFake) { f.report.Status.PID = 0 })
+	stepFresh(r, f, 20*time.Second)
+	if health(r) != rulesDiffer {
+		t.Fatalf("health %q with other rules and no auditd", health(r))
+	}
+	f.set(func(f *auditFake) { f.overflow = true })
+	stepFresh(r, f, time.Second)
+	if health(r) != auditOverflow {
+		t.Fatalf("health %q with other rules and the flag yes", health(r))
+	}
+	r.w.Links.Disconnected(nil)
+	r.step(0)
+	if health(r) != "UNKNOWN laurel-disconnected" {
+		t.Fatalf("health %q: the audit's reasons only where health would be OK", health(r))
+	}
+}
+
 // A new auditd pid, not the first the collector sees, is 10 over any other reason until that auditd's first fresh
 // state or 15 s; the first pid is not, nor a pid gone to 0.
 func TestNewAuditdPIDHoldsUnknown(t *testing.T) {
@@ -497,7 +584,7 @@ func TestNewPIDAcrossACollectorRestart(t *testing.T) {
 // The audit's health strings map to their reasons, and kernel and dispatcher losses to their stages.
 func TestAuditHealthAndLossEntries(t *testing.T) {
 	for h, want := range map[string]entry.Reason{auditStale: entry.ReasonAuditStale, auditOverflow: entry.ReasonDispatcher,
-		auditdDown: entry.ReasonAuditd, auditdRestarted: entry.ReasonAuditd} {
+		auditdDown: entry.ReasonAuditd, auditdRestarted: entry.ReasonAuditd, rulesDiffer: entry.ReasonRulesDiffer} {
 		if e, err := healthEntry(h, 0); err != nil || e.State != entry.StateUnknown || e.Reason != want {
 			t.Errorf("%s: %+v, %v", h, e, err)
 		}
