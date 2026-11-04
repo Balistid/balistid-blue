@@ -141,6 +141,12 @@ func run() error {
 		return fmt.Errorf("canary: %w", err)
 	}
 	canaryErr := exec.CommandContext(ctx, "/usr/bin/true", canaryToken).Run() //nolint:gosec // our own random token
+	// Root covering its tracks (ADR 0061) and io_uring's two probes, whose set up it records, before the read.
+	tracks := coverTracks(ctx)
+	add("io_uring_sysctl", readTrim(ioUringSysctl))
+	add("io_uring_off", ioUringSetup())
+	add("io_uring_on", withIoUring("0"))
+	_ = withIoUring("2")
 	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	lines, readErr := laurelLines(ctx, selfTestLines)
@@ -148,12 +154,12 @@ func run() error {
 	add("e0_recorded", yesNo(readErr == nil && rangeguest.HasRefusedDisable(bytes.NewReader(lines))))
 	// The collector's own canary went through the watch rule and Laurel's socket into its store.
 	add("collector_canary", yesNo(readErr == nil && rangeguest.HasRuleKey(bytes.NewReader(lines), collectorCanaryKey)))
+	tracksFact := tracksFound(lines, tracks)
+	if readErr != nil {
+		tracksFact = "unread: " + readStatus(readErr)
+	}
+	add("tracks", tracksFact)
 	printLines(lines, "audit_enabled")
-
-	add("io_uring_sysctl", readTrim(ioUringSysctl))
-	add("io_uring_off", ioUringSetup())
-	add("io_uring_on", withIoUring("0"))
-	_ = withIoUring("2")
 
 	// The ledger anchored what the collector committed, under the range key (ADR 0027).
 	add("ledger_anchored", ledgerAnchored(ctx))

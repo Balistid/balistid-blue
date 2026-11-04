@@ -57,7 +57,7 @@ SERVICE = {
     "User": "balistid-collector",
     "Group": "balistid-collector",
     "SupplementaryGroups": "balistid-auditreport balistid-auditlog",  # ADR 0038, point 2
-    "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v2",
+    "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v3",
     "StateDirectory": "balistid/collector",
     "StateDirectoryMode": "0700",
     "RuntimeDirectory": "balistid-collector",  # the report for balistid status (ADR 0048)
@@ -236,6 +236,30 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertEqual([l for l in rules if l.startswith("-w ")], [watch])
         self.assertLess(rules.index(watch), rules.index("-e 2"))
         self.assertEqual(rules[-1], "-e 2")
+
+    def test_rules_leave_out_exactly_the_units_that_write_our_state(self):
+        # ADR 0061, point 2: every unit whose program writes under /var/lib/balistid has its never rule, after the
+        # canary's watch (the exit filter takes the first match) and before the rule that records everyone else.
+        rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
+                 if l and not l.startswith("#")]
+        writers = set()
+        for unit in sorted((REPO / "deploy").glob("*/*.service")):
+            service = parse_unit(unit.read_text()).get("Service", {})
+            for line in service.get("ExecStart", []):
+                argv = shlex.split(line)
+                if any(s.startswith("balistid/") for s in service.get("StateDirectory", [])) or \
+                        any(a.startswith("/var/lib/balistid/") for a in argv):
+                    writers.add(argv[0])
+        never = [l for l in rules if l.startswith("-a never,exit -F dir=/var/lib/balistid ")]
+        self.assertEqual(sorted(never), [f"-a never,exit -F dir=/var/lib/balistid -F exe={w}" for w in sorted(writers)])
+        record = "-a always,exit -F dir=/var/lib/balistid -F perm=wa -k balistid-state"
+        canary = next(l for l in rules if l.startswith("-w "))
+        self.assertTrue(all(rules.index(canary) < rules.index(l) < rules.index(record) for l in never))
+        self.assertIn(BINARY, writers)
+        guest = (REPO / "cmd" / "balistid-range-guest" / "tracks.go").read_text()
+        left_out = re.findall(r'^\t"(/[^"]+)",$', guest.split("var tracksLeftOut = []string{", 1)[1].split("}", 1)[0], re.M)
+        excluded = [l.split("-F exe=", 1)[1] for l in rules if l.startswith("-a never,exit -F dir=") and "-F exe=" in l]
+        self.assertEqual(sorted(left_out), sorted(excluded))
 
     def test_laurel_writes_to_the_collector_socket(self):
         # ADR 0016: Laurel's one output is the socket the collector's unit listens on, not a log file.
