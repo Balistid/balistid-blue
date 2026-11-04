@@ -17,6 +17,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var sampleRules = Rules{Count: 7, Digest: [32]byte{0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
+	0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab}}
+
 var sample = Status{Mask: 0, Enabled: 2, Failure: 1, PID: 412, RateLimit: 0, BacklogLimit: 65536, Lost: 7, Backlog: 3,
 	FeatureBitmap: 0x7f, BacklogWaitTime: 60000, BacklogWaitTimeActual: 12}
 
@@ -99,18 +102,19 @@ func TestReportVector(t *testing.T) {
 		hex.EncodeToString([]byte(Label)), "00", "0000000000000003", // label, seq
 		"00000000", "00000002", "00000001", "0000019c", "00000000", "00010000", // mask enabled failure pid rate backlog_limit
 		"00000007", "00000003", "0000007f", "0000ea60", "0000000c", // lost backlog features wait wait_actual
+		"00000007", strings.Repeat("ab", 32), // rule count, digest
 	}, "")
-	b := Report{Seq: 3, Status: sample}.Encode()
-	if hex.EncodeToString(b) != want || len(b) != ReportBytes {
+	b := Report{Seq: 3, Status: sample, Rules: sampleRules}.Encode()
+	if hex.EncodeToString(b) != want || len(b) != ReportBytes || ReportBytes != 110 {
 		t.Fatalf("report %x\nwant   %s", b, want)
 	}
-	if r, err := DecodeReport(b); err != nil || r != (Report{Seq: 3, Status: sample}) {
+	if r, err := DecodeReport(b); err != nil || r != (Report{Seq: 3, Status: sample, Rules: sampleRules}) {
 		t.Fatalf("%+v %v", r, err)
 	}
 	for name, bad := range map[string][]byte{
 		"short":    b[:len(b)-1],
 		"trailing": append(bytes.Clone(b), 0),
-		"label":    append([]byte("balistid/auditstat/v2"), b[len(Label):]...),
+		"label":    append([]byte("balistid/auditstat/v1"), b[len(Label):]...),
 		"empty":    nil,
 	} {
 		if _, err := DecodeReport(bad); err == nil {
@@ -137,7 +141,7 @@ func FuzzDecodeReply(f *testing.F) {
 
 // Whatever DecodeReport accepts, Encode gives back byte for byte.
 func FuzzDecodeReport(f *testing.F) {
-	f.Add(Report{Seq: 3, Status: sample}.Encode())
+	f.Add(Report{Seq: 3, Status: sample, Rules: sampleRules}.Encode())
 	f.Fuzz(func(t *testing.T, b []byte) {
 		r, err := DecodeReport(b)
 		if err != nil {
@@ -149,40 +153,78 @@ func FuzzDecodeReport(f *testing.F) {
 	})
 }
 
-// answer is a kernel that replies with make(seq) from port, or fails with err.
-func answer(make func(seq uint32) []byte, port uint32, err error) exchange {
-	return func(req []byte) ([]byte, uint32, error) {
-		if err != nil {
-			return nil, 0, err
-		}
-		return make(binary.NativeEndian.Uint32(req[8:])), port, nil
+// kernel is a fake audit socket: each request is answered with what reply gives for its type and seq, a datagram
+// at a time from port, or send fails with err.
+func kernel(reply func(typ uint16, seq uint32) [][]byte, port uint32, err error) link {
+	var queue [][]byte
+	return link{
+		send: func(req []byte) error {
+			if err != nil {
+				return err
+			}
+			queue = reply(binary.NativeEndian.Uint16(req[4:]), binary.NativeEndian.Uint32(req[8:]))
+			return nil
+		},
+		recv: func() ([]byte, uint32, error) {
+			if len(queue) == 0 {
+				return nil, 0, syscall.EAGAIN // SO_RCVTIMEO's end
+			}
+			b := queue[0]
+			queue = queue[1:]
+			return b, port, nil
+		},
 	}
+}
+
+// shipped answers AUDIT_GET with sample and AUDIT_LIST_RULES with rules then the list's end.
+func shipped(typ uint16, seq uint32) [][]byte {
+	if typ == unix.AUDIT_GET {
+		return [][]byte{reply(seq, sample)}
+	}
+	return append(rulesReply(seq, testRules...), done(seq))
 }
 
 // A poll writes the kernel's answer whole and group-readable; anything else leaves the report as it was, so it ages.
 func TestPollWritesOnlyTheKernelsAnswer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "report")
-	ok := answer(func(seq uint32) []byte { return reply(seq, sample) }, 0, nil)
-	if err := poll(t.Context(), ok, 7, path); err != nil {
+	if err := poll(t.Context(), kernel(shipped, 0, nil), 7, path); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o640 {
 		t.Fatalf("report %v, %v", fi, err)
 	}
-	if r, err := ReadReport(path, os.Getuid()); err != nil || r != (Report{Seq: 7, Status: sample}) {
+	want := Report{Seq: 7, Status: sample, Rules: Rules{Count: uint32(len(testRules)), Digest: testDigest(testRules...)}}
+	if r, err := ReadReport(path, os.Getuid()); err != nil || r != want {
 		t.Fatalf("%+v %v", r, err)
 	}
 	before, err := os.ReadFile(path) //nolint:gosec // the test's own file
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, ask := range map[string]exchange{
-		"refused":      answer(nil, 0, syscall.EPERM),
-		"stale":        answer(func(seq uint32) []byte { return reply(seq-1, sample) }, 0, nil),
-		"another port": answer(func(seq uint32) []byte { return reply(seq, sample) }, 77, nil),
-		"longer":       answer(func(seq uint32) []byte { return append(reply(seq, sample), 0, 0, 0, 0) }, 0, nil),
+	for name, k := range map[string]link{
+		"refused":      kernel(nil, 0, syscall.EPERM),
+		"another port": kernel(shipped, 77, nil),
+		"stale status": kernel(func(typ uint16, seq uint32) [][]byte { return shipped(typ, seq-2) }, 0, nil),
+		"longer status": kernel(func(typ uint16, seq uint32) [][]byte {
+			if typ == unix.AUDIT_GET {
+				return [][]byte{append(reply(seq, sample), 0, 0, 0, 0)}
+			}
+			return shipped(typ, seq)
+		}, 0, nil),
+		"no list end": kernel(func(typ uint16, seq uint32) [][]byte {
+			if typ == unix.AUDIT_GET {
+				return shipped(typ, seq)
+			}
+			return rulesReply(seq, testRules...)
+		}, 0, nil),
+		"the status's seq on the list": kernel(func(typ uint16, seq uint32) [][]byte {
+			if typ == unix.AUDIT_GET {
+				return shipped(typ, seq)
+			}
+			return shipped(typ, seq-1)
+		}, 0, nil),
 	} {
-		if err := poll(t.Context(), ask, 8, path); err == nil {
+		if err := poll(t.Context(), k, 8, path); err == nil {
 			t.Errorf("%s: written", name)
 		}
 		if after, err := os.ReadFile(path); err != nil || !bytes.Equal(after, before) { //nolint:gosec // the test's own file
@@ -199,11 +241,14 @@ func TestLoopLogsTheFirstFailure(t *testing.T) {
 	defer slog.SetDefault(prev)
 	ctx, cancel := context.WithCancel(t.Context())
 	polls := 0
-	refuse := func([]byte) ([]byte, uint32, error) {
-		if polls++; polls == 2 {
-			cancel()
-		}
-		return nil, 0, syscall.EPERM
+	refuse := link{
+		send: func([]byte) error {
+			if polls++; polls == 2 {
+				cancel()
+			}
+			return syscall.EPERM
+		},
+		recv: func() ([]byte, uint32, error) { return nil, 0, syscall.EAGAIN },
 	}
 	loop(ctx, refuse, filepath.Join(t.TempDir(), "report"), time.Millisecond)
 	if n := strings.Count(logs.String(), "no report"); n != 1 || polls != 2 {

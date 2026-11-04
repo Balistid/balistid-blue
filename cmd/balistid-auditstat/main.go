@@ -1,5 +1,6 @@
-// balistid-auditstat reports the kernel's audit status every 5 s for the collector (ADR 0038). It is the one
-// long-running process with CAP_AUDIT_CONTROL and sends only AUDIT_GET (ADR 0007, R13).
+// balistid-auditstat reports the kernel's audit status and loaded rules every 5 s for the collector (ADR 0038,
+// ADR 0059). It is the one long-running process with CAP_AUDIT_CONTROL and sends only AUDIT_GET and
+// AUDIT_LIST_RULES (ADR 0007, R13).
 package main
 
 import (
