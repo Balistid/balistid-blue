@@ -69,20 +69,31 @@ func rulesFor(tr rangejob.Trial) (string, bool) {
 }
 
 // runSensorDownRules measures sensor_down_s's rules shapes (ADR 0059, point 5): it proves the injected rules loaded
-// and locked, watches for RulesWatch, then reads the store once for the collector's health states over the watch.
+// and locked, watches for RulesWatch, then reads the store once for the collector's health states over the watch and
+// its first stored canary, which the time to rules-differ starts from.
 func runSensorDownRules(ctx context.Context, tr rangejob.Trial, r *report) error {
 	r.add(rangevm.FactRulesProof, rulesProof(tr.Inject, output(ctx, "/usr/bin/auditctl", "-l"),
 		rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))))
+	owner, err := collectorProcess(ctx)
+	if err != nil {
+		return r.fail(err.Error())
+	}
 	if !pause(ctx, rangevm.RulesWatch) {
 		return r.fail("watch: " + ctx.Err().Error())
 	}
 	until := time.Now().UnixNano()
 	var timeline healthTimeline
-	each := func(x rawrecord.Record) error { return timeline.add(x) }
+	var canaryAt int64
+	each := func(x rawrecord.Record) error {
+		if _, _, ok := canarySent(x, owner); ok && x.Received > 0 && (canaryAt == 0 || x.Received < canaryAt) {
+			canaryAt = x.Received
+		}
+		return timeline.add(x)
+	}
 	if err := readStore(ctx, each, each); err != nil {
 		return r.fail("store: " + err.Error())
 	}
-	watch, states, differ := timeline.states(until)
+	watch, states, differ := timeline.states(until, canaryAt)
 	r.add(rangevm.FactRulesWatchMS, watch)
 	r.add(rangevm.FactRulesStates, states)
 	r.add(rangevm.FactRulesDifferMS, differ)
@@ -122,13 +133,12 @@ func rulesProof(inject, list string, status map[string]string) string {
 }
 
 // states is how long the timeline runs from its first record to until, in ms; its states up to until, each once per
-// change, joined by rangevm.StatesSep; and the ms from the first stored canary to the first rules-differ, or
-// rangevm.CanaryNone. The first change away from the first canary-pending is no later than the tick that stored the
-// first canary, so the time is never shorter than the real one, and a reconnect after it does not reset it.
-func (t healthTimeline) states(until int64) (watch, states, differ string) {
+// change, joined by rangevm.StatesSep; and the ms from canaryAt, when the collector received its first stored canary
+// (0 for none), to the first rules-differ, or rangevm.CanaryNone. The collector sees a canary only once it received
+// it, and names rules-differ only after it saw one, so the time is never shorter than the real one.
+func (t healthTimeline) states(until, canaryAt int64) (watch, states, differ string) {
 	var out []string
-	var from, stored int64
-	pending := false
+	var from int64
 	differ = rangevm.CanaryNone
 	for _, h := range t {
 		if h.at <= 0 || h.at > until {
@@ -140,15 +150,8 @@ func (t healthTimeline) states(until int64) (watch, states, differ string) {
 		if len(out) > 0 && out[len(out)-1] == h.state {
 			continue
 		}
-		switch {
-		case stored != 0:
-		case h.state == canaryPending:
-			pending = true
-		case pending:
-			stored = h.at
-		}
-		if h.state == rulesDiffer && differ == rangevm.CanaryNone && stored != 0 {
-			differ = msString(h.at - stored)
+		if h.state == rulesDiffer && differ == rangevm.CanaryNone && canaryAt != 0 && h.at >= canaryAt {
+			differ = msString(h.at - canaryAt)
 		}
 		out = append(out, h.state)
 	}
