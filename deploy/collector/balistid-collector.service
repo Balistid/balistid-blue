@@ -23,7 +23,7 @@ Group=balistid-collector
 # auditstat's report and auditd's state file, each readable only by its group (ADR 0038 point 2); auditd's
 # log_group also owns audit.log, hidden below.
 SupplementaryGroups=balistid-auditreport balistid-auditlog
-ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v2
+ExecStart=/usr/local/lib/balistid/balistid-collector -store /var/lib/balistid/collector/store -canary /var/lib/balistid/collector/canary -rule-version adr-0004-v3
 # Open and the canary refuse a directory anyone but the collector could write.
 StateDirectory=balistid/collector
 StateDirectoryMode=0700
