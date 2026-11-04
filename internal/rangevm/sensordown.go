@@ -188,7 +188,7 @@ func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 	if s, reported := f[FactRulesStates]; reported {
 		states := strings.Split(s, StatesSep)
 		differ, err := msOrNone(f[FactRulesDifferMS])
-		_, timed := f[FactRulesDifferMS]
+		pending, first := slices.Index(states, "UNKNOWN canary-pending"), slices.Index(states, stateRulesDiffer)
 		seen := fmt.Sprintf(" (states \"%s\")", Printable(s, 512))
 		if slices.ContainsFunc(states, func(st string) bool { return !collectorState(st) }) {
 			unproven = append(unproven, "a state no collector writes"+seen)
@@ -196,16 +196,18 @@ func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 		switch {
 		case slices.Contains(states, "OK"):
 			misses = append(misses, "health OK with rules that differ"+seen)
-		case !slices.Contains(states, stateRulesDiffer):
+		case first < 0:
 			misses = append(misses, "no rules-differ"+seen)
 		case states[len(states)-1] != stateRulesDiffer:
 			misses = append(misses, "health not rules-differ last"+seen)
-		case timed && err == nil && differ < 0:
-			misses = append(misses, "rules-differ not after a stored canary"+seen)
-		case timed && err == nil && differ > sensorDownMS:
-			misses = append(misses, fmt.Sprintf("rules-differ %d ms after the first stored canary, over %d%s", differ, sensorDownMS, seen))
-		case timed && err != nil:
+		case err != nil:
 			unproven = append(unproven, "rules-differ's time is not a plain number or none")
+		case differ < 0:
+			misses = append(misses, "rules-differ not after a stored canary"+seen)
+		case differ > sensorDownMS:
+			misses = append(misses, fmt.Sprintf("rules-differ %d ms after the first stored canary, over %d%s", differ, sensorDownMS, seen))
+		case pending < 0 || pending > first:
+			unproven = append(unproven, "rules-differ timed without a canary-pending before it"+seen)
 		}
 	}
 	switch {
