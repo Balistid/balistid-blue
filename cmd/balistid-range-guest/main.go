@@ -63,6 +63,13 @@ func main() {
 			return
 		}
 	}
+	if len(os.Args) == 2 && os.Args[1] == rulesSetupArg {
+		if err := rulesSetup(); err != nil {
+			fmt.Fprintln(os.Stderr, "balistid-range-guest rules-setup:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == storeSetupArg {
 		if err := storeSetup(context.Background()); err != nil {
 			fmt.Fprintln(os.Stderr, "balistid-range-guest store-setup:", err)
@@ -126,6 +133,7 @@ func run() error {
 	add("auditstat_cap_eff", eff)
 	add("auditstat_cap_amb", amb)
 	add("auditstat_report", auditstatReport(ctx))
+	add("audit_rules", auditRules())
 
 	// The canary and the disable come back in one read of the store: each read restarts the collector.
 	canaryToken, err := token("balistid-canary-")

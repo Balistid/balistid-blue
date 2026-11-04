@@ -51,6 +51,8 @@ var imageFiles = []struct {
 }{
 	{"range/balistid-range-guest.service", "usr/lib/systemd/system/balistid-range-guest.service", 0o644},
 	{"range/balistid-range-store.service", "usr/lib/systemd/system/balistid-range-store.service", 0o644},
+	{"range/balistid-range-rules.service", "usr/lib/systemd/system/balistid-range-rules.service", 0o644},
+	{"range/audit-rules-range.conf", "usr/lib/systemd/system/audit-rules.service.d/range.conf", 0o644},
 	{"range/balistid-collector-range.conf", "usr/lib/systemd/system/balistid-collector.service.d/range.conf", 0o644},
 	{"range/balistid-job.conf", "usr/lib/sysusers.d/balistid-job.conf", 0o644},
 	{"deploy/collector/balistid-collector.service", "usr/lib/systemd/system/balistid-collector.service", 0o644},

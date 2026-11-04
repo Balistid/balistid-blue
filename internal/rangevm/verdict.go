@@ -84,6 +84,7 @@ var expected = map[string]string{
 	"auditstat_cap_eff":   capsAuditControl,
 	"auditstat_cap_amb":   capsAuditControl,
 	"auditstat_report":    "yes",
+	"audit_rules":         "pinned",
 	"collector_canary":    "yes",
 	"ledger_anchored":     "yes",
 	"ledger_cosigned":     "yes",

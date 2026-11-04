@@ -367,16 +367,20 @@ func TestAuditStaleAfter15s(t *testing.T) {
 	}
 }
 
-// Nothing read at all is not OK either, but only after the collector's first 15 s.
-func TestNothingReadIsStaleAfterTheFirst15s(t *testing.T) {
+// No report read yet is 8 at once: nothing says which rules are loaded (ADR 0059). A state file not read is 8 only
+// after the collector's first 15 s.
+func TestNothingReadIsStale(t *testing.T) {
 	f := newAuditFake()
-	f.set(func(f *auditFake) {
-		f.reportErr, f.stateErr = os.ErrNotExist, os.ErrNotExist
-	})
+	f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
 	r := auditRig(t, f, seenPath(t), "boot")
 	healthy(r)
+	if health(r) != auditStale {
+		t.Fatalf("health %q before the first report", health(r))
+	}
+	f.set(func(f *auditFake) { f.reportErr, f.stateErr = nil, os.ErrNotExist })
+	r.step(time.Second)
 	if health(r) != "OK" {
-		t.Fatalf("health %q in the first 15 s", health(r))
+		t.Fatalf("health %q with a report and no state file in the first 15 s", health(r))
 	}
 	r.step(15 * time.Second)
 	if health(r) != auditStale {

@@ -26,7 +26,8 @@ ends Laurel and leaves `pid` 0 in auditstat's report (`auditd-down`); auditd's u
 3. The collector pins the shipped rules in Go: count, digest, `-f`, `-r`, `-b`, `--backlog_wait_time`, and the
    SHA-256 of `deploy/audit/balistid.rules`, which a test ties to the file. A fresh report that differs in any of them
    is health reason 11 `UNKNOWN rules-differ`, at once, without the 15 s wait: it is evidence, not an absence. Order
-   9, 11, 10, 8. The Pi alerts on it at once. The range's self-test reads the pin against the real kernel.
+   9, 11, 10, 8. Until the collector has read a first report, health is 8 at once: an OK then would say nothing of
+   the rules (R6). The Pi alerts on 11 at once. The range's self-test reads the pin against the real kernel.
 4. `sensor-down`, 21 runs: from health OK, SIGKILL Laurel through a pidfd; once healthy again, SIGTERM auditd, hold
    20 s, start it; once healthy, `auditctl -e 0`. A stage is timed from a stamp right before its signal to the first
    health record not OK, which must be a state its failure causes: Laurel `laurel-disconnected` or `canary-pending`,

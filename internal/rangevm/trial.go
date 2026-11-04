@@ -331,6 +331,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeCanary(tr, o)
 	case rangejob.MethodSensorDown:
 		return judgeSensorDown(tr, o)
+	case rangejob.MethodSensorDownRules:
+		return judgeRulesDiffer(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

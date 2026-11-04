@@ -1,0 +1,14 @@
+# Range image only (ADR 0059, point 5): before audit-rules.service loads the rules, a rules trial's boot writes a last
+# rules file that differs from the repository's; every other boot fails here if such a file exists.
+[Unit]
+Description=Balistid Blue range: a rules trial's differing rules
+DefaultDependencies=no
+After=local-fs.target
+Before=audit-rules.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A trial's name and boot phase (ADR 0018, point 1): only a rules trial writes the file.
+ImportCredential=balistid.*
+ExecStart=/usr/lib/balistid-range/guest rules-setup

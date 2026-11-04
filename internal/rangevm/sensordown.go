@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
@@ -121,4 +122,72 @@ func failedStage(s SensorStage, f map[string]string) (misses, unproven []string)
 		misses = append(misses, fmt.Sprintf("UNKNOWN %d ms after the stamp, over %d", unknown, sensorDownMS))
 	}
 	return misses, unproven
+}
+
+// What a sensor-down rules trial (ADR 0059, point 5) reports: "yes" when auditctl, as root, shows the injected rules
+// file loaded and audit locked, or why not; how long it watched from the collector's first health record; and the
+// collector's health states over the watch, each once per change, joined by StatesSep.
+const (
+	FactRulesProof   = "rules_proof"
+	FactRulesWatchMS = "rules_watch_ms"
+	FactRulesStates  = "rules_states"
+	StatesSep        = "|"
+)
+
+// RulesWatch is how long a rules trial's guest watches the collector's health: two canaries' deadlines.
+const RulesWatch = 60 * time.Second
+
+// The states a rules trial is judged by: the collector's wait for its first canary over a connection, which every
+// other audit reason waits for, and the reason the rules must give.
+const (
+	stateCanaryPending = "UNKNOWN canary-pending"
+	stateRulesDiffer   = "UNKNOWN rules-differ"
+)
+
+func rulesFacts() []string {
+	return []string{FactTrial, FactPhase, FactKernel, FactRulesProof, FactRulesWatchMS, FactRulesStates}
+}
+
+// judgeRulesDiffer judges a sensor-down rules trial. A report with an unknown or repeated fact, or of another trial
+// or kernel, is INVALID. Health OK at any time, no rules-differ, a state other than canary-pending right before the
+// first one, so it came later than the tick that stored the first canary, or a last state other than rules-differ is
+// a MISS. A fact missing, the injection not proven or a watch under RulesWatch is INVALID, after every MISS.
+func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
+	f, missing, why := knownFacts(tr, o, rulesFacts())
+	if why != "" {
+		return Invalid, why
+	}
+	var misses, unproven []string
+	if missing != "" {
+		unproven = append(unproven, missing)
+	}
+	if p, reported := f[FactRulesProof]; reported && p != "yes" {
+		unproven = append(unproven, fmt.Sprintf("the injection is not proven: \"%s\"", Printable(p, 256)))
+	}
+	if w, reported := f[FactRulesWatchMS]; reported {
+		if ms, err := plainNumber(w); err != nil || ms < uint64(RulesWatch/time.Millisecond) {
+			unproven = append(unproven, fmt.Sprintf("watched \"%s\" ms, under %d", Printable(w, 32), RulesWatch/time.Millisecond))
+		}
+	}
+	if s, reported := f[FactRulesStates]; reported {
+		states := strings.Split(s, StatesSep)
+		first := slices.Index(states, stateRulesDiffer)
+		switch {
+		case slices.Contains(states, "OK"):
+			misses = append(misses, "health OK with rules that differ")
+		case first < 0:
+			misses = append(misses, "no rules-differ")
+		case first == 0 || states[first-1] != stateCanaryPending:
+			misses = append(misses, "rules-differ not right after the first canary was stored")
+		case states[len(states)-1] != stateRulesDiffer:
+			misses = append(misses, fmt.Sprintf("health \"%s\" last, not rules-differ", Printable(states[len(states)-1], 64)))
+		}
+	}
+	switch {
+	case len(misses) > 0:
+		return Miss, strings.Join(misses, "; ")
+	case len(unproven) > 0:
+		return Invalid, strings.Join(unproven, "; ")
+	}
+	return Pass, "never OK; rules-differ from the first stored canary to the end of the watch"
 }

@@ -109,3 +109,55 @@ func TestMeasuresOfASensorDownTrial(t *testing.T) {
 		t.Errorf("measures with a time that is none %v", m)
 	}
 }
+
+// rulesRun is a sound report of a rules trial, changed by name=value as sensorRun.
+func rulesRun(change ...string) Outcome {
+	base := map[string]string{FactRulesProof: "yes", FactRulesWatchMS: "60004", FactRulesStates: strings.Join([]string{
+		"UNKNOWN store: starting", "UNKNOWN laurel-disconnected", stateCanaryPending, stateRulesDiffer}, StatesSep)}
+	return probeRun("sensor-down-rules-extra-1", rulesFacts(), base, change...)
+}
+
+// Every path to PASS with a false or missing fact: the report, the injection not proven, a watch too short or not a
+// number are INVALID; OK at any time, no rules-differ, one not right after canary-pending, or another state last are
+// a MISS, and no INVALID hides one.
+func TestJudgeRulesDiffer(t *testing.T) {
+	join := func(s ...string) string { return FactRulesStates + "=" + strings.Join(s, StatesSep) }
+	invalid := []string{"canary=seen", "trial=sensor-down-1", "kernel=6.0.0",
+		"rules_proof=", "rules_proof=7 rules loaded, not 8", "rules_proof=yes ",
+		"rules_watch_ms=59999", "rules_watch_ms=none", "rules_watch_ms=x", "rules_watch_ms=", "rules_watch_ms=-1",
+	}
+	invalid = append(invalid, rulesFacts()...)
+	miss := []string{
+		join("OK"), join(stateCanaryPending, "OK", stateRulesDiffer), join(stateCanaryPending, stateRulesDiffer, "OK"),
+		join("OK", stateCanaryPending, stateRulesDiffer), join(stateCanaryPending), join(""), FactRulesStates + "=",
+		join(stateRulesDiffer), join("UNKNOWN laurel-disconnected", stateRulesDiffer),
+		join(stateCanaryPending, "UNKNOWN audit-stale", stateRulesDiffer),
+		join(stateCanaryPending, stateRulesDiffer, "UNKNOWN canary-missed"),
+		join(stateCanaryPending, "UNKNOWN rules-differ "), join(stateCanaryPending, "ok"),
+		// A MISS outranks an INVALID.
+		join("OK") + ",rules_proof=no", join(stateCanaryPending) + ",rules_watch_ms=1",
+	}
+	pass := []string{
+		join(stateCanaryPending, stateRulesDiffer),
+		join(stateCanaryPending, stateRulesDiffer, "UNKNOWN laurel-disconnected", stateCanaryPending, stateRulesDiffer),
+		"rules_watch_ms=60000",
+	}
+	judgeCases(t, "sensor-down-rules-extra-1", rulesRun, map[string][]string{Miss: miss, Invalid: invalid, Pass: pass})
+}
+
+// The states a rules trial is judged by are the collector's.
+func TestRulesStatesAreTheCollectorsHealth(t *testing.T) {
+	var src strings.Builder
+	for _, f := range []string{"../collector/writer.go", "../collector/audit.go"} {
+		b, err := os.ReadFile(f) //nolint:gosec // the two fixed sources above
+		if err != nil {
+			t.Fatal(err)
+		}
+		src.Write(b)
+	}
+	for _, s := range []string{stateCanaryPending, stateRulesDiffer} {
+		if !strings.Contains(src.String(), strconv.Quote(s)) {
+			t.Errorf("the collector sets no health %q", s)
+		}
+	}
+}
