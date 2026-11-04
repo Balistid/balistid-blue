@@ -23,11 +23,11 @@ func healthAt(received int64, data string) rawrecord.Record {
 }
 
 // startedRecord is the collector's started record as writer.go writes it: its argv facts under info.
-const startedRecord = `{"schema_version":1,"kind":"started","info":{"version":"v","boot_id":"b","rule_version":"adr-0004-v2"},"at":1,"note_seq":1}`
+const startedRecord = `{"schema_version":1,"kind":"started","info":{"version":"v","boot_id":"b","rule_version":"adr-0004-v3"},"at":1,"note_seq":1}`
 
 func refusedAt(received, firstAt int64, count int) rawrecord.Record {
 	return healthAt(received, fmt.Sprintf(`{"schema_version":1,"kind":"refused","socket":"collector.sock","count":%d,`+
-		`"causes":{"uid":%d},"first_at":%d,"last_at":%d,"at":%d,"rule_version":"adr-0004-v2","last_uid":0,"last_error":""}`,
+		`"causes":{"uid":%d},"first_at":%d,"last_at":%d,"at":%d,"rule_version":"adr-0004-v3","last_uid":0,"last_error":""}`,
 		count, count, firstAt, firstAt, firstAt))
 }
 
@@ -57,9 +57,9 @@ func TestRefusalScan(t *testing.T) {
 
 // A summary that is not whole is reported by its first fault and not counted.
 func TestRefusalScanNamesAFault(t *testing.T) {
-	const ok = `"socket":"collector.sock","count":2,"causes":{"uid":2},"first_at":1,"rule_version":"adr-0004-v2","last_uid":0`
+	const ok = `"socket":"collector.sock","count":2,"causes":{"uid":2},"first_at":1,"rule_version":"adr-0004-v3","last_uid":0`
 	for _, c := range []struct{ want, data string }{
-		{"rule_version", strings.Replace(ok, `"adr-0004-v2"`, `"adr-0004-v1"`, 1)},
+		{"rule_version", strings.Replace(ok, `"adr-0004-v3"`, `"adr-0004-v1"`, 1)},
 		{"socket", strings.Replace(ok, `"collector.sock"`, `"other.sock"`, 1)},
 		{"causes", strings.Replace(ok, `{"uid":2}`, `{"uid":1,"peer_error":1}`, 1)},
 		{"count", strings.Replace(ok, `"count":2`, `"count":0`, 1)},

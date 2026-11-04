@@ -1,5 +1,5 @@
 ## Balistid Blue floor-0 audit rules (ADR 0004). Installed only by balistid-install.
-## version: adr-0004-v2 (the collector's -rule-version names it in its started record)
+## version: adr-0004-v3 (the collector's -rule-version names it in its started record)
 ## -f 1 logs a failure instead of panicking; -r 0 so no rate limit drops records at the kernel. The
 ## backlog is a starting value; step 9.3 measures burst_rate against it.
 -D
@@ -18,6 +18,28 @@
 
 ## The collector's canary creates c-<n> here; its record proves the path to the store (ADR 0017, point 2).
 -w /var/lib/balistid/collector/canary -p w -k balistid-canary
+
+## Root covering its tracks (ADR 0061). The exit filter takes the first rule that matches, so each never rule
+## stands just before what it leaves out, and the canary's watch above stays first.
+## Kernel modules, kexec and eBPF; systemd (pid 1) attaches cgroup programs at every unit start. audit's i386 table
+## names kexec_load sys_kexec_load; i386 has no kexec_file_load.
+-a never,exit -F arch=b64 -S bpf -F pid=1
+-a never,exit -F arch=b32 -S bpf -F pid=1
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module,kexec_load,kexec_file_load,bpf -k balistid-kernel
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module,sys_kexec_load,bpf -k balistid-kernel
+## io_uring is disabled (deploy/sysctl); one that root re-enabled is recorded when set up.
+-a always,exit -F arch=b64 -S io_uring_setup,io_uring_register -k balistid-uring
+-a always,exit -F arch=b32 -S io_uring_setup,io_uring_register -k balistid-uring
+## Writes and removals under the journal, audit and unit config and our state, by any program but the tree's owner.
+-a never,exit -F dir=/var/log/journal -F exe=/usr/lib/systemd/systemd-journald
+-a always,exit -F dir=/var/log/journal -F perm=wa -k balistid-logs
+-a always,exit -F dir=/etc/audit -F perm=wa -k balistid-config
+-a always,exit -F dir=/etc/systemd -F perm=wa -k balistid-config
+-a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-collector
+-a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-ledger
+-a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-relay
+-a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-runner
+-a always,exit -F dir=/var/lib/balistid -F perm=wa -k balistid-state
 
 ## Last: no rule or state change until reboot.
 -e 2
