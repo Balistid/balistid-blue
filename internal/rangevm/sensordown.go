@@ -125,33 +125,31 @@ func failedStage(s SensorStage, f map[string]string) (misses, unproven []string)
 }
 
 // What a sensor-down rules trial (ADR 0059, point 5) reports: "yes" when auditctl, as root, shows the injected rules
-// file loaded and audit locked, or why not; how long it watched from the collector's first health record; and the
-// collector's health states over the watch, each once per change, joined by StatesSep.
+// file loaded and audit locked, or why not; how long it watched from the collector's first health record; the
+// collector's health states over the watch, each once per change, joined by StatesSep; and the ms from the first
+// stored canary to the first rules-differ, CanaryNone without both.
 const (
-	FactRulesProof   = "rules_proof"
-	FactRulesWatchMS = "rules_watch_ms"
-	FactRulesStates  = "rules_states"
-	StatesSep        = "|"
+	FactRulesProof    = "rules_proof"
+	FactRulesWatchMS  = "rules_watch_ms"
+	FactRulesStates   = "rules_states"
+	FactRulesDifferMS = "rules_differ_ms"
+	StatesSep         = "|"
 )
 
 // RulesWatch is how long a rules trial's guest watches the collector's health: two canaries' deadlines.
 const RulesWatch = 60 * time.Second
 
-// The states a rules trial is judged by: the collector's wait for its first canary over a connection, which every
-// other audit reason waits for, and the reason the rules must give.
-const (
-	stateCanaryPending = "UNKNOWN canary-pending"
-	stateRulesDiffer   = "UNKNOWN rules-differ"
-)
+// stateRulesDiffer is the collector's health a rules trial waits for.
+const stateRulesDiffer = "UNKNOWN rules-differ"
 
 func rulesFacts() []string {
-	return []string{FactTrial, FactPhase, FactKernel, FactRulesProof, FactRulesWatchMS, FactRulesStates}
+	return []string{FactTrial, FactPhase, FactKernel, FactRulesProof, FactRulesWatchMS, FactRulesStates, FactRulesDifferMS}
 }
 
 // judgeRulesDiffer judges a sensor-down rules trial. A report with an unknown or repeated fact, or of another trial
-// or kernel, is INVALID. Health OK at any time, no rules-differ, a state other than canary-pending right before the
-// first one, so it came later than the tick that stored the first canary, or a last state other than rules-differ is
-// a MISS. A fact missing, the injection not proven or a watch under RulesWatch is INVALID, after every MISS.
+// or kernel, is INVALID. Health OK at any time, no rules-differ, none timed from a stored canary or one over 10 s
+// after it, or a last state other than rules-differ is a MISS, its reason quoting the states. A fact missing, a time
+// not a number, the injection not proven or a watch under RulesWatch is INVALID, after every MISS.
 func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 	f, missing, why := knownFacts(tr, o, rulesFacts())
 	if why != "" {
@@ -171,16 +169,22 @@ func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	if s, reported := f[FactRulesStates]; reported {
 		states := strings.Split(s, StatesSep)
-		first := slices.Index(states, stateRulesDiffer)
+		differ, err := msOrNone(f[FactRulesDifferMS])
+		_, timed := f[FactRulesDifferMS]
+		seen := fmt.Sprintf(" (states \"%s\")", Printable(s, 512))
 		switch {
 		case slices.Contains(states, "OK"):
-			misses = append(misses, "health OK with rules that differ")
-		case first < 0:
-			misses = append(misses, "no rules-differ")
-		case first == 0 || states[first-1] != stateCanaryPending:
-			misses = append(misses, "rules-differ not right after the first canary was stored")
+			misses = append(misses, "health OK with rules that differ"+seen)
+		case !slices.Contains(states, stateRulesDiffer):
+			misses = append(misses, "no rules-differ"+seen)
 		case states[len(states)-1] != stateRulesDiffer:
-			misses = append(misses, fmt.Sprintf("health \"%s\" last, not rules-differ", Printable(states[len(states)-1], 64)))
+			misses = append(misses, "health not rules-differ last"+seen)
+		case timed && err == nil && differ < 0:
+			misses = append(misses, "rules-differ not after a stored canary"+seen)
+		case timed && err == nil && differ > sensorDownMS:
+			misses = append(misses, fmt.Sprintf("rules-differ %d ms after the first stored canary, over %d%s", differ, sensorDownMS, seen))
+		case timed && err != nil:
+			unproven = append(unproven, "rules-differ's time is not a plain number or none")
 		}
 	}
 	switch {
@@ -189,5 +193,6 @@ func judgeRulesDiffer(tr rangejob.Trial, o Outcome) (string, string) {
 	case len(unproven) > 0:
 		return Invalid, strings.Join(unproven, "; ")
 	}
-	return Pass, "never OK; rules-differ from the first stored canary to the end of the watch"
+	return Pass, fmt.Sprintf("never OK; rules-differ %s ms after the first stored canary, to the end of the watch",
+		f[FactRulesDifferMS])
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,17 +102,42 @@ func TestRulesProofShowsTheInjection(t *testing.T) {
 	}
 }
 
-// The states are each change once, up to until, and the watch runs from the first record.
+// The states are each change once, up to until, the watch runs from the first record, and rules-differ is timed from
+// the change away from the last canary-pending before it, the tick that stored the canary.
 func TestHealthStatesOnceEachUpToTheWatchEnd(t *testing.T) {
-	sec := func(v int64) int64 { return v * int64(time.Second) }
-	h := func(at int64, state string) health { return health{kind: "health", state: state, at: sec(at)} }
-	watch, states := healthTimeline{h(0, "UNKNOWN x"), h(10, "UNKNOWN store: starting"), h(11, "UNKNOWN canary-pending"),
-		h(12, "UNKNOWN canary-pending"), h(13, "UNKNOWN rules-differ"), h(80, "OK")}.states(sec(71))
-	if watch != "61000" || states != "UNKNOWN store: starting|UNKNOWN canary-pending|UNKNOWN rules-differ" {
-		t.Errorf("watch %s, states %q", watch, states)
+	ms := func(v int64) int64 { return v * int64(time.Millisecond) }
+	h := func(at int64, state string) health { return health{kind: "health", state: state, at: ms(at)} }
+	watch, states, differ := healthTimeline{h(0, "UNKNOWN x"), h(10000, "UNKNOWN store: starting"), h(11000, canaryPending),
+		h(11500, "UNKNOWN laurel-disconnected"), h(12000, canaryPending), h(12100, canaryPending),
+		h(13250, "UNKNOWN audit-stale"), h(14000, rulesDiffer), h(15000, "UNKNOWN laurel-disconnected"),
+		h(16000, canaryPending), h(17000, rulesDiffer), h(80000, "OK")}.states(ms(71000))
+	if watch != "61000" || differ != "750" || states != "UNKNOWN store: starting|"+canaryPending+"|UNKNOWN laurel-disconnected|"+
+		canaryPending+"|UNKNOWN audit-stale|"+rulesDiffer+"|UNKNOWN laurel-disconnected|"+canaryPending+"|"+rulesDiffer {
+		t.Errorf("watch %s, differ %s, states %q", watch, differ, states)
 	}
-	if watch, states := (healthTimeline{}).states(sec(71)); watch != rangevm.CanaryNone || states != "" {
-		t.Errorf("no records: %s %q", watch, states)
+	if _, _, differ := (healthTimeline{h(1, rulesDiffer), h(2, canaryPending)}).states(ms(9)); differ != rangevm.CanaryNone {
+		t.Errorf("rules-differ before any canary: %s", differ)
+	}
+	if watch, states, differ := (healthTimeline{}).states(ms(71000)); watch != rangevm.CanaryNone || states != "" ||
+		differ != rangevm.CanaryNone {
+		t.Errorf("no records: %s %q %s", watch, states, differ)
+	}
+}
+
+// The guest does not link the collector, so the states it times are checked against the collector's source.
+func TestRulesStatesAreTheCollectorsHealth(t *testing.T) {
+	var src []byte
+	for _, f := range []string{"../../internal/collector/writer.go", "../../internal/collector/audit.go"} {
+		b, err := os.ReadFile(f) //nolint:gosec // the two fixed sources above
+		if err != nil {
+			t.Fatal(err)
+		}
+		src = append(src, b...)
+	}
+	for _, s := range []string{canaryPending, rulesDiffer} {
+		if !strings.Contains(string(src), strconv.Quote(s)) {
+			t.Errorf("the collector sets no health %q", s)
+		}
 	}
 }
 
