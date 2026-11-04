@@ -141,6 +141,12 @@ def deployed_service() -> dict[str, list[str]]:
     return parse_unit((COLLECTOR / "balistid-collector.service").read_text())["Service"]
 
 
+def audit_rules() -> list[str]:
+    """deploy/audit/balistid.rules without comments and blank lines."""
+    return [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
+            if l and not l.startswith("#")]
+
+
 class CollectorDeployTest(unittest.TestCase):
     def test_exact_file_set(self):
         self.assertEqual({p.name for p in COLLECTOR.iterdir()}, FILES)
@@ -241,8 +247,7 @@ class CollectorDeployTest(unittest.TestCase):
         # ADR 0061, point 3: a never rule leaves out only the program of a unit that writes under /var/lib/balistid
         # (its StateDirectory or a path on its ExecStart) and is confined to it (ProtectSystem=strict), never the
         # collector or journald, before any rule recording a tree; the guest's quiet check names the same programs.
-        rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
-                 if l and not l.startswith("#")]
+        rules = audit_rules()
         confined = set()
         for unit in sorted((REPO / "deploy").glob("*/*.service")):
             service = parse_unit(unit.read_text()).get("Service", {})
@@ -268,7 +273,7 @@ class CollectorDeployTest(unittest.TestCase):
     def test_every_tree_records_creating_and_truncating_opens_on_both_abis(self):
         # ADR 0061, point 2: perm=wa reads only an open's access mode, so each tree with a perm=wa rule also has
         # open, openat (O_CREAT|O_TRUNC) and openat2 rules for b64 and b32, under the same key.
-        rules = (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
+        rules = audit_rules()
         trees = [re.fullmatch(r"-a always,exit -F dir=(\S+) -F perm=wa -k (\S+)", l) for l in rules if l.startswith("-a ") and "perm=wa" in l]
         self.assertTrue(len(trees) >= 6 and all(trees))
         for m in trees:

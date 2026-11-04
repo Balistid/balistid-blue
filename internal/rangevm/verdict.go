@@ -57,6 +57,15 @@ const capsAuditControl = "0000000040000000"
 // Isolation: no interface but loopback and the range's two links to its stand-in for the Pi, a veth and the
 // tunnel over it (ADR 0032), and no network-class PCI device (present before any driver binds, so a slow
 // driver cannot hide a PCI NIC; TestQemuArgv pins that no other device is added).
+// FactTracks is the self-test's fact of ADR 0061; TracksAllYes its one passing value, each part in the guest's order.
+const (
+	FactTracks   = "tracks"
+	TracksAllYes = "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes," +
+		"finit_module=yes,delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,mount=yes,umount2=yes," +
+		"move_mount=yes,fsmount=yes,fsconfig=yes,fspick=yes,mount_setattr=yes,open_tree=yes,pidfd_getfd=yes," +
+		"io_uring_setup=yes,io_uring_register=yes,modprobe=yes,quiet=yes"
+)
+
 // Sensor (ADR 0004 smoke test): the loaded audit settings of deploy/audit/balistid.rules (audit=1 at
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
 // _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, the
@@ -104,12 +113,9 @@ var expected = map[string]string{
 	"io_uring_sysctl":        "2",
 	"io_uring_off":           "EPERM",
 	"io_uring_on":            "EFAULT",
-	// Root covering its tracks (ADR 0061): each part found in the store with the guest's pid, none from a
+	// Root covering its tracks (ADR 0061): each part found in the store with the guest's own records, none from a
 	// program the rules leave out.
-	"tracks": "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes," +
-		"finit_module=yes,delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,mount=yes,umount2=yes," +
-		"move_mount=yes,fsmount=yes,fsconfig=yes,fspick=yes,mount_setattr=yes,open_tree=yes,pidfd_getfd=yes," +
-		"io_uring_register=yes,io_uring_setup=yes,modprobe=yes,quiet=yes",
+	FactTracks:         TracksAllYes,
 	"overflow_before":  "no",
 	"overflow_after":   "yes",
 	"overflow_journal": "yes",

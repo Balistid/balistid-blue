@@ -21,6 +21,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
@@ -32,9 +34,7 @@ const (
 	resultsDisk   = "/dev/disk/by-id/virtio-balistid-results"
 	auditdState   = "/run/audit/auditd.state"
 	ioUringSysctl = "/proc/sys/kernel/io_uring_disabled"
-	// sysIoUringSetup is io_uring_setup on x86-64; Go's frozen syscall table predates it.
-	sysIoUringSetup = 425
-	waitLimit       = 30 * time.Second
+	waitLimit     = 30 * time.Second
 	// floodMax bounds the overflow experiment: each exec makes several records, so this is far
 	// beyond the 16384-entry plugin queue of deploy/auditd/auditd.conf.
 	floodMax = 30000
@@ -141,12 +141,8 @@ func run() error {
 		return fmt.Errorf("canary: %w", err)
 	}
 	canaryErr := exec.CommandContext(ctx, "/usr/bin/true", canaryToken).Run() //nolint:gosec // our own random token
-	// Root covering its tracks (ADR 0061) and io_uring's two probes, whose set up it records, before the read.
+	// Root covering its tracks (ADR 0061), before the read.
 	tracks := coverTracks(ctx)
-	add("io_uring_sysctl", readTrim(ioUringSysctl))
-	add("io_uring_off", ioUringSetup())
-	add("io_uring_on", withIoUring("0"))
-	_ = withIoUring("2")
 	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	lines, readErr := laurelLines(ctx, selfTestLines)
@@ -154,12 +150,17 @@ func run() error {
 	add("e0_recorded", yesNo(readErr == nil && rangeguest.HasRefusedDisable(bytes.NewReader(lines))))
 	// The collector's own canary went through the watch rule and Laurel's socket into its store.
 	add("collector_canary", yesNo(readErr == nil && rangeguest.HasRuleKey(bytes.NewReader(lines), collectorCanaryKey)))
-	tracksFact := tracksFound(lines, tracks)
 	if readErr != nil {
-		tracksFact = "unread: " + readStatus(readErr)
+		add(rangevm.FactTracks, "unread: "+readStatus(readErr))
+	} else {
+		add(rangevm.FactTracks, tracksFound(lines, tracks))
 	}
-	add("tracks", tracksFact)
 	printLines(lines, "audit_enabled")
+
+	add("io_uring_sysctl", readTrim(ioUringSysctl))
+	add("io_uring_off", ioUringSetup())
+	add("io_uring_on", withIoUring("0"))
+	_ = withIoUring("2")
 
 	// The ledger anchored what the collector committed, under the range key (ADR 0027).
 	add("ledger_anchored", ledgerAnchored(ctx))
@@ -573,7 +574,7 @@ func disableAudit(ctx context.Context) {
 // ioUringSetup calls io_uring_setup(1, NULL): the kernel checks io_uring_disabled before it reads
 // the parameters, so EPERM means disabled and EFAULT means allowed.
 func ioUringSetup() string {
-	_, _, errno := syscall.Syscall(sysIoUringSetup, 1, 0, 0)
+	_, _, errno := syscall.Syscall(unix.SYS_IO_URING_SETUP, 1, 0, 0)
 	switch errno {
 	case 0:
 		return "created"
