@@ -91,7 +91,7 @@ func TestRequiredFactsArePinned(t *testing.T) {
 		"auditstat_cap_eff", "auditstat_cap_amb", "auditstat_report", "audit_rules", "collector_canary", "ledger_anchored", "ledger_cosigned", "fork_refused", "shard_cosigned",
 		"announce_cosigned", "suspend_announced", "pi_verified", "pi_reach", "ledger_net", "canary",
 		"audit_enabled_after_e0", "e0_recorded", "io_uring_sysctl", "io_uring_off",
-		"io_uring_on", "tracks", "overflow_before", "overflow_after", "overflow_journal", "audit_lost_after",
+		"io_uring_on", FactTracks, "overflow_before", "overflow_after", "overflow_journal", "audit_lost_after",
 	}
 	got := make([]string, 0, len(expected))
 	for k := range expected {

@@ -149,7 +149,7 @@ func (c *Counter) line(line []byte) {
 		}
 		nums, ok = execNumbers(line)
 	case rangejob.LoadPtrace:
-		if !bytes.Contains(line, []byte(`"balistid-inject"`)) {
+		if !bytes.Contains(line, []byte(`"`+InjectKey+`"`)) {
 			return
 		}
 		nums, ok = ptraceNumber(line)
@@ -212,6 +212,9 @@ func execNumbers(line []byte) (nums []uint64, ok bool) {
 	return nums, ok && len(nums) > 0
 }
 
+// InjectKey is the rule key of deploy/audit/balistid.rules for ptrace, process_vm_writev and pidfd_getfd.
+const InjectKey = "balistid-inject"
+
 // ptraceNumber returns the address of a PEEKDATA of NoPID recorded under the balistid-inject key.
 // Laurel writes the registers as SYSCALL.ARGV, lower-case hex with a 0x prefix.
 func ptraceNumber(line []byte) ([]uint64, bool) {
@@ -219,7 +222,7 @@ func ptraceNumber(line []byte) ([]uint64, bool) {
 	var key string
 	var argv []string
 	if json.Unmarshal(line, &ev) != nil || json.Unmarshal(ev["SYSCALL"], &sc) != nil ||
-		json.Unmarshal(sc["key"], &key) != nil || key != "balistid-inject" {
+		json.Unmarshal(sc["key"], &key) != nil || key != InjectKey {
 		return nil, true // another record that only mentions the key
 	}
 	if json.Unmarshal(sc["ARGV"], &argv) != nil || len(argv) < 3 {
@@ -229,10 +232,16 @@ func ptraceNumber(line []byte) ([]uint64, bool) {
 		argv[1] != "0x"+strconv.FormatUint(NoPID, 16) {
 		return nil, true // ptrace that is not the generator's
 	}
-	digits, found := strings.CutPrefix(argv[2], "0x")
-	n, err := strconv.ParseUint(digits, 16, 64)
-	if !found || err != nil || strconv.FormatUint(n, 16) != digits {
+	n, ok := ArgHex(argv[2])
+	if !ok {
 		return nil, false
 	}
 	return []uint64{n}, true
+}
+
+// ArgHex is a syscall argument as Laurel writes it in SYSCALL.ARGV: lower-case hex with a 0x prefix, no padding.
+func ArgHex(a string) (uint64, bool) {
+	digits, found := strings.CutPrefix(a, "0x")
+	n, err := strconv.ParseUint(digits, 16, 64)
+	return n, found && err == nil && strconv.FormatUint(n, 16) == digits
 }
