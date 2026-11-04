@@ -231,21 +231,7 @@ func canarySent(x rawrecord.Record, owner canaryOwner) (uint64, int64, bool) {
 // canaryKey reports whether an audit key field holds the canary's key: a string, in which the kernel joins
 // several keys with \x01, or a list of strings.
 func canaryKey(raw json.RawMessage) bool {
-	return slices.Contains(auditKeys(raw), collectorCanaryKey)
-}
-
-// auditKeys are the keys of an audit key field: a string, in which the kernel joins several keys with \x01, or a
-// list of strings; nil for anything else.
-func auditKeys(raw json.RawMessage) []string {
-	var one string
-	var many []string
-	if json.Unmarshal(raw, &one) == nil {
-		return strings.Split(one, "\x01")
-	}
-	if json.Unmarshal(raw, &many) != nil {
-		return nil
-	}
-	return many
+	return slices.Contains(rangeguest.AuditKeys(raw), collectorCanaryKey)
 }
 
 // auditTime is the kernel's time of an audit event in ns from its ID "<sec>.<ms>:<serial>", the syscall's

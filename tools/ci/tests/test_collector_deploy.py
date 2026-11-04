@@ -238,8 +238,8 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertEqual(rules[-1], "-e 2")
 
     def test_rules_leave_out_exactly_the_units_that_write_our_state(self):
-        # ADR 0061, point 2: every unit whose program writes under /var/lib/balistid has its never rule, after the
-        # canary's watch (the exit filter takes the first match) and before the rule that records everyone else.
+        # ADR 0061, point 2: every unit whose program writes under /var/lib/balistid has its never rule, only for the
+        # instance systemd starts, before any rule that records the tree (the syscall list takes the first match).
         rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
                  if l and not l.startswith("#")]
         writers = set()
@@ -251,14 +251,15 @@ class CollectorDeployTest(unittest.TestCase):
                         any(a.startswith("/var/lib/balistid/") for a in argv):
                     writers.add(argv[0])
         never = [l for l in rules if l.startswith("-a never,exit -F dir=/var/lib/balistid ")]
-        self.assertEqual(sorted(never), [f"-a never,exit -F dir=/var/lib/balistid -F exe={w}" for w in sorted(writers)])
-        record = "-a always,exit -F dir=/var/lib/balistid -F perm=wa -k balistid-state"
-        canary = next(l for l in rules if l.startswith("-w "))
-        self.assertTrue(all(rules.index(canary) < rules.index(l) < rules.index(record) for l in never))
+        self.assertEqual(sorted(never), [f"-a never,exit -F dir=/var/lib/balistid -F exe={w} -F ppid=1"
+                                         for w in sorted(writers)])
+        first_record = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=/var/lib/balistid " in l)
+        self.assertTrue(all(rules.index(l) < first_record for l in never))
         self.assertIn(BINARY, writers)
         guest = (REPO / "cmd" / "balistid-range-guest" / "tracks.go").read_text()
         left_out = re.findall(r'^\t"(/[^"]+)",$', guest.split("var tracksLeftOut = []string{", 1)[1].split("}", 1)[0], re.M)
-        excluded = [l.split("-F exe=", 1)[1] for l in rules if l.startswith("-a never,exit -F dir=") and "-F exe=" in l]
+        excluded = [l.split("-F exe=", 1)[1].removesuffix(" -F ppid=1") for l in rules if "-F exe=" in l]
+        self.assertTrue(all(l.startswith("-a never,exit -F dir=") and l.endswith(" -F ppid=1") for l in rules if "-F exe=" in l))
         self.assertEqual(sorted(left_out), sorted(excluded))
 
     def test_laurel_writes_to_the_collector_socket(self):
