@@ -16,9 +16,9 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- #250 (draft, ADR 0061, #241): rules v3 (64) record module, kexec, eBPF, root's mounts, io_uring set up and path
-  ops, and every tree's writes and creating or truncating opens; the ledger, relay and runner left out by program.
-  Self-test fact `tracks` proves each part (KVM at ef72118, pin at 8a1728d); critic r1-r2 and Codex r1 fixed.
+- #250 (draft, ADR 0061, #241): rules v3 (80) record module, kexec, eBPF, mounts by any root uid, handle opens,
+  borrowed exes and kept capabilities, io_uring, and every tree's writes and creating or truncating opens; only the
+  ledger, relay, runner left out by exe. Fact `tracks` proves each part (KVM 716f7f2, pin ab00179); 4 review rounds.
 - #242 (ADR 0060): holes floor 0 can close are closed on floor 0; issues #243-#249. #240 merged (093418c).
 - #236 (ADR 0057): rate and CPU trials judge guest steal per span of 1-2 s and void PASS and MISS alike (voiding only
   a MISS let reruns pick the PASSes); measure `steal_worst_ppm`. GitHub's runner steals in most seconds: INVALID there.
