@@ -22,7 +22,11 @@ const ShippedRulesSHA256 = "7374f4de7f48dd8932a1f8908caab771048d2a88490c84731a22
 // seven rules, six syscall rules and the canary's watch (ADR 0059, point 3).
 func Shipped() Loaded {
 	return Loaded{
-		Rules:   Rules{Count: 7, Digest: [32]byte{}},
+		// the self-test's audit_rules in range-kvm run 41770932438 (f8a6832), linux 7.2.8.arch1-2, audit 4.2.1-1
+		Rules: Rules{Count: 7, Digest: [32]byte{
+			0x3f, 0x86, 0x31, 0x7d, 0xcd, 0x19, 0x2a, 0xc7, 0x96, 0xf9, 0xb8, 0xd9, 0xb3, 0x15, 0xa7, 0x4e,
+			0x49, 0xe4, 0x56, 0x02, 0x09, 0x12, 0x33, 0x35, 0x28, 0xc7, 0x98, 0x02, 0xc4, 0x8c, 0x1b, 0x7a,
+		}},
 		Failure: 1, RateLimit: 0, BacklogLimit: 65536, BacklogWaitTime: 60000,
 	}
 }

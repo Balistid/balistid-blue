@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"os"
@@ -453,7 +454,9 @@ func TestRulesDifferAtOnce(t *testing.T) {
 	if health(r) != rulesDiffer {
 		t.Fatalf("health %q 1 s after the start with other rules", health(r))
 	}
-	if s := j.String(); strings.Count(s, "the loaded audit rules differ") != 1 || !strings.Contains(s, "digest=01") {
+	other := auditstat.Shipped().Rules.Digest
+	other[0] ^= 1
+	if s := j.String(); strings.Count(s, "the loaded audit rules differ") != 1 || !strings.Contains(s, "digest="+hex.EncodeToString(other[:])) {
 		t.Errorf("journaled once with the digest: %s", s)
 	}
 	f.set(func(f *auditFake) { f.report.Rules = auditstat.Shipped().Rules })
