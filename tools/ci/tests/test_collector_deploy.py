@@ -237,30 +237,47 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertLess(rules.index(watch), rules.index("-e 2"))
         self.assertEqual(rules[-1], "-e 2")
 
-    def test_rules_leave_out_exactly_the_units_that_write_our_state(self):
-        # ADR 0061, point 2: every unit whose program writes under /var/lib/balistid has its never rule, only for the
-        # instance systemd starts, before any rule that records the tree (the syscall list takes the first match).
+    def test_rules_leave_out_only_named_programs_in_their_own_directories(self):
+        # ADR 0061, point 2: a never rule leaves a program out only in a directory its own unit writes (its
+        # StateDirectory or a path on its ExecStart), never the collector or journald, before any rule recording the
+        # tree; the guest's quiet check names the same pairs.
         rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
                  if l and not l.startswith("#")]
-        writers = set()
+        owned = set()
         for unit in sorted((REPO / "deploy").glob("*/*.service")):
             service = parse_unit(unit.read_text()).get("Service", {})
             for line in service.get("ExecStart", []):
                 argv = shlex.split(line)
-                if any(s.startswith("balistid/") for s in service.get("StateDirectory", [])) or \
-                        any(a.startswith("/var/lib/balistid/") for a in argv):
-                    writers.add(argv[0])
-        never = [l for l in rules if l.startswith("-a never,exit -F dir=/var/lib/balistid ")]
-        self.assertEqual(sorted(never), [f"-a never,exit -F dir=/var/lib/balistid -F exe={w} -F ppid=1"
-                                         for w in sorted(writers)])
-        first_record = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=/var/lib/balistid " in l)
-        self.assertTrue(all(rules.index(l) < first_record for l in never))
-        self.assertIn(BINARY, writers)
+                dirs = ["/var/lib/" + s for s in service.get("StateDirectory", [])]
+                dirs += [a for a in argv if a.startswith("/var/lib/balistid/")]
+                owned.update((argv[0], d) for d in dirs)
+        never = [re.fullmatch(r"-a never,exit -F dir=(\S+) -F exe=(\S+)", l) for l in rules if "-F exe=" in l]
+        self.assertTrue(never and all(never))
+        pairs = {(m.group(2), m.group(1)) for m in never}
+        self.assertLessEqual(pairs, owned)
+        self.assertFalse({exe for exe, _ in pairs} & {BINARY, "/usr/lib/systemd/systemd-journald"})
+        first_record = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=/var/lib/balistid" in l)
+        self.assertTrue(all(rules.index(m.group(0)) < first_record for m in never))
         guest = (REPO / "cmd" / "balistid-range-guest" / "tracks.go").read_text()
-        left_out = re.findall(r'^\t"(/[^"]+)",$', guest.split("var tracksLeftOut = []string{", 1)[1].split("}", 1)[0], re.M)
-        excluded = [l.split("-F exe=", 1)[1].removesuffix(" -F ppid=1") for l in rules if "-F exe=" in l]
-        self.assertTrue(all(l.startswith("-a never,exit -F dir=") and l.endswith(" -F ppid=1") for l in rules if "-F exe=" in l))
-        self.assertEqual(sorted(left_out), sorted(excluded))
+        table = guest.split("var tracksLeftOut = []struct{ exe, dir string }{", 1)[1].split("\n}", 1)[0]
+        self.assertEqual(set(re.findall(r'\{"(/[^"]+)", "(/[^"]+)"\}', table)), pairs)
+
+    def test_every_tree_records_creating_and_truncating_opens_on_both_abis(self):
+        # ADR 0061, point 2: perm=wa reads only an open's access mode, so each tree with a perm=wa rule also has
+        # open, openat (O_CREAT|O_TRUNC) and openat2 rules for b64 and b32, under the same key.
+        rules = (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
+        trees = [re.fullmatch(r"-a always,exit -F dir=(\S+) -F perm=wa -k (\S+)", l) for l in rules if l.startswith("-a ") and "perm=wa" in l]
+        self.assertTrue(len(trees) >= 6 and all(trees))
+        for m in trees:
+            d, k = m.groups()
+            for arch in ("b64", "b32"):
+                with self.subTest(tree=d, arch=arch):
+                    self.assertIn(f"-a always,exit -F arch={arch} -S open -F a1&0x240 -F dir={d} -k {k}", rules)
+                    self.assertIn(f"-a always,exit -F arch={arch} -S openat -F a2&0x240 -F dir={d} -k {k}", rules)
+                    self.assertIn(f"-a always,exit -F arch={arch} -S openat2 -F dir={d} -k {k}", rules)
+        guest = (REPO / "cmd" / "balistid-range-guest" / "tracks.go").read_text()
+        probed = set(re.findall(r'\{"[a-z]+", "(/[^"]+)", key[A-Z][a-z]+\}', guest))
+        self.assertEqual(probed, {m.group(1) for m in trees})
 
     def test_laurel_writes_to_the_collector_socket(self):
         # ADR 0016: Laurel's one output is the socket the collector's unit listens on, not a log file.
