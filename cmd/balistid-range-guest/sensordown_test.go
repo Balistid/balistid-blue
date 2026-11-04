@@ -103,28 +103,41 @@ func TestRulesProofShowsTheInjection(t *testing.T) {
 }
 
 // The states are each change once, up to until, the watch runs from the first record, and rules-differ is timed from
-// the change away from the last canary-pending before it, the tick that stored the canary.
+// when the collector received its first stored canary, whatever the health records around it say.
 func TestHealthStatesOnceEachUpToTheWatchEnd(t *testing.T) {
 	ms := func(v int64) int64 { return v * int64(time.Millisecond) }
 	h := func(at int64, state string) health { return health{kind: "health", state: state, at: ms(at)} }
 	watch, states, differ := healthTimeline{h(0, "UNKNOWN x"), h(10000, "UNKNOWN store: starting"), h(11000, canaryPending),
 		h(11500, "UNKNOWN laurel-disconnected"), h(12000, canaryPending), h(12100, canaryPending),
 		h(13250, "UNKNOWN audit-stale"), h(14000, rulesDiffer), h(15000, "UNKNOWN laurel-disconnected"),
-		h(16000, canaryPending), h(17000, rulesDiffer), h(80000, "OK")}.states(ms(71000))
-	if watch != "61000" || differ != "2500" || states != "UNKNOWN store: starting|"+canaryPending+"|UNKNOWN laurel-disconnected|"+
+		h(16000, canaryPending), h(17000, rulesDiffer), h(80000, "OK")}.states(ms(71000), ms(13100))
+	if watch != "61000" || differ != "900" || states != "UNKNOWN store: starting|"+canaryPending+"|UNKNOWN laurel-disconnected|"+
 		canaryPending+"|UNKNOWN audit-stale|"+rulesDiffer+"|UNKNOWN laurel-disconnected|"+canaryPending+"|"+rulesDiffer {
 		t.Errorf("watch %s, differ %s, states %q", watch, differ, states)
 	}
-	if _, _, differ := (healthTimeline{h(1, rulesDiffer), h(2, canaryPending)}).states(ms(9)); differ != rangevm.CanaryNone {
-		t.Errorf("rules-differ before any canary: %s", differ)
+	// A canary stored at 2000 ms whose health change waits for a tick at 2250 ms: rules-differ at 12100 reads 10100.
+	_, _, differ = healthTimeline{h(1000, canaryPending), h(2250, "UNKNOWN audit-stale"), h(12100, rulesDiffer)}.states(ms(90000), ms(2000))
+	if differ != "10100" {
+		t.Errorf("rules-differ a tick after the canary: %s ms", differ)
 	}
 	// A reconnect after the first canary does not move the origin: rules-differ 28 s after it reads 28000.
 	_, _, differ = healthTimeline{h(1000, canaryPending), h(2000, "UNKNOWN audit-stale"), h(20000, "UNKNOWN laurel-disconnected"),
-		h(21000, canaryPending), h(30000, rulesDiffer)}.states(ms(90000))
+		h(21000, canaryPending), h(30000, rulesDiffer)}.states(ms(90000), ms(2000))
 	if differ != "28000" {
 		t.Errorf("rules-differ after a reconnect: %s ms from the first canary", differ)
 	}
-	if watch, states, differ := (healthTimeline{}).states(ms(71000)); watch != rangevm.CanaryNone || states != "" ||
+	for name, c := range map[string]struct {
+		t        healthTimeline
+		canaryAt int64
+	}{
+		"no canary":              {healthTimeline{h(1, canaryPending), h(5, rulesDiffer)}, 0},
+		"rules-differ before it": {healthTimeline{h(1, rulesDiffer), h(2, canaryPending)}, ms(1500)},
+	} {
+		if _, _, differ := c.t.states(ms(9000), c.canaryAt); differ != rangevm.CanaryNone {
+			t.Errorf("%s: %s", name, differ)
+		}
+	}
+	if watch, states, differ := (healthTimeline{}).states(ms(71000), 0); watch != rangevm.CanaryNone || states != "" ||
 		differ != rangevm.CanaryNone {
 		t.Errorf("no records: %s %q %s", watch, states, differ)
 	}
