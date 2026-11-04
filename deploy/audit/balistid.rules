@@ -39,14 +39,13 @@
 -a always,io_uring -S openat,openat2,unlinkat,renameat,linkat,symlinkat,mkdirat,ftruncate,fallocate -k balistid-uring
 ## Trees: every write, removal, attribute change, and open that creates or truncates (O_CREAT|O_TRUNC, 0x240: perm=wa
 ## reads only the access mode), for both ABIs; openat2's flags no rule reads, so it is recorded whole, but pid 1's.
-## Left out, by program and only in its own directory: the ledger's tiles and the relay's state (static binaries,
-## about 4 records a second in the range) and the runner's objects and results.
+## Left out of the trees: the ledger, relay and runner (static binaries whose units write only their own directory,
+## ProtectSystem=strict; the ledger alone about 4 records a second in the range). Their execs are recorded above.
 -a never,exit -F arch=b64 -S openat2 -F pid=1
 -a never,exit -F arch=b32 -S openat2 -F pid=1
--a never,exit -F dir=/var/lib/balistid/ledger -F exe=/usr/local/lib/balistid/balistid-ledger
--a never,exit -F dir=/var/lib/balistid/relay -F exe=/usr/local/lib/balistid/balistid-relay
--a never,exit -F dir=/var/lib/balistid/objects -F exe=/usr/local/lib/balistid/balistid-runner
--a never,exit -F dir=/var/lib/balistid/results -F exe=/usr/local/lib/balistid/balistid-runner
+-a never,exit -F exe=/usr/local/lib/balistid/balistid-ledger
+-a never,exit -F exe=/usr/local/lib/balistid/balistid-relay
+-a never,exit -F exe=/usr/local/lib/balistid/balistid-runner
 -a always,exit -F dir=/etc/audit -F perm=wa -k balistid-config
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/etc/audit -k balistid-config
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/etc/audit -k balistid-config

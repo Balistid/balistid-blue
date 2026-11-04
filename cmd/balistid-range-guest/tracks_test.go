@@ -23,8 +23,9 @@ const tracksAllYes = "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,
 
 const guestExe = "/usr/lib/balistid-range/guest"
 
-// call is a SYSCALL event shaped as Laurel writes it: the number beside the name, the enriched "PID" beside "pid",
-// the arguments in hex, and PATH items when path is set.
+// call is a SYSCALL event shaped as Laurel writes it: the number beside the name, a0 to a3 as ARGV in hex
+// (linux-audit-parser's Number::Hex, Laurel's coalesce.rs), the enriched "PID" beside "pid", PATH items when path
+// is set.
 type call struct {
 	nr                       int
 	pid, exe, success, key   string
@@ -38,7 +39,7 @@ func (c call) line() string {
 	if c.a2 == "" {
 		c.a2 = "0x0"
 	}
-	line := fmt.Sprintf(`{"ID":"1.000:1","SYSCALL":{"arch":%q,"syscall":%d,"SYSCALL":"x","success":%q,"a2":%q,"pid":%s,`+
+	line := fmt.Sprintf(`{"ID":"1.000:1","SYSCALL":{"arch":%q,"syscall":%d,"SYSCALL":"x","success":%q,"ARGV":["0xffffff9c","0x7ffd1000",%q,"0x0"],"pid":%s,`+
 		`"PID":{"EVENT_ID":"1.000:1"},"exe":%q,"key":%q}`, c.arch, c.nr, c.success, c.a2, c.pid, c.exe, c.key)
 	if c.path != "" {
 		line += fmt.Sprintf(`,"PATH":[{"item":0,"name":"/x","nametype":"PARENT"},{"item":1,"name":%q,"nametype":%q}]`, c.path, c.nametype)
@@ -159,7 +160,7 @@ func TestTracksQuietFails(t *testing.T) {
 	ledger := "/usr/local/lib/balistid/balistid-ledger"
 	for name, extra := range map[string]string{
 		"ledger in its tiles": call{nr: unix.SYS_OPENAT, pid: "300", exe: ledger, success: "yes", key: keyState, path: "/var/lib/balistid/ledger/tile/0", nametype: "CREATE"}.line(),
-		"ledger, relative":    call{nr: unix.SYS_OPENAT, pid: "300", exe: ledger, success: "yes", key: keyState, path: "tile/0", nametype: "CREATE"}.line(),
+		"ledger elsewhere":    call{nr: unix.SYS_OPENAT, pid: "300", exe: ledger, success: "yes", key: keyConfig, path: "/etc/audit/x", nametype: "CREATE"}.line(),
 		"runner's results":    call{nr: unix.SYS_OPENAT, pid: "302", exe: "/usr/local/lib/balistid/balistid-runner", success: "yes", key: keyState, path: "/var/lib/balistid/results/r", nametype: "CREATE"}.line(),
 		"systemd's bpf":       call{nr: unix.SYS_BPF, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyKernel}.line(),
 		"systemd's openat2":   call{nr: unix.SYS_OPENAT2, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyConfig, path: "/etc/systemd/x", nametype: "NORMAL"}.line(),
@@ -178,17 +179,16 @@ func TestTracksQuietFails(t *testing.T) {
 	}
 }
 
-// Records the rules rightly keep do not fail quiet: a left-out program outside its own directory, the collector
-// and journald (left out nowhere), other keys, other event types and a valid io_uring event.
+// Records the rules rightly keep do not fail quiet: the collector and journald (left out nowhere), a left-out
+// program's exec, other event types and a valid io_uring event.
 func TestTracksQuietKeepsRecordedActions(t *testing.T) {
 	for name, extra := range map[string]string{
-		"ledger in /etc/audit": call{nr: unix.SYS_OPENAT, pid: "300", exe: "/usr/local/lib/balistid/balistid-ledger", success: "yes", key: keyConfig, path: "/etc/audit/x", nametype: "CREATE"}.line(),
-		"ledger in the store":  call{nr: unix.SYS_OPENAT, pid: "300", exe: "/usr/local/lib/balistid/balistid-ledger", success: "yes", key: keyState, path: "/var/lib/balistid/collector/x", nametype: "CREATE"}.line(),
-		"the collector":        call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: keyState, path: "/var/lib/balistid/collector/store/s", nametype: "CREATE"}.line(),
-		"journald":             call{nr: unix.SYS_OPENAT, pid: "200", exe: "/usr/lib/systemd/systemd-journald", success: "yes", key: keyLogs, path: "/var/log/journal/m/system.journal", nametype: "CREATE"}.line(),
-		"the canary":           call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: collectorCanaryKey, path: "c-1", nametype: "CREATE"}.line(),
-		"another event":        `{"ID":"1.000:2","CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}`,
-		"an io_uring op":       `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"exe":"/x","key":"balistid-uring"}}`,
+		"the ledger's exec": call{nr: unix.SYS_EXECVE, pid: "300", exe: "/usr/local/lib/balistid/balistid-ledger", success: "yes", key: "balistid-exec"}.line(),
+		"the collector":     call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: keyState, path: "/var/lib/balistid/collector/store/s", nametype: "CREATE"}.line(),
+		"journald":          call{nr: unix.SYS_OPENAT, pid: "200", exe: "/usr/lib/systemd/systemd-journald", success: "yes", key: keyLogs, path: "/var/log/journal/m/system.journal", nametype: "CREATE"}.line(),
+		"the canary":        call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: collectorCanaryKey, path: "c-1", nametype: "CREATE"}.line(),
+		"another event":     `{"ID":"1.000:2","CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}`,
+		"an io_uring op":    `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"exe":"/x","key":"balistid-uring"}}`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); v != "yes" {
 			t.Errorf("%s: quiet=%s", name, v)

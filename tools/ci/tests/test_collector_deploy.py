@@ -237,30 +237,33 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertLess(rules.index(watch), rules.index("-e 2"))
         self.assertEqual(rules[-1], "-e 2")
 
-    def test_rules_leave_out_only_named_programs_in_their_own_directories(self):
-        # ADR 0061, point 2: a never rule leaves a program out only in a directory its own unit writes (its
-        # StateDirectory or a path on its ExecStart), never the collector or journald, before any rule recording the
-        # tree; the guest's quiet check names the same pairs.
+    def test_rules_leave_out_only_sandboxed_writers_of_our_state(self):
+        # ADR 0061, point 3: a never rule leaves out only the program of a unit that writes under /var/lib/balistid
+        # (its StateDirectory or a path on its ExecStart) and is confined to it (ProtectSystem=strict), never the
+        # collector or journald, before any rule recording a tree; the guest's quiet check names the same programs.
         rules = [l for l in (REPO / "deploy" / "audit" / "balistid.rules").read_text().splitlines()
                  if l and not l.startswith("#")]
-        owned = set()
+        confined = set()
         for unit in sorted((REPO / "deploy").glob("*/*.service")):
             service = parse_unit(unit.read_text()).get("Service", {})
             for line in service.get("ExecStart", []):
                 argv = shlex.split(line)
-                dirs = ["/var/lib/" + s for s in service.get("StateDirectory", [])]
-                dirs += [a for a in argv if a.startswith("/var/lib/balistid/")]
-                owned.update((argv[0], d) for d in dirs)
-        never = [re.fullmatch(r"-a never,exit -F dir=(\S+) -F exe=(\S+)", l) for l in rules if "-F exe=" in l]
+                writes = any(s.startswith("balistid/") for s in service.get("StateDirectory", [])) or \
+                    any(a.startswith("/var/lib/balistid/") for a in argv)
+                if writes and service.get("ProtectSystem") == ["strict"]:
+                    confined.add(argv[0])
+        never = [re.fullmatch(r"-a never,exit -F exe=(\S+)", l) for l in rules if "-F exe=" in l]
         self.assertTrue(never and all(never))
-        pairs = {(m.group(2), m.group(1)) for m in never}
-        self.assertLessEqual(pairs, owned)
-        self.assertFalse({exe for exe, _ in pairs} & {BINARY, "/usr/lib/systemd/systemd-journald"})
-        first_record = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=/var/lib/balistid" in l)
-        self.assertTrue(all(rules.index(m.group(0)) < first_record for m in never))
+        left_out = {m.group(1) for m in never}
+        self.assertLessEqual(left_out, confined)
+        self.assertFalse(left_out & {BINARY, "/usr/lib/systemd/systemd-journald"})
+        first_tree = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=" in l)
+        self.assertTrue(all(rules.index(m.group(0)) < first_tree for m in never))
+        self.assertTrue(all(rules.index(m.group(0)) > rules.index(l) for m in never for l in rules
+                            if "-k balistid-exec" in l or "-k balistid-inject" in l))
         guest = (REPO / "cmd" / "balistid-range-guest" / "tracks.go").read_text()
-        table = guest.split("var tracksLeftOut = []struct{ exe, dir string }{", 1)[1].split("\n}", 1)[0]
-        self.assertEqual(set(re.findall(r'\{"(/[^"]+)", "(/[^"]+)"\}', table)), pairs)
+        table = guest.split("var tracksLeftOut = []string{", 1)[1].split("\n}", 1)[0]
+        self.assertEqual(set(re.findall(r'"(/[^"]+)"', table)), left_out)
 
     def test_every_tree_records_creating_and_truncating_opens_on_both_abis(self):
         # ADR 0061, point 2: perm=wa reads only an open's access mode, so each tree with a perm=wa rule also has
