@@ -24,7 +24,7 @@ max = 10
 unit = "s from failure to SENSOR_DOWN or UNKNOWN"
 rows = ["T25", "T26"]
 adr = "0004"
-method = "Range VM, 20 trials each: kill Laurel, stop auditd, start with rules that differ from the repository (injected before -e 2). Separately, auditctl -e 0 under -e 2 is refused and recorded."
+method = "Range VM (ADR 0059), from health OK, timed from a stamp right before the failure to the first health record not OK, which must be a state that failure causes: 21 runs of sensor-down, each a kill Laurel by SIGKILL (laurel-disconnected or canary-pending), then SIGTERM auditd, whose unit refuses a manual stop (laurel-disconnected, canary-pending or auditd-down), then auditctl -e 0 under -e 2, refused with audit still enabled 2 and its CONFIG_CHANGE in the store; and 8 boots each of rules that differ from the repository, injected before -e 2 (a rule added, one removed, -b changed): health never OK and rules-differ within 10 s of the first stored canary. A failure not proven, or health not OK at the stamp, is INVALID; a MISS outranks an INVALID."
 
 [[metric]]
 id = "canary_interval_s"
