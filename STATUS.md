@@ -18,7 +18,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - #250 (draft, ADR 0061, #241): rules v3 (80) record module, kexec, eBPF, mounts by any root uid, handle opens,
   borrowed exes and kept capabilities, io_uring, and every tree's writes and creating or truncating opens; only the
-  ledger, relay, runner left out by exe. Fact `tracks` proves each part (KVM 716f7f2, pin ab00179); 4 review rounds.
+  ledger, relay, runner left out by exe. Fact `tracks` proves each part (pin ab00179, range-kvm 41880683498); 5 review rounds.
 - #242 (ADR 0060): holes floor 0 can close are closed on floor 0; issues #243-#249. #240 merged (093418c).
 - #236 (ADR 0057): rate and CPU trials judge guest steal per span of 1-2 s and void PASS and MISS alike (voiding only
   a MISS let reruns pick the PASSes); measure `steal_worst_ppm`. GitHub's runner steals in most seconds: INVALID there.

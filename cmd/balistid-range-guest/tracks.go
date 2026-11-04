@@ -128,7 +128,7 @@ type tracksProbe struct {
 	token    string            // the name of each tree's file
 	failed   map[string]string // a part whose action failed, and why
 	modprobe [2]string         // the pids of modprobe's load and removal
-	euid     string            // the pid of the mountEuidArg child
+	euid     [2]string         // the pids of the mountEuidArg children: effective, then real and effective uid nobody
 }
 
 // coverTracks does, as root without a loginuid, what ADR 0061 point 4 names.
@@ -153,10 +153,12 @@ func coverTracks(ctx context.Context) tracksProbe {
 			p.failed[c.part] = "the kernel took it" // a refused call was the point; the record still counts
 		}
 	}
-	if pid, err := mountAsOtherEuid(ctx); err != nil {
-		p.failed["mount_euid"] = err.Error()
-	} else {
-		p.euid = pid
+	for i, part := range []string{"mount_euid", "mount_suid"} {
+		pid, err := mountAsOtherEuid(ctx, part)
+		if err != nil {
+			p.failed[part] = err.Error()
+		}
+		p.euid[i] = pid
 	}
 	for i, args := range [][]string{{tracksModule}, {"-r", tracksModule}} {
 		cmd := exec.CommandContext(ctx, "/usr/bin/modprobe", args...) //nolint:gosec // fixed program and module
@@ -195,23 +197,28 @@ func createTruncateRemove(path string) error {
 	return nil
 }
 
-// mountAsOtherEuid runs the mountEuidArg child and returns its pid.
-func mountAsOtherEuid(ctx context.Context) (string, error) {
+// mountAsOtherEuid runs the mountEuidArg child for part and returns its pid.
+func mountAsOtherEuid(ctx context.Context, part string) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
 		return "", fmt.Errorf("self: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, self, mountEuidArg) //nolint:gosec // our own binary
+	cmd := exec.CommandContext(ctx, self, mountEuidArg, part) //nolint:gosec // our own binary, a fixed part
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%w: %.200s", err, out)
 	}
 	return strconv.Itoa(cmd.Process.Pid), nil
 }
 
-// mountEuidMain sets the effective uid to nobody with the real and saved uids root, which keeps the permitted
-// capabilities, and calls mount, refused without CAP_SYS_ADMIN in effect: the rules record it by uid=0.
-func mountEuidMain([]string) error {
-	if err := unix.Setresuid(-1, 65534, -1); err != nil {
+// mountEuidMain leaves uid 0 as real and saved uid (mount_euid) or as saved uid only (mount_suid), which keeps the
+// permitted capabilities, and calls mount, refused without CAP_SYS_ADMIN in effect: the rules record it by uid=0
+// or suid=0.
+func mountEuidMain(args []string) error {
+	ruid := -1
+	if len(args) == 1 && args[0] == "mount_suid" {
+		ruid = 65534
+	}
+	if err := unix.Setresuid(ruid, 65534, -1); err != nil {
 		return fmt.Errorf("setresuid: %w", err)
 	}
 	if unix.Mount("none", "/balistid-none", "tmpfs", 0, "") == nil {
@@ -220,8 +227,8 @@ func mountEuidMain([]string) error {
 	return nil
 }
 
-// truncateByHandle creates path, opens it by its handle for writing with O_TRUNC, which carries no path a tree rule
-// sees (ADR 0061, point 2), and removes it.
+// truncateByHandle creates path, opens it by its handle read-only and for writing with O_TRUNC, neither with a path a
+// tree rule sees (ADR 0061, point 1), and removes it.
 func truncateByHandle(path string) error {
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
 		return fmt.Errorf("write: %w", err)
@@ -236,11 +243,16 @@ func truncateByHandle(path string) error {
 		return fmt.Errorf("mount fd: %w", err)
 	}
 	defer unix.Close(mount) //nolint:errcheck // a read-only directory
-	fd, err := unix.OpenByHandleAt(mount, h, unix.O_WRONLY|unix.O_TRUNC|unix.O_CLOEXEC)
-	if err != nil {
-		return fmt.Errorf("open by handle: %w", err)
+	for _, flags := range []int{unix.O_RDONLY, unix.O_WRONLY | unix.O_TRUNC} {
+		fd, err := unix.OpenByHandleAt(mount, h, flags|unix.O_CLOEXEC)
+		if err != nil {
+			return fmt.Errorf("open by handle: %w", err)
+		}
+		if err := unix.Close(fd); err != nil {
+			return fmt.Errorf("open by handle: %w", err)
+		}
 	}
-	return unix.Close(fd) //nolint:wrapcheck // the probe's own file
+	return nil
 }
 
 // tracksParts is the order of the fact's parts.
@@ -252,7 +264,7 @@ func tracksParts() []string {
 	for _, c := range tracksCalls {
 		parts = append(parts, c.part)
 	}
-	return append(parts, "open_by_handle_at", "mount_euid", "modprobe", "quiet")
+	return append(parts, "open_by_handle_at", "mount_euid", "mount_suid", "modprobe", "quiet")
 }
 
 // tracksFound is the fact tracks: per part "yes" when the store's Laurel lines hold its records, else why not.
@@ -285,6 +297,7 @@ func tracksFound(lines []byte, p tracksProbe) string {
 		seen[tr.part] = seen[tr.part+":CREATE"] && seen[tr.part+":TRUNC"] && seen[tr.part+":TRUNC2"] && seen[tr.part+":DELETE"]
 	}
 	seen["modprobe"] = seen["modprobe:load"] && seen["modprobe:remove"]
+	seen["open_by_handle_at"] = seen["open_by_handle_at:w"] && seen["open_by_handle_at:r"]
 	quiet := "yes"
 	switch {
 	case sc.Err() != nil:
@@ -322,6 +335,7 @@ func printable(r rune) rune {
 // and the name "SYSCALL" beside the number "syscall".
 type tracksRecord struct {
 	arch, pid, exe, success string
+	uid, euid, suid         string
 	nr                      uint64
 	args                    []uint64 // a0 to a3, from Laurel's SYSCALL.ARGV
 	keys                    []string
@@ -356,6 +370,7 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 	okArch, okExe, okSuccess := jsonString(sc["arch"], &r.arch), jsonString(sc["exe"], &r.exe), jsonString(sc["success"], &r.success)
 	nr, errNr := strconv.ParseUint(string(sc["syscall"]), 10, 64)
 	r.nr, r.pid = nr, string(sc["pid"])
+	r.uid, r.euid, r.suid = string(sc["uid"]), string(sc["euid"]), string(sc["suid"])
 	okArgs := json.Unmarshal(sc["ARGV"], &argv) == nil && len(argv) == 4
 	for _, a := range argv {
 		n, ok := rangeguest.ArgHex(a)
@@ -381,21 +396,26 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 	return r, ours, nil
 }
 
-// checkUringop is an error for a URINGOP event under a key of ADR 0061 without its op number, pid and outcome, or
-// one that is no object; a ring's events prove no part.
+// checkUringop is an error for a URINGOP item under a key of ADR 0061 without its op number, pid and outcome, or a
+// URINGOP that is no list of objects; a ring's events prove no part.
 func checkUringop(raw json.RawMessage) error {
-	var ev map[string]json.RawMessage
-	if json.Unmarshal(raw, &ev) != nil || ev == nil {
-		return errors.New("a URINGOP that is no object")
+	var evs []map[string]json.RawMessage // Laurel writes a list (coalesce.rs, its record-uringop.json)
+	if json.Unmarshal(raw, &evs) != nil {
+		return errors.New("a URINGOP that is no list")
 	}
-	keys := rangeguest.AuditKeys(ev["key"])
-	if !slices.ContainsFunc(keys, func(k string) bool { return slices.Contains(tracksKeys, k) }) {
-		return nil
-	}
-	var success string
-	if !decimal(string(ev["uring_op"])) || !decimal(string(ev["pid"])) || !jsonString(ev["success"], &success) ||
-		(success != "yes" && success != "no") {
-		return fmt.Errorf("a URINGOP of %v without its op, pid or outcome", keys)
+	for _, ev := range evs {
+		if ev == nil {
+			return errors.New("a URINGOP item that is no object")
+		}
+		keys := rangeguest.AuditKeys(ev["key"])
+		if !slices.ContainsFunc(keys, func(k string) bool { return slices.Contains(tracksKeys, k) }) {
+			continue
+		}
+		var success string
+		if !decimal(string(ev["uring_op"])) || !decimal(string(ev["pid"])) || !jsonString(ev["success"], &success) ||
+			(success != "yes" && success != "no") {
+			return fmt.Errorf("a URINGOP of %v without its op, pid or outcome", keys)
+		}
 	}
 	return nil
 }
@@ -436,7 +456,10 @@ func (r tracksRecord) matches(p tracksProbe) []string {
 	switch {
 	case r.pid == p.pid && r.success == "yes" && has(keyHandle) && r.nr == unix.SYS_OPEN_BY_HANDLE_AT &&
 		r.args[2]&oTrunc != 0:
-		out = append(out, "open_by_handle_at")
+		out = append(out, "open_by_handle_at:w")
+	case r.pid == p.pid && r.success == "yes" && has(keyHandle) && r.nr == unix.SYS_OPEN_BY_HANDLE_AT &&
+		r.args[2]&unix.O_ACCMODE == unix.O_RDONLY:
+		out = append(out, "open_by_handle_at:r")
 	case r.pid == p.pid && r.success == "yes":
 		for _, tr := range tracksTrees {
 			t := r.paths[filepath.Join(tr.dir, p.token)]
@@ -458,8 +481,13 @@ func (r tracksRecord) matches(p tracksProbe) []string {
 				out = append(out, c.part)
 			}
 		}
-	case has(keyKernel) && r.success == "no" && r.pid == p.euid && r.nr == unix.SYS_MOUNT:
+	// Each child proves its own rule: root only as real uid, then only as saved uid.
+	case has(keyKernel) && r.success == "no" && r.pid == p.euid[0] && r.nr == unix.SYS_MOUNT && r.uid == "0" &&
+		r.euid != "0":
 		out = append(out, "mount_euid")
+	case has(keyKernel) && r.success == "no" && r.pid == p.euid[1] && r.nr == unix.SYS_MOUNT && r.uid != "0" &&
+		r.euid != "0" && r.suid == "0":
+		out = append(out, "mount_suid")
 	case has(keyKernel) && r.success == "yes" && r.pid == p.modprobe[0] && (r.nr == unix.SYS_FINIT_MODULE || r.nr == unix.SYS_INIT_MODULE):
 		out = append(out, "modprobe:load")
 	case has(keyKernel) && r.success == "yes" && r.pid == p.modprobe[1] && r.nr == unix.SYS_DELETE_MODULE:
