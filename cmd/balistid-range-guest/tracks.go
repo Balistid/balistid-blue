@@ -48,12 +48,11 @@ var tracksTrees = []tracksTree{
 	{"state", "/var/lib/balistid", keyState},
 }
 
-// tracksLeftOut are the rules' never rules of the trees: a program left out only in its own directory.
-var tracksLeftOut = []struct{ exe, dir string }{
-	{"/usr/local/lib/balistid/balistid-ledger", "/var/lib/balistid/ledger"},
-	{"/usr/local/lib/balistid/balistid-relay", "/var/lib/balistid/relay"},
-	{"/usr/local/lib/balistid/balistid-runner", "/var/lib/balistid/objects"},
-	{"/usr/local/lib/balistid/balistid-runner", "/var/lib/balistid/results"},
+// tracksLeftOut are the programs the rules leave out of the trees: no record under the trees' keys may come from one.
+var tracksLeftOut = []string{
+	"/usr/local/lib/balistid/balistid-ledger",
+	"/usr/local/lib/balistid/balistid-relay",
+	"/usr/local/lib/balistid/balistid-runner",
 }
 
 // tracksCall is a syscall the rules record, called with arguments the kernel refuses: no module, kexec image, eBPF
@@ -260,9 +259,10 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 		if json.Unmarshal(sc["arch"], &r.arch) != nil && ours {
 			return r, ours, fmt.Errorf("a record of %v without arch", r.keys)
 		}
-		var a2 string
-		if json.Unmarshal(sc["a2"], &a2) == nil {
-			r.a2, _ = strconv.ParseUint(strings.TrimPrefix(a2, "0x"), 16, 64)
+		// Laurel lists a0 to a3 as ARGV, each in hex ("0x80200").
+		var argv []string
+		if json.Unmarshal(sc["ARGV"], &argv) == nil && len(argv) > 2 {
+			r.a2, _ = strconv.ParseUint(strings.TrimPrefix(argv[2], "0x"), 16, 64)
 		}
 	}
 	if ours && (errExe != nil || errOK != nil || !decimal(r.nr) || !decimal(r.pid)) {
@@ -286,9 +286,8 @@ func decimal(s string) bool {
 	return err == nil
 }
 
-// leftOutLeak is why r should not exist under the rules' never rules, or "": a left-out program's record under the
-// state key with no file outside its own directory (a relative name may be inside it), bpf of pid 1, openat2 of
-// pid 1 in a tree.
+// leftOutLeak is why r should not exist under the rules' never rules, or "": a left-out program's record, bpf of
+// pid 1, openat2 of pid 1.
 func (r tracksRecord) leftOutLeak() string {
 	switch {
 	case r.uring:
@@ -297,22 +296,8 @@ func (r tracksRecord) leftOutLeak() string {
 		return "bpf of pid 1"
 	case r.pid == "1" && r.nr == strconv.Itoa(unix.SYS_OPENAT2):
 		return "openat2 of pid 1"
-	case !slices.Contains(r.keys, keyState):
-		return ""
-	}
-	for _, lo := range tracksLeftOut {
-		if r.exe != lo.exe {
-			continue
-		}
-		outside := false
-		for name, nametype := range r.paths {
-			if nametype != "PARENT" && filepath.IsAbs(name) && name != lo.dir && !strings.HasPrefix(name, lo.dir+"/") {
-				outside = true
-			}
-		}
-		if !outside {
-			return r.exe + " in " + lo.dir
-		}
+	case slices.Contains(tracksLeftOut, r.exe):
+		return r.exe
 	}
 	return ""
 }
