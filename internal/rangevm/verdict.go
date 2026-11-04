@@ -61,8 +61,8 @@ const capsAuditControl = "0000000040000000"
 // boot is set in the image but not proven at runtime, ADR 0004), Laurel as
 // _laurel with only its two capabilities, the collector as its own uid with none, a canary through Laurel, the
 // ledger's signed batches through the collector's last commit (ADR 0027), -e 2 refusing and recording a
-// disable, io_uring refused with a control that the probe tells both states apart, and a
-// plugin-queue overflow reported while the kernel loses nothing.
+// disable, io_uring refused with a control that the probe tells both states apart, root's tracks recorded
+// (ADR 0061), and a plugin-queue overflow reported while the kernel loses nothing.
 var expected = map[string]string{
 	FactNet:               "balistid-lan,balistid0,lo",
 	FactPCINet:            "",
@@ -104,10 +104,14 @@ var expected = map[string]string{
 	"io_uring_sysctl":        "2",
 	"io_uring_off":           "EPERM",
 	"io_uring_on":            "EFAULT",
-	"overflow_before":        "no",
-	"overflow_after":         "yes",
-	"overflow_journal":       "yes",
-	"audit_lost_after":       "0",
+	// Root covering its tracks (ADR 0061): each part found in the store with the guest's pid, none from a
+	// program the rules leave out.
+	"tracks": "journal=yes,audit=yes,systemd=yes,state=yes,init_module=yes,finit_module=yes,delete_module=yes," +
+		"kexec_load=yes,kexec_file_load=yes,bpf=yes,io_uring_register=yes,io_uring_setup=yes,modprobe=yes,quiet=yes",
+	"overflow_before":  "no",
+	"overflow_after":   "yes",
+	"overflow_journal": "yes",
+	"audit_lost_after": "0",
 }
 
 // Selftest judges a run of the range image. Missing, unknown or repeated facts are INVALID; any wrong
