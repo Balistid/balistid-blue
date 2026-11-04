@@ -105,15 +105,22 @@ func HasRuleKey(log io.Reader, key string) bool {
 		if json.Unmarshal(ev["SYSCALL"], &sc) != nil {
 			return false
 		}
-		var one string
-		var many []string
-		if json.Unmarshal(sc["key"], &one) == nil {
-			many = strings.Split(one, "\x01")
-		} else if json.Unmarshal(sc["key"], &many) != nil {
-			return false
-		}
-		return slices.Contains(many, key)
+		return slices.Contains(AuditKeys(sc["key"]), key)
 	})
+}
+
+// AuditKeys are the keys of an audit key field: a string, in which the kernel joins several keys with \x01, or a
+// list of strings; nil for anything else.
+func AuditKeys(raw json.RawMessage) []string {
+	var one string
+	var many []string
+	if json.Unmarshal(raw, &one) == nil {
+		return strings.Split(one, "\x01")
+	}
+	if json.Unmarshal(raw, &many) != nil {
+		return nil
+	}
+	return many
 }
 
 // eachEvent calls match on every JSON object line of log until it returns true.

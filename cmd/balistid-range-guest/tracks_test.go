@@ -16,8 +16,9 @@ const tracksToken = "balistid-tracks-ab"
 var tracksProbeOK = tracksProbe{pid: "4242", token: tracksToken, failed: map[string]string{}, modprobe: [2]string{"4300", "4301"}}
 
 // tracksAllYes is internal/rangevm's expected value of the fact tracks.
-const tracksAllYes = "journal=yes,audit=yes,systemd=yes,state=yes,init_module=yes,finit_module=yes,delete_module=yes," +
-	"kexec_load=yes,kexec_file_load=yes,bpf=yes,io_uring_register=yes,io_uring_setup=yes,modprobe=yes,quiet=yes"
+const tracksAllYes = "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes,finit_module=yes," +
+	"delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,umount2=yes,pidfd_getfd=yes,io_uring_register=yes," +
+	"io_uring_setup=yes,modprobe=yes,quiet=yes"
 
 // tracksLine is a SYSCALL event shaped as Laurel writes it: the number beside the name, the enriched "PID" beside
 // "pid", and PATH items when path is set.
@@ -40,6 +41,9 @@ func tracksLines() map[string][]string {
 		lines[tr.part] = []string{
 			tracksLine(unix.SYS_OPENAT, "4242", guestExe, "yes", tr.key, path, "CREATE"),
 			tracksLine(unix.SYS_UNLINKAT, "4242", guestExe, "yes", tr.key, path, "DELETE"),
+		}
+		if tr.trunc {
+			lines[tr.part] = append(lines[tr.part], tracksLine(unix.SYS_OPENAT, "4242", guestExe, "yes", tr.key, path, "NORMAL"))
 		}
 	}
 	for _, c := range tracksCalls() {
@@ -95,13 +99,19 @@ func TestTracksFoundRefusesEachFalseYes(t *testing.T) {
 		"journal under config":   {"journal", replaceAll(`"key":"balistid-logs"`, `"key":"balistid-config"`)},
 		"journal only created":   {"journal", func(l []string) []string { return l[:1] }},
 		"journal only removed":   {"journal", func(l []string) []string { return l[1:] }},
-		"state another file":     {"state", replaceAll(tracksToken, "balistid-tracks-cd")},
-		"bpf another syscall":    {"bpf", replaceAll(`"syscall":321`, `"syscall":59`)},
-		"bpf without a key":      {"bpf", replaceAll(`"key":"balistid-kernel"`, `"key":null`)},
-		"uring under kernel":     {"io_uring_setup", replaceAll(`"key":"balistid-uring"`, `"key":"balistid-kernel"`)},
-		"modprobe failed load":   {"modprobe", replaceAll(`"success":"yes"`, `"success":"no"`)},
-		"modprobe another pid":   {"modprobe", replaceAll(`"pid":4300`, `"pid":4242`)},
-		"modprobe only loads":    {"modprobe", func(l []string) []string { return l[:1] }},
+		"journal not truncated":  {"journal", func(l []string) []string { return l[:2] }},
+		"truncate by unlinkat": {"state", func(l []string) []string {
+			return append(l[:2], strings.Replace(l[2], `"syscall":257`, `"syscall":263`, 1))
+		}},
+		"bpf by another pid":   {"bpf", replaceAll(`"pid":4242`, `"pid":4243`)},
+		"pidfd under kernel":   {"pidfd_getfd", replaceAll(`"key":"balistid-inject"`, `"key":"balistid-kernel"`)},
+		"state another file":   {"state", replaceAll(tracksToken, "balistid-tracks-cd")},
+		"bpf another syscall":  {"bpf", replaceAll(`"syscall":321`, `"syscall":59`)},
+		"bpf without a key":    {"bpf", replaceAll(`"key":"balistid-kernel"`, `"key":null`)},
+		"uring under kernel":   {"io_uring_setup", replaceAll(`"key":"balistid-uring"`, `"key":"balistid-kernel"`)},
+		"modprobe failed load": {"modprobe", replaceAll(`"success":"yes"`, `"success":"no"`)},
+		"modprobe another pid": {"modprobe", replaceAll(`"pid":4300`, `"pid":4242`)},
+		"modprobe only loads":  {"modprobe", func(l []string) []string { return l[:1] }},
 	} {
 		lines := tracksLines()
 		lines[c.part] = c.change(lines[c.part])
@@ -133,6 +143,7 @@ func TestTracksQuiet(t *testing.T) {
 		"collector writes": tracksLine(unix.SYS_WRITE, "301", "/usr/local/lib/balistid/balistid-collector", "yes", keyState, "/var/lib/balistid/x", "NORMAL"),
 		"runner writes":    tracksLine(unix.SYS_WRITE, "302", "/usr/local/lib/balistid/balistid-runner", "yes", keyState, "/var/lib/balistid/x", "NORMAL"),
 		"systemd's bpf":    tracksLine(unix.SYS_BPF, "1", "/usr/lib/systemd/systemd", "yes", keyKernel, "", ""),
+		"a cut record":     `{"ID":"1.000:1","SYSCALL":{"exe":"/usr/local/lib/balistid/balistid-ledger","key":"balistid-state"`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); !strings.HasPrefix(v, "1 from ") {
 			t.Errorf("%s: quiet=%s", name, v)
@@ -168,7 +179,7 @@ func TestTracksFoundNamesAFailedAction(t *testing.T) {
 // The calls are the rules' syscalls on x86-64, and each is refused when run unprivileged here.
 func TestTracksCallsAreRefused(t *testing.T) {
 	want := map[string]int{"init_module": 175, "finit_module": 313, "delete_module": 176, "kexec_load": 246,
-		"kexec_file_load": 320, "bpf": 321, "io_uring_register": 427}
+		"kexec_file_load": 320, "bpf": 321, "umount2": 166, "pidfd_getfd": 438, "io_uring_register": 427}
 	for _, c := range tracksCalls() {
 		if strconv.Itoa(int(c.nr)) != strconv.Itoa(want[c.part]) {
 			t.Errorf("%s is %d, want %d", c.part, c.nr, want[c.part])
