@@ -2,6 +2,7 @@ package collector
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,8 +32,9 @@ const (
 	maxSeenBytes  = 4 << 10
 
 	// The health of the audit reasons, named only where health would otherwise be OK, in this order (ADR 0038,
-	// point 4), but auditdRestarted, which is named over every other reason while it holds.
+	// point 4; ADR 0059, point 3), but auditdRestarted, which is named over every other reason while it holds.
 	auditOverflow   = "UNKNOWN dispatcher-overflow"
+	rulesDiffer     = "UNKNOWN rules-differ"
 	auditdDown      = "UNKNOWN auditd-down"
 	auditdRestarted = "UNKNOWN auditd-restarted"
 	auditStale      = "UNKNOWN audit-stale"
@@ -63,11 +65,13 @@ type seen struct {
 type Audit struct {
 	readReport func() (auditstat.Report, error)
 	readState  func() (overflow bool, mtime int64, err error)
+	shipped    auditstat.Loaded // what the report must say is loaded (ADR 0059, point 3)
 	seenPath   string
 	bootID     string
 
 	start                 time.Time
 	report                auditstat.Report
+	loaded                auditstat.Loaded // the last report's, journaled when it changes to one not shipped
 	haveReport, haveState bool
 	reportAt, stateAt     time.Time // when the report's seq and the state's mtime last changed
 	stateMtime            int64
@@ -83,6 +87,7 @@ func NewAudit(cfg AuditConfig) *Audit {
 	return &Audit{
 		readReport: func() (auditstat.Report, error) { return auditstat.ReadReport(cfg.ReportPath, cfg.ReportUID) },
 		readState:  func() (bool, int64, error) { return readAuditdState(cfg.StatePath) },
+		shipped:    auditstat.Shipped(),
 		seenPath:   cfg.SeenPath, bootID: cfg.BootID,
 	}
 }
@@ -127,6 +132,14 @@ func (a *Audit) check(now time.Time, log *slog.Logger) (kernel, dispatcher uint6
 			a.reportAt = now
 		}
 		a.report, a.haveReport = r, true
+		if l := r.Loaded(); l != a.loaded {
+			a.loaded = l
+			if l != a.shipped {
+				log.Error("the loaded audit rules differ from the shipped ones", "count", l.Rules.Count,
+					"digest", hex.EncodeToString(l.Rules.Digest[:]), "failure", l.Failure, "rate_limit", l.RateLimit,
+					"backlog_limit", l.BacklogLimit, "backlog_wait_time", l.BacklogWaitTime, "rule", auditstat.ShippedRulesSHA256)
+			}
+		}
 		s := r.Status
 		switch {
 		case s.Lost > a.base.Lost:
@@ -174,9 +187,11 @@ func (a *Audit) restarting(now time.Time) bool {
 	return !a.restartAt.IsZero() && !a.stateAt.After(a.restartAt) && now.Sub(a.restartAt) < auditFresh
 }
 
-// reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; a fresh report has no auditd or audit
-// not locked; the report's seq or the state's mtime did not change within auditFresh. The last two wait the
-// collector's first auditFresh. The clock is the writer's monotonic one, which a suspend stops.
+// reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; a fresh report shows rules or status fields
+// other than the shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the state's
+// mtime did not change within auditFresh. The last two wait the collector's first auditFresh; the rules do not, as
+// a fresh report that differs is evidence, not an absence. The clock is the writer's monotonic one, which a suspend
+// stops.
 func (a *Audit) reason(now time.Time) string {
 	warm := now.Sub(a.start) >= auditFresh
 	reportFresh := a.haveReport && now.Sub(a.reportAt) < auditFresh
@@ -184,6 +199,8 @@ func (a *Audit) reason(now time.Time) string {
 	switch {
 	case stateFresh && a.overflow:
 		return auditOverflow
+	case reportFresh && a.report.Loaded() != a.shipped:
+		return rulesDiffer
 	case warm && reportFresh && (a.report.Status.PID == 0 || a.report.Status.Enabled != 2):
 		return auditdDown
 	case warm && (!reportFresh || !stateFresh):

@@ -144,7 +144,7 @@ func TestHealthIsOKOnlyFromAFreshOKReport(t *testing.T) {
 
 // Every reason the collector can send has a name and a hint.
 func TestEveryReasonIsExplained(t *testing.T) {
-	for r := entry.ReasonStarting; r <= entry.ReasonAuditd; r++ {
+	for r := entry.ReasonStarting; r <= entry.ReasonRulesDiffer; r++ {
 		if why, ok := reasons[r]; !ok || why.name == "" || why.hint == "" {
 			t.Errorf("reason %d: %+v", r, why)
 		}

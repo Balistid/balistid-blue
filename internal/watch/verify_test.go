@@ -168,10 +168,10 @@ func TestLossAlarmsUnderItsStage(t *testing.T) {
 }
 
 // A health entry with unstored records alarms as lossunstored; an UNKNOWN for a lasting reason, auditstat's and
-// auditd's ones included (ADR 0038, point 4), alarms at once.
+// auditd's ones (ADR 0038, point 4) and the rules' (ADR 0059) included, alarms at once.
 func TestUnstoredAndUnknownAlarm(t *testing.T) {
 	now := time.Now()
-	for _, r := range []entry.Reason{entry.ReasonStoreDown, entry.ReasonAuditStale, entry.ReasonAuditd} {
+	for _, r := range []entry.Reason{entry.ReasonStoreDown, entry.ReasonAuditStale, entry.ReasonAuditd, entry.ReasonRulesDiffer} {
 		log := enc(t, entry.Batch{First: 1, Last: 4, Root: [32]byte{1}},
 			entry.Health{State: entry.StateUnknown, Reason: r, Unstored: 3})
 		l, f, err := Advance(context.Background(), Log{}, headOf(log), fetchFrom(log))

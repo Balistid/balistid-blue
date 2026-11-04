@@ -325,6 +325,8 @@ func healthEntry(h string, unstored uint64) (entry.Health, error) {
 		e.Reason = entry.ReasonAuditStale
 	case h == auditOverflow:
 		e.Reason = entry.ReasonDispatcher
+	case h == rulesDiffer:
+		e.Reason = entry.ReasonRulesDiffer
 	case h == auditdDown || h == auditdRestarted:
 		e.Reason = entry.ReasonAuditd
 	default:

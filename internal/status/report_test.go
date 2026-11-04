@@ -33,7 +33,7 @@ func TestReportRefusesAHealthOutsideTheEntryRules(t *testing.T) {
 		"OK with a reason":     {State: entry.StateOK, Reason: entry.ReasonStoreDown},
 		"UNKNOWN without one":  {State: entry.StateUnknown},
 		"no state":             {},
-		"reason past the last": {State: entry.StateUnknown, Reason: entry.ReasonAuditd + 1},
+		"reason past the last": {State: entry.StateUnknown, Reason: entry.ReasonRulesDiffer + 1},
 	} {
 		if _, err := (Report{Health: h}).Encode(); err == nil {
 			t.Errorf("%s: encoded", name)
