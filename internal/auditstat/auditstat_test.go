@@ -193,7 +193,7 @@ func TestPollWritesOnlyTheKernelsAnswer(t *testing.T) {
 	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o640 {
 		t.Fatalf("report %v, %v", fi, err)
 	}
-	want := Report{Seq: 7, Status: sample, Rules: Rules{Count: uint32(len(testRules)), Digest: testDigest(testRules...)}}
+	want := Report{Seq: 7, Status: sample, Rules: Rules{Count: 3, Digest: testDigest(testRules...)}}
 	if r, err := ReadReport(path, os.Getuid()); err != nil || r != want {
 		t.Fatalf("%+v %v", r, err)
 	}
