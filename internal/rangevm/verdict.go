@@ -106,9 +106,10 @@ var expected = map[string]string{
 	"io_uring_on":            "EFAULT",
 	// Root covering its tracks (ADR 0061): each part found in the store with the guest's pid, none from a
 	// program the rules leave out.
-	"tracks": "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes,finit_module=yes," +
-		"delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,umount2=yes,pidfd_getfd=yes,io_uring_register=yes," +
-		"io_uring_setup=yes,modprobe=yes,quiet=yes",
+	"tracks": "journal=yes,audit=yes,systemd=yes,laurel=yes,programs=yes,state=yes,init_module=yes," +
+		"finit_module=yes,delete_module=yes,kexec_load=yes,kexec_file_load=yes,bpf=yes,mount=yes,umount2=yes," +
+		"move_mount=yes,fsmount=yes,fsconfig=yes,fspick=yes,mount_setattr=yes,open_tree=yes,pidfd_getfd=yes," +
+		"io_uring_register=yes,io_uring_setup=yes,modprobe=yes,quiet=yes",
 	"overflow_before":  "no",
 	"overflow_after":   "yes",
 	"overflow_journal": "yes",

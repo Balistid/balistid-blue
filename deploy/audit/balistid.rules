@@ -23,56 +23,74 @@
 
 ## Root covering its tracks (ADR 0061). The syscall list takes its first matching rule, so a never rule stands just
 ## before what it leaves out; watches of a path are a list of their own that the kernel checks after it.
-## Kernel modules, kexec, eBPF and mounts; systemd (pid 1) attaches cgroup programs at every unit start. audit's i386
-## table names kexec_load sys_kexec_load; i386 has no kexec_file_load.
+## Kernel modules, kexec and eBPF; systemd (pid 1) attaches cgroup programs at every unit start. audit's i386 table
+## names kexec_load sys_kexec_load; i386 has no kexec_file_load.
 -a never,exit -F arch=b64 -S bpf -F pid=1
 -a never,exit -F arch=b32 -S bpf -F pid=1
 -a always,exit -F arch=b64 -S init_module,finit_module,delete_module,kexec_load,kexec_file_load,bpf -k balistid-kernel
 -a always,exit -F arch=b32 -S init_module,finit_module,delete_module,sys_kexec_load,bpf -k balistid-kernel
--a always,exit -F arch=b64 -S mount,umount2,move_mount,fsmount,mount_setattr,open_tree -k balistid-kernel
--a always,exit -F arch=b32 -S mount,umount2,move_mount,fsmount,mount_setattr,open_tree -k balistid-kernel
-## io_uring is disabled (deploy/sysctl); one that root re-enabled is recorded when set up, and its file ops.
+## Mounts by root: an unprivileged sandbox mounts hundreds of times in its own namespace, which hides nothing.
+-a always,exit -F arch=b64 -S mount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree -F euid=0 -k balistid-kernel
+-a always,exit -F arch=b32 -S mount,umount,umount2,move_mount,fsmount,fsconfig,fspick,mount_setattr,open_tree -F euid=0 -k balistid-kernel
+## io_uring is disabled (deploy/sysctl); one that root re-enabled is recorded when set up, and its path and
+## allocation ops (audit skips its reads and writes).
 -a always,exit -F arch=b64 -S io_uring_setup,io_uring_register -k balistid-uring
 -a always,exit -F arch=b32 -S io_uring_setup,io_uring_register -k balistid-uring
--a always,io_uring -S openat,openat2,unlinkat,renameat,linkat,symlinkat,mkdirat,ftruncate -k balistid-uring
-## Writes and removals under the journal, audit, Laurel and unit config, our programs and our state, by any program
-## but a tree's owner as systemd starts it (ppid 1). perm=wa reads only an open's access mode, so an open that
-## creates or truncates (O_CREAT|O_TRUNC, 0x240) gets its own rule; systemd reads its units with openat2. 32-bit
-## programs are rare here: their creating opens anywhere under /etc and every open in the journal and our state.
+-a always,io_uring -S openat,openat2,unlinkat,renameat,linkat,symlinkat,mkdirat,ftruncate,fallocate -k balistid-uring
+## Trees: every write, removal, attribute change, and open that creates or truncates (O_CREAT|O_TRUNC, 0x240: perm=wa
+## reads only the access mode), for both ABIs; openat2's flags no rule reads, so it is recorded whole, but pid 1's.
+## Left out, by program and only in its own directory: the ledger's tiles and the relay's state (static binaries,
+## about 4 records a second in the range) and the runner's objects and results.
 -a never,exit -F arch=b64 -S openat2 -F pid=1
 -a never,exit -F arch=b32 -S openat2 -F pid=1
+-a never,exit -F dir=/var/lib/balistid/ledger -F exe=/usr/local/lib/balistid/balistid-ledger
+-a never,exit -F dir=/var/lib/balistid/relay -F exe=/usr/local/lib/balistid/balistid-relay
+-a never,exit -F dir=/var/lib/balistid/objects -F exe=/usr/local/lib/balistid/balistid-runner
+-a never,exit -F dir=/var/lib/balistid/results -F exe=/usr/local/lib/balistid/balistid-runner
 -a always,exit -F dir=/etc/audit -F perm=wa -k balistid-config
--a always,exit -F dir=/etc/systemd -F perm=wa -k balistid-config
--a always,exit -F dir=/etc/laurel -F perm=wa -k balistid-config
--a always,exit -F dir=/usr/local/lib/balistid -F perm=wa -k balistid-config
--a always,exit -F path=/usr/lib/systemd/systemd-journald -F perm=wa -k balistid-config
--a never,exit -F dir=/var/log/journal -F exe=/usr/lib/systemd/systemd-journald -F ppid=1
--a always,exit -F dir=/var/log/journal -F perm=wa -k balistid-logs
--a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-collector -F ppid=1
--a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-ledger -F ppid=1
--a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-relay -F ppid=1
--a never,exit -F dir=/var/lib/balistid -F exe=/usr/local/lib/balistid/balistid-runner -F ppid=1
--a always,exit -F dir=/var/lib/balistid -F perm=wa -k balistid-state
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/etc/audit -k balistid-config
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/etc/audit -k balistid-config
 -a always,exit -F arch=b64 -S openat2 -F dir=/etc/audit -k balistid-config
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/etc/audit -k balistid-config
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/etc/audit -k balistid-config
+-a always,exit -F arch=b32 -S openat2 -F dir=/etc/audit -k balistid-config
+-a always,exit -F dir=/etc/systemd -F perm=wa -k balistid-config
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/etc/systemd -k balistid-config
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/etc/systemd -k balistid-config
 -a always,exit -F arch=b64 -S openat2 -F dir=/etc/systemd -k balistid-config
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/etc/systemd -k balistid-config
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/etc/systemd -k balistid-config
+-a always,exit -F arch=b32 -S openat2 -F dir=/etc/systemd -k balistid-config
+-a always,exit -F dir=/etc/laurel -F perm=wa -k balistid-config
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/etc/laurel -k balistid-config
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/etc/laurel -k balistid-config
 -a always,exit -F arch=b64 -S openat2 -F dir=/etc/laurel -k balistid-config
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/etc/laurel -k balistid-config
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/etc/laurel -k balistid-config
+-a always,exit -F arch=b32 -S openat2 -F dir=/etc/laurel -k balistid-config
+-a always,exit -F dir=/usr/local/lib/balistid -F perm=wa -k balistid-config
+-a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F arch=b64 -S openat2 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F arch=b32 -S openat2 -F dir=/usr/local/lib/balistid -k balistid-config
+-a always,exit -F dir=/var/log/journal -F perm=wa -k balistid-logs
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/var/log/journal -k balistid-logs
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/var/log/journal -k balistid-logs
 -a always,exit -F arch=b64 -S openat2 -F dir=/var/log/journal -k balistid-logs
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/var/log/journal -k balistid-logs
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/var/log/journal -k balistid-logs
+-a always,exit -F arch=b32 -S openat2 -F dir=/var/log/journal -k balistid-logs
+-a always,exit -F dir=/var/lib/balistid -F perm=wa -k balistid-state
 -a always,exit -F arch=b64 -S open -F a1&0x240 -F dir=/var/lib/balistid -k balistid-state
 -a always,exit -F arch=b64 -S openat -F a2&0x240 -F dir=/var/lib/balistid -k balistid-state
 -a always,exit -F arch=b64 -S openat2 -F dir=/var/lib/balistid -k balistid-state
--a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/etc -k balistid-config
--a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/etc -k balistid-config
--a always,exit -F arch=b32 -S openat2 -F dir=/etc -k balistid-config
--a always,exit -F arch=b32 -S open,openat,openat2 -F dir=/var/log/journal -k balistid-logs
--a always,exit -F arch=b32 -S open,openat,openat2 -F dir=/var/lib/balistid -k balistid-state
+-a always,exit -F arch=b32 -S open -F a1&0x240 -F dir=/var/lib/balistid -k balistid-state
+-a always,exit -F arch=b32 -S openat -F a2&0x240 -F dir=/var/lib/balistid -k balistid-state
+-a always,exit -F arch=b32 -S openat2 -F dir=/var/lib/balistid -k balistid-state
+## journald's binary: any call on it, so no open mode empties it unrecorded.
+-a always,exit -F path=/usr/lib/systemd/systemd-journald -k balistid-config
 
 ## Last: no rule or state change until reboot.
 -e 2
