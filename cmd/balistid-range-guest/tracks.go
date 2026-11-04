@@ -29,10 +29,14 @@ const (
 	keyConfig = "balistid-config"
 	keyState  = "balistid-state"
 	keyHandle = "balistid-handle"
+	// mountEuidArg is the probe's child that leaves uid 0 as effective uid only, keeping root's capabilities, then
+	// mounts.
+	mountEuidArg = "mount-euid"
 	// tracksModule is a module the range's kernel builds as one and nothing loads at boot (ADR 0061, point 3).
 	tracksModule = "dummy"
 	// archB64 is the audit arch of x86-64, the guest's; its file ops are what the probe credits.
 	archB64 = "0xc000003e"
+	archB32 = "0x40000003"
 	oTrunc  = 0x200
 )
 
@@ -124,6 +128,7 @@ type tracksProbe struct {
 	token    string            // the name of each tree's file
 	failed   map[string]string // a part whose action failed, and why
 	modprobe [2]string         // the pids of modprobe's load and removal
+	euid     string            // the pid of the mountEuidArg child
 }
 
 // coverTracks does, as root without a loginuid, what ADR 0061 point 4 names.
@@ -147,6 +152,11 @@ func coverTracks(ctx context.Context) tracksProbe {
 		if c.call() == nil {
 			p.failed[c.part] = "the kernel took it" // a refused call was the point; the record still counts
 		}
+	}
+	if pid, err := mountAsOtherEuid(ctx); err != nil {
+		p.failed["mount_euid"] = err.Error()
+	} else {
+		p.euid = pid
 	}
 	for i, args := range [][]string{{tracksModule}, {"-r", tracksModule}} {
 		cmd := exec.CommandContext(ctx, "/usr/bin/modprobe", args...) //nolint:gosec // fixed program and module
@@ -185,6 +195,31 @@ func createTruncateRemove(path string) error {
 	return nil
 }
 
+// mountAsOtherEuid runs the mountEuidArg child and returns its pid.
+func mountAsOtherEuid(ctx context.Context) (string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("self: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, self, mountEuidArg) //nolint:gosec // our own binary
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("%w: %.200s", err, out)
+	}
+	return strconv.Itoa(cmd.Process.Pid), nil
+}
+
+// mountEuidMain sets the effective uid to nobody with the real and saved uids root, which keeps the permitted
+// capabilities, and calls mount, refused without CAP_SYS_ADMIN in effect: the rules record it by uid=0.
+func mountEuidMain([]string) error {
+	if err := unix.Setresuid(-1, 65534, -1); err != nil {
+		return fmt.Errorf("setresuid: %w", err)
+	}
+	if unix.Mount("none", "/balistid-none", "tmpfs", 0, "") == nil {
+		return errors.New("the kernel took the mount")
+	}
+	return nil
+}
+
 // truncateByHandle creates path, opens it by its handle for writing with O_TRUNC, which carries no path a tree rule
 // sees (ADR 0061, point 2), and removes it.
 func truncateByHandle(path string) error {
@@ -217,7 +252,7 @@ func tracksParts() []string {
 	for _, c := range tracksCalls {
 		parts = append(parts, c.part)
 	}
-	return append(parts, "open_by_handle_at", "modprobe", "quiet")
+	return append(parts, "open_by_handle_at", "mount_euid", "modprobe", "quiet")
 }
 
 // tracksFound is the fact tracks: per part "yes" when the store's Laurel lines hold its records, else why not.
@@ -232,8 +267,8 @@ func tracksFound(lines []byte, p tracksProbe) string {
 		switch {
 		case err != nil:
 			why = err.Error()
-		case !ours:
-			why = ""
+		case !ours || !slices.ContainsFunc(r.keys, func(k string) bool { return slices.Contains(tracksKeys, k) }):
+			why = "" // a left-out program's inject records are recorded on purpose
 		}
 		if why != "" {
 			if loud++; loud == 1 {
@@ -304,6 +339,9 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 	if json.Unmarshal(line, &top) != nil || top == nil {
 		return r, false, errors.New("a line that is no JSON object")
 	}
+	if raw, ok := top["URINGOP"]; ok {
+		return r, false, checkUringop(raw)
+	}
 	raw, ok := top["SYSCALL"]
 	if !ok {
 		return r, false, nil // another event type
@@ -324,6 +362,9 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 		okArgs = okArgs && ok
 		r.args = append(r.args, n)
 	}
+	okArch = okArch && (r.arch == archB64 || r.arch == archB32)
+	okExe = okExe && strings.HasPrefix(r.exe, "/")
+	okSuccess = okSuccess && (r.success == "yes" || r.success == "no")
 	if ours && (!okArch || !okExe || !okSuccess || errNr != nil || !decimal(r.pid) || !okArgs) {
 		return r, ours, fmt.Errorf("a record of %v without its arch, number, pid, exe, outcome or arguments", r.keys)
 	}
@@ -338,6 +379,25 @@ func parseTracksRecord(line []byte) (r tracksRecord, ours bool, err error) {
 		}
 	}
 	return r, ours, nil
+}
+
+// checkUringop is an error for a URINGOP event under a key of ADR 0061 without its op number, pid and outcome, or
+// one that is no object; a ring's events prove no part.
+func checkUringop(raw json.RawMessage) error {
+	var ev map[string]json.RawMessage
+	if json.Unmarshal(raw, &ev) != nil || ev == nil {
+		return errors.New("a URINGOP that is no object")
+	}
+	keys := rangeguest.AuditKeys(ev["key"])
+	if !slices.ContainsFunc(keys, func(k string) bool { return slices.Contains(tracksKeys, k) }) {
+		return nil
+	}
+	var success string
+	if !decimal(string(ev["uring_op"])) || !decimal(string(ev["pid"])) || !jsonString(ev["success"], &success) ||
+		(success != "yes" && success != "no") {
+		return fmt.Errorf("a URINGOP of %v without its op, pid or outcome", keys)
+	}
+	return nil
 }
 
 // jsonString decodes raw into s only when it is a JSON string: null and other types are not.
@@ -398,6 +458,8 @@ func (r tracksRecord) matches(p tracksProbe) []string {
 				out = append(out, c.part)
 			}
 		}
+	case has(keyKernel) && r.success == "no" && r.pid == p.euid && r.nr == unix.SYS_MOUNT:
+		out = append(out, "mount_euid")
 	case has(keyKernel) && r.success == "yes" && r.pid == p.modprobe[0] && (r.nr == unix.SYS_FINIT_MODULE || r.nr == unix.SYS_INIT_MODULE):
 		out = append(out, "modprobe:load")
 	case has(keyKernel) && r.success == "yes" && r.pid == p.modprobe[1] && r.nr == unix.SYS_DELETE_MODULE:
