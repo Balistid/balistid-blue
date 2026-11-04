@@ -1,13 +1,13 @@
-// Package auditstat reads the kernel's audit status for balistid-auditstat, the one long-running process with
-// CAP_AUDIT_CONTROL (ADR 0007, ADR 0038 point 1), and encodes the fixed-size report the collector reads. It
-// sends only AUDIT_GET and parses nothing but the kernel's fixed struct audit_status.
+// Package auditstat reads the kernel's audit status and loaded rules for balistid-auditstat, the one long-running
+// process with CAP_AUDIT_CONTROL (ADR 0007, ADR 0038 point 1, ADR 0059), and encodes the fixed-size report the
+// collector reads. It sends only AUDIT_GET and AUDIT_LIST_RULES, parses nothing but the kernel's fixed struct
+// audit_status and the netlink framing, and hashes the rules unread.
 package auditstat
 
 import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -48,12 +48,8 @@ func decodeReply(b []byte, port, seq uint32) (Status, error) {
 	if port != 0 {
 		return Status{}, errors.New("auditstat: a reply not from the kernel")
 	}
-	if len(b) >= unix.SizeofNlMsghdr+4 && binary.NativeEndian.Uint16(b[4:]) == unix.NLMSG_ERROR {
-		code := binary.NativeEndian.Uint32(b[unix.SizeofNlMsghdr:]) // the kernel's errno, negated
-		if code == 0 {
-			return Status{}, errors.New("auditstat: an acknowledgement, not a reply")
-		}
-		return Status{}, fmt.Errorf("auditstat: the kernel refused AUDIT_GET: %w", syscall.Errno(^code+1))
+	if err := kernelError(b, "AUDIT_GET"); err != nil {
+		return Status{}, err
 	}
 	switch {
 	case len(b) != replyBytes:

@@ -1,5 +1,5 @@
-# Reports the kernel's audit status every 5 s for the collector (ADR 0038 point 1): the one long-running process
-# with CAP_AUDIT_CONTROL, which sends only AUDIT_GET (ADR 0007, R13).
+# Reports the kernel's audit status and loaded rules every 5 s for the collector (ADR 0038 point 1, ADR 0059): the
+# one long-running process with CAP_AUDIT_CONTROL, which sends only AUDIT_GET and AUDIT_LIST_RULES (ADR 0007, R13).
 [Unit]
 Description=Balistid Blue auditstat: the kernel's audit status for the collector
 After=systemd-sysusers.service
