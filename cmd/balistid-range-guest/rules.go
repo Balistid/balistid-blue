@@ -123,11 +123,12 @@ func rulesProof(inject, list string, status map[string]string) string {
 
 // states is how long the timeline runs from its first record to until, in ms; its states up to until, each once per
 // change, joined by rangevm.StatesSep; and the ms from the first stored canary to the first rules-differ, or
-// rangevm.CanaryNone. The canary is stored at the change away from the last canary-pending before that rules-differ:
-// the tick that stored it ends the wait.
+// rangevm.CanaryNone. The first change away from the first canary-pending is no later than the tick that stored the
+// first canary, so the time is never shorter than the real one, and a reconnect after it does not reset it.
 func (t healthTimeline) states(until int64) (watch, states, differ string) {
 	var out []string
-	var from, pending, stored int64
+	var from, stored int64
+	pending := false
 	differ = rangevm.CanaryNone
 	for _, h := range t {
 		if h.at <= 0 || h.at > until {
@@ -140,10 +141,10 @@ func (t healthTimeline) states(until int64) (watch, states, differ string) {
 			continue
 		}
 		switch {
-		case differ != rangevm.CanaryNone:
+		case stored != 0:
 		case h.state == canaryPending:
-			pending, stored = h.at, 0
-		case pending != 0 && stored == 0:
+			pending = true
+		case pending:
 			stored = h.at
 		}
 		if h.state == rulesDiffer && differ == rangevm.CanaryNone && stored != 0 {

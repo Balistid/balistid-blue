@@ -111,12 +111,18 @@ func TestHealthStatesOnceEachUpToTheWatchEnd(t *testing.T) {
 		h(11500, "UNKNOWN laurel-disconnected"), h(12000, canaryPending), h(12100, canaryPending),
 		h(13250, "UNKNOWN audit-stale"), h(14000, rulesDiffer), h(15000, "UNKNOWN laurel-disconnected"),
 		h(16000, canaryPending), h(17000, rulesDiffer), h(80000, "OK")}.states(ms(71000))
-	if watch != "61000" || differ != "750" || states != "UNKNOWN store: starting|"+canaryPending+"|UNKNOWN laurel-disconnected|"+
+	if watch != "61000" || differ != "2500" || states != "UNKNOWN store: starting|"+canaryPending+"|UNKNOWN laurel-disconnected|"+
 		canaryPending+"|UNKNOWN audit-stale|"+rulesDiffer+"|UNKNOWN laurel-disconnected|"+canaryPending+"|"+rulesDiffer {
 		t.Errorf("watch %s, differ %s, states %q", watch, differ, states)
 	}
 	if _, _, differ := (healthTimeline{h(1, rulesDiffer), h(2, canaryPending)}).states(ms(9)); differ != rangevm.CanaryNone {
 		t.Errorf("rules-differ before any canary: %s", differ)
+	}
+	// A reconnect after the first canary does not move the origin: rules-differ 28 s after it reads 28000.
+	_, _, differ = healthTimeline{h(1000, canaryPending), h(2000, "UNKNOWN audit-stale"), h(20000, "UNKNOWN laurel-disconnected"),
+		h(21000, canaryPending), h(30000, rulesDiffer)}.states(ms(90000))
+	if differ != "28000" {
+		t.Errorf("rules-differ after a reconnect: %s ms from the first canary", differ)
 	}
 	if watch, states, differ := (healthTimeline{}).states(ms(71000)); watch != rangevm.CanaryNone || states != "" ||
 		differ != rangevm.CanaryNone {

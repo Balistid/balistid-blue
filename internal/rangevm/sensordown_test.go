@@ -130,6 +130,10 @@ func TestJudgeRulesDiffer(t *testing.T) {
 		"rules_watch_ms=59999", "rules_watch_ms=none", "rules_watch_ms=x", "rules_watch_ms=", "rules_watch_ms=-1",
 		"rules_differ_ms=x", "rules_differ_ms=", "rules_differ_ms=-1", "rules_differ_ms=1250 ",
 		"rules_differ_ms=18446744073709551615",
+		// A state no collector writes proves nothing, empty or near one it writes.
+		join("GARBAGE", stateRulesDiffer), join("OK ", stateRulesDiffer), join("", stateRulesDiffer),
+		join(pending, "UNKNOWN store: ", stateRulesDiffer), join(pending, "UNKNOWN store: x\x00", stateRulesDiffer),
+		join(pending, "unknown audit-stale", stateRulesDiffer),
 	}
 	invalid = append(invalid, rulesFacts()...)
 	miss := []string{
@@ -144,6 +148,7 @@ func TestJudgeRulesDiffer(t *testing.T) {
 	pass := []string{
 		join(pending, stateRulesDiffer), join(stateRulesDiffer), "rules_differ_ms=10000", "rules_differ_ms=0",
 		join(pending, stateRulesDiffer, "UNKNOWN laurel-disconnected", pending, stateRulesDiffer),
+		join(pending, "UNKNOWN store: starting", "UNKNOWN ledger-stream", "UNKNOWN auditd-restarted", stateRulesDiffer),
 		"rules_watch_ms=60000",
 	}
 	judgeCases(t, "sensor-down-rules-extra-1", rulesRun, map[string][]string{Miss: miss, Invalid: invalid, Pass: pass})
@@ -152,14 +157,22 @@ func TestJudgeRulesDiffer(t *testing.T) {
 // The states a rules trial is judged by are the collector's.
 func TestRulesStatesAreTheCollectorsHealth(t *testing.T) {
 	var src strings.Builder
-	for _, f := range []string{"../collector/writer.go", "../collector/audit.go"} {
-		b, err := os.ReadFile(f) //nolint:gosec // the two fixed sources above
+	for _, f := range []string{"../collector/writer.go", "../collector/audit.go", "../collector/ledger.go"} {
+		b, err := os.ReadFile(f) //nolint:gosec // the fixed sources above
 		if err != nil {
 			t.Fatal(err)
 		}
 		src.Write(b)
 	}
-	for _, s := range []string{stateRulesDiffer} {
+	if !strings.Contains(src.String(), `"`+storeState+`" + `) {
+		t.Errorf("the collector writes no %q state", storeState)
+	}
+	for _, s := range []string{stateRulesDiffer, "UNKNOWN starting", "UNKNOWN laurel-disconnected", "UNKNOWN canary-missed",
+		"UNKNOWN canary-pending", "UNKNOWN dispatcher-overflow", "UNKNOWN auditd-down", "UNKNOWN auditd-restarted",
+		"UNKNOWN audit-stale", "UNKNOWN ledger-stream"} {
+		if !collectorState(s) {
+			t.Errorf("%q is not a collector state", s)
+		}
 		if !strings.Contains(src.String(), strconv.Quote(s)) {
 			t.Errorf("the collector sets no health %q", s)
 		}
