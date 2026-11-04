@@ -20,7 +20,7 @@ const (
 	tracksAllYes = rangevm.TracksAllYes
 )
 
-var tracksProbeOK = tracksProbe{pid: guestPid, token: tracksToken, failed: map[string]string{}, modprobe: [2]string{"4300", "4301"}, euid: "4400"}
+var tracksProbeOK = tracksProbe{pid: guestPid, token: tracksToken, failed: map[string]string{}, modprobe: [2]string{"4300", "4301"}, euid: [2]string{"4400", "4401"}}
 
 // call is a SYSCALL event shaped as Laurel writes it: the number beside the name, a0 to a3 as ARGV in hex
 // (linux-audit-parser's Number::Hex, Laurel's coalesce.rs), the enriched "PID" beside "pid", PATH items when path
@@ -74,13 +74,22 @@ func tracksLines() map[string][]string {
 		}
 		lines[c.part] = []string{call{nr: c.nr, pid: guestPid, exe: guestExe, success: "no", key: c.key, a0: a0}.line()}
 	}
-	lines["open_by_handle_at"] = []string{call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: guestPid, exe: guestExe, success: "yes", key: keyHandle, a0: "0x5", a2: "0x80201"}.line()}
-	lines["mount_euid"] = []string{call{nr: unix.SYS_MOUNT, pid: "4400", exe: guestExe, success: "no", key: keyKernel}.line()}
+	lines["open_by_handle_at"] = []string{
+		call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: guestPid, exe: guestExe, success: "yes", key: keyHandle, a0: "0x5", a2: "0x80000"}.line(),
+		call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: guestPid, exe: guestExe, success: "yes", key: keyHandle, a0: "0x5", a2: "0x80201"}.line(),
+	}
+	lines["mount_suid"] = []string{withUids(call{nr: unix.SYS_MOUNT, pid: "4401", exe: guestExe, success: "no", key: keyKernel}.line(), "65534", "65534", "0")}
+	lines["mount_euid"] = []string{withUids(call{nr: unix.SYS_MOUNT, pid: "4400", exe: guestExe, success: "no", key: keyKernel}.line(), "0", "65534", "0")}
 	lines["modprobe"] = []string{
 		call{nr: unix.SYS_FINIT_MODULE, pid: "4300", exe: "/usr/bin/kmod", success: "yes", key: keyKernel}.line(),
 		call{nr: unix.SYS_DELETE_MODULE, pid: "4301", exe: "/usr/bin/kmod", success: "yes", key: keyKernel}.line(),
 	}
 	return lines
+}
+
+// withUids puts the real, effective and saved uid into a SYSCALL line, as the kernel's record carries them.
+func withUids(line, uid, euid, suid string) string {
+	return strings.Replace(line, `"pid":`, `"uid":`+uid+`,"euid":`+euid+`,"suid":`+suid+`,"pid":`, 1)
 }
 
 func join(lines map[string][]string, extra ...string) []byte {
@@ -172,6 +181,13 @@ func TestTracksFoundRefusesEachFalseYes(t *testing.T) {
 		"handle not truncating":    {"open_by_handle_at", replaceAll(`"0x80201"`, `"0x80001"`)},
 		"handle under config":      {"open_by_handle_at", replaceAll(`"key":"balistid-handle"`, `"key":"balistid-config"`)},
 		"handle by another pid":    {"open_by_handle_at", replaceAll(`"pid":4242`, `"pid":4243`)},
+		"handle only read-only":    {"open_by_handle_at", keep(0)},
+		"handle only writes":       {"open_by_handle_at", keep(1)},
+		"suid mount by a stranger": {"mount_suid", replaceAll(`"pid":4401`, `"pid":4999`)},
+		"suid mount took it":       {"mount_suid", replaceAll(`"success":"no"`, `"success":"yes"`)},
+		"suid mount, real root":    {"mount_suid", replaceAll(`"uid":65534,"euid"`, `"uid":0,"euid"`)},
+		"euid mount, real nobody":  {"mount_euid", replaceAll(`"uid":0,"euid"`, `"uid":65534,"euid"`)},
+		"euid mount, still root":   {"mount_euid", replaceAll(`"euid":65534`, `"euid":0`)},
 		"openat2 as DELETE":        {"journal", replaceAll(`"0x7ffd2000","0x0"],"pid":4242,"PID":{"EVENT_ID":"1.000:1"},"exe":"/usr/lib/balistid-range/guest","key":"balistid-logs"},"PATH":[{"item":0,"name":"/x","nametype":"PARENT"},{"item":1,"name":"/var/log/journal/balistid-tracks-ab","nametype":"NORMAL"}]`, `"0x7ffd2000","0x0"],"pid":4242,"PID":{"EVENT_ID":"1.000:1"},"exe":"/usr/lib/balistid-range/guest","key":"balistid-logs"},"PATH":[{"item":0,"name":"/x","nametype":"PARENT"},{"item":1,"name":"/var/log/journal/balistid-tracks-ab","nametype":"DELETE"}]`)},
 		"openat2 by openat":        {"journal", replaceAll(`"syscall":437,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x7ffd2000"`, `"syscall":257,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80000"`)},
 		"euid mount by guest":      {"mount_euid", replaceAll(`"pid":4400`, `"pid":4242`)},
@@ -224,10 +240,11 @@ func TestTracksQuietFails(t *testing.T) {
 		"an unknown outcome":    strings.Replace(ours.line(), `"success":"yes"`, `"success":"maybe"`, 1),
 		"an empty exe":          strings.Replace(ours.line(), `"exe":"/x"`, `"exe":""`, 1),
 		"three args":            strings.Replace(ours.line(), `,"0x0"],"pid"`, `],"pid"`, 1),
-		"a URINGOP list":        `{"ID":"1.000:3","URINGOP":[]}`,
-		"a bare URINGOP":        `{"ID":"1.000:3","URINGOP":{"key":"balistid-uring"}}`,
-		"a URINGOP null op":     `{"ID":"1.000:3","URINGOP":{"uring_op":null,"success":"yes","pid":5,"key":"balistid-uring"}}`,
-		"a URINGOP odd outcome": `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"maybe","pid":5,"key":"balistid-uring"}}`,
+		"a URINGOP object":      `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"key":"balistid-uring"}}`,
+		"a URINGOP null item":   `{"ID":"1.000:3","URINGOP":[null]}`,
+		"a bare URINGOP":        `{"ID":"1.000:3","URINGOP":[{"key":"balistid-uring"}]}`,
+		"a URINGOP null op":     `{"ID":"1.000:3","URINGOP":[{"uring_op":null,"success":"yes","pid":5,"key":"balistid-uring"}]}`,
+		"a URINGOP odd outcome": `{"ID":"1.000:3","URINGOP":[{"uring_op":18,"success":"maybe","pid":5,"key":"balistid-uring"}]}`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); !strings.HasPrefix(v, "1_ first ") {
 			t.Errorf("%s: quiet=%s", name, v)
@@ -249,7 +266,8 @@ func TestTracksQuietKeepsRecordedActions(t *testing.T) {
 		"journald":           call{nr: unix.SYS_OPENAT, pid: "200", exe: "/usr/lib/systemd/systemd-journald", success: "yes", key: keyLogs, path: "/var/log/journal/m/system.journal", nametype: "CREATE"}.line(),
 		"the canary":         call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: collectorCanaryKey, path: "c-1", nametype: "CREATE"}.line(),
 		"another event":      `{"ID":"1.000:2","CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}`,
-		"an io_uring op":     `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"key":"balistid-uring"}}`,
+		"an io_uring op":     `{"ID":"1.000:3","URINGOP":[{"uring_op":18,"success":"yes","pid":5,"key":"balistid-uring"}]}`,
+		"no ring op":         `{"ID":"1.000:3","URINGOP":[]}`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); v != "yes" {
 			t.Errorf("%s: quiet=%s", name, v)
