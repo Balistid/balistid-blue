@@ -17,11 +17,12 @@ or our state leaves no record unless it execs a tool; a payload in memory leaves
 
 1. Rules v3 start with `-c`: a line that cannot load (a tree missing at boot) is skipped, `-e 2` still loads and the
    rule list reads `rules-differ` (ADR 0059). They add `pidfd_getfd` and `prctl` that borrows an exe or keeps
-   capabilities across a uid change (`PR_SET_MM`, `PR_SET_SECUREBITS`, `PR_SET_KEEPCAPS`) to the inject rules; under
+   capabilities across a uid change (`PR_SET_MM` with EXE_FILE or MAP, `PR_SET_SECUREBITS`, `PR_SET_KEEPCAPS`) to the
+   inject rules; under
    `balistid-kernel`, module, kexec and eBPF syscalls (`bpf` of pid 1 left out: systemd attaches cgroup programs at
-   every unit start) and root's mount syscalls (`euid=0`: a sandbox mounts hundreds of times in its own namespace;
-   a mount after root kept its capabilities and left uid 0 shows by that prctl); under `balistid-handle`, every
-   `open_by_handle_at` that writes, creates or truncates, as it carries no path a tree sees. `balistid-uring`
+   every unit start) and mounts while the real, effective or saved uid is 0 (a sandbox mounts hundreds of times in
+   its own namespace; leaving all three keeps no capability but by that prctl); under `balistid-handle`, every
+   `open_by_handle_at`, as it carries no path a tree sees and a read-only one reopens for writing through /proc. `balistid-uring`
    records `io_uring_setup`, `io_uring_register` and the ring's path and `fallocate` ops.
 2. Trees: `/etc/audit`, `/etc/systemd`, `/etc/laurel`, `/usr/local/lib/balistid` (`balistid-config`),
    `/var/log/journal` (`balistid-logs`), `/var/lib/balistid` (`balistid-state`), and any call on the binaries of

@@ -20,7 +20,7 @@ const (
 	tracksAllYes = rangevm.TracksAllYes
 )
 
-var tracksProbeOK = tracksProbe{pid: guestPid, token: tracksToken, failed: map[string]string{}, modprobe: [2]string{"4300", "4301"}}
+var tracksProbeOK = tracksProbe{pid: guestPid, token: tracksToken, failed: map[string]string{}, modprobe: [2]string{"4300", "4301"}, euid: "4400"}
 
 // call is a SYSCALL event shaped as Laurel writes it: the number beside the name, a0 to a3 as ARGV in hex
 // (linux-audit-parser's Number::Hex, Laurel's coalesce.rs), the enriched "PID" beside "pid", PATH items when path
@@ -75,6 +75,7 @@ func tracksLines() map[string][]string {
 		lines[c.part] = []string{call{nr: c.nr, pid: guestPid, exe: guestExe, success: "no", key: c.key, a0: a0}.line()}
 	}
 	lines["open_by_handle_at"] = []string{call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: guestPid, exe: guestExe, success: "yes", key: keyHandle, a0: "0x5", a2: "0x80201"}.line()}
+	lines["mount_euid"] = []string{call{nr: unix.SYS_MOUNT, pid: "4400", exe: guestExe, success: "no", key: keyKernel}.line()}
 	lines["modprobe"] = []string{
 		call{nr: unix.SYS_FINIT_MODULE, pid: "4300", exe: "/usr/bin/kmod", success: "yes", key: keyKernel}.line(),
 		call{nr: unix.SYS_DELETE_MODULE, pid: "4301", exe: "/usr/bin/kmod", success: "yes", key: keyKernel}.line(),
@@ -147,36 +148,41 @@ func TestTracksFoundRefusesEachFalseYes(t *testing.T) {
 		part   string
 		change func([]string) []string
 	}{
-		"journal gone":           {"journal", func([]string) []string { return nil }},
-		"journal by another pid": {"journal", replaceAll(`"pid":4242`, `"pid":4243`)},
-		"journal under config":   {"journal", replaceAll(`"key":"balistid-logs"`, `"key":"balistid-config"`)},
-		"journal on i386":        {"journal", replaceAll(archB64, "0x40000003")},
-		"journal ops failed":     {"journal", replaceAll(`"success":"yes"`, `"success":"no"`)},
-		"journal not created":    {"journal", keep(1, 2, 3)},
-		"journal not truncated":  {"journal", keep(0, 2, 3)},
-		"journal no openat2":     {"journal", keep(0, 1, 3)},
-		"journal not removed":    {"journal", keep(0, 1, 2)},
-		"truncate without TRUNC": {"state", replaceAll(`"0x80200"`, `"0x80000"`)},
-		"truncate by unlinkat":   {"state", replaceAll(`"syscall":257,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80200"`, `"syscall":263,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80200"`)},
-		"programs another file":  {"programs", replaceAll(tracksToken, "balistid-tracks-cd")},
-		"bpf another syscall":    {"bpf", replaceAll(`"syscall":321`, `"syscall":59`)},
-		"bpf by another pid":     {"bpf", replaceAll(`"pid":4242`, `"pid":4243`)},
-		"bpf took it":            {"bpf", replaceAll(`"success":"no"`, `"success":"yes"`)},
-		"bpf outcome unknown":    {"bpf", replaceAll(`"success":"no"`, `"success":""`)},
-		"bpf on i386":            {"bpf", replaceAll(archB64, "0x40000003")},
-		"bpf without a key":      {"bpf", replaceAll(`"key":"balistid-kernel"`, `"key":null`)},
-		"mount under uring":      {"mount", replaceAll(`"key":"balistid-kernel"`, `"key":"balistid-uring"`)},
-		"pidfd under kernel":     {"pidfd_getfd", replaceAll(`"key":"balistid-inject"`, `"key":"balistid-kernel"`)},
-		"uring under kernel":     {"io_uring_setup", replaceAll(`"key":"balistid-uring"`, `"key":"balistid-kernel"`)},
-		"prctl another option":   {"prctl_set_mm", replaceAll(`"ARGV":["0x23"`, `"ARGV":["0xf"`)},
-		"handle not truncating":  {"open_by_handle_at", replaceAll(`"0x80201"`, `"0x80001"`)},
-		"handle under config":    {"open_by_handle_at", replaceAll(`"key":"balistid-handle"`, `"key":"balistid-config"`)},
-		"handle by another pid":  {"open_by_handle_at", replaceAll(`"pid":4242`, `"pid":4243`)},
-		"modprobe failed load":   {"modprobe", replaceAll(`"success":"yes"`, `"success":"no"`)},
-		"modprobe another pid":   {"modprobe", replaceAll(`"pid":4300`, `"pid":4242`)},
-		"modprobe by a stranger": {"modprobe", replaceAll(`"pid":4300`, `"pid":4999`)},
-		"removal by a stranger":  {"modprobe", replaceAll(`"pid":4301`, `"pid":4999`)},
-		"modprobe only loads":    {"modprobe", keep(0)},
+		"journal gone":             {"journal", func([]string) []string { return nil }},
+		"journal by another pid":   {"journal", replaceAll(`"pid":4242`, `"pid":4243`)},
+		"journal under config":     {"journal", replaceAll(`"key":"balistid-logs"`, `"key":"balistid-config"`)},
+		"journal on i386":          {"journal", replaceAll(archB64, "0x40000003")},
+		"journal ops failed":       {"journal", replaceAll(`"success":"yes"`, `"success":"no"`)},
+		"journal not created":      {"journal", keep(1, 2, 3)},
+		"journal not truncated":    {"journal", keep(0, 2, 3)},
+		"journal no openat2":       {"journal", keep(0, 1, 3)},
+		"journal not removed":      {"journal", keep(0, 1, 2)},
+		"truncate without TRUNC":   {"state", replaceAll(`"0x80200"`, `"0x80000"`)},
+		"truncate by unlinkat":     {"state", replaceAll(`"syscall":257,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80200"`, `"syscall":263,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80200"`)},
+		"programs another file":    {"programs", replaceAll(tracksToken, "balistid-tracks-cd")},
+		"bpf another syscall":      {"bpf", replaceAll(`"syscall":321`, `"syscall":59`)},
+		"bpf by another pid":       {"bpf", replaceAll(`"pid":4242`, `"pid":4243`)},
+		"bpf took it":              {"bpf", replaceAll(`"success":"no"`, `"success":"yes"`)},
+		"bpf on i386":              {"bpf", replaceAll(archB64, "0x40000003")},
+		"bpf without a key":        {"bpf", replaceAll(`"key":"balistid-kernel"`, `"key":null`)},
+		"mount under uring":        {"mount", replaceAll(`"key":"balistid-kernel"`, `"key":"balistid-uring"`)},
+		"pidfd under kernel":       {"pidfd_getfd", replaceAll(`"key":"balistid-inject"`, `"key":"balistid-kernel"`)},
+		"uring under kernel":       {"io_uring_setup", replaceAll(`"key":"balistid-uring"`, `"key":"balistid-kernel"`)},
+		"prctl another option":     {"prctl_set_mm", replaceAll(`"ARGV":["0x23"`, `"ARGV":["0xf"`)},
+		"handle not truncating":    {"open_by_handle_at", replaceAll(`"0x80201"`, `"0x80001"`)},
+		"handle under config":      {"open_by_handle_at", replaceAll(`"key":"balistid-handle"`, `"key":"balistid-config"`)},
+		"handle by another pid":    {"open_by_handle_at", replaceAll(`"pid":4242`, `"pid":4243`)},
+		"openat2 as DELETE":        {"journal", replaceAll(`"0x7ffd2000","0x0"],"pid":4242,"PID":{"EVENT_ID":"1.000:1"},"exe":"/usr/lib/balistid-range/guest","key":"balistid-logs"},"PATH":[{"item":0,"name":"/x","nametype":"PARENT"},{"item":1,"name":"/var/log/journal/balistid-tracks-ab","nametype":"NORMAL"}]`, `"0x7ffd2000","0x0"],"pid":4242,"PID":{"EVENT_ID":"1.000:1"},"exe":"/usr/lib/balistid-range/guest","key":"balistid-logs"},"PATH":[{"item":0,"name":"/x","nametype":"PARENT"},{"item":1,"name":"/var/log/journal/balistid-tracks-ab","nametype":"DELETE"}]`)},
+		"openat2 by openat":        {"journal", replaceAll(`"syscall":437,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x7ffd2000"`, `"syscall":257,"SYSCALL":"x","success":"yes","ARGV":["0xffffff9c","0x7ffd1000","0x80000"`)},
+		"euid mount by guest":      {"mount_euid", replaceAll(`"pid":4400`, `"pid":4242`)},
+		"euid mount took it":       {"mount_euid", replaceAll(`"success":"no"`, `"success":"yes"`)},
+		"euid mount by a stranger": {"mount_euid", replaceAll(`"pid":4400`, `"pid":4999`)},
+		"euid umount2":             {"mount_euid", replaceAll(`"syscall":165`, `"syscall":166`)},
+		"modprobe failed load":     {"modprobe", replaceAll(`"success":"yes"`, `"success":"no"`)},
+		"modprobe another pid":     {"modprobe", replaceAll(`"pid":4300`, `"pid":4242`)},
+		"modprobe by a stranger":   {"modprobe", replaceAll(`"pid":4300`, `"pid":4999`)},
+		"removal by a stranger":    {"modprobe", replaceAll(`"pid":4301`, `"pid":4999`)},
+		"modprobe only loads":      {"modprobe", keep(0)},
 	} {
 		lines := tracksLines()
 		lines[c.part] = c.change(lines[c.part])
@@ -195,25 +201,33 @@ func TestTracksFoundRefusesEachFalseYes(t *testing.T) {
 func TestTracksQuietFails(t *testing.T) {
 	ours := call{nr: unix.SYS_OPENAT, pid: "3", exe: "/x", success: "yes", key: keyState}
 	for name, extra := range map[string]string{
-		"ledger in its tiles": call{nr: unix.SYS_OPENAT, pid: "300", exe: ledgerExe, success: "yes", key: keyState, path: "/var/lib/balistid/ledger/tile/0", nametype: "CREATE"}.line(),
-		"ledger elsewhere":    call{nr: unix.SYS_OPENAT, pid: "300", exe: ledgerExe, success: "yes", key: keyConfig, path: "/etc/audit/x", nametype: "CREATE"}.line(),
-		"runner's results":    call{nr: unix.SYS_OPENAT, pid: "302", exe: "/usr/local/lib/balistid/balistid-runner", success: "yes", key: keyState, path: "/var/lib/balistid/results/r", nametype: "CREATE"}.line(),
-		"systemd's bpf":       call{nr: unix.SYS_BPF, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyKernel}.line(),
-		"systemd's openat2":   call{nr: unix.SYS_OPENAT2, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyConfig, path: "/etc/systemd/x", nametype: "NORMAL"}.line(),
-		"a cut record":        `{"ID":"1.000:1","SYSCALL":{"exe":"/usr/local/lib/balistid/balistid-ledger","key":"balis`,
-		"a cut joined key":    `{"ID":"1.000:1","SYSCALL":{"key":"x` + "\u0001" + `balistid-st`,
-		"a null line":         `null`,
-		"a null SYSCALL":      `{"ID":"1.000:1","SYSCALL":null}`,
-		"a SYSCALL list":      `{"ID":"1.000:1","SYSCALL":[]}`,
-		"an exe not a string": strings.Replace(ours.line(), `"exe":"/x"`, `"exe":3`, 1),
-		"a null exe":          strings.Replace(ours.line(), `"exe":"/x"`, `"exe":null`, 1),
-		"a null arch":         strings.Replace(ours.line(), `"arch":"0xc000003e"`, `"arch":null`, 1),
-		"no arch":             strings.Replace(ours.line(), `"arch":"0xc000003e",`, ``, 1),
-		"a null outcome":      strings.Replace(ours.line(), `"success":"yes"`, `"success":null`, 1),
-		"an overflowing arg":  call{nr: unix.SYS_OPENAT, pid: "3", exe: "/x", success: "yes", key: keyState, a2: "0x10000000000000000"}.line(),
-		"an arg without 0x":   call{nr: unix.SYS_OPENAT, pid: "3", exe: "/x", success: "yes", key: keyState, a2: "80200"}.line(),
-		"a padded arg":        call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: "3", exe: "/x", success: "yes", key: keyHandle, a2: "0x080200"}.line(),
-		"an inject record":    `{"ID":"1.000:1","SYSCALL":{"arch":"0xc000003e","syscall":157,"key":"balistid-inject"}}`,
+		"ledger in its tiles":   call{nr: unix.SYS_OPENAT, pid: "300", exe: ledgerExe, success: "yes", key: keyState, path: "/var/lib/balistid/ledger/tile/0", nametype: "CREATE"}.line(),
+		"ledger elsewhere":      call{nr: unix.SYS_OPENAT, pid: "300", exe: ledgerExe, success: "yes", key: keyConfig, path: "/etc/audit/x", nametype: "CREATE"}.line(),
+		"runner's results":      call{nr: unix.SYS_OPENAT, pid: "302", exe: "/usr/local/lib/balistid/balistid-runner", success: "yes", key: keyState, path: "/var/lib/balistid/results/r", nametype: "CREATE"}.line(),
+		"systemd's bpf":         call{nr: unix.SYS_BPF, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyKernel}.line(),
+		"systemd's openat2":     call{nr: unix.SYS_OPENAT2, pid: "1", exe: "/usr/lib/systemd/systemd", success: "yes", key: keyConfig, path: "/etc/systemd/x", nametype: "NORMAL"}.line(),
+		"a cut record":          `{"ID":"1.000:1","SYSCALL":{"exe":"/usr/local/lib/balistid/balistid-ledger","key":"balis`,
+		"a cut joined key":      `{"ID":"1.000:1","SYSCALL":{"key":"x` + "\u0001" + `balistid-st`,
+		"a null line":           `null`,
+		"a null SYSCALL":        `{"ID":"1.000:1","SYSCALL":null}`,
+		"a SYSCALL list":        `{"ID":"1.000:1","SYSCALL":[]}`,
+		"an exe not a string":   strings.Replace(ours.line(), `"exe":"/x"`, `"exe":3`, 1),
+		"a null exe":            strings.Replace(ours.line(), `"exe":"/x"`, `"exe":null`, 1),
+		"a null arch":           strings.Replace(ours.line(), `"arch":"0xc000003e"`, `"arch":null`, 1),
+		"no arch":               strings.Replace(ours.line(), `"arch":"0xc000003e",`, ``, 1),
+		"a null outcome":        strings.Replace(ours.line(), `"success":"yes"`, `"success":null`, 1),
+		"an overflowing arg":    call{nr: unix.SYS_OPENAT, pid: "3", exe: "/x", success: "yes", key: keyState, a2: "0x10000000000000000"}.line(),
+		"an arg without 0x":     call{nr: unix.SYS_OPENAT, pid: "3", exe: "/x", success: "yes", key: keyState, a2: "80200"}.line(),
+		"a padded arg":          call{nr: unix.SYS_OPEN_BY_HANDLE_AT, pid: "3", exe: "/x", success: "yes", key: keyHandle, a2: "0x080200"}.line(),
+		"an inject record":      `{"ID":"1.000:1","SYSCALL":{"arch":"0xc000003e","syscall":157,"key":"balistid-inject"}}`,
+		"an unknown arch":       strings.Replace(ours.line(), `"arch":"0xc000003e"`, `"arch":"0x1"`, 1),
+		"an unknown outcome":    strings.Replace(ours.line(), `"success":"yes"`, `"success":"maybe"`, 1),
+		"an empty exe":          strings.Replace(ours.line(), `"exe":"/x"`, `"exe":""`, 1),
+		"three args":            strings.Replace(ours.line(), `,"0x0"],"pid"`, `],"pid"`, 1),
+		"a URINGOP list":        `{"ID":"1.000:3","URINGOP":[]}`,
+		"a bare URINGOP":        `{"ID":"1.000:3","URINGOP":{"key":"balistid-uring"}}`,
+		"a URINGOP null op":     `{"ID":"1.000:3","URINGOP":{"uring_op":null,"success":"yes","pid":5,"key":"balistid-uring"}}`,
+		"a URINGOP odd outcome": `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"maybe","pid":5,"key":"balistid-uring"}}`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); !strings.HasPrefix(v, "1_ first ") {
 			t.Errorf("%s: quiet=%s", name, v)
@@ -229,12 +243,13 @@ func TestTracksQuietFails(t *testing.T) {
 // program's exec, other event types and an io_uring event.
 func TestTracksQuietKeepsRecordedActions(t *testing.T) {
 	for name, extra := range map[string]string{
-		"the ledger's exec": call{nr: unix.SYS_EXECVE, pid: "300", exe: ledgerExe, success: "yes", key: "balistid-exec"}.line(),
-		"the collector":     call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: keyState, path: "/var/lib/balistid/collector/store/s", nametype: "CREATE"}.line(),
-		"journald":          call{nr: unix.SYS_OPENAT, pid: "200", exe: "/usr/lib/systemd/systemd-journald", success: "yes", key: keyLogs, path: "/var/log/journal/m/system.journal", nametype: "CREATE"}.line(),
-		"the canary":        call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: collectorCanaryKey, path: "c-1", nametype: "CREATE"}.line(),
-		"another event":     `{"ID":"1.000:2","CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}`,
-		"an io_uring op":    `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"key":"balistid-uring"}}`,
+		"the ledger's exec":  call{nr: unix.SYS_EXECVE, pid: "300", exe: ledgerExe, success: "yes", key: "balistid-exec"}.line(),
+		"the ledger's prctl": call{nr: unix.SYS_PRCTL, pid: "300", exe: ledgerExe, success: "no", key: "balistid-inject", a0: "0x23"}.line(),
+		"the collector":      call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: keyState, path: "/var/lib/balistid/collector/store/s", nametype: "CREATE"}.line(),
+		"journald":           call{nr: unix.SYS_OPENAT, pid: "200", exe: "/usr/lib/systemd/systemd-journald", success: "yes", key: keyLogs, path: "/var/log/journal/m/system.journal", nametype: "CREATE"}.line(),
+		"the canary":         call{nr: unix.SYS_OPENAT, pid: "301", exe: "/usr/local/lib/balistid/balistid-collector", success: "yes", key: collectorCanaryKey, path: "c-1", nametype: "CREATE"}.line(),
+		"another event":      `{"ID":"1.000:2","CONFIG_CHANGE":[{"audit_enabled":0,"res":0}]}`,
+		"an io_uring op":     `{"ID":"1.000:3","URINGOP":{"uring_op":18,"success":"yes","pid":5,"key":"balistid-uring"}}`,
 	} {
 		if v := part(tracksFound(join(tracksLines(), extra), tracksProbeOK), "quiet"); v != "yes" {
 			t.Errorf("%s: quiet=%s", name, v)
