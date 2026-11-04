@@ -191,7 +191,11 @@ func tracksFound(lines []byte, p tracksProbe) string {
 		case part == "quiet" && sc.Err() != nil:
 			v = "unread: " + sc.Err().Error()
 		case part == "quiet" && len(loud) > 0:
-			v = fmt.Sprintf("%d from %s", len(loud), loud[0])
+			n := map[string]int{}
+			for _, l := range loud {
+				n[l]++
+			}
+			v = fmt.Sprintf("%d uptime %s: %v", len(loud), readTrim("/proc/uptime"), n)
 		case part == "quiet":
 			v = "yes"
 		case p.failed["token"] != "":
