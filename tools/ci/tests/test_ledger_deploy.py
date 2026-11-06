@@ -163,6 +163,9 @@ class LedgerDeployTest(unittest.TestCase):
         self.assertIn(f'linkGroup = "{LINK_GROUP}"', main)
         self.assertIn("socketAccess(linkGroup)", main)
         self.assertIn("listen(sock, sockMode, linkGID)", main)
+        # The range's probe of the socket runs with the job's groups: a member of the link group is admitted.
+        guest = (REPO / "cmd" / "balistid-range-guest" / "net.go").read_text()
+        self.assertIn("cred, err := loginCredential(jobUser)", guest.split("func ledgerSock(", 1)[1].split("\n}\n", 1)[0])
         takers = {p.relative_to(REPO).as_posix() for d in ("deploy", "range", "packaging") for p in (REPO / d).rglob("*")
                   if p.is_file() and LINK_GROUP in p.read_text(errors="replace")}
         self.assertEqual(takers, {"deploy/ledger/balistid-ledger.service", "deploy/ledger/sysusers.conf",
