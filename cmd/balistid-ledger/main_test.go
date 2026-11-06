@@ -202,10 +202,13 @@ func TestListenGivesTheSocketItsModeAndGroup(t *testing.T) {
 		}
 	}
 	for _, c := range []struct {
-		mode    os.FileMode
-		gid     int
-		wantGID int
-	}{{0o660, gid, gid}, {0o600, -1, os.Getegid()}} {
+		mode os.FileMode
+		gid  int
+	}{{0o660, gid}, {0o600, -1}} {
+		want := c.gid
+		if want < 0 {
+			want = os.Getegid()
+		}
 		path := filepath.Join(t.TempDir(), "s.sock")
 		ln, err := listen(path, c.mode, c.gid)
 		if (errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL)) && os.Getenv("CI") != "true" {
@@ -219,12 +222,22 @@ func TestListenGivesTheSocketItsModeAndGroup(t *testing.T) {
 			t.Fatal(err)
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || fi.Mode().Type() != os.ModeSocket || fi.Mode().Perm() != c.mode || int(st.Gid) != c.wantGID {
+		if !ok || fi.Mode().Type() != os.ModeSocket || fi.Mode().Perm() != c.mode || int(st.Gid) != want {
 			t.Errorf("listen(%v, %d): %v, gid %v", c.mode, c.gid, fi.Mode(), st)
 		}
 		if err := ln.Close(); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// The collector's socket opens to the link group only when it resolves; else to the ledger's uid alone (R6).
+func TestSocketAccessClosesWithoutTheGroup(t *testing.T) {
+	if mode, gid, err := socketAccess("root"); err != nil || mode != 0o660 || gid != 0 {
+		t.Errorf("root: %v %d %v", mode, gid, err)
+	}
+	if mode, gid, err := socketAccess("balistid-no-such-group"); err == nil || mode != 0o600 || gid != -1 {
+		t.Errorf("missing group: %v %d %v", mode, gid, err)
 	}
 }
 

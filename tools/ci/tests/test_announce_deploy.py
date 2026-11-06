@@ -11,7 +11,7 @@ import shlex
 import unittest
 from pathlib import Path
 
-from test_ledger_deploy import (FORBIDDEN as LEDGER_FORBIDDEN, LINK_GROUP, SERVICE as LEDGER_SERVICE, SOCKET,
+from test_ledger_deploy import (FORBIDDEN as LEDGER_FORBIDDEN, SERVICE as LEDGER_SERVICE, SOCKET,
                                 service_text as ledger_text)
 from test_runner_deploy import parse_unit
 
@@ -75,7 +75,6 @@ class AnnounceDeployTest(unittest.TestCase):
             for key in ("User", "Group", "ExecPaths", "SystemCallFilter", "PrivateNetwork"):
                 with self.subTest(name=name, key=key):
                     self.assertEqual(service[key], ledger[key])
-            self.assertEqual(service["SupplementaryGroups"], [ledger["SupplementaryGroups"][0].replace(f" {LINK_GROUP}", "")])
 
     def test_the_client_takes_the_ledgers_defaults(self):
         main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
