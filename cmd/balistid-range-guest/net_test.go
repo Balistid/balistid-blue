@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -42,6 +44,34 @@ func TestReach(t *testing.T) {
 	}
 	if err := reachMain([]string{"icmp", "127.0.0.1:9"}); err == nil {
 		t.Error("icmp accepted")
+	}
+}
+
+// A probe of a file's mode carries the account's supplementary groups; the other probes match by uid only.
+func TestLoginCredentialCarriesTheGroups(t *testing.T) {
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		t.Skipf("no group database here: %v", err)
+	}
+	login, err := loginCredential(u.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := credential(u.Username)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain.Groups) != 0 || len(login.Groups) != len(ids) {
+		t.Fatalf("groups: plain %v, login %v, want %v", plain.Groups, login.Groups, ids)
+	}
+	for i, id := range ids {
+		if strconv.FormatUint(uint64(login.Groups[i]), 10) != id {
+			t.Fatalf("login groups %v, want %v", login.Groups, ids)
+		}
 	}
 }
 
