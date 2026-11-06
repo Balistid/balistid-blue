@@ -114,6 +114,16 @@ func (s *serialScan) scanning(next func(rawrecord.Record) error) func(rawrecord.
 	}
 }
 
+// showStoreSerials reads the store once more and shows its serials in the host's log, labelled.
+func showStoreSerials(ctx context.Context, label string) {
+	scan, err := scanStore(ctx)
+	if err != nil {
+		hostLine(os.Stdout, "serials: %s: store: %v", label, err)
+		return
+	}
+	printSerials(ctx, label, scan)
+}
+
 // scanStore reads the store once and scans its Laurel lines without holding them: after the overflow
 // experiment they are tens of MiB.
 func scanStore(ctx context.Context) (*serialScan, error) {
