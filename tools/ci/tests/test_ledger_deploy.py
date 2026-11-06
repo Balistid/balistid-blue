@@ -157,23 +157,16 @@ class LedgerDeployTest(unittest.TestCase):
         self.assertEqual(service["SupplementaryGroups"], [f"{relay['Group'][0]} {LINK_GROUP}"])
 
     def test_only_the_ledger_and_the_collector_take_the_link_group(self):
-        # ADR 0060: the collector's socket is 0660 in the link group; any other unit or a member in sysusers
-        # would open it to another uid.
+        # ADR 0060: the collector's socket is 0660 in the link group; any other unit taking the group would open
+        # it to another uid. Both units and both sysusers are pinned exactly by their own tests.
         main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
         self.assertIn(f'linkGroup = "{LINK_GROUP}"', main)
-        self.assertIn("listen(sock, 0o660, linkGID)", main)
-        collector = REPO / "deploy" / "collector"
-        self.assertIn(LINK_GROUP, parse_unit((collector / "balistid-collector.service").read_text())["Service"]
-                      ["SupplementaryGroups"][0].split())
-        self.assertIn(LINK_GROUP, service_text())
-        self.assertIn(("g", LINK_GROUP, "-"), collector_lines("sysusers.conf", (collector / "sysusers.conf").read_text()))
+        self.assertIn("socketAccess(linkGroup)", main)
+        self.assertIn("listen(sock, sockMode, linkGID)", main)
         takers = {p.relative_to(REPO).as_posix() for d in ("deploy", "range", "packaging") for p in (REPO / d).rglob("*")
                   if p.is_file() and LINK_GROUP in p.read_text(errors="replace")}
         self.assertEqual(takers, {"deploy/ledger/balistid-ledger.service", "deploy/ledger/sysusers.conf",
                                   "deploy/collector/balistid-collector.service", "deploy/collector/sysusers.conf"})
-        for name in ("deploy/ledger/sysusers.conf", "deploy/collector/sysusers.conf"):
-            self.assertEqual([l for l in collector_lines(name, (REPO / name).read_text()) if LINK_GROUP in l],
-                             [("g", LINK_GROUP, "-")])
 
     def test_tmpfiles(self):
         self.assertEqual(lines("tmpfiles.conf"), TMPFILES)

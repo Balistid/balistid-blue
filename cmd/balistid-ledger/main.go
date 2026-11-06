@@ -234,9 +234,9 @@ func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, rela
 	if err != nil {
 		log.Error("collector account not resolved, refusing every peer", "err", err)
 	}
-	linkGID, err := unixsock.LookupGID(linkGroup)
+	sockMode, linkGID, err := socketAccess(linkGroup)
 	if err != nil {
-		log.Error("link group not resolved, the socket stays in the ledger's own group", "err", err)
+		log.Error("link group not resolved, the socket admits no peer", "err", err)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -252,7 +252,7 @@ func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, rela
 	wg.Go(func() {
 		retire(retireCtx, anchor.Retirement{Dir: dir, Relay: relay, WitnessKey: witnessKey, Keep: logRetention, Now: time.Now}, log)
 	})
-	ln, err := listen(sock, 0o660, linkGID)
+	ln, err := listen(sock, sockMode, linkGID)
 	var ctl *net.UnixListener
 	if err == nil {
 		if ctl, err = listen(control, 0o600, -1); err != nil {
@@ -323,6 +323,16 @@ func readSigner(path, creds string) (note.Signer, error) {
 		return nil, errors.New("signing key: not a note signer key") // the error could quote the key
 	}
 	return s, nil
+}
+
+// socketAccess is the collector socket's mode and group: 0660 in group, or, when group does not resolve, 0600 and
+// no group, the ledger uid's alone, since the relay's unit takes the ledger's own group (R6).
+func socketAccess(group string) (os.FileMode, int, error) {
+	gid, err := unixsock.LookupGID(group)
+	if err != nil {
+		return 0o600, -1, err //nolint:wrapcheck // unixsock errors carry their context
+	}
+	return 0o660, gid, nil
 }
 
 // listen binds a socket with mode, in group gid unless it is -1. The collector's is the link group's, which
