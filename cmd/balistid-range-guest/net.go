@@ -210,6 +210,10 @@ func reachAs(ctx context.Context, account, proto, addr string) string {
 	if err != nil {
 		return "error: " + err.Error()
 	}
+	return reachWith(ctx, self, cred, proto, addr)
+}
+
+func reachWith(ctx context.Context, self string, cred *syscall.Credential, proto, addr string) string {
 	child := exec.CommandContext(ctx, self, reachArg, proto, addr) //nolint:gosec // our own binary, fixed argv
 	child.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
 	out, err := child.Output()
@@ -230,6 +234,31 @@ func credential(account string) (*syscall.Credential, error) {
 		return nil, fmt.Errorf("user %s: ids %q %q", account, u.Uid, u.Gid)
 	}
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, nil
+}
+
+// loginCredential is credential with account's supplementary groups, as a login of it has them: a file's group
+// admits a member, so a probe of a socket's mode runs with them.
+func loginCredential(account string) (*syscall.Credential, error) {
+	cred, err := credential(account)
+	if err != nil {
+		return nil, err
+	}
+	u, err := user.Lookup(account)
+	if err != nil {
+		return nil, fmt.Errorf("user %s: %w", account, err)
+	}
+	ids, err := u.GroupIds()
+	if err != nil {
+		return nil, fmt.Errorf("user %s: groups: %w", account, err)
+	}
+	for _, id := range ids {
+		g, err := strconv.ParseUint(id, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("user %s: group %q", account, id)
+		}
+		cred.Groups = append(cred.Groups, uint32(g))
+	}
+	return cred, nil
 }
 
 // reachMain is a reach child: one TCP or Unix connect or one UDP datagram to addr, printed as open, sent,
@@ -279,8 +308,8 @@ func reach(ctx context.Context, proto, addr string) (string, error) {
 	return verdict, nil
 }
 
-// ledgerSock is the owner, group and mode of the collector's socket at the ledger and what the job's uid gets
-// connecting to it: refused by the file's mode, its connects never reach the backlog, where a flood would delay
+// ledgerSock is the owner, group and mode of the collector's socket at the ledger and what the job's uid, with its
+// groups, gets connecting to it: refused by the file's mode, its connects never reach the backlog, where a flood would delay
 // the collector's reconnect (T2, ADR 0060).
 func ledgerSock(ctx context.Context) string {
 	fi, err := os.Lstat(ledgerSocket)
@@ -298,8 +327,18 @@ func ledgerSock(ctx context.Context) string {
 	if g, err := user.LookupGroupId(group); err == nil {
 		group = g.Name
 	}
+	self, err := os.Executable()
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	cred, err := loginCredential(jobUser)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	ctx, cancel := context.WithTimeout(ctx, reachWait+5*time.Second)
+	defer cancel()
 	return fmt.Sprintf("mode=%04o,owner=%s,group=%s,job=%s", fi.Mode().Perm(), owner, group,
-		reachAs(ctx, jobUser, "unix", ledgerSocket))
+		reachWith(ctx, self, cred, "unix", ledgerSocket))
 }
 
 // ledgerNet lists the interfaces in the ledger's network namespace, as its process sees them: PrivateNetwork

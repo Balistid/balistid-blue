@@ -201,6 +201,9 @@ func TestListenGivesTheSocketItsModeAndGroup(t *testing.T) {
 			}
 		}
 	}
+	if gid == os.Getgid() && os.Getenv("CI") == "true" {
+		t.Fatal("no supplementary group to show that listen sets one")
+	}
 	for _, c := range []struct {
 		mode os.FileMode
 		gid  int

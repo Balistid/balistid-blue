@@ -236,7 +236,7 @@ func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, rela
 	}
 	sockMode, linkGID, err := socketAccess(linkGroup)
 	if err != nil {
-		log.Error("link group not resolved, the socket admits no peer", "err", err)
+		log.Error("link group not resolved, the socket admits no peer", "err", err, "rule_version", anchor.RuleVersion)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
