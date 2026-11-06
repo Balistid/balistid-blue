@@ -11,7 +11,7 @@ import shlex
 import unittest
 from pathlib import Path
 
-from test_ledger_deploy import (FORBIDDEN as LEDGER_FORBIDDEN, SERVICE as LEDGER_SERVICE, SOCKET,
+from test_ledger_deploy import (FORBIDDEN as LEDGER_FORBIDDEN, LINK_GROUP, SERVICE as LEDGER_SERVICE, SOCKET,
                                 service_text as ledger_text)
 from test_runner_deploy import parse_unit
 
@@ -25,8 +25,9 @@ FORBIDDEN = LEDGER_FORBIDDEN - {"ExecStop"}
 SANDBOX = {k: v for k, v in LEDGER_SERVICE.items() if k not in {
     "Type", "Restart", "RestartSec", "ExecStart", "LoadCredential", "StateDirectory", "StateDirectoryMode",
     "RuntimeDirectory", "RuntimeDirectoryMode", "UMask", "MemoryMax", "TimeoutStopSec", "NoExecPaths",
-    "RemoveIPC"}}
-SANDBOX |= {"UMask": "0077", "MemoryMax": "64M", "NoExecPaths": "/ /tmp -/dev/shm"}
+    "RemoveIPC", "SupplementaryGroups"}}
+# The relay's group alone: as the ledger's uid they own the collector's socket and need not its link group.
+SANDBOX |= {"UMask": "0077", "MemoryMax": "64M", "NoExecPaths": "/ /tmp -/dev/shm", "SupplementaryGroups": "balistid-relay"}
 
 UNITS = {
     "balistid-announce.service": (
@@ -71,9 +72,10 @@ class AnnounceDeployTest(unittest.TestCase):
         ledger = parse_unit(ledger_text())["Service"]
         for name in FILES:
             service = parse_unit(text(name))["Service"]
-            for key in ("User", "Group", "SupplementaryGroups", "ExecPaths", "SystemCallFilter", "PrivateNetwork"):
+            for key in ("User", "Group", "ExecPaths", "SystemCallFilter", "PrivateNetwork"):
                 with self.subTest(name=name, key=key):
                     self.assertEqual(service[key], ledger[key])
+            self.assertEqual(service["SupplementaryGroups"], [ledger["SupplementaryGroups"][0].replace(f" {LINK_GROUP}", "")])
 
     def test_the_client_takes_the_ledgers_defaults(self):
         main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()

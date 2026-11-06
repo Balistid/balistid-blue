@@ -22,6 +22,7 @@ const (
 	ledgerKeyArg = "ledger-key"
 	ledgerKeyDir = "/etc/balistid"
 	ledgerLog    = "/var/lib/balistid/ledger/log"
+	ledgerSocket = "/run/balistid-ledger/ledger.sock"
 	// ledgerOrigin names the range's log; the host's comes from balistid-install.
 	ledgerOrigin = "balistid-range/log"
 )

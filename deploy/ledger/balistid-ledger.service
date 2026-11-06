@@ -1,5 +1,5 @@
 # Appends the collector's stream to the signed log (ADR 0006, 0026, 0027). It listens on its own socket in
-# /run/balistid-ledger: any uid may connect, the ledger takes only the collector's (SO_PEERCRED).
+# /run/balistid-ledger, 0660 in balistid-ledgerlink, and takes only the collector's uid (SO_PEERCRED, ADR 0060).
 [Unit]
 Description=Balistid Blue ledger: the collector's stream into the signed log
 # Early boot beside the collector, which redials it every second until it listens.
@@ -17,8 +17,9 @@ RestartSec=1s
 User=balistid-ledger
 Group=balistid-ledger
 # The relay's cosigned checkpoint is 0640 of its group: read, never write, to tell the collector which
-# seal is cosigned (ADR 0029, point 1).
-SupplementaryGroups=balistid-relay
+# seal is cosigned (ADR 0029, point 1). The link group, which only this unit and the collector's take, owns
+# the collector's socket, so no other uid's connect reaches its backlog (ADR 0060).
+SupplementaryGroups=balistid-relay balistid-ledgerlink
 ExecStart=/usr/local/lib/balistid/balistid-ledger -log /var/lib/balistid/ledger/log -socket /run/balistid-ledger/ledger.sock
 # The signing key, root's 0600 file, reaches the ledger alone in $CREDENTIALS_DIRECTORY (ADR 0006, point 1).
 LoadCredential=ledger-key:/etc/balistid/ledger-key

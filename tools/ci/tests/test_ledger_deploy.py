@@ -38,7 +38,7 @@ SERVICE = {
     "RestartSec": "1s",
     "User": "balistid-ledger",
     "Group": "balistid-ledger",
-    "SupplementaryGroups": "balistid-relay",
+    "SupplementaryGroups": "balistid-relay balistid-ledgerlink",
     "ExecStart": f"{BINARY} -log {STATE}/log -socket {SOCKET}",
     "LoadCredential": "ledger-key:/etc/balistid/ledger-key",
     "StateDirectory": "balistid/ledger",
@@ -84,7 +84,9 @@ TMPFILES = [
     ("d", STATE, "0750", "balistid-ledger", "balistid-ledger", "-"),
     ("d", f"{STATE}/log", "0750", "balistid-ledger", "balistid-ledger", "-"),
 ]
-SYSUSERS = [("u", "balistid-ledger", "-", "Balistid Blue ledger"), ("g", "balistid-relay", "-")]
+LINK_GROUP = "balistid-ledgerlink"
+SYSUSERS = [("u", "balistid-ledger", "-", "Balistid Blue ledger"), ("g", "balistid-relay", "-"),
+            ("g", LINK_GROUP, "-")]
 
 
 def unit_problems(text: str) -> list[str]:
@@ -146,11 +148,32 @@ class LedgerDeployTest(unittest.TestCase):
         self.assertEqual(service["LoadCredential"][0].split(":")[0], "ledger-key")
         collector = (REPO / "cmd" / "balistid-collector" / "main.go").read_text()
         self.assertIn(f'ledgerSocket = "{SOCKET}"', collector)
+        guest = (REPO / "cmd" / "balistid-range-guest" / "ledger.go").read_text()
+        self.assertIn(f'ledgerSocket = "{SOCKET}"', guest)
         # The relay's cosigned checkpoint, in the relay's state directory (ADR 0029, point 1).
         main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
         relay = parse_unit((REPO / "deploy" / "relay" / "balistid-relay.service").read_text())["Service"]
         self.assertIn(f'flag.String("relay", "/var/lib/{relay["StateDirectory"][0]}/"+cosign.Name,', main)
-        self.assertEqual(relay["Group"], service["SupplementaryGroups"])
+        self.assertEqual(service["SupplementaryGroups"], [f"{relay['Group'][0]} {LINK_GROUP}"])
+
+    def test_only_the_ledger_and_the_collector_take_the_link_group(self):
+        # ADR 0060: the collector's socket is 0660 in the link group; any other unit or a member in sysusers
+        # would open it to another uid.
+        main = (REPO / "cmd" / "balistid-ledger" / "main.go").read_text()
+        self.assertIn(f'linkGroup = "{LINK_GROUP}"', main)
+        self.assertIn("listen(sock, 0o660, linkGID)", main)
+        collector = REPO / "deploy" / "collector"
+        self.assertIn(LINK_GROUP, parse_unit((collector / "balistid-collector.service").read_text())["Service"]
+                      ["SupplementaryGroups"][0].split())
+        self.assertIn(LINK_GROUP, service_text())
+        self.assertIn(("g", LINK_GROUP, "-"), collector_lines("sysusers.conf", (collector / "sysusers.conf").read_text()))
+        takers = {p.relative_to(REPO).as_posix() for d in ("deploy", "range", "packaging") for p in (REPO / d).rglob("*")
+                  if p.is_file() and LINK_GROUP in p.read_text(errors="replace")}
+        self.assertEqual(takers, {"deploy/ledger/balistid-ledger.service", "deploy/ledger/sysusers.conf",
+                                  "deploy/collector/balistid-collector.service", "deploy/collector/sysusers.conf"})
+        for name in ("deploy/ledger/sysusers.conf", "deploy/collector/sysusers.conf"):
+            self.assertEqual([l for l in collector_lines(name, (REPO / name).read_text()) if LINK_GROUP in l],
+                             [("g", LINK_GROUP, "-")])
 
     def test_tmpfiles(self):
         self.assertEqual(lines("tmpfiles.conf"), TMPFILES)

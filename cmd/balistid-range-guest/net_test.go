@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -41,6 +42,30 @@ func TestReach(t *testing.T) {
 	}
 	if err := reachMain([]string{"icmp", "127.0.0.1:9"}); err == nil {
 		t.Error("icmp accepted")
+	}
+}
+
+// A Unix socket whose file the caller may not write refuses its connect as EACCES, told apart from an open one.
+func TestReachUnix(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes any socket file")
+	}
+	path := filepath.Join(t.TempDir(), "s.sock")
+	l, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", path)
+	if errors.Is(err, syscall.EPERM) && os.Getenv("CI") != "true" {
+		t.Skipf("unix sockets denied here: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close() //nolint:errcheck // test listener
+	for mode, want := range map[os.FileMode]string{0o500: "EACCES", 0o700: "open"} {
+		if err := os.Chmod(path, mode); err != nil {
+			t.Fatal(err)
+		}
+		if v, err := reach(t.Context(), "unix", path); err != nil || v != want {
+			t.Errorf("mode %v: %q, %v, want %s", mode, v, err, want)
+		}
 	}
 }
 

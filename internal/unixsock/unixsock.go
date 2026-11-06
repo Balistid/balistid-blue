@@ -50,6 +50,19 @@ func LookupUID(name string) (int, error) {
 	return uid, nil
 }
 
+// LookupGID resolves the group a socket's file admits; a caller leaves the socket closed when it fails (R6).
+func LookupGID(name string) (int, error) {
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return -1, fmt.Errorf("unixsock: group %s: %w", name, err)
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return -1, fmt.Errorf("unixsock: group %s: gid %q: %w", name, g.Gid, err)
+	}
+	return gid, nil
+}
+
 // Notify sends state to systemd over NOTIFY_SOCKET (sd_notify); without the variable it does nothing.
 func Notify(state string) error {
 	path := os.Getenv("NOTIFY_SOCKET")

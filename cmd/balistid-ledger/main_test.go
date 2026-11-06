@@ -134,7 +134,7 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close(t.Context()) //nolint:errcheck // test end
-	ln, err := listen(filepath.Join(run, "ledger.sock"), 0o666)
+	ln, err := listen(filepath.Join(run, "ledger.sock"), 0o660, -1)
 	if errors.Is(err, syscall.EPERM) && os.Getenv("CI") != "true" {
 		t.Skipf("unix sockets denied here: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 		t.Fatal(err)
 	}
 	control := filepath.Join(run, "control.sock")
-	ctl, err := listen(control, 0o600)
+	ctl, err := listen(control, 0o600, -1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,6 +186,45 @@ func TestAskSavesTheCosignedFinal(t *testing.T) {
 	}
 	if !l.Ended() {
 		t.Fatal("the log did not end")
+	}
+}
+
+// listen leaves the collector's socket 0660 in the link group, never open to every uid; without a group the
+// socket keeps the process's.
+func TestListenGivesTheSocketItsModeAndGroup(t *testing.T) {
+	gid := os.Getgid()
+	if groups, err := os.Getgroups(); err == nil {
+		for _, g := range groups {
+			if g != gid {
+				gid = g // a group other than the primary shows that listen set it
+				break
+			}
+		}
+	}
+	for _, c := range []struct {
+		mode    os.FileMode
+		gid     int
+		wantGID int
+	}{{0o660, gid, gid}, {0o600, -1, os.Getegid()}} {
+		path := filepath.Join(t.TempDir(), "s.sock")
+		ln, err := listen(path, c.mode, c.gid)
+		if (errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EINVAL)) && os.Getenv("CI") != "true" {
+			t.Skipf("unix sockets or chown denied here: %v", err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || fi.Mode().Type() != os.ModeSocket || fi.Mode().Perm() != c.mode || int(st.Gid) != c.wantGID {
+			t.Errorf("listen(%v, %d): %v, gid %v", c.mode, c.gid, fi.Mode(), st)
+		}
+		if err := ln.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

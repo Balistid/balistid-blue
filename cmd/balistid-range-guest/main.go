@@ -226,6 +226,7 @@ func run() error {
 	}
 	add("pi_reach", reach)
 	add("ledger_net", ledgerNet(ctx))
+	add("ledger_sock", ledgerSock(ctx))
 
 	// Last, because it stops Laurel and floods auditd.
 	before, after, lost, journal := overflow(ctx, pid)

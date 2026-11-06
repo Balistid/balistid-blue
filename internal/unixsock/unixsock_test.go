@@ -93,3 +93,12 @@ func TestLookupUID(t *testing.T) {
 		t.Fatalf("missing account: %d, %v", uid, err)
 	}
 }
+
+func TestLookupGID(t *testing.T) {
+	if gid, err := LookupGID("root"); err != nil || gid != 0 {
+		t.Fatalf("root: %d, %v", gid, err)
+	}
+	if gid, err := LookupGID("balistid-no-such-group"); err == nil || gid != -1 {
+		t.Fatalf("missing group: %d, %v", gid, err)
+	}
+}

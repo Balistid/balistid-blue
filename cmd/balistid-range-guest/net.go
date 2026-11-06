@@ -232,11 +232,11 @@ func credential(account string) (*syscall.Credential, error) {
 	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, nil
 }
 
-// reachMain is a reach child: one TCP connect or one UDP datagram to addr, printed as open, sent, timeout,
-// EPERM or refused; anything else is an error the self-test fails on.
+// reachMain is a reach child: one TCP or Unix connect or one UDP datagram to addr, printed as open, sent,
+// timeout, EPERM, EACCES or refused; anything else is an error the self-test fails on.
 func reachMain(args []string) error {
-	if len(args) != 2 || (args[0] != "tcp" && args[0] != "udp" && args[0] != "udp-from-wireguard") {
-		return errors.New("usage: " + reachArg + " tcp|udp|udp-from-wireguard addr:port")
+	if len(args) != 2 || !slices.Contains([]string{"tcp", "udp", "udp-from-wireguard", "unix"}, args[0]) {
+		return errors.New("usage: " + reachArg + " tcp|udp|udp-from-wireguard|unix addr")
 	}
 	verdict, err := reach(context.Background(), args[0], args[1])
 	if err != nil {
@@ -267,6 +267,8 @@ func reach(ctx context.Context, proto, addr string) (string, error) {
 	case err == nil:
 	case errors.Is(err, syscall.EPERM):
 		verdict = "EPERM"
+	case errors.Is(err, syscall.EACCES):
+		verdict = "EACCES"
 	case errors.Is(err, syscall.ECONNREFUSED):
 		verdict = "refused"
 	case errors.As(err, &ne) && ne.Timeout():
@@ -275,6 +277,29 @@ func reach(ctx context.Context, proto, addr string) (string, error) {
 		return "", fmt.Errorf("%s %s: %w", proto, addr, err)
 	}
 	return verdict, nil
+}
+
+// ledgerSock is the owner, group and mode of the collector's socket at the ledger and what the job's uid gets
+// connecting to it: refused by the file's mode, its connects never reach the backlog, where a flood would delay
+// the collector's reconnect (T2, ADR 0060).
+func ledgerSock(ctx context.Context) string {
+	fi, err := os.Lstat(ledgerSocket)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || fi.Mode().Type() != os.ModeSocket {
+		return fmt.Sprintf("error: %s is %v", ledgerSocket, fi.Mode())
+	}
+	owner, group := strconv.FormatUint(uint64(st.Uid), 10), strconv.FormatUint(uint64(st.Gid), 10)
+	if u, err := user.LookupId(owner); err == nil {
+		owner = u.Username
+	}
+	if g, err := user.LookupGroupId(group); err == nil {
+		group = g.Name
+	}
+	return fmt.Sprintf("mode=%04o,owner=%s,group=%s,job=%s", fi.Mode().Perm(), owner, group,
+		reachAs(ctx, jobUser, "unix", ledgerSocket))
 }
 
 // ledgerNet lists the interfaces in the ledger's network namespace, as its process sees them: PrivateNetwork
