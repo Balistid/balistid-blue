@@ -112,8 +112,9 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	// idle audit is over, before its barrier and stop end the collector and its cgroup (measures only).
 	collector1 := unitSample{err: errors.New("no sample after the drain")}
 	read := storeReader(func() { collector1 = sampleUnit(ctx, collectorUnitName) })
+	serials := newSerialScan()
 	followErr := rateRead(counter, func(before, after func(rawrecord.Record) error) error {
-		return read.Read(ctx, waitLimit, before, after)
+		return read.Read(ctx, waitLimit, serials.scanning(before), after)
 	})
 	windows, stealErr := stopSteal()
 	collectorCPU, collectorMem := collectorMeasures(collector0, collector1)
@@ -155,6 +156,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactOutside, u(outside))
 	add(rangevm.FactCollectorUS, collectorCPU)
 	add(rangevm.FactCollectorMem, collectorMem)
+	printSerials(ctx, tr.Name, serials)
 	return r.send(r.facts)
 }
 
