@@ -146,6 +146,9 @@ func run() error {
 	disableAudit(ctx)
 	add("audit_enabled_after_e0", valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["enabled"]))
 	lines, readErr := laurelLines(ctx, selfTestLines)
+	if readErr == nil {
+		printSerials(ctx, "self-test", scanLines(lines))
+	}
 	add("canary", canarySeen(canaryErr, readErr, lines, canaryToken))
 	add("e0_recorded", yesNo(readErr == nil && rangeguest.HasRefusedDisable(bytes.NewReader(lines))))
 	// The collector's own canary went through the watch rule and Laurel's socket into its store.
@@ -233,6 +236,12 @@ func run() error {
 	add("overflow_after", after)
 	add("overflow_journal", journal)
 	add("audit_lost_after", lost)
+	// Whether the plugin queue's drops show as serial gaps, which nothing counts today (#245).
+	if scan, err := scanStore(ctx); err != nil {
+		hostLine(os.Stdout, "serials: after overflow: store: %v", err)
+	} else {
+		printSerials(ctx, "after overflow", scan)
+	}
 	return write(facts)
 }
 
