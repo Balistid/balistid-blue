@@ -104,15 +104,20 @@ func scanLines(lines []byte) *serialScan {
 	return s
 }
 
+// scanning is next, which also scans each Laurel line it is handed.
+func (s *serialScan) scanning(next func(rawrecord.Record) error) func(rawrecord.Record) error {
+	return func(r rawrecord.Record) error {
+		if r.Provider == store.SensorProvider {
+			s.add(r.Data)
+		}
+		return next(r)
+	}
+}
+
 // scanStore reads the store once and scans its Laurel lines without holding them: after the overflow
 // experiment they are tens of MiB.
 func scanStore(ctx context.Context) (*serialScan, error) {
 	s := newSerialScan()
-	err := readStore(ctx, func(r rawrecord.Record) error {
-		if r.Provider == store.SensorProvider {
-			s.add(r.Data)
-		}
-		return nil
-	}, nil)
+	err := readStore(ctx, s.scanning(func(rawrecord.Record) error { return nil }), nil)
 	return s, err
 }

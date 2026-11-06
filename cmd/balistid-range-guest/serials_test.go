@@ -3,6 +3,9 @@ package main
 import (
 	"slices"
 	"testing"
+
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 // A scan counts the kernel's serials apart from auditd's own, names each gap with the events around it and
@@ -31,5 +34,22 @@ not json
 	if got := newSerialScan().report("empty", 30); !slices.Equal(got, []string{
 		"serials: empty: lines=0 events=0 daemon=0 unparsed=0 repeated=0 first=0 last=0 missing=0"}) {
 		t.Fatalf("empty: %q", got)
+	}
+}
+
+// A store read scans only Laurel's lines and still hands every record on.
+func TestSerialScanningPassesEveryRecord(t *testing.T) {
+	s, passed := newSerialScan(), 0
+	f := s.scanning(func(rawrecord.Record) error { passed++; return nil })
+	for _, r := range []rawrecord.Record{
+		{Provider: store.SensorProvider, Data: []byte(`{"ID":"1730000000.123:7","SYSCALL":{}}`)},
+		{Provider: "balistid-collector", Data: []byte(`{"ID":"1730000000.123:9","SYSCALL":{}}`)},
+	} {
+		if err := f(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if passed != 2 || s.all != 1 || len(s.types) != 1 {
+		t.Fatalf("passed %d, scanned %d lines, %d serials", passed, s.all, len(s.types))
 	}
 }
