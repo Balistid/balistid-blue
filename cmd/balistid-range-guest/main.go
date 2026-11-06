@@ -238,11 +238,7 @@ func run() error {
 	add("overflow_journal", journal)
 	add("audit_lost_after", lost)
 	// Whether the plugin queue's drops show as serial gaps, which nothing counts today (#245).
-	if scan, err := scanStore(ctx); err != nil {
-		hostLine(os.Stdout, "serials: after overflow: store: %v", err)
-	} else {
-		printSerials(ctx, "after overflow", scan)
-	}
+	showStoreSerials(ctx, "after overflow")
 	return write(facts)
 }
 

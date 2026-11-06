@@ -187,6 +187,8 @@ func runLoss(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	r.add(rangevm.FactFirstUnknown, firstUnknown(ctx, fromNs))
 	r.add(rangevm.FactOKAfterResume, okAfter)
+	// Whether this loss shows as a gap in the kernel's event serials (#245); after the facts, which it leaves as they are.
+	showStoreSerials(ctx, tr.Name)
 	return r.send(r.facts)
 }
 
