@@ -107,6 +107,8 @@ var expected = map[string]string{
 	// The input rules show in their counters: the host's answers to the Pi are dropped on output anyway.
 	"pi_reach": "relay_tcp=open,job_tcp=timeout,job_udp=EPERM,job_endpoint=EPERM,root_tcp=timeout," +
 		"job_bundles=timeout,pi_host_port=timeout,tunnel_refused=counted,host_refused=counted,logged=yes,job_squat=EPERM",
+	// Only the link group may connect to the ledger's socket (T2, ADR 0060): the job's uid is refused by its mode.
+	"ledger_sock":            "mode=0660,owner=balistid-ledger,group=balistid-ledgerlink,job=EACCES",
 	"ledger_net":             "lo",
 	"canary":                 "seen",
 	"audit_enabled_after_e0": "2",

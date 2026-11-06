@@ -54,6 +54,10 @@ func TestSelftest(t *testing.T) {
 		{"a refusal not logged", reach("logged=yes", "logged=missing to-pi-not-relay"), Fail},
 		{"an unmarked datagram from WireGuard's port", reach("job_squat=EPERM", "job_squat=sent"), Fail},
 		{"the ledger sees the tunnel", passing(map[string]string{"ledger_net": "balistid0,lo"}), Fail},
+		{"the ledger's socket open to every uid", passing(map[string]string{
+			"ledger_sock": "mode=0666,owner=balistid-ledger,group=balistid-ledger,job=open"}), Fail},
+		{"the job's uid in the link group", passing(map[string]string{
+			"ledger_sock": "mode=0660,owner=balistid-ledger,group=balistid-ledgerlink,job=open"}), Fail},
 		{"other kernel", passing(map[string]string{FactKernel: "7.2.8-hardened1-2-hardened"}), Unknown},
 		{"sensor wrong on another kernel", passing(map[string]string{FactKernel: "6.1.0", "canary": "missing"}), Fail},
 		{"missing kernel", passing(map[string]string{FactKernel: "-"}), Invalid},
@@ -89,7 +93,7 @@ func TestRequiredFactsArePinned(t *testing.T) {
 		"audit_lost", "laurel_user", "laurel_cap_prm", "laurel_cap_eff", "laurel_cap_amb", "collector_user",
 		"collector_cap_prm", "collector_cap_eff", "collector_cap_amb", "auditstat_user", "auditstat_cap_prm",
 		"auditstat_cap_eff", "auditstat_cap_amb", "auditstat_report", "audit_rules", "collector_canary", "ledger_anchored", "ledger_cosigned", "fork_refused", "shard_cosigned",
-		"announce_cosigned", "suspend_announced", "pi_verified", "pi_reach", "ledger_net", "canary",
+		"announce_cosigned", "suspend_announced", "pi_verified", "pi_reach", "ledger_sock", "ledger_net", "canary",
 		"audit_enabled_after_e0", "e0_recorded", "io_uring_sysctl", "io_uring_off",
 		"io_uring_on", FactTracks, "overflow_before", "overflow_after", "overflow_journal", "audit_lost_after",
 	}

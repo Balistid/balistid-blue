@@ -48,6 +48,8 @@ const (
 	// logRetention is log_retention_days; old logs are checked at start and then hourly.
 	logRetention = 400 * 24 * time.Hour
 	retireEvery  = time.Hour
+	// linkGroup is the collector socket's group, which only the ledger's and the collector's units take.
+	linkGroup = "balistid-ledgerlink"
 )
 
 // notices names what the binary links under a licence other than Apache-2.0, MIT, BSD or ISC (ADR 0026,
@@ -232,6 +234,10 @@ func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, rela
 	if err != nil {
 		log.Error("collector account not resolved, refusing every peer", "err", err)
 	}
+	linkGID, err := unixsock.LookupGID(linkGroup)
+	if err != nil {
+		log.Error("link group not resolved, the socket stays in the ledger's own group", "err", err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	l, err := anchor.Open(ctx, anchor.Config{Dir: dir, Signer: signer, CapBytes: logLimit,
@@ -246,10 +252,10 @@ func serve(dir, sock, control, keyPath, witnessKey string, logLimit uint64, rela
 	wg.Go(func() {
 		retire(retireCtx, anchor.Retirement{Dir: dir, Relay: relay, WitnessKey: witnessKey, Keep: logRetention, Now: time.Now}, log)
 	})
-	ln, err := listen(sock, 0o666)
+	ln, err := listen(sock, 0o660, linkGID)
 	var ctl *net.UnixListener
 	if err == nil {
-		if ctl, err = listen(control, 0o600); err != nil {
+		if ctl, err = listen(control, 0o600, -1); err != nil {
 			err = errors.Join(err, ln.Close())
 		}
 	}
@@ -319,15 +325,23 @@ func readSigner(path, creds string) (note.Signer, error) {
 	return s, nil
 }
 
-// listen binds a socket with mode: the collector's lets any uid connect, SO_PEERCRED decides right after
-// accept, before a byte is read, and counts the refusals (ADR 0007, point 2), since the collector's unit has
-// no group to share; the control socket is the ledger uid's alone (ADR 0030, point 1).
-func listen(path string, mode os.FileMode) (*net.UnixListener, error) {
+// listen binds a socket with mode, in group gid unless it is -1. The collector's is the link group's, which
+// only the ledger's and the collector's units take: another uid's connect fails on the file's mode before it
+// reaches the backlog, and SO_PEERCRED still decides right after accept (ADR 0007, point 2; ADR 0060). Bound
+// under umask 0027, it admits no other uid before the chmod. The control socket is the ledger uid's alone
+// (ADR 0030, point 1).
+func listen(path string, mode os.FileMode, gid int) (*net.UnixListener, error) {
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
-	if err := os.Chmod(path, mode); err != nil {
+	if gid >= 0 {
+		err = os.Chown(path, -1, gid)
+	}
+	if err == nil {
+		err = os.Chmod(path, mode)
+	}
+	if err != nil {
 		return nil, errors.Join(fmt.Errorf("listen: %w", err), ln.Close())
 	}
 	return ln, nil

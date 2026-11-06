@@ -56,7 +56,7 @@ SERVICE = {
     "RestartSec": "1s",
     "User": "balistid-collector",
     "Group": "balistid-collector",
-    "SupplementaryGroups": "balistid-auditreport balistid-auditlog",  # ADR 0038, point 2
+    "SupplementaryGroups": "balistid-auditreport balistid-auditlog balistid-ledgerlink",  # ADR 0038 point 2, 0060
     "ExecStart": f"{BINARY} -store {STATE}/store -canary {STATE}/canary -rule-version adr-0004-v3",
     "StateDirectory": "balistid/collector",
     "StateDirectoryMode": "0700",
@@ -110,7 +110,8 @@ TMPFILES = [
     ("d", f"{STATE}/store", "0700", "balistid-collector", "balistid-collector", "-"),
     ("d", f"{STATE}/canary", "0700", "balistid-collector", "balistid-collector", "-"),
 ]
-SYSUSERS = [("u", "balistid-collector", "-", "Balistid Blue collector"), ("g", "balistid-auditlog", "-")]
+SYSUSERS = [("u", "balistid-collector", "-", "Balistid Blue collector"), ("g", "balistid-auditlog", "-"),
+            ("g", "balistid-ledgerlink", "-")]
 
 
 def unit_problems(name: str, text: str) -> list[str]:
@@ -299,7 +300,8 @@ class CollectorDeployTest(unittest.TestCase):
         conf = dict(tuple(p.strip() for p in l.split("=", 1)) for l in
                     (REPO / "deploy" / "auditd" / "auditd.conf").read_text().splitlines() if "=" in l and not l.startswith("#"))
         auditstat = parse_unit((REPO / "deploy" / "auditstat" / "balistid-auditstat.service").read_text())["Service"]
-        self.assertEqual(deployed_service()["SupplementaryGroups"], [f"{auditstat['Group'][0]} {conf['log_group']}"])
+        self.assertEqual(deployed_service()["SupplementaryGroups"],
+                         [f"{auditstat['Group'][0]} {conf['log_group']} balistid-ledgerlink"])
         self.assertEqual(conf["report_interval"], "5")
         self.assertIn(("g", conf["log_group"], "-"), lines("sysusers.conf"))
 
@@ -347,9 +349,9 @@ class UnitCheckTest(unittest.TestCase):
             ("[Service]", "OnFailure=x.service\n[Service]"),
             ("WantedBy=sysinit.target", "WantedBy=multi-user.target"),
             ("Before=auditd.service shutdown.target", "Before=shutdown.target"),
-            ("SupplementaryGroups=balistid-auditreport balistid-auditlog",
-             "SupplementaryGroups=balistid-auditreport balistid-auditlog systemd-journal"),
-            ("SupplementaryGroups=balistid-auditreport balistid-auditlog", "SupplementaryGroups=adm"),
+            ("SupplementaryGroups=balistid-auditreport balistid-auditlog balistid-ledgerlink",
+             "SupplementaryGroups=balistid-auditreport balistid-auditlog balistid-ledgerlink systemd-journal"),
+            ("SupplementaryGroups=balistid-auditreport balistid-auditlog balistid-ledgerlink", "SupplementaryGroups=adm"),
             ("InaccessiblePaths=/var/log/audit", "InaccessiblePaths="),
             ("InaccessiblePaths=/var/log/audit", "InaccessiblePaths=-/var/log/audit"),
         ):
