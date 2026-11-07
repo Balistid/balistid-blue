@@ -32,6 +32,10 @@ PROPOSED_DAYS = 14  # an ADR waiting longer than this is a warning
 MAX_OPEN_PRS = 2  # agreed with the maintainer 2026-10-09
 # K1 (ADR 0040 point 5): 40 merged product pull requests from 2026-11-01; ADR 0065 says which count.
 K1_FROM, K1_LIMIT, K1_WARN = "2026-11-01", 40, 30
+# Workflows that run on a schedule, outside the pull request gate: nobody sees them fail unless status does
+# (the nightly fuzz failed four nights in a row, 2026-11-03 to 06).
+SCHEDULED = ("fuzz.yml", "scorecard.yml")
+SCHEDULED_STALE_DAYS = 3
 PRODUCT_TYPE = re.compile(r"(feat|fix|perf|refactor|test|security)(\([a-z0-9-]+\))?!?: \S")
 SHOWN = 5  # results and reviews listed
 MAX_JSON = 1 << 20  # the runner's own reader stops here too (internal/rangerun)
@@ -310,8 +314,27 @@ def k1_count(repo: Path) -> int | str:
     return sum(1 for pr in prs if isinstance(pr, dict) and is_product(pr))
 
 
+def scheduled_runs(repo: Path) -> list[dict] | str:
+    """The latest run on main of each scheduled workflow: its name, conclusion and day."""
+    out = []
+    for wf in SCHEDULED:
+        try:
+            p = subprocess.run(["gh", "run", "list", "--workflow", wf, "--branch", "main", "--limit", "1",
+                                "--json", "conclusion,createdAt"], cwd=repo, capture_output=True, text=True, timeout=30)
+            runs = json.loads(p.stdout) if p.returncode == 0 else None
+        except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired) as e:
+            return f"gh failed ({clean(e, 100)})"
+        if not isinstance(runs, list):
+            return f"gh failed ({clean(p.stderr, 100)})"
+        run = runs[0] if runs and isinstance(runs[0], dict) else {}
+        day = str(run.get("createdAt", ""))[:10]
+        out.append({"workflow": wf, "conclusion": clean(run.get("conclusion") or "none", 20),
+                    "day": dt.date.fromisoformat(day) if len(day) == 10 and day[4] == "-" else None})
+    return out
+
+
 def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, today: dt.date,
-             k1: int | str | None = None) -> list[str]:
+             k1: int | str | None = None, scheduled: list[dict] | str | None = None) -> list[str]:
     w = []
     age = (today - status["updated"]).days
     if age > STALE_DAYS:
@@ -326,7 +349,7 @@ def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, to
             w.append(f"ADR {a['num']} {a['state']} for {days} days")
         if days < 0:
             w.append(f"ADR {a['num']} is dated {a['date']}, after today")
-    for source in (results, revs, prs, k1):
+    for source in (results, revs, prs, k1, scheduled):
         if isinstance(source, str) and source != NOT_ASKED:
             w.append(f"cannot check: {source}")
     ev = results.get("evidence") if isinstance(results, dict) else None
@@ -338,6 +361,11 @@ def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, to
                      f"latest evidence ran {ev['commit']}")
     if isinstance(prs, list) and len(prs) > MAX_OPEN_PRS:
         w.append(f"{len(prs)} open pull requests (agreed limit {MAX_OPEN_PRS})")
+    for run in scheduled if isinstance(scheduled, list) else []:
+        if run["conclusion"] != "success":
+            w.append(f"scheduled {run['workflow']}: latest run on main is {run['conclusion']}")
+        elif run["day"] is None or (today - run["day"]).days > SCHEDULED_STALE_DAYS:
+            w.append(f"scheduled {run['workflow']}: no run on main for over {SCHEDULED_STALE_DAYS} days")
     if isinstance(k1, int) and k1 >= K1_WARN:
         w.append(f"K1: {k1} of {K1_LIMIT} product pull requests used; at {K1_LIMIT} without K1, ADR 0040 point 5 decides")
     return w
@@ -364,6 +392,7 @@ def render(repo: Path, results: Path, done: Path, want_prs: bool, all_metrics: b
     revs = reviews(done, repo)
     prs = open_prs(repo) if want_prs else NOT_ASKED
     k1 = k1_count(repo) if want_prs else NOT_ASKED
+    scheduled = scheduled_runs(repo) if want_prs else NOT_ASKED
     lines: list[str] = []
 
     def paint(text: str, code: str) -> str:
@@ -374,9 +403,11 @@ def render(repo: Path, results: Path, done: Path, want_prs: bool, all_metrics: b
 
     lines.append(paint(f"Balistid Blue  ·  HEAD {facts['head']}", "1"))
     lines.append(f"STATUS.md updated {status['updated']}  ·  today {today}")
+    if isinstance(scheduled, list):
+        lines.append("Scheduled: " + ", ".join(f"{r['workflow']} {r['conclusion']} {r['day'] or '?'}" for r in scheduled))
     if isinstance(k1, int):
         lines.append(f"K1: {k1} of {K1_LIMIT} product pull requests since {K1_FROM} (ADR 0065)")
-    w = warnings(status, adrs, facts, res, revs, prs, today, k1)
+    w = warnings(status, adrs, facts, res, revs, prs, today, k1, scheduled)
     head(f"Warnings ({len(w)})")
     lines += [paint(f"  ! {x}", "31") for x in w] or [paint("  none", "2")]
     head("Waiting on the maintainer")
