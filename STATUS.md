@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-07 by claude/opus-5.5 (#207 merged; #245 measured, ADR 0062; ADR 0064 install first)
+Updated: 2026-11-07 by claude/opus-5.5 (ADR 0068: the recorder installs first; #238 replaced by feat/install-recorder)
 
 ## Where we are
 
@@ -21,19 +21,19 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #250 (ADR 0061, #241, 986b354): rules v3 (80) record module, kexec, eBPF, mounts by any root uid, handle opens,
   borrowed exes and kept capabilities, io_uring, and every tree's writes and creating or truncating opens; only the
   ledger, relay, runner left out by exe. Fact `tracks` proves each part (pin ab00179, range-kvm 41880683498); 5 review rounds.
-- #242 (ADR 0060): holes floor 0 can close are closed on floor 0; issues #243-#249. #240 merged (093418c). #236
-  (ADR 0057): rate and CPU trials void PASS and MISS alike on guest steal per 1-2 s; GitHub's runner is INVALID there.
-- #238 (draft, ADR 0058, #196): `balistid-install` installs the runner from MANIFEST v1 signed by the maintainer's sk
-  key, flags 0x05 checked in Go; critic CLOSED, Codex findings fixed. CI red until the key commit (no placeholder).
+- #242 (ADR 0060): holes floor 0 can close are closed on floor 0, issues #243-#249; #240 merged (093418c).
+- feat/install-recorder (replaces #238; ADR 0058, 0068, #196): `balistid-install recorder` installs the sensor,
+  collector, ledger, auditstat and CLI from a signed bundle, the bootstrap runs it; `runner` as in #238. It refuses a
+  host without `audit=1 audit_backlog_limit=65536`, Laurel or the audit tools, or with other `*.rules`. CI red until
+  the key commit (no placeholder).
 ## Next step
-1. #238: the maintainer's FIDO2 key, `deploy/install/allowed_signers`, README row and fingerprint (from 2026-11-07),
-   CI, approve, merge, first install; then 9.5's components on the installer with the install ADR (#197 x32 as a
-   named, visible gap; #202 caps).
-2. Until the recorder has run 7 days on the host, floor 0 takes no new scope (ADR 0064): 9.5's #243 (btrfs refused),
-   #244, #201, #203, #204, #213, C3 (#200); after install ADR 0062's stage 9, #246-#248. Then ADR 0055's two passes.
+1. The recorder's install: review (critic, Codex security), the maintainer's FIDO2 key, `deploy/install/allowed_signers`,
+   README row and fingerprint (2026-11-09), CI, approve, merge; #202's caps; then the host: Laurel from
+   `packaging/laurel`, the boot entry's audit options, other rules out of `rules.d`, the bootstrap, a reboot (ADR 0068).
+   Then the `witness` component (#203, #204) and the runner from the installer.
+2. Until the recorder has run 7 days on the host, floor 0 takes no new scope (ADR 0064): 9.5's #244, #201, #203,
+   #204, #213, C3 (#200); after install #243 (ADR 0068), ADR 0062's stage 9, #246-#248. Then ADR 0055's two passes.
 ## Open decisions (maintainer)
-- #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed; the install ADR decides
-  who owns that directory. A kernel or audit change of the rule bytes needs a renewed pin (ADR 0059).
 - #194: an OK report the collector can neither rewrite nor remove stands up to 5 s (accepted, acceptance/0.toml);
   the report's tmpfs pages count in the collector's MemoryMax.
 - #142, #148, #123, #170, #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed
