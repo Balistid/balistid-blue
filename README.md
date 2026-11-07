@@ -1,10 +1,12 @@
 # Balistid Blue
 
+[![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
+
 Balistid Blue is a light, local-first security control plane for Linux hosts on x86-64. It ships no sensor of its
 own: it runs maintained open-source security tools under one command layer, explains each verdict to the person
 who acts on it, and keeps a history in which a witness off the host, an optional level, refuses rewrites.
 
-Status: pre-alpha. Nothing here is ready to protect a machine yet. See `STATUS.md`.
+Status: pre-alpha. The floor-0 recorder runs end to end in a VM range; a first real host is next (ADR 0064, `STATUS.md`).
 
 ## Why
 
@@ -48,8 +50,8 @@ Each floor must be useful on its own, even if the next one never ships.
 Today: `balistid-range build` packs the sensor configuration from `deploy/` and the
 Laurel package into an Arch image; `balistid-range run` boots it once in QEMU inside bwrap, the guest checks
 the sensor and writes facts to a raw results disk, and the host turns them into a verdict (ADR 0004, 0009).
-Planned for floor 0: auditd → Laurel → collector → raw SQLite shards → ledger → Raspberry Pi witness
-(ADR 0005–0007). Each decision lives in one place: why in `adr/`, where we are in `STATUS.md`, what can go
+Floor 0 on `main`: auditd → Laurel → collector → raw SQLite shards → signed ledger → relay → Raspberry Pi witness
+(ADR 0005–0007, 0027, 0031), proven by the range on GitHub's KVM for every pull request (`range-kvm`, ADR 0028). Each decision lives in one place: why in `adr/`, where we are in `STATUS.md`, what can go
 wrong in `THREAT_MODEL.md`, the numbers in `acceptance/`, and what lives where in this map.
 
 ## Repository map
@@ -64,7 +66,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `THREAT_MODEL.md` | Threats per floor with their control, proof and honest status |
 | `adr/` | Architecture decision records, one page each |
 | `acceptance/` | Acceptance numbers per floor, committed before the floor's code |
-| `cmd/balistid/` | The unprivileged command-line client (today only `version`) |
+| `cmd/balistid/` | The unprivileged command-line client (`version` and `status`) |
 | `cmd/balistid-range/` | Range launcher: `build` an image, `run` it once (ADR 0009) |
 | `cmd/balistid-range-guest/` | Program inside the range VM that checks isolation and the sensor |
 | `cmd/balistid-runner/` | Range runner: `build` its image at install, `tick` one evidence run or agent job (ADR 0011) |
