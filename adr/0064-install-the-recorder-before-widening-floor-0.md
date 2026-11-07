@@ -1,8 +1,8 @@
 # 0064 — Install the recorder before widening floor 0
 
-- Status: proposed
+- Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-07
-- Decided-by: jvc0n (2026-11-07: install first, narrow ADR 0060); claude/opus-5.5 the map
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-07: install first and narrow ADR 0060, decided in session)
 - Agent: claude/opus-5.5
 - Amends ADR 0060 points 1 and 2.
 

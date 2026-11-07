@@ -1,6 +1,6 @@
 # 0062 — Count gaps in the kernel's event serials
 
-- Status: proposed
+- Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-07
 - Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
