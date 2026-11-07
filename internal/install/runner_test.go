@@ -159,7 +159,7 @@ func entryOf(mode fs.FileMode, uid, gid int, data []byte) string {
 func (h *fakeHost) installed(t *testing.T, s *fakeSystem, before map[string]string, files map[string][]byte) map[string]string {
 	t.Helper()
 	want := maps.Clone(before)
-	for _, dir := range append(slices.Clone(createdDirs), stateDir) {
+	for _, dir := range append(slices.Clone(runnerComponent.created), stateDir) {
 		want[filepath.Join(h.cfg.Root, dir)] = entryOf(fs.ModeDir|0o755, s.uid, s.gid, nil)
 	}
 	for _, dir := range maintainerDirs {
@@ -344,7 +344,7 @@ func TestRunnerRefusesABadMaintainer(t *testing.T) {
 // outlive the install and change the unit.
 func TestRunnerRefusesARunningOrChangedUnit(t *testing.T) {
 	h, s := newRunnerHost(t)
-	for _, u := range runnerUnits {
+	for _, u := range runnerComponent.units {
 		for _, active := range []string{"active", "activating", "deactivating", "reloading", "x", ""} {
 			s.units = map[string]map[string]string{u: {"ActiveState": active}}
 			h.refusedRun(t, s, u+" "+active, maint, "", "not stopped")
@@ -367,9 +367,9 @@ func TestRunnerRefusesARunningOrChangedUnit(t *testing.T) {
 
 // A unit from an earlier install, or none, passes before the reload.
 func TestRunnerAcceptsUnitsFromThisInstallOrNone(t *testing.T) {
-	for _, n := range []int{len(runnerUnits), 1, 0} {
+	for _, n := range []int{len(runnerComponent.units), 1, 0} {
 		h, s := newRunnerHost(t)
-		for _, u := range runnerUnits[:n] {
+		for _, u := range runnerComponent.units[:n] {
 			s.units[u] = map[string]string{"FragmentPath": unitDir + u}
 		}
 		if err := h.install(t, s, maint, ""); err != nil {
@@ -381,7 +381,7 @@ func TestRunnerAcceptsUnitsFromThisInstallOrNone(t *testing.T) {
 // systemd answers for a unit with no file only after the install's own reload: a drop-in or another file seen
 // then stops the run there, logged with its step, and the installer does not replace itself.
 func TestRunnerStopsOnAUnitSeenOnlyAfterTheReload(t *testing.T) {
-	for _, u := range runnerUnits {
+	for _, u := range runnerComponent.units {
 		for _, c := range [][2]string{{"DropInPaths", unitDir + u + ".d/old.conf"},
 			{"FragmentPath", "/run/systemd/system/" + u}, {"FragmentPath", ""}} {
 			prop, value := c[0], c[1]
