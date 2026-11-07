@@ -189,7 +189,8 @@ class ManifestTest(unittest.TestCase):
         needs = re.findall(r"(?m)^    needs: \[(.*)\]$", RELEASE_JOB)
         self.assertEqual(len(needs), 1)
         self.assertIn("range-kvm", jobs)
-        self.assertEqual(set(needs[0].split(", ")), jobs - {"go-release", "range-kvm"})
+        # range-kvm and mutation run on pull requests and the merge queue only, never on the push a release builds.
+        self.assertEqual(set(needs[0].split(", ")), jobs - {"go-release", "range-kvm", "mutation"})
 
     # -X with a path that names no variable is ignored silently; CI runs no built binary to see it.
     def test_version_flag_names_the_real_variable(self):
