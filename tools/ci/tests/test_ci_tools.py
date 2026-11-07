@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -28,9 +30,9 @@ GIT_ENV = {
     "GIT_CONFIG_GLOBAL": os.devnull,
     "GIT_CONFIG_SYSTEM": os.devnull,
     "GIT_AUTHOR_NAME": "t",
-    "GIT_AUTHOR_EMAIL": "t@example.invalid",
+    "GIT_AUTHOR_EMAIL": "1+t@users.noreply.github.com",
     "GIT_COMMITTER_NAME": "t",
-    "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    "GIT_COMMITTER_EMAIL": "1+t@users.noreply.github.com",
 }
 
 
@@ -193,6 +195,24 @@ class CommitLintRangeTest(unittest.TestCase):
             self.assertEqual(commit_lint.main(rng), 1)
             commit(repo, "Bump something", env=bot)
             self.assertEqual(commit_lint.main(rng + ["--dependabot-pr"]), 1)
+
+    def test_personal_address_fails_without_being_printed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            commit(repo, "chore: base\n\nAgent: jvc0n")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            rng = ["--repo", tmp, "--range", f"{base}..HEAD"]
+            for key in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+                with self.subTest(key=key):
+                    commit(repo, GOOD_MSG, env={**GIT_ENV, key: "someone@mail.example"})
+                    err = io.StringIO()
+                    with contextlib.redirect_stderr(err):
+                        self.assertEqual(commit_lint.main(rng), 1)
+                    self.assertIn("not a GitHub noreply address", err.getvalue())
+                    self.assertNotIn("mail.example", err.getvalue())
+                    git(repo, "reset", "-q", "--hard", base)
+            commit(repo, GOOD_MSG, env={**GIT_ENV, "GIT_COMMITTER_EMAIL": "noreply@github.com"})
+            self.assertEqual(commit_lint.main(rng), 0)
 
     def test_record_separator_in_message_cannot_split_commit(self):
         with tempfile.TemporaryDirectory() as tmp:

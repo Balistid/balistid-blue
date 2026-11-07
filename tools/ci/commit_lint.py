@@ -7,7 +7,8 @@
   same single-line trailer (R11): `Agent: jvc0n` or `Agent: <claude|codex>/<model>`.
 - No control characters or Unicode line separators (git and Python split lines differently).
 - No advertising trailers (Co-Authored-By, "Generated with", robot emoji).
-- In range mode: no merge commits (linear history).
+- In range mode: no merge commits (linear history), and author and committer are GitHub noreply addresses,
+  never a personal mailbox (ADR 0063); the address is not printed, so a refusal does not publish it.
 
 Modes: --message-file (commit-msg hook) or --range REV-RANGE (CI). With --strip-attribution the hook
 first deletes the attribution lines that AI tools insert by themselves (Co-Authored-By, "Generated
@@ -37,6 +38,8 @@ SCISSORS = "# ------------------------ >8 ------------------------"
 # Characters that Python or git may treat as line breaks or hide from a reviewer.
 CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f\x85\u2028\u2029]")
 DEPENDABOT_EMAIL = "49699333+dependabot[bot]@users.noreply.github.com"
+# The identities a public commit may carry: GitHub's private noreply addresses and its own committer.
+IDENTITY_RE = re.compile(r"^([0-9]+\+[A-Za-z0-9-]+(\[bot\])?@users\.noreply\.github\.com|noreply@github\.com)$")
 STRIP_RE = re.compile(
     r"^\s*(?:co-authored-by:.*|.*\U0001F916.*|.*generated with \[?claude code.*)$", re.IGNORECASE
 )
@@ -98,22 +101,23 @@ def lint(message: str, *, require_agent: bool = True) -> list[str]:
     return errors
 
 
-def read_commit(repo: Path, sha: str) -> tuple[int, str, str]:
-    """Return (parent count, author email, message) from the raw commit object."""
+def read_commit(repo: Path, sha: str) -> tuple[int, str, str, str]:
+    """Return (parent count, author email, committer email, message) from the raw commit object."""
     raw = subprocess.run(
         ["git", "-C", str(repo), "cat-file", "commit", sha],
         check=True,
         capture_output=True,
     ).stdout.decode("utf-8", errors="replace")
     header, _, message = raw.partition("\n\n")
-    parents, email = 0, ""
+    parents, emails = 0, {"author": "", "committer": ""}
     for line in header.splitlines():
-        if line.startswith("parent "):
+        role = line.split(" ", 1)[0]
+        if role == "parent":
             parents += 1
-        elif line.startswith("author "):
+        elif role in emails:
             match = re.search(r"<([^>]*)>", line)
-            email = match.group(1) if match else ""
-    return parents, email, message.strip("\n")
+            emails[role] = match.group(1) if match else ""
+    return parents, emails["author"], emails["committer"], message.strip("\n")
 
 
 def shas_in_range(repo: Path, rev_range: str) -> list[str]:
@@ -154,10 +158,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     failures = 0
     for sha in shas:
-        parents, email, message = read_commit(args.repo, sha)
+        parents, email, committer, message = read_commit(args.repo, sha)
         errors = []
         if parents > 1:
             errors.append("merge commits are not allowed (linear history)")
+        for role, address in (("author", email), ("committer", committer)):
+            if not IDENTITY_RE.match(address):
+                errors.append(f"{role} email is not a GitHub noreply address (ADR 0063)")
         exempt = args.dependabot_pr and email == DEPENDABOT_EMAIL
         errors.extend(lint(message, require_agent=not exempt))
         for e in errors:
