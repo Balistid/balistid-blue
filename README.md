@@ -95,7 +95,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/wholefile/` | Files written whole: temp file, fsync, rename, directory fsync (ENGINEERING.md 7) |
 | `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
 | `cmd/balistid-install/`, `internal/install/` | `balistid-install`: installs a component only from a MANIFEST the maintainer signed, each file checked (ADR 0053, 0058) |
-| `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
+| `deploy/audit/` | Audit rules; the range image and `balistid-install`'s recorder install them (ADR 0004, 0068) |
 | `deploy/auditd/`, `deploy/laurel/` | auditd configuration, the Laurel plugin entry and Laurel's configuration |
 | `deploy/sysctl/` | Kernel settings (io_uring disabled) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
