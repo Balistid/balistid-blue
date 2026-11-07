@@ -536,11 +536,11 @@ class ReadCiTest(unittest.TestCase):
     def test_every_job_is_known(self):
         # A new job may run a check check.py does not; this test makes CI_ONLY be reviewed then.
         jobs = re.findall(r"^  ([a-z0-9-]+):$", CI_TEXT.split("\njobs:\n", 1)[1], re.MULTILINE)
-        self.assertEqual(jobs, ["go-static", "go-test", "go-race", "go-release", "selftest",
+        self.assertEqual(jobs, ["go-static", "go-test", "mutation", "go-race", "go-release", "selftest",
                                 "docs-budget", "pin-check", "commit-lint", "secrets", "workflow-lint", "range-kvm"])
         labels = check.read_ci(CI_TEXT)["ci_only"]
         for label in ("toolchain", "build", "selftest", "docs-budget", "pin-check", "commit-lint",
-                      "secrets", "workflow-lint", "range-kvm"):
+                      "secrets", "workflow-lint", "range-kvm", "mutation"):
             self.assertIn(label, labels)
 
     def test_missing_value_fails_closed(self):
