@@ -1,6 +1,7 @@
 package status
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,18 +57,24 @@ func TestParseShowRefusesAnythingElse(t *testing.T) {
 // Whatever parseShow accepts is one state per name, each of the plain form.
 func FuzzParseShow(f *testing.F) {
 	f.Add([]byte(show(UnitState{"a.service", "loaded", "active", "running"}, UnitState{"b.socket", "loaded", "active", "listening"})))
+	// systemctl show may print a unit's properties in any order; parseShow takes them by name.
+	f.Add([]byte("Id=a.service\nLoadState=loaded\nSubState=running\nActiveState=active\n\n" + show(UnitState{"b.socket", "loaded", "active", "listening"})))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		got, err := parseShow(b, twoNames)
 		if err != nil {
 			return
 		}
+		blocks := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n\n")
 		for i, s := range got {
 			if s.ID != twoNames[i] || !stateValue.MatchString(s.Load) || !stateValue.MatchString(s.Active) || !stateValue.MatchString(s.Sub) {
 				t.Fatalf("parseShow(%q) = %+v", b, got)
 			}
-		}
-		if show(got...) != string(b) && show(got...) != strings.TrimSuffix(string(b), "\n")+"\n" {
-			t.Fatalf("parseShow(%q) = %+v, which prints as %q", b, got, show(got...))
+			want, have := strings.Split(strings.TrimSuffix(show(s), "\n"), "\n"), strings.Split(blocks[i], "\n")
+			slices.Sort(want)
+			slices.Sort(have)
+			if !slices.Equal(want, have) {
+				t.Fatalf("parseShow(%q) = %+v, whose unit %d prints other lines than it read", b, got, i)
+			}
 		}
 	})
 }
