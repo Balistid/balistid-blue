@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"golang.org/x/mod/sumdb/note"
@@ -282,6 +283,18 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 			h.mkdir(t, "usr/lib/sysctl.d", 0o755)
 			h.put(t, "usr/lib/sysctl.d/50-x.conf", []byte("kernel/io_uring_disabled=1\n"), 0o644)
 		}, "/usr/lib/sysctl.d/50-x.conf sets io_uring_disabled"},
+		"a public key that is a directory": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, ledgerPub, 0o755)
+		}, "/" + ledgerPub},
+		"a FIFO among the sysctl files": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o755)
+			must(t, syscall.Mkfifo(filepath.Join(h.cfg.Root, "etc/sysctl.d/50-x.conf"), 0o644))
+		}, "/etc/sysctl.d/50-x.conf: not a regular file"},
+		"io_uring through a linked sysctl file": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o755)
+			h.put(t, "etc/sysctl.conf", []byte("kernel.io_uring_disabled = 0\n"), 0o644)
+			h.symlink(t, "../sysctl.conf", "etc/sysctl.d/99-sysctl.conf")
+		}, "sets io_uring_disabled"},
 		"io_uring in sysctl.conf": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "etc/sysctl.conf", []byte("-kernel.io_uring_disabled = 0\n"), 0o644)
 		}, "/etc/sysctl.conf sets io_uring_disabled"},
@@ -316,6 +329,9 @@ func TestRecorderReplacesALonePublicKeyAndKeepsItsOwnSysctl(t *testing.T) {
 	h.put(t, ledgerPub, []byte(vk+"\n"), 0o644)
 	h.put(t, "etc/sysctl.d/90-balistid.conf", []byte("kernel.io_uring_disabled = 2\n"), 0o644)
 	h.put(t, "etc/sysctl.d/README", []byte("kernel.io_uring_disabled\n"), 0o644)
+	h.symlink(t, "/dev/null", "etc/sysctl.d/50-masked.conf")
+	h.put(t, "etc/sysctl.conf", []byte("vm.swappiness = 10\n"), 0o644)
+	h.symlink(t, "../sysctl.conf", "etc/sysctl.d/99-sysctl.conf")
 	must(t, h.installRecorder(t, s, ""))
 	if string(readFile(t, h, ledgerPub)) == vk+"\n" {
 		t.Fatal("the lone public key was kept")

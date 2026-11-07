@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -215,25 +214,43 @@ func otherSysctl(host *os.Root) error {
 		}
 	}
 	for _, p := range files {
-		f, err := host.Open(p)
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("/%s: %w", p, err)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, maxConfBytes+1))
-		_ = f.Close()
+		data, err := sysctlFile(host, p)
 		switch {
+		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
-			return fmt.Errorf("/%s: %w", p, err)
-		case len(data) > maxConfBytes:
-			return fmt.Errorf("/%s: over %d bytes", p, maxConfBytes)
+			return err
 		case bytes.Contains(data, []byte("io_uring_disabled")):
 			return fmt.Errorf("/%s sets io_uring_disabled, which the recorder's sysctl file sets: remove it first", p)
 		}
 	}
 	return nil
+}
+
+// sysctlFile reads p as systemd-sysctl would apply it: a link to /dev/null masks it (no bytes), another link is read
+// as its target, once; anything but a plain file then refuses, so a FIFO cannot hold the install.
+func sysctlFile(host *os.Root, p string) ([]byte, error) {
+	fi, err := host.Lstat(p)
+	if err != nil {
+		return nil, fmt.Errorf("/%s: %w", p, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		target, err := host.Readlink(p)
+		if err != nil {
+			return nil, fmt.Errorf("/%s: %w", p, err)
+		}
+		if target == "/dev/null" {
+			return nil, nil
+		}
+		if !path.IsAbs(target) {
+			target = path.Join("/", path.Dir(p), target)
+		}
+		p = strings.TrimPrefix(path.Clean(target), "/")
+	}
+	data, err := wholefile.ReadIn(host, p, maxConfBytes)
+	if err != nil {
+		return nil, fmt.Errorf("/%s: %w", p, err)
+	}
+	return data, nil
 }
 
 // rootProgram refuses p unless it is root's regular executable file only root may write, in a trusted directory.
@@ -331,6 +348,9 @@ func installedLedgerKey(cfg Config, host *os.Root) (absent bool, err error) {
 	case errors.Is(privErr, fs.ErrNotExist) && pubErr == nil:
 		// A public key alone, before the ledger's log exists, is what a stopped install leaves (writeLedgerKey
 		// writes it first): nothing was signed with its private half, so a new pair replaces it.
+		if _, err := rootFile(cfg, host, ledgerPub, 0o644, maxKeyBytes); err != nil {
+			return false, err
+		}
 		if _, err := host.Lstat(ledgerLog); errors.Is(err, fs.ErrNotExist) {
 			return true, nil
 		}
