@@ -32,9 +32,12 @@ func newRecorderHost(t *testing.T) (*fakeHost, *fakeSystem, map[string][]byte) {
 	for _, dir := range append(slices.Clone(recorderComponent.trusted), "usr/bin", "proc") {
 		h.mkdir(t, dir, 0o755)
 	}
-	for _, p := range hostPrograms {
-		h.put(t, p, []byte("#!/bin/sh\n"), 0o755)
+	for _, p := range append(slices.Clone(hostPrograms), "usr/bin/gawk") {
+		if p != "usr/bin/awk" {
+			h.put(t, p, []byte("#!/bin/sh\n"), 0o755)
+		}
 	}
+	h.symlink(t, "gawk", "usr/bin/awk")
 	h.put(t, "proc/cmdline", []byte(bootedCmdline), 0o644)
 	h.put(t, auditdConf, []byte(distroAuditd), 0o640)
 	files := recorderFiles(h.key.signers)
@@ -179,16 +182,6 @@ func TestRecorderFirstInstallPlacesBothKeys(t *testing.T) {
 	}
 }
 
-// A host without auditd.conf has nothing to keep: no auditd.conf.orig is written.
-func TestRecorderKeepsNoAuditdConfWhereThereWasNone(t *testing.T) {
-	h, s, _ := newRecorderHost(t)
-	must(t, os.Remove(filepath.Join(h.cfg.Root, auditdConf)))
-	must(t, h.installRecorder(t, s, ""))
-	if _, err := os.Lstat(filepath.Join(h.cfg.Root, auditdOrig)); err == nil {
-		t.Fatal("an auditd.conf.orig was written with no auditd.conf before")
-	}
-}
-
 // Each precondition of ADR 0068 point 2 refuses alone, before any write or command.
 func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 	sk1, vk1, err := note.GenerateKey(rand.Reader, "balistid.dev/log/0000000000000001")
@@ -214,16 +207,50 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 		"no gawk": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/gawk")))
 		}, "/usr/bin/gawk"},
+		"no auditctl": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/auditctl")))
+		}, "/usr/bin/auditctl"},
+		"auditd not executable": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.chmod(t, "usr/bin/auditd", 0o644)
+		}, "not an executable regular file"},
+		"gawk others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.chmod(t, "usr/bin/gawk", 0o757)
+		}, "/usr/bin/gawk is not an executable regular file"},
+		"awk a link by an absolute path": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/awk")))
+			h.symlink(t, "/usr/bin/gawk", "usr/bin/awk")
+		}, "links outside its directory"},
+		"augenrules a link out of its directory": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/augenrules")))
+			h.symlink(t, "../../proc/cmdline", "usr/bin/augenrules")
+		}, "links outside its directory"},
+		"audit=0 before audit=1": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "proc/cmdline", []byte("audit=0 audit=1 audit_backlog_limit=65536\n"), 0o644)
+		}, "without audit=0"},
+		"audit=1 only for init": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "proc/cmdline", []byte("rw -- audit=1 audit_backlog_limit=65536\n"), 0o644)
+		}, "without audit=0"},
+		"audit=1 inside quotes": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "proc/cmdline", []byte("x=\"a audit=1 audit_backlog_limit=65536\"\n"), 0o644)
+		}, "without audit=0"},
+		"no auditd.conf": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			must(t, os.Remove(filepath.Join(h.cfg.Root, auditdConf)))
+		}, "/etc/audit/auditd.conf: missing"},
+		"a kept original that is a directory": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, auditdOrig, 0o755)
+		}, "/" + auditdOrig},
+		"a kept original that is a link": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.symlink(t, "../audit/auditd.conf", auditdOrig)
+		}, "/" + auditdOrig},
+		"a kept original others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, auditdOrig, []byte(distroAuditd), 0o666)
+		}, "not -rw-r-----"},
 		"laurel others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.chmod(t, "usr/bin/laurel", 0o757)
-		}, "only root may write"},
+		}, "not an executable regular file"},
 		"auditd its group may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.chmod(t, "usr/bin/auditd", 0o775)
-		}, "only root may write"},
-		"augenrules a link": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
-			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/augenrules")))
-			h.symlink(t, "gawk", "usr/bin/augenrules")
-		}, "only root may write"},
+		}, "not an executable regular file"},
 		"usr/bin writable": {func(t *testing.T, h *fakeHost, _ *fakeSystem) { h.chmod(t, "usr/bin", 0o775) }, "writable by group or other"},
 		"no _laurel":       {func(_ *testing.T, _ *fakeHost, s *fakeSystem) { s.noLaurel = true }, "no user _laurel"},
 		"other rules": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
@@ -322,7 +349,10 @@ func TestEveryDestinationIsInACheckedDirectory(t *testing.T) {
 // bootedForAudit reads the kernel's command line as the kernel does: the last of a repeated parameter wins.
 func TestBootedForAudit(t *testing.T) {
 	for cmdline, want := range map[string]bool{
-		bootedCmdline: true, "audit=1 audit_backlog_limit=131072": true, "audit=0 audit=1 audit_backlog_limit=65536": true,
+		bootedCmdline: true, "audit=1 audit_backlog_limit=131072": true, "audit=0 audit=1 audit_backlog_limit=65536": false,
+		"audit=off audit=1 audit_backlog_limit=65536": false, "audit=1 audit_backlog_limit=65536 -- audit=0": false,
+		"audit=1 audit_backlog_limit=65536 -- x": true, "-- audit=1 audit_backlog_limit=65536": false,
+		"audit=1 audit_backlog_limit=65536 -- audit_backlog_limit=64": true, `audit=1 audit_backlog_limit=65536 x="y"`: false,
 		"audit=1 audit_backlog_limit=65536 audit_backlog_limit=64": false, "audit=1 audit_backlog_limit=x": false,
 		"audit=on audit_backlog_limit=65536": false, "xaudit=1 audit_backlog_limit=65536": false, "": false,
 	} {

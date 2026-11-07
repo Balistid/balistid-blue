@@ -71,8 +71,9 @@ const (
 	maxConfBytes = 64 << 10
 )
 
-// hostPrograms are what the sensor runs from the distribution and Laurel's package (ADR 0004, 0068 point 2).
-var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/gawk"}
+// hostPrograms are what the sensor runs from the distribution and Laurel's package (ADR 0004, 0068 point 2):
+// augenrules runs auditctl and awk by these paths and its PATH.
+var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/auditctl", "usr/bin/awk"}
 
 // Recorder installs the recorder component from dir (ADR 0068). Every check, the signature first, runs before the
 // first write; a refusal changes nothing and runs no command. A failed step stops with what was written in place.
@@ -157,16 +158,8 @@ func recorder(ctx context.Context, cfg Config, dir, fingerprint string, d *Decis
 // _laurel, a kernel booted without audit=1 and the backlog limit, or other rules augenrules would merge (ADR 0068).
 func hostReady(cfg Config, host *os.Root) error {
 	for _, p := range hostPrograms {
-		if _, err := trustedPath(cfg, host, path.Dir(p)); err != nil {
+		if err := rootProgram(cfg, host, p); err != nil {
 			return err
-		}
-		fi, err := host.Lstat(p)
-		if err != nil {
-			return fmt.Errorf("/%s: %w", p, err)
-		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o022 != 0 || !ok || int64(st.Uid) != int64(cfg.UID) {
-			return fmt.Errorf("/%s is not a regular file of root's that only root may write", p)
 		}
 	}
 	if _, err := cfg.LookupUser("_laurel"); err != nil {
@@ -177,17 +170,58 @@ func hostReady(cfg Config, host *os.Root) error {
 		return fmt.Errorf("/proc/cmdline: %w", err)
 	}
 	if !bootedForAudit(string(cmdline)) {
-		return fmt.Errorf("the kernel was not booted with audit=1 audit_backlog_limit=%d: add both to the boot entry's "+
-			"options and reboot", backlogLimit)
+		return fmt.Errorf("the kernel was not booted with audit=1 audit_backlog_limit=%d and without audit=0, "+
+			"audit=off or quotes: set the boot entry's options and reboot", backlogLimit)
 	}
 	return otherRules(host)
 }
 
-// bootedForAudit is whether the kernel's last audit= is 1 and its last audit_backlog_limit= is at least backlogLimit,
-// as the kernel reads a repeated parameter.
+// rootProgram refuses p unless it is root's regular executable file only root may write, in a trusted directory.
+// A link is followed only to a bare name in the same directory (/usr/bin/awk to gawk), which is then checked too.
+func rootProgram(cfg Config, host *os.Root, p string) error {
+	if _, err := trustedPath(cfg, host, path.Dir(p)); err != nil {
+		return err
+	}
+	fi, err := host.Lstat(p)
+	if err != nil {
+		return fmt.Errorf("/%s: %w", p, err)
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		target, err := host.Readlink(p)
+		if err != nil || target == "" || strings.Contains(target, "/") || target == "." || target == ".." {
+			return fmt.Errorf("/%s links outside its directory", p)
+		}
+		p = path.Join(path.Dir(p), target)
+		if fi, err = host.Lstat(p); err != nil {
+			return fmt.Errorf("/%s: %w", p, err)
+		}
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o022 != 0 || fi.Mode().Perm()&0o100 == 0 || !ok ||
+		int64(st.Uid) != int64(cfg.UID) {
+		return fmt.Errorf("/%s is not an executable regular file of root's that only root may write", p)
+	}
+	return nil
+}
+
+// bootedForAudit is whether the kernel enabled audit with at least backlogLimit and auditd.service may start. The
+// kernel takes the last audit= and audit_backlog_limit= before "--" (what follows goes to init); auditd's unit does not
+// start on audit=0 or audit=off anywhere. Quotes, which group words for the kernel, refuse: they are not parsed here.
 func bootedForAudit(cmdline string) bool {
-	audit, limit := "", ""
+	if strings.Contains(cmdline, `"`) {
+		return false
+	}
+	audit, limit, kernel := "", "", true
 	for _, f := range strings.Fields(cmdline) {
+		if f == "audit=0" || f == "audit=off" {
+			return false
+		}
+		if f == "--" {
+			kernel = false
+		}
+		if !kernel {
+			continue
+		}
 		if v, ok := strings.CutPrefix(f, "audit="); ok {
 			audit = v
 		}
@@ -236,11 +270,11 @@ func installedLedgerKey(cfg Config, host *os.Root) (absent bool, err error) {
 	case errors.Is(privErr, fs.ErrNotExist) || errors.Is(pubErr, fs.ErrNotExist):
 		return false, errors.New("only one of the ledger's key pair is installed")
 	}
-	skey, err := rootFile(cfg, host, ledgerKey, 0o600)
+	skey, err := rootFile(cfg, host, ledgerKey, 0o600, maxKeyBytes)
 	if err != nil {
 		return false, err
 	}
-	vkey, err := rootFile(cfg, host, ledgerPub, 0o644)
+	vkey, err := rootFile(cfg, host, ledgerPub, 0o644, maxKeyBytes)
 	if err != nil {
 		return false, err
 	}
@@ -262,8 +296,8 @@ func installedLedgerKey(cfg Config, host *os.Root) (absent bool, err error) {
 	return false, nil
 }
 
-// rootFile reads name, root's with exactly mode and one link, on a trusted path.
-func rootFile(cfg Config, host *os.Root, name string, mode fs.FileMode) ([]byte, error) {
+// rootFile reads name, root's with exactly mode and one link, on a trusted path, at most limit bytes.
+func rootFile(cfg Config, host *os.Root, name string, mode fs.FileMode, limit int64) ([]byte, error) {
 	if _, err := trustedPath(cfg, host, path.Dir(name)); err != nil {
 		return nil, err
 	}
@@ -274,23 +308,22 @@ func rootFile(cfg Config, host *os.Root, name string, mode fs.FileMode) ([]byte,
 	if err := ownedAs(fi, cfg.UID, cfg.GID, mode); err != nil {
 		return nil, fmt.Errorf("/%s: %w", name, err)
 	}
-	data, err := wholefile.ReadIn(host, name, maxKeyBytes)
+	data, err := wholefile.ReadIn(host, name, limit)
 	if err != nil {
 		return nil, fmt.Errorf("/%s: %w", name, err)
 	}
 	return data, nil
 }
 
-// originalAuditdConf is the auditd.conf to keep as auditdOrig: the installed one while none is kept, else nil.
+// originalAuditdConf is the auditd.conf to keep as auditdOrig: the installed one while none is kept, else nil. A
+// kept one must be root's 0640 file as written; the audit package's auditd.conf must exist to be kept.
 func originalAuditdConf(cfg Config, host *os.Root) ([]byte, error) {
 	switch _, err := host.Lstat(auditdOrig); {
 	case err == nil:
-		return nil, nil
+		_, err := rootFile(cfg, host, auditdOrig, 0o640, maxConfBytes)
+		return nil, err
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, fmt.Errorf("/%s: %w", auditdOrig, err)
-	}
-	if _, err := host.Lstat(auditdConf); errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
 	}
 	data, err := wholefile.ReadIn(host, auditdConf, maxConfBytes)
 	if err != nil {
