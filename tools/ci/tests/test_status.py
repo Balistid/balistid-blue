@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+from unittest import mock
 import sys
 import tempfile
 import unittest
@@ -210,6 +211,13 @@ class StatusTest(Fixture):
         self.assertFalse(status.warnings(st, [], facts, res, [], prs[:2], TODAY))
         self.assertIn("cannot check: gh failed", " ".join(status.warnings(st, [], facts, res, [], "gh failed", TODAY)))
         self.assertFalse(status.warnings(st, [], facts, res, [], status.NOT_ASKED, TODAY))
+
+    def test_k1_asks_only_for_pull_requests_merged_into_main(self) -> None:
+        ok = subprocess.CompletedProcess([], 0, stdout='[{"title": "feat: x", "author": {"login": "b"}}]', stderr="")
+        with mock.patch.object(status.subprocess, "run", return_value=ok) as run:
+            self.assertEqual(status.k1_count(self.repo), 1)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index("--base") + 1], "main")
 
     def test_k1_counts_product_types_and_warns_from_the_threshold(self) -> None:
         bot, dependabot = {"login": "app/balistid-bot"}, {"login": "app/dependabot"}
