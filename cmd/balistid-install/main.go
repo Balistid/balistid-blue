@@ -1,5 +1,5 @@
 // Command balistid-install installs a Balistid Blue component only from a release whose MANIFEST the maintainer
-// signed (ADR 0053, 0058). `verify` is the unprivileged dry run; `runner` installs the range runner as root.
+// signed (ADR 0053, 0058, 0068). `verify` is the unprivileged dry run; `recorder` and `runner` install as root.
 package main
 
 import (
@@ -12,14 +12,15 @@ import (
 
 func main() { os.Exit(run(context.Background(), os.Args[1:], os.Geteuid())) }
 
-const usage = "usage: balistid-install verify <dir> [<fingerprint>] | balistid-install runner <dir> <maintainer> [<fingerprint>]"
+const usage = "usage: balistid-install verify recorder|runner <dir> [<fingerprint>] | " +
+	"balistid-install recorder <dir> [<fingerprint>] | balistid-install runner <dir> <maintainer> [<fingerprint>]"
 
 // run is the exit status: 0 verified or installed, 1 refused or stopped, 2 a usage error.
 func run(ctx context.Context, args []string, euid int) int {
 	cfg := install.DefaultConfig()
 	switch {
-	case len(args) >= 2 && len(args) <= 3 && args[0] == "verify":
-		r, err := install.Check(ctx, cfg, "runner", args[1], optional(args, 2))
+	case len(args) >= 3 && len(args) <= 4 && args[0] == "verify":
+		r, err := install.Check(ctx, cfg, args[1], args[2], optional(args, 3))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "balistid-install: refused: "+err.Error())
 			return 1
@@ -29,6 +30,20 @@ func run(ctx context.Context, args []string, euid int) int {
 		for _, f := range r.Manifest.Files {
 			fmt.Printf("%x  %s\n", f.SHA256, f.Name)
 		}
+		if r.Manifest.Component == "recorder" {
+			fmt.Println(install.RecorderNotice)
+		}
+		return 0
+	case len(args) >= 2 && len(args) <= 3 && args[0] == "recorder":
+		if euid != 0 {
+			fmt.Fprintln(os.Stderr, "balistid-install: recorder installs as root only")
+			return 1
+		}
+		fmt.Fprintln(os.Stderr, "balistid-install: "+install.RecorderNotice)
+		if install.Recorder(ctx, cfg, args[1], optional(args, 2)) != nil {
+			return 1 // Recorder logged the reason
+		}
+		fmt.Println("installed and enabled, nothing started. Reboot to load and lock the rules, then run balistid status.")
 		return 0
 	case len(args) >= 3 && len(args) <= 4 && args[0] == "runner":
 		if euid != 0 {

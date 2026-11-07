@@ -17,14 +17,15 @@ import (
 // fakeHost is a root directory standing in for "/", owned by the test's uid, with an installed allowed_signers of
 // a runtime key, and a release directory the maintainer downloaded into.
 type fakeHost struct {
-	cfg Config
-	dir string
-	key key
+	cfg    Config
+	dir    string
+	key    key
+	bundle string // the bundle's file name, the runner's unless a test sets another
 }
 
 func newHost(t *testing.T) *fakeHost {
 	t.Helper()
-	h := &fakeHost{dir: t.TempDir(), key: newKey(t)}
+	h := &fakeHost{dir: t.TempDir(), key: newKey(t), bundle: runnerComponent.bundle()}
 	h.cfg = Config{Root: t.TempDir(), UID: os.Getuid(), GID: os.Getgid(), SSHKeygen: sshKeygen,
 		VerifyTimeout: 10 * time.Second}
 	h.mkdir(t, "etc/balistid", 0o755)
@@ -61,9 +62,12 @@ func (k key) sign(t *testing.T, data []byte, namespace string) []byte {
 	return k.sk.sign(data, namespace, skPresence|skVerified)
 }
 
-// manifestOf is the MANIFEST CI writes for files.
-func manifestOf(files map[string][]byte) []byte {
-	m := Manifest{Component: "runner", Commit: testCommit}
+// manifestOf is the MANIFEST CI writes for files of the runner.
+func manifestOf(files map[string][]byte) []byte { return manifestFor("runner", files) }
+
+// manifestFor is the MANIFEST CI writes for files of the named component.
+func manifestFor(component string, files map[string][]byte) []byte {
+	m := Manifest{Component: component, Commit: testCommit}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		m.Files = append(m.Files, File{Name: name, SHA256: sha256.Sum256(files[name])})
 	}
@@ -96,7 +100,7 @@ func (h *fakeHost) publish(t *testing.T, files map[string][]byte, manifest, sig 
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		entries = append(entries, entry{name: name, data: string(files[name])})
 	}
-	if err := os.WriteFile(filepath.Join(h.dir, runnerComponent.bundle()), tarOf(t, entries...), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(h.dir, h.bundle), tarOf(t, entries...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if sig != nil {
