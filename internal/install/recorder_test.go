@@ -33,12 +33,16 @@ func newRecorderHost(t *testing.T) (*fakeHost, *fakeSystem, map[string][]byte) {
 	for _, dir := range append(slices.Clone(recorderComponent.trusted), "usr/bin", "proc") {
 		h.mkdir(t, dir, 0o755)
 	}
-	for _, p := range append(slices.Clone(hostPrograms), "usr/bin/gawk") {
-		if p != "usr/bin/awk" {
-			h.put(t, p, []byte("#!/bin/sh\n"), 0o755)
+	for _, p := range append(slices.Clone(hostPrograms), "usr/bin/gawk", "usr/bin/bash") {
+		h.put(t, p, []byte("#!/bin/sh\n"), 0o755)
+	}
+	for _, name := range pathPrograms {
+		if name != "awk" && name != "sh" {
+			h.put(t, "usr/bin/"+name, []byte("#!/bin/sh\n"), 0o755)
 		}
 	}
 	h.symlink(t, "gawk", "usr/bin/awk")
+	h.symlink(t, "bash", "usr/bin/sh")
 	h.put(t, "proc/cmdline", []byte(bootedCmdline), 0o644)
 	h.put(t, auditdConf, []byte(distroAuditd), 0o640)
 	files := recorderFiles(h.key.signers)
@@ -195,19 +199,42 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 	}{
 		"no audit=1": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("rw audit_backlog_limit=65536\n"), 0o644)
-		}, "not booted with audit=1"},
+		}, "exactly audit=1"},
 		"audit=1 then audit=0": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("audit=1 audit_backlog_limit=65536 audit=0\n"), 0o644)
-		}, "not booted with audit=1"},
+		}, "exactly audit=1"},
 		"a lower backlog limit": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("audit=1 audit_backlog_limit=65535\n"), 0o644)
-		}, "not booted with audit=1"},
+		}, "exactly audit=1"},
 		"no backlog limit": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("audit=1\n"), 0o644)
-		}, "not booted with audit=1"},
+		}, "exactly audit=1"},
 		"no gawk": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/gawk")))
 		}, "/usr/bin/gawk"},
+		"awk shadowed on the boot PATH": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "usr/local/bin/awk", []byte("#!/bin/sh\n"), 0o755)
+		}, "/usr/local/bin/awk comes before /usr/bin/awk"},
+		"sh shadowed in a split /usr/sbin": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "usr/sbin", 0o755)
+			h.symlink(t, "../bin/bash", "usr/sbin/sh")
+		}, "/usr/sbin/sh comes before /usr/bin/sh"},
+		"usr/local/bin writable": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.chmod(t, "usr/local/bin", 0o777)
+		}, "/usr/local/bin: writable by group or other"},
+		"no xargs": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/xargs")))
+		}, "/usr/bin/xargs"},
+		"a sysctl file others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o755)
+			h.put(t, "etc/sysctl.d/10-x.conf", []byte("vm.swappiness = 10\n"), 0o666)
+		}, "/etc/sysctl.d/10-x.conf is not root's file that only root may write"},
+		"a sysctl directory others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o777)
+		}, "/etc/sysctl.d: writable by group or other"},
+		"the backlog limit by its hyphenated name": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "proc/cmdline", []byte("audit=1 audit_backlog_limit=65536 audit-backlog-limit=1\n"), 0o644)
+		}, "exactly audit=1"},
 		"no auditctl": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/auditctl")))
 		}, "/usr/bin/auditctl"},
@@ -227,13 +254,13 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 		}, "links outside its directory"},
 		"audit=0 before audit=1": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("audit=0 audit=1 audit_backlog_limit=65536\n"), 0o644)
-		}, "without audit=0"},
+		}, "exactly audit=1"},
 		"audit=1 only for init": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("rw -- audit=1 audit_backlog_limit=65536\n"), 0o644)
-		}, "without audit=0"},
+		}, "exactly audit=1"},
 		"audit=1 inside quotes": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "proc/cmdline", []byte("x=\"a audit=1 audit_backlog_limit=65536\"\n"), 0o644)
-		}, "without audit=0"},
+		}, "exactly audit=1"},
 		"no auditd.conf": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			must(t, os.Remove(filepath.Join(h.cfg.Root, auditdConf)))
 		}, "/etc/audit/auditd.conf: missing"},
@@ -430,7 +457,10 @@ func TestBootedForAudit(t *testing.T) {
 		bootedCmdline: true, "audit=1 audit_backlog_limit=131072": true, "audit=0 audit=1 audit_backlog_limit=65536": false,
 		"audit=off audit=1 audit_backlog_limit=65536": false, "audit=1 audit_backlog_limit=65536 -- audit=0": false,
 		"audit=1 audit_backlog_limit=65536 -- x": true, "-- audit=1 audit_backlog_limit=65536": false,
-		"audit=1 audit_backlog_limit=65536 -- audit_backlog_limit=64": true, `audit=1 audit_backlog_limit=65536 x="y"`: false,
+		"audit=1 audit_backlog_limit=65536 -- audit_backlog_limit=64": false, `audit=1 audit_backlog_limit=65536 x="y"`: false,
+		"audit=1 audit_backlog_limit=65536 audit-backlog-limit=1": false, "audit=1 audit_backlog_limit=65536 audit_backlog_limit=131072": false,
+		"audit=1 audit=1 audit_backlog_limit=65536": false, "audit=1\u2003audit_backlog_limit=65536": false,
+		"audit=1\taudit_backlog_limit=65536": false, "audit=1  audit_backlog_limit=65536\n": true, "audit-0 audit=1 audit_backlog_limit=65536": false,
 		"audit=1 audit_backlog_limit=065536": false, "audit=1 audit_backlog_limit=0100000": false,
 		"audit=1 audit_backlog_limit=":                             false,
 		"audit=1 audit_backlog_limit=65536 audit_backlog_limit=64": false, "audit=1 audit_backlog_limit=x": false,
