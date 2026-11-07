@@ -128,7 +128,7 @@ func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string
 	for _, dir := range maintainerDirs {
 		extra = append(extra, wantDir{dir, maintainerOwner, runnerGroup, fs.ModeDir | fs.ModeSetgid | 0o750})
 	}
-	absent, err := preflight(cfg, host, c, muid, extra, c.tmpfilesConf(r))
+	absent, err := preflight(cfg, host, c, muid, extra, r)
 	if err != nil {
 		return err
 	}
@@ -180,15 +180,18 @@ func unitsAsWritten(ctx context.Context, cfg Config, units []string, reloaded bo
 // preflight checks every path the install of c writes or creates, or tmpfiles makes, and extra, before the first
 // write, and returns those absent. Absent means only "does not exist": any other error refuses. Nothing found is
 // repaired, since others may have prepared it.
-func preflight(cfg Config, host *os.Root, c component, muid int, extra []wantDir, tmpfiles []byte) (map[string]bool, error) {
+func preflight(cfg Config, host *os.Root, c component, muid int, extra []wantDir, r Release) (map[string]bool, error) {
 	for _, dir := range c.trusted {
 		if _, err := trustedPath(cfg, host, dir); err != nil {
 			return nil, err
 		}
 	}
-	made, err := tmpfilesDirs(tmpfiles)
-	if err != nil {
-		return nil, err
+	var made []wantDir
+	for _, name := range c.tmpfiles {
+		var err error
+		if made, err = tmpfilesDirs(name, r.Files[name], made); err != nil {
+			return nil, err
+		}
 	}
 	var dirs []wantDir
 	for _, dir := range append(slices.Clone(c.created), stateDir) {
@@ -267,33 +270,33 @@ func (d wantDir) owner(cfg Config, muid int) (uid, gid int, err error) {
 
 var tmpfilesLine = regexp.MustCompile(`^d (/var/lib/balistid(?:/[a-z0-9_-]+)*) ([0-7]{4}) ([a-z_][a-z0-9_-]*) ([a-z_][a-z0-9_-]*) -$`)
 
-// tmpfilesDirs are the directories the release's tmpfiles.conf makes, all under /var/lib/balistid. Any other line
-// but a comment or a blank one is refused: the installer checks before tmpfiles runs only what it can read here.
-func tmpfilesDirs(conf []byte) ([]wantDir, error) {
-	var dirs []wantDir
+// tmpfilesDirs appends to dirs the directories the release's tmpfiles.conf named name makes, all under
+// /var/lib/balistid. Any other line but a comment or a blank one is refused: the installer checks before tmpfiles
+// runs only what it can read here. Each file is read alone, as tmpfiles reads it.
+func tmpfilesDirs(name string, conf []byte, dirs []wantDir) ([]wantDir, error) {
 	for i, line := range strings.Split(strings.TrimSuffix(string(conf), "\n"), "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		m := tmpfilesLine.FindStringSubmatch(line)
 		if m == nil {
-			return nil, fmt.Errorf("tmpfiles.conf: line %d is not a directory the installer can check", i+1)
+			return nil, fmt.Errorf("%s: line %d is not a directory the installer can check", name, i+1)
 		}
 		bits, err := strconv.ParseUint(m[2], 8, 32)
 		if err != nil || bits&^0o2777 != 0 {
-			return nil, fmt.Errorf("tmpfiles.conf: line %d: a mode other than permissions and setgid", i+1)
+			return nil, fmt.Errorf("%s: line %d: a mode other than permissions and setgid", name, i+1)
 		}
 		mode := fs.ModeDir | fs.FileMode(bits&0o777)
 		if bits&0o2000 != 0 {
 			mode |= fs.ModeSetgid
 		}
-		name := strings.TrimPrefix(m[1], "/")
+		dir := strings.TrimPrefix(m[1], "/")
 		// Preflight checks what tmpfiles will make; a directory whose parent it does not make is not checked whole.
-		if parent := path.Dir(name); name != stateDir && parent != stateDir &&
+		if parent := path.Dir(dir); dir != stateDir && parent != stateDir &&
 			!slices.ContainsFunc(dirs, func(d wantDir) bool { return d.name == parent }) {
-			return nil, fmt.Errorf("tmpfiles.conf: line %d: its parent directory is not listed before it", i+1)
+			return nil, fmt.Errorf("%s: line %d: its parent directory is not listed before it", name, i+1)
 		}
-		dirs = append(dirs, wantDir{name, m[3], m[4], mode})
+		dirs = append(dirs, wantDir{dir, m[3], m[4], mode})
 	}
 	return dirs, nil
 }
@@ -305,7 +308,7 @@ func apply(ctx context.Context, cfg Config, host *os.Root, r Release, maintainer
 	if err := c.createDirs(host, absent); err != nil {
 		return err
 	}
-	if err := c.writeFiles(host, r, absent); err != nil {
+	if err := c.writeFiles(host, r, absent, false); err != nil {
 		return err
 	}
 	if err := runAll(ctx, cfg, []string{"/usr/bin/systemd-sysusers", "/etc/sysusers.d/balistid-runner.conf"},

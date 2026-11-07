@@ -4,7 +4,7 @@
 - Date: 2026-11-07
 - Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-07: recorder first, plan approved in session)
 - Agent: claude/opus-5.5
-- Amends ADR 0064 points 1 and 3 (order, #243) and ADR 0058 point 5 (what the first install runs).
+- Amends ADR 0064 points 1 and 3 (order, #243) and ADR 0058 points 4 and 5 (`verify` names it; what the first install runs).
 
 ## Context
 
@@ -20,21 +20,21 @@ and ssh-agent's units, a witness key; `balistid status` asks for `balistid-net` 
    `recorder`, then `witness` (relay, litewitness, ssh-agent, Pi watcher, announce, ntfy token; #203, #204), then
    `runner` (ADR 0058). The bootstrap command (ADR 0058 point 5) runs `recorder`; the others, the host's runner
    included, use the `balistid-install` it installs.
-2. `recorder` is the sensor, the collector, the ledger, auditstat and the CLI: the four binaries, the collector's
-   service and socket, the ledger's and auditstat's services, their three `sysusers.conf` and two `tmpfiles.conf`,
-   `balistid.rules`, `auditd.conf`, Laurel's plugin and config, the io_uring sysctl, `allowed_signers` and the
-   installer last. Units, sysusers and tmpfiles go under `/etc` as the runner's; the sensor's files where the range
-   image puts them. Before the first write it refuses unless: laurel, augenrules, auditd, auditctl and awk in `/usr/bin`
-   are root's executables no group or other may write (a link only to a name beside it); `_laurel` exists; the kernel
-   took `audit=1 audit_backlog_limit=65536`, with no `audit=0` or `audit=off`; `/etc/audit/rules.d` holds no `*.rules` (what
-   augenrules reads) but `balistid.rules` (it decides #240: the recorder owns them; it moves none); and every unit of
-   its own is stopped. auditd may run: its new `auditd.conf` takes effect at the reboot.
-3. It writes the files, runs `systemd-sysusers` and `systemd-tmpfiles --create` on its own files, makes the ledger's
-   key where none is installed (Ed25519 note key, origin `balistid.dev/log/` and 16 random hex digits, private
-   0600 and public 0644 in `/etc/balistid`; an installed pair must parse and match, else it refuses), reloads,
-   enables `auditd.service`, the collector's socket and service, the ledger and auditstat, and starts nothing. The
-   reboot after it loads the rules and locks them (`-e 2`); the installer and `verify` say so before it writes,
-   with io_uring off for the whole host. The first `auditd.conf` it replaces is kept once in
+2. `recorder` is the sensor, the collector, the ledger, auditstat and the CLI: four binaries, the collector's service
+   and socket, the ledger's and auditstat's services, three `sysusers.conf` and two `tmpfiles.conf` (each checked
+   alone), `balistid.rules`, `auditd.conf`, Laurel's plugin and config, the io_uring sysctl, `allowed_signers` and the
+   installer. Units, sysusers and tmpfiles go under `/etc` as the runner's; the sensor's files where the range image
+   puts them. Before the first write it refuses unless: laurel, augenrules, auditd, auditctl and awk in `/usr/bin` are
+   root's executables no group or other may write (a link only to a name beside it); `_laurel` exists; the kernel
+   took `audit=1 audit_backlog_limit=65536` (decimal) with no `audit=0` or `audit=off`; `/etc/audit/rules.d` holds no
+   `*.rules` but `balistid.rules` and no other sysctl file names `io_uring_disabled` (this decides #240: the recorder
+   owns both, moving nothing); the audit package's `auditd.conf` exists; and every unit of its own is stopped.
+3. It writes its units and configuration, runs `systemd-sysusers` and `systemd-tmpfiles --create` on its own files,
+   makes the ledger's key where none is installed (Ed25519 note key, origin `balistid.dev/log/` and 16 random hex
+   digits, public 0644 then private 0600 in `/etc/balistid`; an installed pair must sign and verify; a public key alone
+   before the log exists is replaced), reloads, enables `auditd.service` and its own units, then writes the sensor's
+   files and itself, and starts nothing. The reboot loads the rules and locks them (`-e 2`); the installer and `verify`
+   say so first, with io_uring off for the whole host. The first `auditd.conf` it replaces is kept once in
    `/etc/balistid/auditd.conf.orig` for the uninstall.
 4. `audit=1` and the backlog limit stay the maintainer's line in the boot entry on 9.5: editing boot entries of every
    loader is the stranger-facing form, decided at ADR 0056's checkpoint with `install_min` and `install_steps`, which

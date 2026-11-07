@@ -266,10 +266,25 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 		}, "not a regular file"},
 		"only a private key": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, ledgerKey, []byte(sk1+"\n"), 0o600)
-		}, "only one of the ledger's key pair"},
-		"only a public key": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+		}, "private key is installed without its public key"},
+		"only a public key beside a log": {func(t *testing.T, h *fakeHost, s *fakeSystem) {
+			s.groupMade = true // the users of a host the recorder was installed on
 			h.put(t, ledgerPub, []byte(vk1+"\n"), 0o644)
-		}, "only one of the ledger's key pair"},
+			h.mkdir(t, stateDir, 0o755)
+			h.mkdir(t, stateDir+"/ledger", 0o750)
+			h.mkdir(t, ledgerLog, 0o750)
+		}, "public key is installed without its private key, and its log exists"},
+		"io_uring set again later": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o755)
+			h.put(t, "etc/sysctl.d/99-local.conf", []byte("kernel.io_uring_disabled = 0\n"), 0o644)
+		}, "/etc/sysctl.d/99-local.conf sets io_uring_disabled"},
+		"io_uring in the vendor's sysctl": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "usr/lib/sysctl.d", 0o755)
+			h.put(t, "usr/lib/sysctl.d/50-x.conf", []byte("kernel/io_uring_disabled=1\n"), 0o644)
+		}, "/usr/lib/sysctl.d/50-x.conf sets io_uring_disabled"},
+		"io_uring in sysctl.conf": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, "etc/sysctl.conf", []byte("-kernel.io_uring_disabled = 0\n"), 0o644)
+		}, "/etc/sysctl.conf sets io_uring_disabled"},
 		"a readable private key": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, ledgerKey, []byte(sk1+"\n"), 0o644)
 			h.put(t, ledgerPub, []byte(vk1+"\n"), 0o644)
@@ -289,6 +304,53 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 			h.refusedRecorder(t, s, label, c.want)
 		})
 	}
+}
+
+// A stopped install's lone public key, before the ledger's log exists, is replaced by a new pair; the recorder's own
+// sysctl file and a file systemd-sysctl does not read do not refuse.
+func TestRecorderReplacesALonePublicKeyAndKeepsItsOwnSysctl(t *testing.T) {
+	h, s, _ := newRecorderHost(t)
+	_, vk, err := note.GenerateKey(rand.Reader, "balistid.dev/log/00000000000000cd")
+	must(t, err)
+	h.mkdir(t, signersDir, 0o755)
+	h.put(t, ledgerPub, []byte(vk+"\n"), 0o644)
+	h.put(t, "etc/sysctl.d/90-balistid.conf", []byte("kernel.io_uring_disabled = 2\n"), 0o644)
+	h.put(t, "etc/sysctl.d/README", []byte("kernel.io_uring_disabled\n"), 0o644)
+	must(t, h.installRecorder(t, s, ""))
+	if string(readFile(t, h, ledgerPub)) == vk+"\n" {
+		t.Fatal("the lone public key was kept")
+	}
+	if absent, err := installedLedgerKey(h.cfg, mustRoot(t, h)); absent || err != nil {
+		t.Fatalf("no new pair: %v %v", absent, err)
+	}
+}
+
+// A stop before the units are enabled leaves the next boot as it was: no rules to lock, no io_uring setting, the
+// distribution's auditd.conf and no Laurel plugin.
+func TestRecorderStoppedBeforeEnablingLeavesTheSensorAlone(t *testing.T) {
+	h, s, _ := newRecorderHost(t)
+	s.failCmd = "systemctl"
+	if err := h.installRecorder(t, s, ""); err == nil || !strings.Contains(s.logs[0], "outcome=stopped") {
+		t.Fatalf("%v, logged %q", err, s.logs)
+	}
+	for _, name := range recorderComponent.late {
+		dest := recorderTable[slices.IndexFunc(recorderTable, func(f target) bool { return f.name == name })].dest
+		if b, err := os.ReadFile(filepath.Join(h.cfg.Root, dest)); err == nil && string(b) != distroAuditd { //nolint:gosec // test temp dir
+			t.Errorf("/%s was written before the units were enabled", dest)
+		}
+	}
+}
+
+// Each tmpfiles.conf is checked alone, as tmpfiles reads it: a last comment without a newline does not hide the next
+// file's first line.
+func TestRecorderChecksEachTmpfilesFileAlone(t *testing.T) {
+	h, s, _ := newRecorderHost(t)
+	files := recorderFiles(h.key.signers)
+	files["collector-tmpfiles.conf"] = []byte("d /var/lib/balistid 0755 root root -\n# last")
+	files["ledger-tmpfiles.conf"] = []byte("d /etc/evil 0777 nobody nobody -\n")
+	m := manifestFor("recorder", files)
+	h.publish(t, files, m, h.key.sign(t, m, Namespace))
+	h.refusedRecorder(t, s, "a line after a comment", "ledger-tmpfiles.conf: line 1 is not a directory")
 }
 
 // What augenrules does not read, and the recorder's own rules, do not refuse: a directory beside them, an installed
@@ -353,6 +415,8 @@ func TestBootedForAudit(t *testing.T) {
 		"audit=off audit=1 audit_backlog_limit=65536": false, "audit=1 audit_backlog_limit=65536 -- audit=0": false,
 		"audit=1 audit_backlog_limit=65536 -- x": true, "-- audit=1 audit_backlog_limit=65536": false,
 		"audit=1 audit_backlog_limit=65536 -- audit_backlog_limit=64": true, `audit=1 audit_backlog_limit=65536 x="y"`: false,
+		"audit=1 audit_backlog_limit=065536": false, "audit=1 audit_backlog_limit=0100000": false,
+		"audit=1 audit_backlog_limit=":                             false,
 		"audit=1 audit_backlog_limit=65536 audit_backlog_limit=64": false, "audit=1 audit_backlog_limit=x": false,
 		"audit=on audit_backlog_limit=65536": false, "xaudit=1 audit_backlog_limit=65536": false, "": false,
 	} {

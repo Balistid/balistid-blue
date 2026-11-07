@@ -107,15 +107,15 @@ func (s *fakeSystem) show(_ context.Context, names, props []string) ([]map[strin
 func (s *fakeSystem) lookupUser(name string) (int, error) {
 	s.noWriteYet()
 	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": cmp.Or(s.runnerUID, s.uid),
-		"_laurel": 950}[name]
-	if !ok || name == "balistid-runner" && !s.groupMade || name == "_laurel" && s.noLaurel {
+		"_laurel": 950, "balistid-ledger": s.uid, "balistid-collector": s.uid}[name]
+	if !ok || name == "_laurel" && s.noLaurel || name != "_laurel" && strings.HasPrefix(name, "balistid-") && !s.groupMade {
 		return 0, errors.New("unknown user")
 	}
 	return uid, nil
 }
 
 func (s *fakeSystem) lookupGroup(name string) (int, error) {
-	if name != runnerGroup && name != agentsGroup || !s.groupMade {
+	if !slices.Contains([]string{runnerGroup, agentsGroup, "balistid-ledger", "balistid-collector"}, name) || !s.groupMade {
 		return 0, errors.New("unknown group")
 	}
 	return s.gid, nil
