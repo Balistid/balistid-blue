@@ -43,14 +43,14 @@ and ssh-agent's units, a witness key; `balistid status` asks for `balistid-net` 
    btrfs on 9.5, as the only 9.5 host is btrfs; T10's btrfs gap is measured in the 7 days. #243's refusal moves to
    `after-install` with its own filesystem.
 6. Until `witness` is installed nothing cosigns, so no shard retires and `balistid status` names the missing relay,
-   tunnel and announce units: never OK, as ADR 0043 point 4 wants for history. The caps of #202 land before install.
+   tunnel and announce units: never OK, as ADR 0043 point 4 wants for history. The 7 days run with today's caps on a
+   disk with room for them; #202 stays the maintainer's: a yearly log at `host_log_cap_gib` alone fills `disk_default_gib`.
 
 ## Alternatives considered
 
 - Runner first (ADR 0064): installs again what already runs and leaves the recorder unmeasured.
 - All of local mode at once: three new units and a key format no range trial ran yet, before any day of data.
-- The installer edits the boot entry: archinstall's systemd-boot entries, GRUB and UKIs differ; a wrong edit
-  stops the boot, a refusal stops nothing.
+- The installer edits the boot entry: systemd-boot, GRUB and UKIs differ; a wrong edit stops the boot, a refusal not.
 
 ## Consequences
 
