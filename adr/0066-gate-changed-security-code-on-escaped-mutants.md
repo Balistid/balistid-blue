@@ -20,7 +20,8 @@ uncovered (socket tests skip outside CI). Three of the escapes sit in error bran
 
 1. CI job `mutation`, on pull requests and merge-queue groups only, mutates the lines a change adds or changes in
    the packages that decide security: `internal/anchor`, `unixsock`, `cosign`, `link`, `collector`, `rangevm`,
-   `relay`, `entry`, `shard`, `store` and `cmd/balistid-ledger`. A mutant that tests run but none kills fails the job
+   `relay`, `entry`, `shard`, `store`, `watch` and `cmd/balistid-ledger`: every package that admits or refuses a peer,
+   verifies a signature, a log or a store, judges a fact or raises an alarm; a new such package joins the list. A mutant that tests run but none kills fails the job
    (`--fail-on-escaped`); an uncovered one is listed in the job's log for review. Every mutator runs, `%w` to `%v`
    too, since `errors.Is` decides on wrapped errors (the cap's UNKNOWN). No baseline file can hide an escape.
 2. An equivalent mutant (no behaviour change, or a branch nothing can reach) goes into
@@ -41,4 +42,5 @@ uncovered (socket tests skip outside CI). Three of the escapes sit in error bran
 
 - A change to a security decision now needs tests that notice it changed, checked by the machine on every pull request.
 - What it does not catch, left to R4 and review: a removed guard (no added line to mutate), a line no test runs
-  (listed, not failed), a test written to fail on purpose under mutation, and a mutant that errors or times out.
+  (listed, not failed), a test written to fail on purpose under mutation, and a mutant that errors or times out
+  (listed too).

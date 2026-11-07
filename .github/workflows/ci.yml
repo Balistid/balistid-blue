@@ -152,11 +152,11 @@ jobs:
       - name: Mutants on changed security-decision code must die
         run: |
           "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --no-diffs \
-            --output-statuses=en --logger-github --blacklist=tools/ci/mutation-blacklist \
+            --output-statuses=enx --logger-github --blacklist=tools/ci/mutation-blacklist \
             --baseline="$RUNNER_TEMP/no-baseline.json" \
             --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
             ./internal/anchor/ ./internal/unixsock/ ./internal/cosign/ ./internal/link/ ./internal/collector/ \
-            ./internal/rangevm/ ./internal/relay/ ./internal/entry/ ./internal/shard/ ./internal/store/ \
+            ./internal/rangevm/ ./internal/relay/ ./internal/entry/ ./internal/shard/ ./internal/store/ ./internal/watch/ \
             ./cmd/balistid-ledger/
 
   go-race:
