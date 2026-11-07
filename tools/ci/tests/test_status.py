@@ -212,6 +212,24 @@ class StatusTest(Fixture):
         self.assertIn("cannot check: gh failed", " ".join(status.warnings(st, [], facts, res, [], "gh failed", TODAY)))
         self.assertFalse(status.warnings(st, [], facts, res, [], status.NOT_ASKED, TODAY))
 
+    def test_scheduled_workflows_warn_when_failed_or_stale(self) -> None:
+        facts, res = {"status_behind": 0}, {"latest": [], "evidence": None}
+        st = status.parse_status((self.repo / "STATUS.md").read_text())
+        run = lambda c, d: {"workflow": "fuzz.yml", "conclusion": c, "day": d}  # noqa: E731
+        warn = lambda s: " ".join(status.warnings(st, [], facts, res, [], [], TODAY, None, s))  # noqa: E731
+        self.assertEqual(warn([run("success", TODAY)]), "")
+        self.assertIn("fuzz.yml: latest run on main is failure", warn([run("failure", TODAY)]))
+        old = TODAY - dt.timedelta(days=status.SCHEDULED_STALE_DAYS + 1)
+        self.assertIn("no run on main for over", warn([run("success", old)]))
+        self.assertIn("no run on main for over", warn([run("success", None)]))
+        self.assertIn("cannot check: gh failed", warn("gh failed (x)"))
+        ok = subprocess.CompletedProcess([], 0, stdout='[{"conclusion": "failure", "createdAt": "2026-11-06T07:00:00Z"}]',
+                                         stderr="")
+        with mock.patch.object(status.subprocess, "run", return_value=ok):
+            got = status.scheduled_runs(self.repo)
+        self.assertEqual([r["conclusion"] for r in got], ["failure"] * len(status.SCHEDULED))
+        self.assertEqual(got[0]["day"], dt.date(2026, 11, 6))
+
     def test_k1_asks_only_for_pull_requests_merged_into_main(self) -> None:
         ok = subprocess.CompletedProcess([], 0, stdout='[{"title": "feat: x", "author": {"login": "b"}}]', stderr="")
         with mock.patch.object(status.subprocess, "run", return_value=ok) as run:
