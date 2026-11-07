@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-04
-- Decided-by: alex (2026-11-04: a hole floor 0 can close is closed on floor 0, however long it takes); claude/opus-5.5
+- Decided-by: jvc0n (2026-11-04: a hole floor 0 can close is closed on floor 0, however long it takes); claude/opus-5.5
   the map
 - Agent: claude/opus-5.5
 - Amends ADR 0051 points 1 and 3.

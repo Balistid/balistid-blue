@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-02
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 - Amends: R13 and §7 file modes (ENGINEERING.md), ADR 0007 table (CLI row), ADR 0043 point 4 (when)
 

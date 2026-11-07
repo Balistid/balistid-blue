@@ -2,7 +2,7 @@
 
 - Status: accepted (supersedes decision 3 of ADR 0001)
 - Date: 2026-09-30, amended 2026-10-10 (required checks, not a count)
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

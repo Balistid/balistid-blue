@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-04
-- Decided-by: alex (2026-11-04: issue #241 and ADR 0060's rule); claude/opus-5.5 the rules and the self-test
+- Decided-by: jvc0n (2026-11-04: issue #241 and ADR 0060's rule); claude/opus-5.5 the rules and the self-test
 - Agent: claude/opus-5.5
 - Closes issue #241; amends ADR 0004 point 2 (rules version `adr-0004-v3`) and the T3 part of ADR 0060.
 

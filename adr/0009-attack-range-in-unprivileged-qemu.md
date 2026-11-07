@@ -2,7 +2,7 @@
 
 - Status: accepted 2026-10-04 (range run 20261004T075611Z-3a36f42b on fa883b2 PASS, incl. Laurel output)
 - Date: 2026-10-02
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

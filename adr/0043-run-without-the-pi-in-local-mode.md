@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-02
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 - Amends: ADR 0006 point 2 and Consequences, 0031 point 1, 0032 point 3, 0034 point 3, 0040 point 3
 

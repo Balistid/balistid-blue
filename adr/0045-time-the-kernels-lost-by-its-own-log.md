@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged)
 - Date: 2026-11-02
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-02)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
 - Amends ADR 0039 point 4
 

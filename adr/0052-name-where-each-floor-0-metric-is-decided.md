@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-03
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-02)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
 - Closes the decision of issue #213; amends ADR 0022 point 2 (who measures `headroom_gib`).
 

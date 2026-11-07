@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-01
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 - Amends ADR 0001's Consequences (the maintainer's line-by-line review of gate changes)
 

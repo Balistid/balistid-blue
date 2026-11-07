@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-03
-- Decided-by: alex (2026-11-03: the 1000 execs/s and burst loads, the queue and peak rules, CanaryEvery 29 s);
+- Decided-by: jvc0n (2026-11-03: the 1000 execs/s and burst loads, the queue and peak rules, CanaryEvery 29 s);
   claude/opus-5.5 rss-large's 1 exec/s from his intent, "the rate Laurel holds", after 2/s overflowed (run 41567155763),
   confirmed by his approval of this pull request, and the rest
 - Agent: claude/opus-5.5

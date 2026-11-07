@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-02
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-02)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
 - Amends ADR 0002 point 2
 
@@ -17,8 +17,8 @@ ADR 0042 his approval reads the summary, not the text. An ADR changes no enforce
 
 1. `adr/` leaves `.github/CODEOWNERS`. A pull request that touches only `adr/` (and `STATUS.md`) merges through
    `balistid-bot` when CI is green, like product code before install (ADR 0015).
-2. `Decided-by: alex` only when the maintainer approved that pull request; an ADR merged without him says
-   `Decided-by: <agent> (delegated by alex, <date>)`.
+2. `Decided-by: jvc0n` only when the maintainer approved that pull request; an ADR merged without him says
+   `Decided-by: <agent> (delegated by jvc0n, <date>)`.
 3. The gates, the rules (`ENGINEERING.md`, `CLAUDE.md`, `AGENTS.md`), `acceptance/`, `deploy/`, `packaging/` and the
    installed binaries stay owned: an ADR that changes a gate or a number lands with those files and waits for him.
 4. The agent reports each ADR it merged to the maintainer the same day: its number, the decision in a sentence, and

@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-02
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

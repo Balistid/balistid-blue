@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-11, amended 2026-10-19 (exec denied by mount, not by syscall filter), 2026-11-03 (29 s)
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

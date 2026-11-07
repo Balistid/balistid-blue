@@ -2,8 +2,8 @@
 
 - Status: proposed | accepted | superseded by NNNN
 - Date: YYYY-MM-DD
-- Decided-by: alex
-- Agent: who drafted it (claude/<model>, codex/<model>, alex)
+- Decided-by: jvc0n
+- Agent: who drafted it (claude/<model>, codex/<model>, jvc0n)
 
 ## Context
 

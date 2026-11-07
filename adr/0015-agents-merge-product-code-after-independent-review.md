@@ -2,7 +2,7 @@
 
 - Status: accepted (narrows the owned paths of ADR 0002, decision 2)
 - Date: 2026-10-10
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

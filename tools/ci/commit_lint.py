@@ -4,7 +4,7 @@
 - Subject follows Conventional Commits and fits in 72 characters.
 - Body, if any, is separated from the subject by a blank line.
 - Exactly one `Agent:` line in the whole message; it is the last line, and git parses it as the
-  same single-line trailer (R11): `Agent: alex` or `Agent: <claude|codex>/<model>`.
+  same single-line trailer (R11): `Agent: jvc0n` or `Agent: <claude|codex>/<model>`.
 - No control characters or Unicode line separators (git and Python split lines differently).
 - No advertising trailers (Co-Authored-By, "Generated with", robot emoji).
 - In range mode: no merge commits (linear history).
@@ -30,7 +30,7 @@ from pathlib import Path
 TYPES = "feat|fix|docs|refactor|test|ci|build|chore|perf|revert|security"
 SUBJECT_RE = re.compile(rf"^({TYPES})(\([a-z0-9-]+\))?!?: \S.*$")
 SUBJECT_MAX = 72
-AGENT_RE = re.compile(r"^Agent: (alex|(claude|codex)/[a-z0-9][a-z0-9.-]*)$")
+AGENT_RE = re.compile(r"^Agent: (jvc0n|(claude|codex)/[a-z0-9][a-z0-9.-]*)$")
 AGENT_LINE_RE = re.compile(r"^\s*agent\s*:", re.IGNORECASE)
 FORBIDDEN_RE = re.compile(r"co-authored-by|generated with|\U0001F916", re.IGNORECASE)
 SCISSORS = "# ------------------------ >8 ------------------------"
@@ -90,7 +90,7 @@ def lint(message: str, *, require_agent: bool = True) -> list[str]:
         if len(agent_lines) != 1:
             errors.append(f"expected exactly one 'Agent:' line, found {len(agent_lines)}")
         elif not AGENT_RE.match(agent_lines[0]):
-            errors.append(f"malformed trailer {agent_lines[0]!r}; use 'Agent: alex' or 'Agent: claude/<model>'")
+            errors.append(f"malformed trailer {agent_lines[0]!r}; use 'Agent: jvc0n' or 'Agent: claude/<model>'")
         elif len(trailer_agents) != 1 or trailer_agents[0] != agent_lines[0]:
             errors.append("'Agent:' must be a single-line trailer in the final trailer block")
         elif [ln for ln in lines if ln.strip()][-1] != agent_lines[0]:

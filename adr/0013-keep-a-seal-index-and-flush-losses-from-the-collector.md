@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-09, amended 2026-10-10 (torn-write loss in commits, crash_loss_ms), 2026-10-24 (full filesystem)
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

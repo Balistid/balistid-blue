@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-03
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-03; the checkpoint is the maintainer's request)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-03; the checkpoint is the maintainer's request)
 - Agent: claude/opus-5.5
 
 ## Context
