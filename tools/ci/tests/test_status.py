@@ -211,6 +211,23 @@ class StatusTest(Fixture):
         self.assertIn("cannot check: gh failed", " ".join(status.warnings(st, [], facts, res, [], "gh failed", TODAY)))
         self.assertFalse(status.warnings(st, [], facts, res, [], status.NOT_ASKED, TODAY))
 
+    def test_k1_counts_product_types_and_warns_from_the_threshold(self) -> None:
+        bot, dependabot = {"login": "app/balistid-bot"}, {"login": "app/dependabot"}
+        for title, author, want in (("feat(ledger): x", bot, True), ("fix!: y", bot, True), ("test: z", bot, True),
+                                    ("security(net): w", bot, True), ("docs(adr): x", bot, False),
+                                    ("ci: x", bot, False), ("chore: x", bot, False), ("Fix stuff", bot, False),
+                                    ("fix(deps): bump", dependabot, False), ("feat:no space", bot, False)):
+            with self.subTest(title=title):
+                self.assertEqual(status.is_product({"title": title, "author": author}), want)
+        self.assertFalse(status.is_product({"title": 7, "author": "x"}))
+        facts, res = {"status_behind": 0}, {"latest": [], "evidence": None}
+        st = status.parse_status((self.repo / "STATUS.md").read_text())
+        warn = lambda k1: " ".join(status.warnings(st, [], facts, res, [], [], TODAY, k1))  # noqa: E731
+        self.assertNotIn("K1", warn(status.K1_WARN - 1))
+        self.assertIn(f"K1: {status.K1_WARN} of {status.K1_LIMIT}", warn(status.K1_WARN))
+        self.assertIn("cannot check: gh failed", warn("gh failed (x)"))
+        self.assertEqual(warn(status.NOT_ASKED), "")
+
 
 class RunnerResultTest(Fixture):
     def test_bad_results_are_unreadable_not_fatal(self) -> None:

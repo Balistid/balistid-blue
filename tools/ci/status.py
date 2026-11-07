@@ -30,6 +30,9 @@ STALE_DAYS = 3  # STATUS.md older than this is a warning
 STALE_COMMITS = 10  # and so are this many commits since STATUS.md last changed
 PROPOSED_DAYS = 14  # an ADR waiting longer than this is a warning
 MAX_OPEN_PRS = 2  # agreed with the maintainer 2026-10-09
+# K1 (ADR 0040 point 5): 40 merged product pull requests from 2026-11-01; ADR 0065 says which count.
+K1_FROM, K1_LIMIT, K1_WARN = "2026-11-01", 40, 30
+PRODUCT_TYPE = re.compile(r"(feat|fix|perf|refactor|test|security)(\([a-z0-9-]+\))?!?: \S")
 SHOWN = 5  # results and reviews listed
 MAX_JSON = 1 << 20  # the runner's own reader stops here too (internal/rangerun)
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -287,7 +290,27 @@ def open_prs(repo: Path) -> list[dict] | str:
             for pr in prs if isinstance(pr, dict)]
 
 
-def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, today: dt.date) -> list[str]:
+def is_product(pr: dict) -> bool:
+    """A K1 product pull request (ADR 0065): a product type in its title, not Dependabot's."""
+    author = pr.get("author") if isinstance(pr.get("author"), dict) else {}
+    return bool(PRODUCT_TYPE.match(str(pr.get("title", "")))) and "dependabot" not in str(author.get("login", ""))
+
+
+def k1_count(repo: Path) -> int | str:
+    """How many K1 product pull requests merged since K1_FROM, or why GitHub could not say."""
+    try:
+        p = subprocess.run(["gh", "pr", "list", "--state", "merged", "--search", f"merged:>={K1_FROM}", "--limit", "1000",
+                            "--json", "title,author"], cwd=repo, capture_output=True, text=True, timeout=30)
+        prs = json.loads(p.stdout) if p.returncode == 0 else None
+    except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired) as e:
+        return f"gh failed ({clean(e, 100)})"
+    if not isinstance(prs, list):
+        return f"gh failed ({clean(p.stderr, 100)})"
+    return sum(1 for pr in prs if isinstance(pr, dict) and is_product(pr))
+
+
+def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, today: dt.date,
+             k1: int | str | None = None) -> list[str]:
     w = []
     age = (today - status["updated"]).days
     if age > STALE_DAYS:
@@ -302,7 +325,7 @@ def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, to
             w.append(f"ADR {a['num']} {a['state']} for {days} days")
         if days < 0:
             w.append(f"ADR {a['num']} is dated {a['date']}, after today")
-    for source in (results, revs, prs):
+    for source in (results, revs, prs, k1):
         if isinstance(source, str) and source != NOT_ASKED:
             w.append(f"cannot check: {source}")
     ev = results.get("evidence") if isinstance(results, dict) else None
@@ -314,6 +337,8 @@ def warnings(status: dict, adrs: list[dict], facts: dict, results, revs, prs, to
                      f"latest evidence ran {ev['commit']}")
     if isinstance(prs, list) and len(prs) > MAX_OPEN_PRS:
         w.append(f"{len(prs)} open pull requests (agreed limit {MAX_OPEN_PRS})")
+    if isinstance(k1, int) and k1 >= K1_WARN:
+        w.append(f"K1: {k1} of {K1_LIMIT} product pull requests used; at {K1_LIMIT} without K1, ADR 0040 point 5 decides")
     return w
 
 
@@ -337,6 +362,7 @@ def render(repo: Path, results: Path, done: Path, want_prs: bool, all_metrics: b
     res = runner_results(results)
     revs = reviews(done, repo)
     prs = open_prs(repo) if want_prs else NOT_ASKED
+    k1 = k1_count(repo) if want_prs else NOT_ASKED
     lines: list[str] = []
 
     def paint(text: str, code: str) -> str:
@@ -347,7 +373,9 @@ def render(repo: Path, results: Path, done: Path, want_prs: bool, all_metrics: b
 
     lines.append(paint(f"Balistid Blue  ·  HEAD {facts['head']}", "1"))
     lines.append(f"STATUS.md updated {status['updated']}  ·  today {today}")
-    w = warnings(status, adrs, facts, res, revs, prs, today)
+    if isinstance(k1, int):
+        lines.append(f"K1: {k1} of {K1_LIMIT} product pull requests since {K1_FROM} (ADR 0065)")
+    w = warnings(status, adrs, facts, res, revs, prs, today, k1)
     head(f"Warnings ({len(w)})")
     lines += [paint(f"  ! {x}", "31") for x in w] or [paint("  none", "2")]
     head("Waiting on the maintainer")
