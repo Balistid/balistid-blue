@@ -24,9 +24,9 @@ and ssh-agent's units, a witness key; `balistid status` asks for `balistid-net` 
    service and socket, the ledger's and auditstat's services, their three `sysusers.conf` and two `tmpfiles.conf`,
    `balistid.rules`, `auditd.conf`, Laurel's plugin and config, the io_uring sysctl, `allowed_signers` and the
    installer last. Units, sysusers and tmpfiles go under `/etc` as the runner's; the sensor's files where the range
-   image puts them. Before the first write it refuses unless: `/usr/bin/laurel`, `/usr/bin/augenrules`,
-   `/usr/bin/auditd` and `/usr/bin/gawk` are root's regular files no group or other may write; `_laurel` exists;
-   `/proc/cmdline` holds `audit=1` and `audit_backlog_limit=65536`; `/etc/audit/rules.d` holds no `*.rules` (what
+   image puts them. Before the first write it refuses unless: laurel, augenrules, auditd, auditctl and awk in `/usr/bin`
+   are root's executables no group or other may write (a link only to a name beside it); `_laurel` exists; the kernel
+   took `audit=1 audit_backlog_limit=65536`, with no `audit=0` or `audit=off`; `/etc/audit/rules.d` holds no `*.rules` (what
    augenrules reads) but `balistid.rules` (it decides #240: the recorder owns them; it moves none); and every unit of
    its own is stopped. auditd may run: its new `auditd.conf` takes effect at the reboot.
 3. It writes the files, runs `systemd-sysusers` and `systemd-tmpfiles --create` on its own files, makes the ledger's
