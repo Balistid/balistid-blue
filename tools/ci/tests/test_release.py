@@ -71,7 +71,8 @@ RELEASE_JOB = """
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
           # balistid-pi runs on the maintainer's arm64 Pi, installed by the hash printed below (ADR 0031).
-          for target in balistid:amd64 balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
+          for target in balistid:amd64 balistid-auditstat:amd64 balistid-collector:amd64 balistid-ledger:amd64 \\
+            balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
             cmd="${target%:*}" arch="${target#*:}"
             (cd "$a" && GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
             (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \\
@@ -80,32 +81,47 @@ RELEASE_JOB = """
           done
           # No built binary runs in this job: one run here could change what is bundled before it is
           # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
-          for cmd in balistid balistid-runner balistid-install balistid-pi; do
+          for cmd in balistid balistid-auditstat balistid-collector balistid-ledger balistid-runner balistid-install \\
+            balistid-pi; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
             sha256sum "$a/$cmd"
           done
-          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --installer "$a/balistid-install" \\
-            --deploy "$a/deploy/runner" --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" \\
-            --out "$RUNNER_TEMP/release"
-          python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/balistid-runner-bundle.tar"
-          cp "$RUNNER_TEMP/release/MANIFEST" "$RUNNER_TEMP/MANIFEST"
+          for c in recorder runner; do
+            python3 tools/ci/release.py manifest --component "$c" --bin "$a" --tree "$a" \\
+              --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" --out "$RUNNER_TEMP/files-$c"
+            mkdir "$RUNNER_TEMP/$c"
+            python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/files-$c" --out "$RUNNER_TEMP/$c/balistid-$c-bundle.tar"
+            cp "$RUNNER_TEMP/files-$c/MANIFEST" "$RUNNER_TEMP/$c/MANIFEST"
+          done
       # The maintainer signs a MANIFEST only if it equals the one this step prints on a push to main (ADR 0058,
       # point 1). A pull request runs its own workflow and can print anything, so the main workflow prints nothing there.
-      - name: MANIFEST of the range runner and the first-install command
+      - name: MANIFESTs of the recorder and the range runner, and the first-install command
         if: github.event_name == 'push'
         run: |
-          echo "MANIFEST of the runner at $GITHUB_SHA:"
-          cat "$RUNNER_TEMP/MANIFEST"
+          for c in recorder runner; do
+            echo "MANIFEST of the $c at $GITHUB_SHA:"
+            cat "$RUNNER_TEMP/$c/MANIFEST"
+          done
           python3 tools/ci/release.py bootstrap --signers deploy/install/allowed_signers
-      # The maintainer downloads both, signs the MANIFEST and installs with balistid-install (ADR 0058).
-      - name: Upload the bundle and its MANIFEST
+      # The maintainer downloads one, signs its MANIFEST and installs with balistid-install (ADR 0058, 0068).
+      - name: Upload the recorder's bundle and its MANIFEST
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: balistid-recorder-bundle
+          path: |
+            ${{ runner.temp }}/recorder/balistid-recorder-bundle.tar
+            ${{ runner.temp }}/recorder/MANIFEST
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the runner's bundle and its MANIFEST
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: balistid-runner-bundle
           path: |
-            ${{ runner.temp }}/balistid-runner-bundle.tar
-            ${{ runner.temp }}/MANIFEST
+            ${{ runner.temp }}/runner/balistid-runner-bundle.tar
+            ${{ runner.temp }}/runner/MANIFEST
           if-no-files-found: error
           retention-days: 30
 """
@@ -130,25 +146,28 @@ class Key:
         shutil.move(sig, out)
 
 
-def write_inputs(root: Path, signers: str = "maintainer@balistid.dev x\n",
-                 installer: str = "#!/bin/sh\n") -> tuple[Path, Path, Path, Path]:
-    binary = root / "bin"
-    binary.write_bytes(b"\x7fELF runner")
-    inst = root / "installer"
-    inst.write_text(installer)
-    deploy = root / "deploy"
-    deploy.mkdir()
-    for name in release.DEPLOY:
-        (deploy / name).write_text(f"{name}\n")
+def write_inputs(root: Path, signers: str = "maintainer@balistid.dev x\n", installer: str = "#!/bin/sh\n",
+                 component: str = release.FIRST) -> tuple[str, Path, Path, Path]:
+    """manifest's inputs for component: its binaries and the installer in bin/, its deploy files in tree/."""
+    binaries, deploy = release.COMPONENTS[component]
+    bindir = root / "bin"
+    bindir.mkdir()
+    for name in binaries:
+        (bindir / name).write_bytes(b"\x7fELF " + name.encode())
+    (bindir / release.INSTALLER).write_text(installer)
+    tree = root / "tree"
+    for name, rel in deploy.items():
+        (tree / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tree / rel).write_text(f"{name}\n")
     keys = root / "allowed_signers"
     keys.write_text(signers)
-    return binary, inst, deploy, keys
+    return component, bindir, tree, keys
 
 
 class ManifestTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.inputs = write_inputs(self.tmp)
+        self.inputs = write_inputs(self.tmp, component="runner")
         self.out = self.tmp / "out"
 
     def test_manifest_is_v1_with_every_file_sorted_as_sha256sum_writes_it(self):
@@ -157,8 +176,8 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(digest, hashlib.sha256(text.encode()).hexdigest())
         lines = text.splitlines()
         self.assertEqual(lines[:3], ["balistid-manifest 1", "component runner", f"commit {COMMIT}"])
-        self.assertEqual([line.split("  ")[1] for line in lines[3:]], sorted(release.FILES))
-        self.assertEqual(sorted(p.name for p in self.out.iterdir()), sorted([*release.FILES, "MANIFEST"]))
+        self.assertEqual([line.split("  ")[1] for line in lines[3:]], sorted(release.files("runner")))
+        self.assertEqual(sorted(p.name for p in self.out.iterdir()), sorted([*release.files("runner"), "MANIFEST"]))
         check = subprocess.run(["sha256sum", "-c", "--strict", "-"], cwd=self.out, capture_output=True,
                                input="\n".join(lines[3:]) + "\n", text=True)
         self.assertEqual(check.returncode, 0, check.stderr)
@@ -167,11 +186,11 @@ class ManifestTest(unittest.TestCase):
             self.assertEqual((self.out / name).stat().st_mode & 0o777, mode, name)
 
     def test_symlinked_or_missing_input_fails(self):
-        deploy = self.inputs[2]
+        deploy = self.inputs[2] / "deploy" / "runner"
         (deploy / "tmpfiles.conf").unlink()
         with self.assertRaises(FileNotFoundError):
             release.manifest(*self.inputs, COMMIT, self.out)
-        (deploy / "tmpfiles.conf").symlink_to(self.inputs[0])
+        (deploy / "tmpfiles.conf").symlink_to(self.inputs[1] / "balistid-runner")
         with self.assertRaises(ValueError):
             release.manifest(*self.inputs, COMMIT, self.tmp / "out2")
 
@@ -186,18 +205,41 @@ class ManifestTest(unittest.TestCase):
                 release.manifest(*self.inputs, commit, self.tmp / f"out-{len(commit)}")
 
     def test_manifest_covers_exactly_deploy_runner(self):
-        self.assertEqual(set(release.DEPLOY), {p.name for p in (REPO / "deploy" / "runner").iterdir()})
+        self.assertEqual({rel.removeprefix("deploy/runner/") for rel in release.COMPONENTS["runner"][1].values()},
+                         {p.name for p in (REPO / "deploy" / "runner").iterdir()})
 
-    # What release.py bundles is what the installer's table installs, under the names it reads.
+    def test_every_deploy_source_is_a_tracked_file(self):
+        for component, (_, deploy) in release.COMPONENTS.items():
+            for name, rel in deploy.items():
+                with self.subTest(component=component, name=name):
+                    self.assertTrue((REPO / rel).is_file() and not (REPO / rel).is_symlink(), rel)
+
+    # What release.py bundles is what the installer's table installs, under the names it reads; the sensor's
+    # files go where the range image puts them (ADR 0068, point 2).
     def test_files_and_names_are_the_installers(self):
-        runner = go_code((REPO / "internal/install/runner.go").read_text())
-        table = runner[runner.index("var runnerTable = []target{"):]
-        table = table[:table.index("\n}\n")]
-        names = re.findall(r'^\t\{"([a-z0-9._-]+)", ', table, re.M)
-        names += ["allowed_signers"] if "{signersName, " in table else []
-        self.assertEqual(sorted(names), sorted(release.FILES))
+        image = dict(re.findall(r'^\t\{"([^"]+)", "([^"]+)", 0o[0-7]+\},$',
+                                go_code((REPO / "internal/rangevm/session.go").read_text()), re.M))
+        for component, src in (("runner", "runner.go"), ("recorder", "recorder.go")):
+            code = go_code((REPO / "internal/install" / src).read_text())
+            table = code[code.index(f"var {component}Table = []target{{"):]
+            table = table[:table.index("\n}\n")]
+            rows = re.findall(r'^\t\{"([a-z0-9._-]+)", "([a-z0-9/._-]+)", 0o[0-7]+\},$', table, re.M)
+            consts = dict(re.findall(r'^\t([a-zA-Z]+) += "([a-z0-9/._-]+)"$', code, re.M))
+            for name, dest in re.findall(r'^\t\{"([a-z0-9._-]+)", ([a-zA-Z]+ \+ "[^"]+"|[a-zA-Z]+), 0o[0-7]+\},$', table, re.M):
+                head, _, tail = dest.partition(' + "')
+                rows.append((name, consts[head] + tail.rstrip('"')))
+            names = [name for name, _ in rows] + (["allowed_signers"] if "{signersName, " in table else [])
+            with self.subTest(component=component):
+                self.assertEqual(sorted(names), sorted(release.files(component)))
+            for name, dest in rows:
+                source = release.COMPONENTS[component][1].get(name, "")
+                if image.get(source, "").startswith("etc/"):
+                    with self.subTest(component=component, name=name):
+                        self.assertEqual(dest, image[source])
+        self.assertIn('return "balistid-" + c.name + "-bundle.tar"',
+                      go_code((REPO / "internal/install/component.go").read_text()))
+        self.assertEqual(release.BUNDLE, "balistid-recorder-bundle.tar")
         verify = go_code((REPO / "internal/install/verify.go").read_text())
-        self.assertIn(f'bundleName  = "{release.BUNDLE}"', verify)
         self.assertIn(f'sigName     = "{release.SIG}"', verify)
         self.assertIn(f'signersName = "{release.SIGNERS}"', verify)
         self.assertIn("maxSigBytes = 4 << 10", verify)
@@ -220,7 +262,7 @@ class ManifestTest(unittest.TestCase):
         self.assertEqual(len(builds), 2)
         for line in builds:
             self.assertTrue(line.endswith("go " + " ".join(release.GO_BUILD) + ' "$flags" -o "$cmd" "./cmd/$cmd")'))
-        for cmd in (release.BINARY, release.INSTALLER):
+        for cmd in {release.INSTALLER}.union(*(binaries for binaries, _ in release.COMPONENTS.values())):
             self.assertIn(f" {cmd}:amd64 ", RELEASE_JOB)
         for setting in ("GOFLAGS: -mod=readonly", 'GOWORK: "off"', 'CGO_ENABLED: "0"', "GOTOOLCHAIN: local"):
             self.assertIn(setting, job)
@@ -273,7 +315,7 @@ class ManifestTest(unittest.TestCase):
     def test_build_refuses_a_commit_that_is_not_40_hex(self):
         for commit in ("main", "4d1be61", "A" * 40, "a" * 41):
             with self.subTest(commit=commit), self.assertRaises(ValueError):
-                release.build(REPO, commit, self.out)
+                release.build(REPO, commit, release.FIRST, self.out)
 
 
 class BundleTest(unittest.TestCase):
@@ -287,12 +329,12 @@ class BundleTest(unittest.TestCase):
         self.assertEqual(a, b)
         with tarfile.open(self.tmp / "a.tar") as tar:
             members = tar.getmembers()
-        self.assertEqual([m.name for m in members], ["MANIFEST", *release.FILES])
+        self.assertEqual([m.name for m in members], ["MANIFEST", *release.files(release.FIRST)])
         self.assertTrue(all(m.isreg() and m.uid == 0 and m.mtime == 0 for m in members))
 
     def test_a_link_in_the_directory_fails(self):
-        (self.tmp / "files" / "tmpfiles.conf").unlink()
-        (self.tmp / "files" / "tmpfiles.conf").symlink_to("/etc/passwd")
+        (self.tmp / "files" / "auditd.conf").unlink()
+        (self.tmp / "files" / "auditd.conf").symlink_to("/etc/passwd")
         with self.assertRaises(ValueError):
             release.bundle(self.tmp / "files", self.tmp / "a.tar")
 
@@ -388,9 +430,9 @@ class BootstrapTest(unittest.TestCase):
     def test_the_signed_bundle_runs_its_installer_from_the_copy(self):
         r = self.run_bootstrap(str(self.stage))
         self.assertEqual(r.returncode, 0, r.stderr)
-        script, verb, copy, user, fp = self.mark.read_text().split()
+        script, verb, copy, fp = self.mark.read_text().split()
         installer = hashlib.sha256((self.tmp / "stage-work" / "files" / "balistid-install").read_bytes()).hexdigest()
-        self.assertEqual((script, verb, user, fp), (f"{copy}/{installer}", "runner", "maint", self.key.fingerprint))
+        self.assertEqual((script, verb, fp), (f"{copy}/{installer}", "recorder", self.key.fingerprint))
         self.assertTrue(copy.startswith("/tmp/balistid-install."))
         listed = sorted(Path(f"{self.mark}.ls").read_text().split())
         self.assertEqual(listed, sorted([release.BUNDLE, release.SIG, "k", "m", installer]))
@@ -424,7 +466,7 @@ class BootstrapTest(unittest.TestCase):
 
     def test_an_altered_manifest_runs_nothing(self):
         files = self.tmp / "stage-work" / "files"
-        (files / "MANIFEST").write_text((files / "MANIFEST").read_text().replace("component runner", "component runnes"))
+        (files / "MANIFEST").write_text((files / "MANIFEST").read_text().replace(f"commit {COMMIT}", f"commit {COMMIT[::-1]}"))
         self.bundle.unlink()
         release.bundle(files, self.bundle)
         self.assert_ran_nothing(self.run_bootstrap(str(self.stage)))
@@ -463,7 +505,7 @@ class BootstrapTest(unittest.TestCase):
     def test_a_malformed_bundle_runs_nothing(self):
         data = bytearray(self.bundle.read_bytes())
         with tarfile.open(self.bundle) as tar:
-            offset = next(m.offset for m in tar.getmembers() if m.name == "tmpfiles.conf")
+            offset = next(m.offset for m in tar.getmembers() if m.name == "auditd.conf")
         data[offset + 148] ^= 0x01  # the header checksum of a member root does not extract
         self.bundle.write_bytes(bytes(data))
         r = self.run_bootstrap(str(self.stage))

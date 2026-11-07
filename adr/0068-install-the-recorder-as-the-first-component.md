@@ -4,7 +4,7 @@
 - Date: 2026-11-07
 - Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-07: recorder first, plan approved in session)
 - Agent: claude/opus-5.5
-- Amends ADR 0064 points 1 and 3 (order, #243) and ADR 0058 points 5 and 7 (what the first install runs).
+- Amends ADR 0064 points 1 and 3 (order, #243) and ADR 0058 point 5 (what the first install runs).
 
 ## Context
 
@@ -18,8 +18,8 @@ and ssh-agent's units, a witness key; `balistid status` asks for `balistid-net` 
 
 1. Components install in this order, each from its own signed bundle `balistid-<component>-bundle.tar`:
    `recorder`, then `witness` (relay, litewitness, ssh-agent, Pi watcher, announce, ntfy token; #203, #204), then
-   `runner` (ADR 0058). The bootstrap command (ADR 0058 point 5) runs `recorder`; the others use the installed
-   `balistid-install`. `deploy/runner/install` stays until `runner` runs from the installer.
+   `runner` (ADR 0058). The bootstrap command (ADR 0058 point 5) runs `recorder`; the others, the host's runner
+   included, use the `balistid-install` it installs.
 2. `recorder` is the sensor, the collector, the ledger, auditstat and the CLI: the four binaries, the collector's
    service and socket, the ledger's and auditstat's services, their three `sysusers.conf` and two `tmpfiles.conf`,
    `balistid.rules`, `auditd.conf`, Laurel's plugin and config, the io_uring sysctl, `allowed_signers` and the

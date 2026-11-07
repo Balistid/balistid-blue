@@ -215,7 +215,8 @@ jobs:
           git archive HEAD | tar -x -C "$a"
           git archive HEAD | tar -x -C "$b"
           # balistid-pi runs on the maintainer's arm64 Pi, installed by the hash printed below (ADR 0031).
-          for target in balistid:amd64 balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
+          for target in balistid:amd64 balistid-auditstat:amd64 balistid-collector:amd64 balistid-ledger:amd64 \
+            balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
             cmd="${target%:*}" arch="${target#*:}"
             (cd "$a" && GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
             (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \
@@ -224,32 +225,47 @@ jobs:
           done
           # No built binary runs in this job: one run here could change what is bundled before it is
           # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
-          for cmd in balistid balistid-runner balistid-install balistid-pi; do
+          for cmd in balistid balistid-auditstat balistid-collector balistid-ledger balistid-runner balistid-install \
+            balistid-pi; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
             sha256sum "$a/$cmd"
           done
-          python3 tools/ci/release.py manifest --binary "$a/balistid-runner" --installer "$a/balistid-install" \
-            --deploy "$a/deploy/runner" --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" \
-            --out "$RUNNER_TEMP/release"
-          python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/release" --out "$RUNNER_TEMP/balistid-runner-bundle.tar"
-          cp "$RUNNER_TEMP/release/MANIFEST" "$RUNNER_TEMP/MANIFEST"
+          for c in recorder runner; do
+            python3 tools/ci/release.py manifest --component "$c" --bin "$a" --tree "$a" \
+              --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" --out "$RUNNER_TEMP/files-$c"
+            mkdir "$RUNNER_TEMP/$c"
+            python3 tools/ci/release.py bundle --dir "$RUNNER_TEMP/files-$c" --out "$RUNNER_TEMP/$c/balistid-$c-bundle.tar"
+            cp "$RUNNER_TEMP/files-$c/MANIFEST" "$RUNNER_TEMP/$c/MANIFEST"
+          done
       # The maintainer signs a MANIFEST only if it equals the one this step prints on a push to main (ADR 0058,
       # point 1). A pull request runs its own workflow and can print anything, so the main workflow prints nothing there.
-      - name: MANIFEST of the range runner and the first-install command
+      - name: MANIFESTs of the recorder and the range runner, and the first-install command
         if: github.event_name == 'push'
         run: |
-          echo "MANIFEST of the runner at $GITHUB_SHA:"
-          cat "$RUNNER_TEMP/MANIFEST"
+          for c in recorder runner; do
+            echo "MANIFEST of the $c at $GITHUB_SHA:"
+            cat "$RUNNER_TEMP/$c/MANIFEST"
+          done
           python3 tools/ci/release.py bootstrap --signers deploy/install/allowed_signers
-      # The maintainer downloads both, signs the MANIFEST and installs with balistid-install (ADR 0058).
-      - name: Upload the bundle and its MANIFEST
+      # The maintainer downloads one, signs its MANIFEST and installs with balistid-install (ADR 0058, 0068).
+      - name: Upload the recorder's bundle and its MANIFEST
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: balistid-recorder-bundle
+          path: |
+            ${{ runner.temp }}/recorder/balistid-recorder-bundle.tar
+            ${{ runner.temp }}/recorder/MANIFEST
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the runner's bundle and its MANIFEST
         if: github.event_name == 'push'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: balistid-runner-bundle
           path: |
-            ${{ runner.temp }}/balistid-runner-bundle.tar
-            ${{ runner.temp }}/MANIFEST
+            ${{ runner.temp }}/runner/balistid-runner-bundle.tar
+            ${{ runner.temp }}/runner/MANIFEST
           if-no-files-found: error
           retention-days: 30
 

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""The files root installs for the range runner and their MANIFEST (ADR 0011, point 1; ADR 0058).
+"""The files root installs for each component and their MANIFEST (ADR 0011, point 1; ADR 0058, 0068).
 
-manifest:  copy the runner and installer binaries, deploy/runner and the maintainer's allowed_signers into a new
-           directory and write MANIFEST v1: its header, then the sha256sum line of each file, sorted. The
+manifest:  copy a component's binaries, the installer, its deploy files and the maintainer's allowed_signers into a
+           new directory and write MANIFEST v1: its header, then the sha256sum line of each file, sorted. The
            maintainer signs it; balistid-install checks the signature and every file against it.
 bundle:    one deterministic tar of that directory. CI uploads it with the MANIFEST and prints the MANIFEST only
            on a push to main; the maintainer downloads both.
 build:     the manifest directory from a commit of a local repository, built with the flags of CI's
            go-release job and the upstream toolchain go.mod pins, to compare with CI's.
-bootstrap: the root command CI prints for the first install, with the key's fingerprint. In an empty environment
+bootstrap: the root command CI prints for the first install (the recorder), with the key's fingerprint. In an empty environment
            it reads the bundle and the signature with the maintainer's rights (root opens nothing they name),
            capped, into a new root-only directory, and runs the bundle's balistid-install only if the signature
            is by the key with that fingerprint and the binary is the one the signed MANIFEST names.
@@ -32,19 +32,42 @@ from pathlib import Path
 
 import go_gate
 
-BINARY = "balistid-runner"
 INSTALLER = "balistid-install"
 SIGNERS = "allowed_signers"
-DEPLOY = ("sysusers.conf", "tmpfiles.conf", "balistid-runner-build.service", "balistid-runner-tick.service",
-          "balistid-runner-tick.timer")
-FILES = tuple(sorted((BINARY, INSTALLER, SIGNERS, *DEPLOY)))
-EXECUTABLE = {BINARY, INSTALLER}
-COMPONENT = "runner"
+# Each component's binaries and its deploy files by the name internal/install's table gives them.
+COMPONENTS = {
+    "runner": (("balistid-runner",), {name: f"deploy/runner/{name}" for name in (
+        "sysusers.conf", "tmpfiles.conf", "balistid-runner-build.service", "balistid-runner-tick.service",
+        "balistid-runner-tick.timer")}),
+    "recorder": (("balistid", "balistid-auditstat", "balistid-collector", "balistid-ledger"), {
+        "balistid-collector.service": "deploy/collector/balistid-collector.service",
+        "balistid-collector.socket": "deploy/collector/balistid-collector.socket",
+        "balistid-ledger.service": "deploy/ledger/balistid-ledger.service",
+        "balistid-auditstat.service": "deploy/auditstat/balistid-auditstat.service",
+        "collector-sysusers.conf": "deploy/collector/sysusers.conf",
+        "ledger-sysusers.conf": "deploy/ledger/sysusers.conf",
+        "auditstat-sysusers.conf": "deploy/auditstat/sysusers.conf",
+        "collector-tmpfiles.conf": "deploy/collector/tmpfiles.conf",
+        "ledger-tmpfiles.conf": "deploy/ledger/tmpfiles.conf",
+        "balistid.rules": "deploy/audit/balistid.rules",
+        "auditd.conf": "deploy/auditd/auditd.conf",
+        "laurel-plugin.conf": "deploy/auditd/laurel-plugin.conf",
+        "laurel-config.toml": "deploy/laurel/config.toml",
+        "sysctl.conf": "deploy/sysctl/balistid.conf",
+    }),
+}
+FIRST = "recorder"  # the component the bootstrap installs (ADR 0068, point 1)
+
+
+def bundle_name(component: str) -> str:
+    return f"balistid-{component}-bundle.tar"
+
+
+BUNDLE = bundle_name(FIRST)
 # Equal to the go build line and flags of ci.yml's go-release job (pinned by a test).
 VERSION_FLAG = "-X github.com/Balistid/balistid-blue/internal/buildinfo.Version="
 GO_BUILD = ("build", "-trimpath", "-buildvcs=false", "-ldflags")
 
-BUNDLE = "balistid-runner-bundle.tar"
 BUNDLE_MAX_MIB = 64
 SIG = "MANIFEST.sig"
 SIG_MAX_BYTES = 4 << 10  # internal/install's maxSigBytes
@@ -77,45 +100,62 @@ BOOTSTRAP = (
     'h=$(cksum -a sha256 --untagged < "$ro/i") && mv -- "$ro/i" "$ro/${h%% *}" && '
     f'x=$(sed -n "s/^\\([0-9a-f]\\{{64\\}}\\)  {INSTALLER}\\$/\\1/p" "$ro/m") && '
     f'v=$(timeout 20 ssh-keygen -Y verify -f "$ro/k" -I maintainer@balistid.dev -n install@balistid.dev -s "$ro/{SIG}" < "$ro/m") && '
-    'case $v in *" key $1") chmod 700 -- "$ro/$x" && "$ro/$x" runner "$ro" "$m" "$1" ;; '
+    'case $v in *" key $1") chmod 700 -- "$ro/$x" && "$ro/$x" recorder "$ro" "$1" ;; '
     '*) logger -s -t balistid-install "the manifest is not signed by the typed key"; false ;; esac; '
     'r=$?; rm -rf -- "$ro" || r=9; [ $r = 0 ] || logger -s -t balistid-install "bootstrap stopped, status $r"; exit $r'
 )
 ROOT_PATH = "/usr/bin:/usr/sbin"
 
 
+def files(component: str) -> tuple[str, ...]:
+    """The component's file names in MANIFEST order."""
+    binaries, deploy = COMPONENTS[component]
+    return tuple(sorted((*binaries, INSTALLER, SIGNERS, *deploy)))
+
+
+def executable(component: str) -> set[str]:
+    return {*COMPONENTS[component][0], INSTALLER}
+
+
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def manifest(binary: Path, installer: Path, deploy: Path, signers: Path, commit: str, out: Path) -> str:
+def manifest(component: str, bindir: Path, tree: Path, signers: Path, commit: str, out: Path) -> str:
+    """Copies the component's binaries from bindir, its deploy files from the checked-out tree and signers into out."""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"commit {commit!r} is not 40 hex digits")
+    binaries, deploy = COMPONENTS[component]
     out.mkdir(mode=0o700)
-    sources = {BINARY: binary, INSTALLER: installer, SIGNERS: signers} | {name: deploy / name for name in DEPLOY}
-    for name in FILES:
+    sources = {name: bindir / name for name in (*binaries, INSTALLER)} | {SIGNERS: signers}
+    sources |= {name: tree / rel for name, rel in deploy.items()}
+    for name in files(component):
         src = sources[name]
         if not stat.S_ISREG(src.lstat().st_mode):
             raise ValueError(f"{src}: not a regular file")
         shutil.copyfile(src, out / name, follow_symlinks=False)
-        (out / name).chmod(0o755 if name in EXECUTABLE else 0o644)
-    text = f"balistid-manifest 1\ncomponent {COMPONENT}\ncommit {commit}\n"
-    text += "".join(f"{sha256(out / name)}  {name}\n" for name in FILES)
+        (out / name).chmod(0o755 if name in executable(component) else 0o644)
+    text = f"balistid-manifest 1\ncomponent {component}\ncommit {commit}\n"
+    text += "".join(f"{sha256(out / name)}  {name}\n" for name in files(component))
     (out / "MANIFEST").write_text(text)
     return hashlib.sha256(text.encode()).hexdigest()
 
 
 def bundle(src: Path, out: Path) -> str:
-    """Packs src (as manifest left it) into out: fixed order, owner, time and modes, so equal inputs give
-    equal bytes."""
+    """Packs src (as manifest left it, for the component its MANIFEST names) into out: fixed order, owner, time and
+    modes, so equal inputs give equal bytes."""
+    header = (src / "MANIFEST").read_text().split("\n")
+    component = header[1].removeprefix("component ") if len(header) > 1 else ""
+    if component not in COMPONENTS or header[1] != f"component {component}":
+        raise ValueError(f"{src / 'MANIFEST'}: names no component")
     with tarfile.open(out, "x", format=tarfile.USTAR_FORMAT) as tar:
-        for name in ("MANIFEST", *FILES):
+        for name in ("MANIFEST", *files(component)):
             path = src / name
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ValueError(f"{path}: not a regular file")
             data = path.read_bytes()
             info = tarfile.TarInfo(name)
-            info.size, info.mode = len(data), 0o755 if name in EXECUTABLE else 0o644
+            info.size, info.mode = len(data), 0o755 if name in executable(component) else 0o644
             tar.addfile(info, io.BytesIO(data))
     if out.stat().st_size > BUNDLE_MAX_MIB << 20:
         raise ValueError(f"{out}: over {BUNDLE_MAX_MIB} MiB, the bootstrap would cut it")
@@ -132,7 +172,7 @@ def fingerprint(signers: Path) -> str:
     return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
 
 
-def build(repo: Path, commit: str, out: Path) -> None:
+def build(repo: Path, commit: str, component: str, out: Path) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"commit {commit!r} is not 40 hex digits")
     with tempfile.TemporaryDirectory() as tmp:
@@ -154,18 +194,20 @@ def build(repo: Path, commit: str, out: Path) -> None:
                                    capture_output=True, text=True).stdout.strip()
         if problems := go_gate.toolchain_problems(go_mod, goversion, pinned[0]):
             raise ValueError("; ".join(problems))
-        for cmd in (BINARY, INSTALLER):
-            subprocess.run(["go", *GO_BUILD, VERSION_FLAG + commit, "-o", str(t / cmd), f"./cmd/{cmd}"],
+        bindir = t / "bin"
+        bindir.mkdir()
+        for cmd in (*COMPONENTS[component][0], INSTALLER):
+            subprocess.run(["go", *GO_BUILD, VERSION_FLAG + commit, "-o", str(bindir / cmd), f"./cmd/{cmd}"],
                            cwd=src, env=env, check=True)
-        manifest(t / BINARY, t / INSTALLER, src / "deploy" / "runner", src / "deploy" / "install" / SIGNERS,
-                 commit, out)
+        manifest(component, bindir, src, src / "deploy" / "install" / SIGNERS, commit, out)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
     m = sub.add_parser("manifest")
-    for flag in ("--binary", "--installer", "--deploy", "--signers", "--out"):
+    m.add_argument("--component", choices=sorted(COMPONENTS), required=True)
+    for flag in ("--bin", "--tree", "--signers", "--out"):
         m.add_argument(flag, type=Path, required=True)
     m.add_argument("--commit", required=True)
     t = sub.add_parser("bundle")
@@ -174,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build")
     b.add_argument("--repo", type=Path, required=True)
     b.add_argument("--commit", required=True)
+    b.add_argument("--component", choices=sorted(COMPONENTS), required=True)
     b.add_argument("--out", type=Path, required=True, help="a new directory; gets files/ and the bundle")
     sub.add_parser("bootstrap").add_argument("--signers", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -188,14 +231,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"/usr/bin/env -i PATH={ROOT_PATH} /usr/bin/sh -p -c '{BOOTSTRAP}' - {fp}")
             return 0
         if args.cmd == "manifest":
-            manifest(args.binary, args.installer, args.deploy, args.signers, args.commit, args.out)
+            manifest(args.component, args.bin, args.tree, args.signers, args.commit, args.out)
             return 0
         if args.cmd == "bundle":
             bundle(args.dir, args.out)
             return 0
         args.out.mkdir(mode=0o700)
-        build(args.repo, args.commit, args.out / "files")
-        bundle(args.out / "files", args.out / BUNDLE)
+        build(args.repo, args.commit, args.component, args.out / "files")
+        bundle(args.out / "files", args.out / bundle_name(args.component))
     except (OSError, ValueError, subprocess.CalledProcessError) as err:
         print(f"release: {err}", file=sys.stderr)
         return 1
