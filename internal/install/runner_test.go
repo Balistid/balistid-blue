@@ -36,6 +36,7 @@ type fakeSystem struct {
 	t            *testing.T
 	uid, gid     int
 	runnerUID    int // the runner user's uid, when it is not the test's
+	noLaurel     bool
 }
 
 // newRunnerHost is a fake host with the directories every Linux host has, the maintainer's key installed and a
@@ -105,8 +106,9 @@ func (s *fakeSystem) show(_ context.Context, names, props []string) ([]map[strin
 
 func (s *fakeSystem) lookupUser(name string) (int, error) {
 	s.noWriteYet()
-	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": cmp.Or(s.runnerUID, s.uid)}[name]
-	if !ok || name == "balistid-runner" && !s.groupMade {
+	uid, ok := map[string]int{maint: s.uid, "daemon": 2, "nobody": 65534, "balistid-runner": cmp.Or(s.runnerUID, s.uid),
+		"_laurel": 950}[name]
+	if !ok || name == "balistid-runner" && !s.groupMade || name == "_laurel" && s.noLaurel {
 		return 0, errors.New("unknown user")
 	}
 	return uid, nil
