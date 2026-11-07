@@ -299,7 +299,8 @@ def is_product(pr: dict) -> bool:
 def k1_count(repo: Path) -> int | str:
     """How many K1 product pull requests merged since K1_FROM, or why GitHub could not say."""
     try:
-        p = subprocess.run(["gh", "pr", "list", "--state", "merged", "--search", f"merged:>={K1_FROM}", "--limit", "1000",
+        p = subprocess.run(["gh", "pr", "list", "--state", "merged", "--base", "main", "--search", f"merged:>={K1_FROM}",
+                            "--limit", "1000",
                             "--json", "title,author"], cwd=repo, capture_output=True, text=True, timeout=30)
         prs = json.loads(p.stdout) if p.returncode == 0 else None
     except (OSError, ValueError, RecursionError, subprocess.TimeoutExpired) as e:
