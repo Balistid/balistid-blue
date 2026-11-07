@@ -217,25 +217,34 @@ class ManifestTest(unittest.TestCase):
     # What release.py bundles is what the installer's table installs, under the names it reads; the sensor's
     # files go where the range image puts them (ADR 0068, point 2).
     def test_files_and_names_are_the_installers(self):
-        image = dict(re.findall(r'^\t\{"([^"]+)", "([^"]+)", 0o[0-7]+\},$',
-                                go_code((REPO / "internal/rangevm/session.go").read_text()), re.M))
+        session = go_code((REPO / "internal/rangevm/session.go").read_text())
+        image = {src: (dst, mode) for src, dst, mode in re.findall(r'^\t\{"([^"]+)", "([^"]+)", (0o[0-7]+)\},$', session, re.M)}
+        programs = dict(re.findall(r'^\t\{"[^"]+", "\.", "\./cmd/([a-z-]+)", "([a-z/._-]+)"\},$', session, re.M))
+        self.assertIn("balistid-collector", programs)
         for component, src in (("runner", "runner.go"), ("recorder", "recorder.go")):
             code = go_code((REPO / "internal/install" / src).read_text())
             table = code[code.index(f"var {component}Table = []target{{"):]
             table = table[:table.index("\n}\n")]
-            rows = re.findall(r'^\t\{"([a-z0-9._-]+)", "([a-z0-9/._-]+)", 0o[0-7]+\},$', table, re.M)
+            rows = re.findall(r'^\t\{"([a-z0-9._-]+)", "([a-z0-9/._-]+)", (0o[0-7]+)\},$', table, re.M)
             consts = dict(re.findall(r'^\t([a-zA-Z]+) += "([a-z0-9/._-]+)"$', code, re.M))
-            for name, dest in re.findall(r'^\t\{"([a-z0-9._-]+)", ([a-zA-Z]+ \+ "[^"]+"|[a-zA-Z]+), 0o[0-7]+\},$', table, re.M):
+            for name, dest, mode in re.findall(r'^\t\{"([a-z0-9._-]+)", ([a-zA-Z]+ \+ "[^"]+"|[a-zA-Z]+), (0o[0-7]+)\},$', table, re.M):
                 head, _, tail = dest.partition(' + "')
-                rows.append((name, consts[head] + tail.rstrip('"')))
-            names = [name for name, _ in rows] + (["allowed_signers"] if "{signersName, " in table else [])
+                rows.append((name, consts[head] + tail.rstrip('"'), mode))
+            names = [name for name, _, _ in rows] + (["allowed_signers"] if "{signersName, " in table else [])
             with self.subTest(component=component):
                 self.assertEqual(sorted(names), sorted(release.files(component)))
-            for name, dest in rows:
+            checked = 0
+            for name, dest, mode in rows:
                 source = release.COMPONENTS[component][1].get(name, "")
-                if image.get(source, "").startswith("etc/"):
+                if image.get(source, ("", ""))[0].startswith("etc/"):
                     with self.subTest(component=component, name=name):
-                        self.assertEqual(dest, image[source])
+                        self.assertEqual((dest, mode), image[source])
+                    checked += 1
+                if component == "recorder" and name in release.COMPONENTS[component][0]:
+                    with self.subTest(component=component, name=name):
+                        self.assertEqual((dest, mode), (programs[name], "0o755"))
+                    checked += 1
+            self.assertEqual(checked, {"runner": 0, "recorder": 9}[component])
         self.assertIn('return "balistid-" + c.name + "-bundle.tar"',
                       go_code((REPO / "internal/install/component.go").read_text()))
         self.assertEqual(release.BUNDLE, "balistid-recorder-bundle.tar")
