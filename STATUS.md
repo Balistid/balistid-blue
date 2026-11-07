@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-07 by claude/opus-5.5 (#207 merged; #245 measured, ADR 0062 proposes counting serial gaps)
+Updated: 2026-11-07 by claude/opus-5.5 (#207 merged; #245 measured, ADR 0062; ADR 0064 install first)
 
 ## Where we are
 
@@ -29,8 +29,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 1. #238: the maintainer's FIDO2 key, `deploy/install/allowed_signers`, README row and fingerprint (from 2026-11-07),
    CI, approve, merge, first install; then 9.5's components on the installer with the install ADR (#197 x32 as a
    named, visible gap; #202 caps).
-2. #245: measure `gap_hold_s` (ADR 0062 point 5), then stage 9 in the collector. 9.5 (ADR 0051, 0060): #243, #244, #201 (a timer under its own uid), #203, #204 (L12 residuals),
-   #213; C3 2026-11-10 (#200). Floor 0 closes with ADR 0055's two passes.
+2. Until the recorder has run 7 days on the host, floor 0 takes no new scope (ADR 0064): 9.5's #243 (btrfs refused),
+   #244, #201, #203, #204, #213, C3 (#200); after install ADR 0062's stage 9, #246-#248. Then ADR 0055's two passes.
 ## Open decisions (maintainer)
 - #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed; the install ADR decides
   who owns that directory. A kernel or audit change of the rule bytes needs a renewed pin (ADR 0059).
