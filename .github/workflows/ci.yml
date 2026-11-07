@@ -34,6 +34,9 @@ env:
   GOLANGCI_SHA256: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
   GOVULNCHECK_VERSION: "v1.8.0"
   GOVULNCHECK_SUM: "h1:clG4qBU6zH5VKjti8n5j8BBuYzoSha392xXMkXS351U="
+  # Mutation gate (ADR 0066): a small fork with fast releases, so one exact version and its module hash.
+  MUTESTING_VERSION: "v2.10.40"
+  MUTESTING_SUM: "h1:4H+N7GNOGA2//CWe3F2QBj6WVFKQYKFKLKODH/V/2pY="
 
 jobs:
   go-static:
@@ -114,6 +117,45 @@ jobs:
         run: |
           go build ./...
           go test ./...
+
+  mutation:
+    # A mutant on a changed line of a security-decision package that a test runs but no test kills fails the
+    # pull request (ADR 0066); uncovered mutants show as warnings.
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -mod=readonly
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Go (pinned by sha256) and check it against go.mod
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/go/bin/go" version
+          python3 tools/ci/go_gate.py toolchain --go-mod go.mod \
+            --goversion "$("$RUNNER_TEMP/go/bin/go" env GOVERSION)" --expect "$GO_VERSION"
+      - name: Install go-mutesting (module checked against its pinned hash first)
+        run: |
+          (cd "$RUNNER_TEMP" && go mod download -json "github.com/jonbaldie/go-mutesting/v2@${MUTESTING_VERSION}") > "$RUNNER_TEMP/mutesting.json"
+          python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/mutesting.json" --expect "$MUTESTING_SUM"
+          GOBIN="$RUNNER_TEMP/bin" go install "github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@${MUTESTING_VERSION}"
+      - name: Mutants on changed security-decision code must die
+        run: |
+          "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --quiet --no-diffs \
+            --logger-github --disable=expression/errorf-wrap --blacklist=tools/ci/mutation-blacklist \
+            --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
+            ./internal/anchor/ ./internal/unixsock/ ./internal/cosign/ ./internal/link/ ./internal/collector/ \
+            ./internal/rangevm/ ./cmd/balistid-ledger/
 
   go-race:
     runs-on: ubuntu-24.04

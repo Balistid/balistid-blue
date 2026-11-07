@@ -51,6 +51,7 @@ LAYOUT: tuple[str, ...] = (
     "githooks/commit-msg",
     "tools/ci/*.py",
     "tools/ci/tests/*.py",
+    "tools/ci/mutation-blacklist",  # equivalent mutants the mutation gate skips (ADR 0066)
     "acceptance/[0-9].toml",
     # Go and deployment layout (ADR 0003).
     "go.mod",
