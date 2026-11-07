@@ -19,8 +19,8 @@ explained.
 
 1. **Provable history.** The core is an event record whose tampering is detectable, with checkpoints
    anchored off the host (for example on a Raspberry Pi witness).
-2. **Detections are proven, not assumed.** Every detection ships with an attack scenario that must
-   trigger it and a legitimate scenario that must not, replayed in CI and run in an isolated VM range.
+2. **Detections are proven, response waits for them.** Every detection ships with an attack scenario that must
+   trigger it and a legitimate one that must not, run in an isolated VM range; a response acts only on those.
 3. **Actors, not just events.** Package transactions (pacman/AUR), AI coding agents, AI server
    services and the administrator are modelled as actors on top of the same record.
 4. **Built for one person.** Explained verdicts, an interruption budget and a nightly report instead
@@ -33,11 +33,11 @@ Each floor must be useful on its own, even if the next one never ships.
 | Floor | Name | Value on its own |
 |---|---|---|
 | 0 | Recorder | Trustworthy, tamper-evident timeline of what happened on the host |
-| 1 | Drill | Automated proof that detections fire on real techniques in a VM |
-| 2 | Package actor | What a pacman/AUR package actually did when it was installed |
-| 3 | UX | Explained verdicts, interruption budget, nightly report |
-| 4 | AI server profile | Hardening and monitoring for a self-hosted AI server |
-| 5 | AI agent actor | AI coding agents observed as first-class actors |
+| 1 | Detection | An alert on the phone when something is wrong, each detection proven by an attack it must catch and normal work it must not |
+| 2 | Response | Contain what a detection measured right found (a process, the network, a file), explained and reversible |
+| 3 | AI agent actor | AI coding agents as first-class actors: their normal work told apart from abuse |
+| 4 | Package actor | What a pacman/AUR package actually did when it was installed |
+| 5 | UX and AI server | Explained verdicts, interruption budget, nightly report; hardening for a self-hosted AI server |
 
 ## Non-goals
 
