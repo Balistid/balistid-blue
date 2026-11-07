@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-06 by claude/opus-5.5 (#207 the ledger's socket for the link group only)
+Updated: 2026-11-07 by claude/opus-5.5 (#207 merged; #245 measured, ADR 0062 proposes counting serial gaps)
 
 ## Where we are
 
@@ -16,7 +16,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- #207 (ADR 0060, T2): the ledger's socket 0660 in `balistid-ledgerlink`, only its and the collector's units; fact `ledger_sock`.
+- #207 (#255, 2492695): the ledger's socket 0660 in `balistid-ledgerlink`, only its and the collector's units.
+- #245 (#256, 9f08f97): range trials show serial gaps: none without loss, one per loss stage; ADR 0062 (proposed).
 - #250 (ADR 0061, #241, 986b354): rules v3 (80) record module, kexec, eBPF, mounts by any root uid, handle opens,
   borrowed exes and kept capabilities, io_uring, and every tree's writes and creating or truncating opens; only the
   ledger, relay, runner left out by exe. Fact `tracks` proves each part (pin ab00179, range-kvm 41880683498); 5 review rounds.
@@ -24,12 +25,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   (ADR 0057): rate and CPU trials void PASS and MISS alike on guest steal per 1-2 s; GitHub's runner is INVALID there.
 - #238 (draft, ADR 0058, #196): `balistid-install` installs the runner from MANIFEST v1 signed by the maintainer's sk
   key, flags 0x05 checked in Go; critic CLOSED, Codex findings fixed. CI red until the key commit (no placeholder).
-- #233, #229 (ADR 0054), #237 and ADR 0051-0056 as before (git log of this file); Laurel #313 merged upstream.
 ## Next step
 1. #238: the maintainer's FIDO2 key, `deploy/install/allowed_signers`, README row and fingerprint (from 2026-11-07),
    CI, approve, merge, first install; then 9.5's components on the installer with the install ADR (#197 x32 as a
    named, visible gap; #202 caps).
-2. 9.5 (ADR 0051, 0060): #243, #244, #201 (a timer under its own uid), #203, #204 (L12 residuals),
+2. #245: measure `gap_hold_s` (ADR 0062 point 5), then stage 9 in the collector. 9.5 (ADR 0051, 0060): #243, #244, #201 (a timer under its own uid), #203, #204 (L12 residuals),
    #213; C3 2026-11-10 (#200). Floor 0 closes with ADR 0055's two passes.
 ## Open decisions (maintainer)
 - #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed; the install ADR decides
