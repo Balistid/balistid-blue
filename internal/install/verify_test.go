@@ -26,7 +26,7 @@ func TestCheckAcceptsTheSignedRelease(t *testing.T) {
 	h := newHost(t)
 	files := h.release(t)
 	before := snapshot(t, h.cfg.Root)
-	r, err := Check(t.Context(), h.cfg, h.dir, "")
+	r, err := Check(t.Context(), h.cfg, "runner", h.dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func (h *fakeHost) refuses(t *testing.T, label, fingerprint, want string) {
 	t.Helper()
 	before := snapshot(t, h.cfg.Root)
 	done := make(chan error, 1)
-	go func() { _, err := Check(t.Context(), h.cfg, h.dir, fingerprint); done <- err }()
+	go func() { _, err := Check(t.Context(), h.cfg, "runner", h.dir, fingerprint); done <- err }()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), want) {
@@ -113,7 +113,7 @@ func TestCheckRefusesFilesTheManifestDoesNotMatch(t *testing.T) {
 
 // The inputs come from a directory agents can write: only regular files with one link, within their caps.
 func TestCheckRefusesInputsThatAreNotPlainFiles(t *testing.T) {
-	for _, name := range []string{bundleName, sigName} {
+	for _, name := range []string{runnerComponent.bundle(), sigName} {
 		for label, swap := range map[string]func(p string) error{
 			"a symlink": func(p string) error {
 				if err := os.Rename(p, p+".real"); err != nil {
@@ -129,7 +129,7 @@ func TestCheckRefusesInputsThatAreNotPlainFiles(t *testing.T) {
 			},
 			"a hard link": func(p string) error { return os.Link(p, p+".other") },
 			"over the cap": func(p string) error {
-				return os.Truncate(p, map[string]int64{bundleName: MaxBundleBytes, sigName: maxSigBytes}[name]+1)
+				return os.Truncate(p, map[string]int64{runnerComponent.bundle(): MaxBundleBytes, sigName: maxSigBytes}[name]+1)
 			},
 			"missing": os.Remove,
 		} {
@@ -235,12 +235,12 @@ func TestCheckFirstInstallTrustsOnlyTheTypedFingerprint(t *testing.T) {
 	h := newHost(t)
 	h.release(t)
 	fp := h.key.fingerprint(t)
-	if _, err := Check(t.Context(), h.cfg, h.dir, fp); err != nil {
+	if _, err := Check(t.Context(), h.cfg, "runner", h.dir, fp); err != nil {
 		t.Fatalf("the same key installed: %v", err)
 	}
 	h.refuses(t, "another fingerprint, the key installed", newKey(t).fingerprint(t), "installed key does not have")
 	must(t, os.Remove(filepath.Join(h.cfg.Root, "etc/balistid/allowed_signers")))
-	if _, err := Check(t.Context(), h.cfg, h.dir, fp); err != nil {
+	if _, err := Check(t.Context(), h.cfg, "runner", h.dir, fp); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	h.refuses(t, "no key and no fingerprint", "", "allowed_signers")

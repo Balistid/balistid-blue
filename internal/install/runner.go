@@ -2,12 +2,10 @@ package install
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"maps"
 	"os"
 	"os/exec"
 	"os/user"
@@ -19,7 +17,6 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/buildinfo"
-	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
 // target is where one file of a component goes and its mode.
@@ -42,12 +39,14 @@ var runnerTable = []target{
 }
 
 var (
-	runnerUnits = []string{"balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service"}
-	unitProps   = []string{"Id", "ActiveState", "DropInPaths", "FragmentPath"}
-	// trustedDirs exist on every host; they and every directory above them are only checked, never changed.
-	trustedDirs = []string{"etc/systemd/system", "usr/local/lib", "var/lib"}
-	// createdDirs and stateDir are absent or exactly root:root 0755, whatever tmpfiles.conf (which makes stateDir) says.
-	createdDirs    = []string{"usr/local/lib/balistid", "etc/sysusers.d", "etc/tmpfiles.d", signersDir}
+	// runnerComponent's created directories and stateDir are absent or exactly root:root 0755, whatever
+	// tmpfiles.conf (which makes stateDir) says.
+	runnerComponent = component{name: "runner", table: runnerTable,
+		units:    []string{"balistid-runner-tick.timer", "balistid-runner-tick.service", "balistid-runner-build.service"},
+		trusted:  []string{"etc/systemd/system", "usr/local/lib", "var/lib"},
+		created:  []string{"usr/local/lib/balistid", "etc/sysusers.d", "etc/tmpfiles.d", signersDir},
+		tmpfiles: []string{"tmpfiles.conf"}}
+	unitProps      = []string{"Id", "ActiveState", "DropInPaths", "FragmentPath"}
 	maintainerDirs = []string{stateDir + "/inbox", stateDir + "/objects"}
 	maintainerName = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 )
@@ -113,29 +112,23 @@ func runner(ctx context.Context, cfg Config, dir, maintainer, fingerprint string
 		return fmt.Errorf("open the root: %w", err)
 	}
 	defer host.Close() //nolint:errcheck // every write is synced by WriteIn
-	r, err := check(ctx, cfg, host, dir, fingerprint)
+	c := runnerComponent
+	r, err := c.released(ctx, cfg, host, dir, fingerprint, d)
 	if err != nil {
 		return err
-	}
-	d.Commit, d.ManifestSHA256, d.Signer = r.Manifest.Commit, hex.EncodeToString(r.ManifestSHA256[:]), r.Signer.Fingerprint()
-	if r.Manifest.Component != d.Component {
-		return errors.New("the manifest is not of the runner component")
-	}
-	names := make([]string, len(runnerTable))
-	for i, f := range runnerTable {
-		names[i] = f.name
-	}
-	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(maps.Keys(r.Files))) {
-		return errors.New("the manifest's files are not the runner's")
 	}
 	muid, err := maintainerUID(cfg, maintainer)
 	if err != nil {
 		return err
 	}
-	if err := unitsAsWritten(ctx, cfg, false); err != nil {
+	if err := unitsAsWritten(ctx, cfg, c.units, false); err != nil {
 		return err
 	}
-	absent, err := preflight(cfg, host, muid, r.Files["tmpfiles.conf"])
+	var extra []wantDir
+	for _, dir := range maintainerDirs {
+		extra = append(extra, wantDir{dir, maintainerOwner, runnerGroup, fs.ModeDir | fs.ModeSetgid | 0o750})
+	}
+	absent, err := preflight(cfg, host, c, muid, extra, c.tmpfilesConf(r))
 	if err != nil {
 		return err
 	}
@@ -161,15 +154,15 @@ func maintainerUID(cfg Config, name string) (int, error) {
 // unitsAsWritten refuses a unit that runs, or that a drop-in or a file other than the one this install writes
 // would change. systemd answers only for what it has loaded, so before the reload a unit with no file yet passes,
 // and after it only the installed file does. Not checked: .wants/ and manager-wide settings; only root writes them.
-func unitsAsWritten(ctx context.Context, cfg Config, reloaded bool) error {
-	blocks, err := cfg.Show(ctx, runnerUnits, unitProps)
+func unitsAsWritten(ctx context.Context, cfg Config, units []string, reloaded bool) error {
+	blocks, err := cfg.Show(ctx, units, unitProps)
 	if err != nil {
-		return fmt.Errorf("cannot query the runner's units: %w", err)
+		return fmt.Errorf("cannot query the units: %w", err)
 	}
-	if len(blocks) != len(runnerUnits) {
-		return errors.New("cannot query the runner's units: an answer per unit is missing")
+	if len(blocks) != len(units) {
+		return errors.New("cannot query the units: an answer per unit is missing")
 	}
-	for i, u := range runnerUnits {
+	for i, u := range units {
 		b := blocks[i]
 		if a := b["ActiveState"]; !reloaded && a != "inactive" && a != "failed" {
 			return fmt.Errorf("%s is %q, not stopped", u, a)
@@ -184,11 +177,11 @@ func unitsAsWritten(ctx context.Context, cfg Config, reloaded bool) error {
 	return nil
 }
 
-// preflight checks every path the install writes or creates, or tmpfiles makes, before the first write, and returns those absent.
-// Absent means only "does not exist": any other error refuses. Nothing found is repaired, since others may
-// have prepared it.
-func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string]bool, error) {
-	for _, dir := range trustedDirs {
+// preflight checks every path the install of c writes or creates, or tmpfiles makes, and extra, before the first
+// write, and returns those absent. Absent means only "does not exist": any other error refuses. Nothing found is
+// repaired, since others may have prepared it.
+func preflight(cfg Config, host *os.Root, c component, muid int, extra []wantDir, tmpfiles []byte) (map[string]bool, error) {
+	for _, dir := range c.trusted {
 		if _, err := trustedPath(cfg, host, dir); err != nil {
 			return nil, err
 		}
@@ -198,14 +191,11 @@ func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string
 		return nil, err
 	}
 	var dirs []wantDir
-	for _, dir := range append(slices.Clone(createdDirs), stateDir) {
+	for _, dir := range append(slices.Clone(c.created), stateDir) {
 		dirs = append(dirs, wantDir{dir, "root", "root", fs.ModeDir | 0o755})
 	}
-	for _, dir := range maintainerDirs {
-		dirs = append(dirs, wantDir{dir, maintainerOwner, runnerGroup, fs.ModeDir | fs.ModeSetgid | 0o750})
-	}
 	absent := map[string]bool{}
-	for _, d := range slices.Concat(dirs, made) {
+	for _, d := range slices.Concat(dirs, extra, made) {
 		fi, err := host.Lstat(d.name)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
@@ -229,7 +219,7 @@ func preflight(cfg Config, host *os.Root, muid int, tmpfiles []byte) (map[string
 			return nil, fmt.Errorf("/%s: %w", d.name, err)
 		}
 	}
-	for _, f := range runnerTable {
+	for _, f := range c.table {
 		if absent[path.Dir(f.dest)] {
 			absent[f.dest] = true
 			continue
@@ -311,22 +301,12 @@ func tmpfilesDirs(conf []byte) ([]wantDir, error) {
 // apply writes as the shell installer did: directories, then each file whole, then systemd's users, directories
 // and units; it checks the units again after the reload and writes itself last. Each error names its step.
 func apply(ctx context.Context, cfg Config, host *os.Root, r Release, maintainer string, muid int, absent map[string]bool) error {
-	for _, dir := range createdDirs {
-		if !absent[dir] {
-			continue
-		}
-		if err := errors.Join(host.Mkdir(dir, 0o755), host.Chmod(dir, 0o755)); err != nil {
-			return fmt.Errorf("step create /%s: %w", dir, err)
-		}
+	c := runnerComponent
+	if err := c.createDirs(host, absent); err != nil {
+		return err
 	}
-	last := runnerTable[len(runnerTable)-1]
-	for _, f := range runnerTable[:len(runnerTable)-1] {
-		if f.name == signersName && !absent[f.dest] {
-			continue // check found the installed one equal to the bundle's
-		}
-		if err := wholefile.WriteIn(host, f.dest, r.Files[f.name], f.mode); err != nil {
-			return fmt.Errorf("step write /%s: %w", f.dest, err)
-		}
+	if err := c.writeFiles(host, r, absent); err != nil {
+		return err
 	}
 	if err := runAll(ctx, cfg, []string{"/usr/bin/systemd-sysusers", "/etc/sysusers.d/balistid-runner.conf"},
 		[]string{"/usr/bin/systemd-tmpfiles", "--create", "/etc/tmpfiles.d/balistid-runner.conf"}); err != nil {
@@ -339,13 +319,10 @@ func apply(ctx context.Context, cfg Config, host *os.Root, r Release, maintainer
 		[]string{"/usr/bin/systemctl", "daemon-reload"}); err != nil {
 		return err
 	}
-	if err := unitsAsWritten(ctx, cfg, true); err != nil {
+	if err := unitsAsWritten(ctx, cfg, c.units, true); err != nil {
 		return fmt.Errorf("step check after the reload: %w", err)
 	}
-	if err := wholefile.WriteIn(host, last.dest, r.Files[last.name], last.mode); err != nil {
-		return fmt.Errorf("step write /%s: %w", last.dest, err)
-	}
-	return nil
+	return c.writeInstaller(host, r)
 }
 
 func runAll(ctx context.Context, cfg Config, argvs ...[]string) error {

@@ -77,7 +77,7 @@ func TestCheckRequiresTheTokensTouchAndPIN(t *testing.T) {
 	}
 	for _, flags := range []byte{skPresence | skVerified, 0xff} {
 		h := skHost(t, flags)
-		if _, err := Check(t.Context(), h.cfg, h.dir, ""); err != nil {
+		if _, err := Check(t.Context(), h.cfg, "runner", h.dir, ""); err != nil {
 			t.Errorf("flags %#x: %v", flags, err)
 		}
 	}

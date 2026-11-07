@@ -39,8 +39,8 @@ func TestRunnerInstallsWhatReleasePyWrites(t *testing.T) {
 	}
 	release("manifest", "--binary", filepath.Join(in, "balistid-runner"), "--installer", filepath.Join(in, "balistid-install"),
 		"--deploy", deploy, "--signers", filepath.Join(in, signersName), "--commit", testCommit, "--out", files)
-	must(t, os.Remove(filepath.Join(h.dir, bundleName)))
-	release("bundle", "--dir", files, "--out", filepath.Join(h.dir, bundleName))
+	must(t, os.Remove(filepath.Join(h.dir, runnerComponent.bundle())))
+	release("bundle", "--dir", files, "--out", filepath.Join(h.dir, runnerComponent.bundle()))
 	m, err := os.ReadFile(filepath.Join(files, manifestName)) //nolint:gosec // test temp dir
 	must(t, err)
 	must(t, os.WriteFile(filepath.Join(h.dir, sigName), h.key.sign(t, m, Namespace), 0o600)) //nolint:gosec // test temp dir
