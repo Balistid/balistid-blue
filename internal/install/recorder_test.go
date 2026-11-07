@@ -345,6 +345,19 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 			h.put(t, "etc/sysctl.conf", []byte("kernel.io_uring_disabled = 0\n"), 0o644)
 			h.symlink(t, "../sysctl.conf", "etc/sysctl.d/99-sysctl.conf")
 		}, "sets io_uring_disabled"},
+		"a dangling sysctl link": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "etc/sysctl.d", 0o755)
+			h.mkdir(t, "tmp/agent", 0o777)
+			h.symlink(t, "../../tmp/agent/x.conf", "etc/sysctl.d/60-x.conf")
+		}, "/etc/sysctl.d/60-x.conf is a link the installer does not follow"},
+		"a sysctl link through another link": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "usr/lib/sysctl.d", 0o755)
+			h.mkdir(t, "tmp/agent/child", 0o777)
+			h.put(t, "tmp/agent/final.conf", []byte("kernel.io_uring_disabled = 0\n"), 0o666)
+			h.put(t, "usr/lib/final.conf", []byte("vm.swappiness = 10\n"), 0o644)
+			h.symlink(t, "../../tmp/agent/child", "usr/lib/jump")
+			h.symlink(t, "../jump/../final.conf", "usr/lib/sysctl.d/70-x.conf")
+		}, "/usr/lib/sysctl.d/70-x.conf is a link the installer does not follow"},
 		"io_uring in sysctl.conf": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.put(t, "etc/sysctl.conf", []byte("-kernel.io_uring_disabled = 0\n"), 0o644)
 		}, "/etc/sysctl.conf sets io_uring_disabled"},
