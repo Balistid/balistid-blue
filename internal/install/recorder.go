@@ -75,9 +75,16 @@ const (
 	maxConfBytes = 64 << 10
 )
 
-// hostPrograms are what the sensor runs from the distribution and Laurel's package (ADR 0004, 0068 point 2):
-// augenrules runs auditctl and awk by these paths and its PATH.
-var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/auditctl", "usr/bin/awk"}
+// hostPrograms are what the sensor runs by absolute path from the distribution and Laurel's package (ADR 0004, 0068).
+var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/auditctl"}
+
+// pathPrograms are what audit 4.2.1's augenrules runs through PATH at boot (its shebang is `env sh`); each must be
+// /usr/bin's and no directory systemd searches before it may hold the name.
+var pathPrograms = []string{"sh", "awk", "cat", "chmod", "cmp", "cp", "mktemp", "rm", "sort", "xargs"}
+
+// bootPathBefore are the directories of systemd's default PATH before /usr/bin (`systemd-path search-binaries-default`
+// and, where /usr/sbin is no link to bin, /usr/sbin).
+var bootPathBefore = []string{"usr/local/sbin", "usr/local/bin", "usr/sbin"}
 
 // Recorder installs the recorder component from dir (ADR 0068). Every check, the signature first, runs before the
 // first write; a refusal changes nothing and runs no command. A failed step stops with what was written in place.
@@ -169,6 +176,9 @@ func hostReady(cfg Config, host *os.Root) error {
 			return err
 		}
 	}
+	if err := bootPath(cfg, host); err != nil {
+		return err
+	}
 	if _, err := cfg.LookupUser("_laurel"); err != nil {
 		return fmt.Errorf("no user _laurel: install Laurel from packaging/laurel first: %w", err)
 	}
@@ -177,13 +187,39 @@ func hostReady(cfg Config, host *os.Root) error {
 		return fmt.Errorf("/proc/cmdline: %w", err)
 	}
 	if !bootedForAudit(string(cmdline)) {
-		return fmt.Errorf("the kernel was not booted with audit=1 audit_backlog_limit=%d and without audit=0, "+
-			"audit=off or quotes: set the boot entry's options and reboot", backlogLimit)
+		return fmt.Errorf("the kernel command line must be printable ASCII with exactly audit=1 and "+
+			"audit_backlog_limit=%d or more before --, and no other audit parameter: set the boot entry's options and reboot",
+			backlogLimit)
 	}
-	if err := otherRules(host); err != nil {
+	if err := otherRules(cfg, host); err != nil {
 		return err
 	}
-	return otherSysctl(host)
+	return otherSysctl(cfg, host)
+}
+
+// bootPath refuses a host where augenrules at boot could run another program than /usr/bin's: each of pathPrograms
+// must be root's there, and no directory systemd searches first may hold its name, whatever it is.
+func bootPath(cfg Config, host *os.Root) error {
+	for _, name := range pathPrograms {
+		if err := rootProgram(cfg, host, "usr/bin/"+name); err != nil {
+			return err
+		}
+		for _, dir := range bootPathBefore {
+			if fi, err := host.Lstat(dir); err != nil || !fi.IsDir() {
+				continue // absent, or /usr/sbin linked to bin
+			}
+			if _, err := trustedPath(cfg, host, dir); err != nil {
+				return err
+			}
+			switch _, err := host.Lstat(path.Join(dir, name)); {
+			case err == nil:
+				return fmt.Errorf("/%s/%s comes before /usr/bin/%s on the boot PATH: augenrules would run it", dir, name, name)
+			case !errors.Is(err, fs.ErrNotExist):
+				return fmt.Errorf("/%s/%s: %w", dir, name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // sysctlDirs are where systemd-sysctl reads settings; it applies all of them by file name, so any one of them could
@@ -192,20 +228,15 @@ var sysctlDirs = []string{"etc/sysctl.d", "run/sysctl.d", "usr/local/lib/sysctl.
 
 // otherSysctl refuses any sysctl file but the recorder's that names io_uring_disabled: exit rules do not see
 // io_uring's operations (ADR 0004), and nothing at runtime would show it on again. It changes none of them.
-func otherSysctl(host *os.Root) error {
+func otherSysctl(cfg Config, host *os.Root) error {
 	files := []string{"etc/sysctl.conf"}
 	for _, dir := range sysctlDirs {
-		f, err := host.Open(dir)
+		names, err := dirNames(cfg, host, dir)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("/%s: %w", dir, err)
-		}
-		names, err := f.Readdirnames(-1)
-		_ = f.Close()
-		if err != nil {
-			return fmt.Errorf("/%s: %w", dir, err)
+			return err
 		}
 		for _, n := range names {
 			if p := path.Join(dir, n); strings.HasSuffix(n, ".conf") && p != "etc/sysctl.d/90-balistid.conf" {
@@ -214,7 +245,7 @@ func otherSysctl(host *os.Root) error {
 		}
 	}
 	for _, p := range files {
-		data, err := sysctlFile(host, p)
+		data, err := sysctlFile(cfg, host, p)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
@@ -226,9 +257,27 @@ func otherSysctl(host *os.Root) error {
 	return nil
 }
 
+// dirNames lists dir, which must be a directory on a trusted path (so opening it cannot block on a FIFO).
+func dirNames(cfg Config, host *os.Root, dir string) ([]string, error) {
+	if _, err := trustedPath(cfg, host, dir); err != nil {
+		return nil, err
+	}
+	f, err := host.Open(dir)
+	if err != nil {
+		return nil, fmt.Errorf("/%s: %w", dir, err)
+	}
+	defer f.Close() //nolint:errcheck // read-only
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return nil, fmt.Errorf("/%s: %w", dir, err)
+	}
+	return names, nil
+}
+
 // sysctlFile reads p as systemd-sysctl would apply it: a link to /dev/null masks it (no bytes), another link is read
-// as its target, once; anything but a plain file then refuses, so a FIFO cannot hold the install.
-func sysctlFile(host *os.Root, p string) ([]byte, error) {
+// as its target, once. What is read must be root's plain file only root may write, on a trusted path, so A1 cannot
+// change it after the check; a FIFO or any other type refuses without blocking.
+func sysctlFile(cfg Config, host *os.Root, p string) ([]byte, error) {
 	fi, err := host.Lstat(p)
 	if err != nil {
 		return nil, fmt.Errorf("/%s: %w", p, err)
@@ -245,6 +294,16 @@ func sysctlFile(host *os.Root, p string) ([]byte, error) {
 			target = path.Join("/", path.Dir(p), target)
 		}
 		p = strings.TrimPrefix(path.Clean(target), "/")
+		if fi, err = host.Lstat(p); err != nil {
+			return nil, fmt.Errorf("/%s: %w", p, err)
+		}
+	}
+	if _, err := trustedPath(cfg, host, path.Dir(p)); err != nil {
+		return nil, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int64(st.Uid) != int64(cfg.UID) || fi.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("/%s is not root's file that only root may write", p)
 	}
 	data, err := wholefile.ReadIn(host, p, maxConfBytes)
 	if err != nil {
@@ -281,47 +340,48 @@ func rootProgram(cfg Config, host *os.Root, p string) error {
 	return nil
 }
 
-// bootedForAudit is whether the kernel enabled audit with at least backlogLimit and auditd.service may start. The
-// kernel takes the last audit= and audit_backlog_limit= before "--" (what follows goes to init); auditd's unit does not
-// start on audit=0 or audit=off anywhere. Quotes, which group words for the kernel, refuse: they are not parsed here.
+// bootedForAudit is whether the command line holds, before "--" (what follows goes to init), exactly one audit=1
+// and one audit_backlog_limit of at least backlogLimit in plain decimal (the kernel reads base 0), and no other
+// parameter that names audit anywhere: the kernel and systemd read "-" as "_" in names, and auditd's unit does not
+// start on audit=0 or audit=off. Only printable ASCII words split by spaces are read; anything else refuses.
 func bootedForAudit(cmdline string) bool {
-	if strings.Contains(cmdline, `"`) {
+	cmdline = strings.TrimSuffix(cmdline, "\n")
+	if strings.ContainsFunc(cmdline, func(r rune) bool { return r < ' ' || r > '~' || r == '"' }) {
 		return false
 	}
-	audit, limit, kernel := "", "", true
-	for _, f := range strings.Fields(cmdline) {
-		if f == "audit=0" || f == "audit=off" {
-			return false
-		}
+	audit, limits, kernel := 0, 0, true
+	for _, f := range strings.Split(cmdline, " ") {
 		if f == "--" {
 			kernel = false
-		}
-		if !kernel {
 			continue
 		}
-		if v, ok := strings.CutPrefix(f, "audit="); ok {
-			audit = v
-		}
-		if v, ok := strings.CutPrefix(f, "audit_backlog_limit="); ok {
-			limit = v
+		key, value, _ := strings.Cut(f, "=")
+		key = strings.ReplaceAll(key, "-", "_")
+		switch {
+		case !strings.Contains(key, "audit"):
+		case !kernel:
+			return false
+		case key == "audit" && value == "1":
+			audit++
+		case key == "audit_backlog_limit":
+			n, err := strconv.ParseUint(value, 10, 32)
+			if err != nil || value[0] == '0' || n < backlogLimit {
+				return false
+			}
+			limits++
+		default:
+			return false
 		}
 	}
-	// The kernel reads the limit with base 0, so a leading zero is octal: only plain decimal is read the same here.
-	n, err := strconv.ParseUint(limit, 10, 32)
-	return audit == "1" && err == nil && limit[0] != '0' && n >= backlogLimit
+	return audit == 1 && limits == 1
 }
 
 // otherRules refuses any *.rules in rules.d but the recorder's: augenrules would merge it and the collector read the
 // loaded rules as rules-differ (ADR 0059). It moves none of them.
-func otherRules(host *os.Root) error {
-	f, err := host.Open(rulesDir)
+func otherRules(cfg Config, host *os.Root) error {
+	names, err := dirNames(cfg, host, rulesDir)
 	if err != nil {
-		return fmt.Errorf("/%s: %w", rulesDir, err)
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	names, err := f.Readdirnames(-1)
-	if err != nil {
-		return fmt.Errorf("/%s: %w", rulesDir, err)
+		return err
 	}
 	var other []string
 	for _, n := range names {
