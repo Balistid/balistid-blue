@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-01
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 - Amends ADR 0002 point 3 and ADR 0015 point 2 (the up-to-date rule gives way to the queue)
 

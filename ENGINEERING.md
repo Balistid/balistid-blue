@@ -2,7 +2,7 @@
 
 These rules bind every contributor: the maintainer, Claude Code and Codex. When this file conflicts
 with any global policy, this file wins inside this repository. Changing a rule requires an ADR
-decided by the maintainer (`Decided-by: alex`).
+decided by the maintainer (`Decided-by: jvc0n`).
 
 ## 1. Definition of done
 
@@ -30,7 +30,7 @@ A change is done when all of these hold, verified now and not from memory:
 | R8 | No root action outside `balistid-install`. |
 | R9 | Do not write a sensor someone already maintains. A new component needs an ADR naming the existing tool, why it is not enough and what changes. |
 | R10 | Every detection and boundary names its `THREAT_MODEL.md` row and ships an attack scenario that triggers it and a legitimate one that does not. |
-| R11 | Every commit carries exactly one `Agent:` trailer (`alex`, `claude/<model>`, `codex/<model>`). No advertising trailers. |
+| R11 | Every commit carries exactly one `Agent:` trailer (`jvc0n`, `claude/<model>`, `codex/<model>`). No advertising trailers. |
 | R12 | Running floor first, document second. Only the files in the docs allowlist exist (`tools/ci/docs_budget.py`). |
 | R13 | Minimal root surface: only the installer runs as root; the one long-running privileged process is `balistid-auditstat` (`CAP_AUDIT_CONTROL`), and `balistid-net` holds `CAP_NET_ADMIN` only for its start at boot (ADR 0032); every other runs as its own uid without privilege (ADR 0007). UI and CLI are unprivileged and never call `sudo`; they talk to a daemon over a Unix socket checked with `SO_PEERCRED`, or read a fixed-size file it publishes, checked by owner, type and size (ADR 0048). |
 | R14 | Dependencies and CI actions are pinned by hash; builds use the lock only. A dependency update is its own commit. |

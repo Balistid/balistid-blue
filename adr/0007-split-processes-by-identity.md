@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-10-01, amended 2026-10-10 (R13 already updated), 2026-10-11 (points 2 and 5 by ADR 0016), 2026-10-31 (table, point 4 by 0038)
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

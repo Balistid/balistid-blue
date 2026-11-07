@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-04
-- Decided-by: alex (2026-11-04: the plan of issue #198); claude/opus-5.5 the bounds and the trial shapes
+- Decided-by: jvc0n (2026-11-04: the plan of issue #198); claude/opus-5.5 the bounds and the trial shapes
 - Agent: claude/opus-5.5
 - Closes issue #198; amends ADR 0004 point 4, ADR 0007's table, ADR 0038 points 1, 4 and 5, ADR 0027 point 6.
 

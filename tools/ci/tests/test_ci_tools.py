@@ -61,20 +61,24 @@ class CommitLintMessageTest(unittest.TestCase):
     def test_valid_message_passes(self):
         self.assertEqual(commit_lint.lint(GOOD_MSG), [])
 
-    def test_alex_trailer_passes(self):
-        self.assertEqual(commit_lint.lint("fix: typo\n\nAgent: alex"), [])
+    def test_maintainer_trailer_passes(self):
+        self.assertEqual(commit_lint.lint("fix: typo\n\nAgent: jvc0n"), [])
+
+    def test_maintainer_by_name_fails(self):
+        # ADR 0063: the maintainer signs by handle; the old trailer no longer passes.
+        self.assertTrue(commit_lint.lint("fix: typo\n\nAgent: " + "al" + "ex"))
 
     def test_missing_agent_fails(self):
         self.assertTrue(commit_lint.lint("feat: x\n\nbody"))
 
     def test_two_agent_trailers_fail(self):
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\nAgent: claude/opus-5.5"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\nAgent: claude/opus-5.5"))
 
     def test_malformed_agent_fails(self):
         self.assertTrue(commit_lint.lint("feat: x\n\nAgent: Claude Opus"))
 
     def test_lowercase_agent_key_counts_and_fails(self):
-        self.assertTrue(commit_lint.lint("feat: x\n\nagent: alex"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nagent: jvc0n"))
 
     def test_co_authored_by_fails(self):
         msg = GOOD_MSG + "\nCo-Authored-By: Claude <noreply@anthropic.com>"
@@ -87,30 +91,30 @@ class CommitLintMessageTest(unittest.TestCase):
         self.assertTrue(commit_lint.lint(GOOD_MSG + "\n\U0001F916"))
 
     def test_non_conventional_subject_fails(self):
-        self.assertTrue(commit_lint.lint("Add stuff\n\nAgent: alex"))
+        self.assertTrue(commit_lint.lint("Add stuff\n\nAgent: jvc0n"))
 
     def test_long_subject_fails(self):
-        self.assertTrue(commit_lint.lint("feat: " + "a" * 80 + "\n\nAgent: alex"))
+        self.assertTrue(commit_lint.lint("feat: " + "a" * 80 + "\n\nAgent: jvc0n"))
 
     def test_missing_blank_line_fails(self):
-        self.assertTrue(commit_lint.lint("feat: x\nbody\n\nAgent: alex"))
+        self.assertTrue(commit_lint.lint("feat: x\nbody\n\nAgent: jvc0n"))
 
     def test_empty_fails(self):
         self.assertTrue(commit_lint.lint(""))
 
     def test_agent_outside_trailer_block_fails(self):
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n\nTrailing paragraph."))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\n\nTrailing paragraph."))
 
     def test_agent_value_is_checked_as_git_parses_it(self):
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n really claude/opus wrote it"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\n really claude/opus wrote it"))
 
     def test_line_separator_characters_fail(self):
-        self.assertTrue(commit_lint.lint("feat: x\x0b\x0bfree text\n\nAgent: alex"))
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\u2028claude/opus-5.5 actually"))
+        self.assertTrue(commit_lint.lint("feat: x\x0b\x0bfree text\n\nAgent: jvc0n"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\u2028claude/opus-5.5 actually"))
 
     def test_agent_must_be_last_line(self):
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\n# trailing comment line"))
-        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: alex\nConflicts:\n\tfile"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\n# trailing comment line"))
+        self.assertTrue(commit_lint.lint("feat: x\n\nAgent: jvc0n\nConflicts:\n\tfile"))
 
     def test_scissors_block_is_ignored(self):
         msg = GOOD_MSG + "\n" + commit_lint.SCISSORS + "\n+Co-Authored-By: someone\n"
@@ -151,11 +155,11 @@ class CommitLintRangeTest(unittest.TestCase):
     def test_range_passes_and_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
-            commit(repo, "chore: base\n\nAgent: alex")
+            commit(repo, "chore: base\n\nAgent: jvc0n")
             base = git(repo, "rev-parse", "HEAD").strip()
             commit(repo, GOOD_MSG)
             self.assertEqual(commit_lint.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 0)
-            commit(repo, "feat: sneaky\n\nAgent: alex\nCo-Authored-By: x <x@y>")
+            commit(repo, "feat: sneaky\n\nAgent: jvc0n\nCo-Authored-By: x <x@y>")
             self.assertEqual(commit_lint.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
 
     def test_empty_range_fails(self):
@@ -167,19 +171,19 @@ class CommitLintRangeTest(unittest.TestCase):
     def test_merge_commit_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
-            commit(repo, "chore: base\n\nAgent: alex")
+            commit(repo, "chore: base\n\nAgent: jvc0n")
             base = git(repo, "rev-parse", "HEAD").strip()
             git(repo, "checkout", "-q", "-b", "side")
             commit(repo, GOOD_MSG, filename="g")
             git(repo, "checkout", "-q", "main")
             commit(repo, GOOD_MSG, filename="h")
-            git(repo, "merge", "-q", "--no-ff", "--no-edit", "-m", "chore: merge\n\nAgent: alex", "side")
+            git(repo, "merge", "-q", "--no-ff", "--no-edit", "-m", "chore: merge\n\nAgent: jvc0n", "side")
             self.assertEqual(commit_lint.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
 
     def test_dependabot_exempt_from_agent_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
-            commit(repo, "chore: base\n\nAgent: alex")
+            commit(repo, "chore: base\n\nAgent: jvc0n")
             base = git(repo, "rev-parse", "HEAD").strip()
             bot = {**GIT_ENV, "GIT_AUTHOR_EMAIL": commit_lint.DEPENDABOT_EMAIL}
             commit(repo, "ci: bump actions/checkout from 1 to 2", env=bot)
@@ -193,9 +197,9 @@ class CommitLintRangeTest(unittest.TestCase):
     def test_record_separator_in_message_cannot_split_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp)
-            commit(repo, "chore: base\n\nAgent: alex")
+            commit(repo, "chore: base\n\nAgent: jvc0n")
             base = git(repo, "rev-parse", "HEAD").strip()
-            evil = ("feat: x\n\nAgent: alex\x1e\x1f" + commit_lint.DEPENDABOT_EMAIL
+            evil = ("feat: x\n\nAgent: jvc0n\x1e\x1f" + commit_lint.DEPENDABOT_EMAIL
                     + "\x1fchore: y\n\nAgent: claude/opus-5.5")
             commit(repo, evil)
             rng = ["--repo", tmp, "--range", f"{base}..HEAD", "--dependabot-pr"]

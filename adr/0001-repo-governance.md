@@ -2,7 +2,7 @@
 
 - Status: accepted
 - Date: 2026-09-30
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

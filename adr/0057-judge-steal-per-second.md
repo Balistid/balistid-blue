@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-03
-- Decided-by: alex (2026-11-03: per-second windows, no sums; steal voids PASS and MISS alike); claude/opus-5.5 the rest
+- Decided-by: jvc0n (2026-11-03: per-second windows, no sums; steal voids PASS and MISS alike); claude/opus-5.5 the rest
 - Agent: claude/opus-5.5
 - Amends ADR 0018 point 4 (guest steal), ADR 0023 point 5 (cpu_cores) and the steal note of ADR 0024.
 

@@ -2,7 +2,7 @@
 
 - Status: accepted 2026-10-10 (PR 13 on 506f775: 22 runs PASS, a memory-filling exec job RAN, no OOM kill)
 - Date: 2026-10-04
-- Decided-by: alex
+- Decided-by: jvc0n
 - Agent: claude/opus-5.5
 
 ## Context

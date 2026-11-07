@@ -2,7 +2,7 @@
 
 - Status: proposed
 - Date: 2026-11-07
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-02)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
 - Answers issue #245 (ADR 0060's floor-0 row for T4 and T25); adds loss stage 9 to ADR 0027 point 6 and its key to
   ADR 0039 point 1.

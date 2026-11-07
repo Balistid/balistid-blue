@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-02
-- Decided-by: claude/opus-5.5 (delegated by alex, 2026-11-02)
+- Decided-by: claude/opus-5.5 (delegated by jvc0n, 2026-11-02)
 - Agent: claude/opus-5.5
 - Amends: ADR 0005 point 3 (how `shard.Read` checks a sealed shard); closes the C1 open decision and issue #206.
 

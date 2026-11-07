@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-02
-- Decided-by: alex (approves this pull request; drafted by the agent on his delegation, 2026-11-02)
+- Decided-by: jvc0n (approves this pull request; drafted by the agent on his delegation, 2026-11-02)
 - Agent: claude/opus-5.5
 - Amends ADR 0040 point 4 (the CPU bar) and its consequence that CPU decides before more Pi work
 
