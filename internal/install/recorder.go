@@ -76,7 +76,10 @@ const (
 )
 
 // hostPrograms are what the sensor runs by absolute path from the distribution and Laurel's package (ADR 0004, 0068).
-var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/auditctl"}
+// augenrules' shebang is /usr/bin/env, and it runs /usr/sbin/restorecon where that exists (optionalPrograms).
+var hostPrograms = []string{"usr/bin/laurel", "usr/bin/augenrules", "usr/bin/auditd", "usr/bin/auditctl", "usr/bin/env"}
+
+var optionalPrograms = []string{"usr/sbin/restorecon"}
 
 // pathPrograms are what audit 4.2.1's augenrules runs through PATH at boot (its shebang is `env sh`); each must be
 // /usr/bin's and no directory systemd searches before it may hold the name.
@@ -176,6 +179,15 @@ func hostReady(cfg Config, host *os.Root) error {
 			return err
 		}
 	}
+	for _, p := range optionalPrograms {
+		p = usrMerged(host, p)
+		if _, err := host.Lstat(p); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err := rootProgram(cfg, host, p); err != nil {
+			return err
+		}
+	}
 	if err := bootPath(cfg, host); err != nil {
 		return err
 	}
@@ -205,8 +217,17 @@ func bootPath(cfg Config, host *os.Root) error {
 			return err
 		}
 		for _, dir := range bootPathBefore {
-			if fi, err := host.Lstat(dir); err != nil || !fi.IsDir() {
-				continue // absent, or /usr/sbin linked to bin
+			fi, err := host.Lstat(dir)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				continue
+			case err != nil:
+				return fmt.Errorf("/%s: %w", dir, err)
+			case fi.Mode()&fs.ModeSymlink != 0:
+				if dir != "usr/sbin" || !sbinIsBin(host) {
+					return fmt.Errorf("/%s is a link; only /usr/sbin may be one, to bin", dir)
+				}
+				continue
 			}
 			if _, err := trustedPath(cfg, host, dir); err != nil {
 				return err
@@ -340,6 +361,20 @@ func rootProgram(cfg Config, host *os.Root, p string) error {
 	return nil
 }
 
+// sbinIsBin is whether /usr/sbin is the merged-/usr link to bin beside it.
+func sbinIsBin(host *os.Root) bool {
+	target, err := host.Readlink("usr/sbin")
+	return err == nil && target == "bin"
+}
+
+// usrMerged is p with usr/sbin read as usr/bin where /usr/sbin is the merged-/usr link, so rootProgram checks the file.
+func usrMerged(host *os.Root, p string) string {
+	if rest, ok := strings.CutPrefix(p, "usr/sbin/"); ok && sbinIsBin(host) {
+		return "usr/bin/" + rest
+	}
+	return p
+}
+
 // bootedForAudit is whether the command line holds, before "--" (what follows goes to init), exactly one audit=1
 // and one audit_backlog_limit of at least backlogLimit in plain decimal (the kernel reads base 0), and no other
 // parameter that names audit anywhere: the kernel and systemd read "-" as "_" in names, and auditd's unit does not
@@ -466,16 +501,16 @@ func rootFile(cfg Config, host *os.Root, name string, mode fs.FileMode, limit in
 // originalAuditdConf is the auditd.conf to keep as auditdOrig: the installed one while none is kept, else nil. A
 // kept one must be root's 0640 file as written; the audit package's auditd.conf must exist to be kept.
 func originalAuditdConf(cfg Config, host *os.Root) ([]byte, error) {
+	data, err := wholefile.ReadIn(host, auditdConf, maxConfBytes)
+	if err != nil {
+		return nil, fmt.Errorf("/%s: %w", auditdConf, err)
+	}
 	switch _, err := host.Lstat(auditdOrig); {
 	case err == nil:
 		_, err := rootFile(cfg, host, auditdOrig, 0o640, maxConfBytes)
 		return nil, err
 	case !errors.Is(err, fs.ErrNotExist):
 		return nil, fmt.Errorf("/%s: %w", auditdOrig, err)
-	}
-	data, err := wholefile.ReadIn(host, auditdConf, maxConfBytes)
-	if err != nil {
-		return nil, fmt.Errorf("/%s: %w", auditdConf, err)
 	}
 	return data, nil
 }
