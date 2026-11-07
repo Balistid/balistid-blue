@@ -18,13 +18,14 @@ uncovered (socket tests skip outside CI). Three of the escapes sit in error bran
 
 ## Decision
 
-1. CI job `mutation`, on pull requests and merge-queue groups only, mutates the lines a change touches in the
-   packages that decide security: `internal/anchor`, `unixsock`, `cosign`, `link`, `collector`, `rangevm` and
-   `cmd/balistid-ledger`. A mutant that tests run but none kills fails the job (`--fail-on-escaped`); an uncovered
-   one is a warning on the pull request. Mutants of error-message text are off (`expression/errorf-wrap`).
+1. CI job `mutation`, on pull requests and merge-queue groups only, mutates the lines a change adds or changes in
+   the packages that decide security: `internal/anchor`, `unixsock`, `cosign`, `link`, `collector`, `rangevm`,
+   `relay`, `entry`, `shard`, `store` and `cmd/balistid-ledger`. A mutant that tests run but none kills fails the job
+   (`--fail-on-escaped`); an uncovered one is listed in the job's log for review. Every mutator runs, `%w` to `%v`
+   too, since `errors.Is` decides on wrapped errors (the cap's UNKNOWN). No baseline file can hide an escape.
 2. An equivalent mutant (no behaviour change, or a branch nothing can reach) goes into
-   `tools/ci/mutation-blacklist` by its checksum, with its reason in the pull request that adds it; the file is
-   code-owned, so the maintainer sees each one.
+   `tools/ci/mutation-blacklist` by its checksum; the tool reads bare checksums only, so the reason and the mutant's
+   file:line go into the commit that adds the line, which `git blame` shows. The file is code-owned.
 3. The tool is one exact module version checked against its module hash before it is built (as govulncheck); the job
    holds no secret and reads only. Its maintainer works alone with AI agents and releases often, so a version bump is
    its own reviewed commit.
@@ -39,4 +40,5 @@ uncovered (socket tests skip outside CI). Three of the escapes sit in error bran
 ## Consequences
 
 - A change to a security decision now needs tests that notice it changed, checked by the machine on every pull request.
-- Uncovered lines are not a failure: R4 and review still judge them.
+- What it does not catch, left to R4 and review: a removed guard (no added line to mutate), a line no test runs
+  (listed, not failed), a test written to fail on purpose under mutation, and a mutant that errors or times out.
