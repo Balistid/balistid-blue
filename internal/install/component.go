@@ -26,6 +26,8 @@ type component struct {
 	created []string
 	// tmpfiles are the table names of its tmpfiles.conf files, read in this order: a parent is listed before its children.
 	tmpfiles []string
+	// late are table names written only after the units are enabled: a stop before them leaves the next boot as it was.
+	late []string
 }
 
 // components are the ones balistid-install installs, by the name a MANIFEST gives.
@@ -55,20 +57,11 @@ func (c component) released(ctx context.Context, cfg Config, host *os.Root, dir,
 	return r, nil
 }
 
-// tmpfilesConf is the component's tmpfiles.conf files of r, joined in order.
-func (c component) tmpfilesConf(r Release) []byte {
-	var b []byte
-	for _, name := range c.tmpfiles {
-		b = append(b, r.Files[name]...)
-	}
-	return b
-}
-
-// writeFiles writes every file of the table but the installer, skipping an installed allowed_signers that check
-// found equal to the bundle's.
-func (c component) writeFiles(host *os.Root, r Release, absent map[string]bool) error {
+// writeFiles writes the files of the table but the installer that are late or not, skipping an installed
+// allowed_signers that check found equal to the bundle's.
+func (c component) writeFiles(host *os.Root, r Release, absent map[string]bool, late bool) error {
 	for _, f := range c.table[:len(c.table)-1] {
-		if f.name == signersName && !absent[f.dest] {
+		if f.name == signersName && !absent[f.dest] || slices.Contains(c.late, f.name) != late {
 			continue
 		}
 		if err := wholefile.WriteIn(host, f.dest, r.Files[f.name], f.mode); err != nil {

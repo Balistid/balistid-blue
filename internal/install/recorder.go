@@ -1,11 +1,13 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -56,7 +58,9 @@ var recorderComponent = component{name: "recorder", table: recorderTable,
 	trusted: []string{"etc/systemd/system", "usr/local/lib", "usr/local/bin", "var/lib", "etc/audit", rulesDir,
 		"etc/audit/plugins.d", "etc/sysctl.d"},
 	created:  []string{"usr/local/lib/balistid", "etc/sysusers.d", "etc/tmpfiles.d", signersDir, "etc/laurel"},
-	tmpfiles: []string{"collector-tmpfiles.conf", "ledger-tmpfiles.conf"}}
+	tmpfiles: []string{"collector-tmpfiles.conf", "ledger-tmpfiles.conf"},
+	// The sensor's files change the next boot: locked rules, io_uring off, Laurel aimed at the collector's socket.
+	late: []string{"balistid.rules", "auditd.conf", "laurel-plugin.conf", "laurel-config.toml", "sysctl.conf"}}
 
 const (
 	rulesDir   = "etc/audit/rules.d"
@@ -65,6 +69,7 @@ const (
 	auditdOrig = signersDir + "/auditd.conf.orig"
 	ledgerKey  = signersDir + "/ledger-key"
 	ledgerPub  = signersDir + "/ledger-key.pub"
+	ledgerLog  = stateDir + "/ledger/log"
 	// backlogLimit is the kernel's queue before auditd loads the rules' -b (ADR 0004; range/mkosi.conf).
 	backlogLimit = 65536
 	maxKeyBytes  = 1 << 10
@@ -109,7 +114,7 @@ func recorder(ctx context.Context, cfg Config, dir, fingerprint string, d *Decis
 	if err := unitsAsWritten(ctx, cfg, c.units, false); err != nil {
 		return err
 	}
-	absent, err := preflight(cfg, host, c, 0, nil, c.tmpfilesConf(r))
+	absent, err := preflight(cfg, host, c, 0, nil, r)
 	if err != nil {
 		return err
 	}
@@ -130,7 +135,7 @@ func recorder(ctx context.Context, cfg Config, dir, fingerprint string, d *Decis
 			return fmt.Errorf("step write /%s: %w", auditdOrig, err)
 		}
 	}
-	if err := c.writeFiles(host, r, absent); err != nil {
+	if err := c.writeFiles(host, r, absent, false); err != nil {
 		return err
 	}
 	if keyAbsent {
@@ -149,6 +154,9 @@ func recorder(ctx context.Context, cfg Config, dir, fingerprint string, d *Decis
 		return fmt.Errorf("step check after the reload: %w", err)
 	}
 	if err := runAll(ctx, cfg, append([]string{"/usr/bin/systemctl", "enable", "--", "auditd.service"}, c.units...)); err != nil {
+		return err
+	}
+	if err := c.writeFiles(host, r, absent, true); err != nil {
 		return err
 	}
 	return c.writeInstaller(host, r)
@@ -173,7 +181,59 @@ func hostReady(cfg Config, host *os.Root) error {
 		return fmt.Errorf("the kernel was not booted with audit=1 audit_backlog_limit=%d and without audit=0, "+
 			"audit=off or quotes: set the boot entry's options and reboot", backlogLimit)
 	}
-	return otherRules(host)
+	if err := otherRules(host); err != nil {
+		return err
+	}
+	return otherSysctl(host)
+}
+
+// sysctlDirs are where systemd-sysctl reads settings; it applies all of them by file name, so any one of them could
+// set io_uring_disabled after the recorder's 90-balistid.conf.
+var sysctlDirs = []string{"etc/sysctl.d", "run/sysctl.d", "usr/local/lib/sysctl.d", "usr/lib/sysctl.d"}
+
+// otherSysctl refuses any sysctl file but the recorder's that names io_uring_disabled: exit rules do not see
+// io_uring's operations (ADR 0004), and nothing at runtime would show it on again. It changes none of them.
+func otherSysctl(host *os.Root) error {
+	files := []string{"etc/sysctl.conf"}
+	for _, dir := range sysctlDirs {
+		f, err := host.Open(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("/%s: %w", dir, err)
+		}
+		names, err := f.Readdirnames(-1)
+		_ = f.Close()
+		if err != nil {
+			return fmt.Errorf("/%s: %w", dir, err)
+		}
+		for _, n := range names {
+			if p := path.Join(dir, n); strings.HasSuffix(n, ".conf") && p != "etc/sysctl.d/90-balistid.conf" {
+				files = append(files, p)
+			}
+		}
+	}
+	for _, p := range files {
+		f, err := host.Open(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("/%s: %w", p, err)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxConfBytes+1))
+		_ = f.Close()
+		switch {
+		case err != nil:
+			return fmt.Errorf("/%s: %w", p, err)
+		case len(data) > maxConfBytes:
+			return fmt.Errorf("/%s: over %d bytes", p, maxConfBytes)
+		case bytes.Contains(data, []byte("io_uring_disabled")):
+			return fmt.Errorf("/%s sets io_uring_disabled, which the recorder's sysctl file sets: remove it first", p)
+		}
+	}
+	return nil
 }
 
 // rootProgram refuses p unless it is root's regular executable file only root may write, in a trusted directory.
@@ -229,8 +289,9 @@ func bootedForAudit(cmdline string) bool {
 			limit = v
 		}
 	}
+	// The kernel reads the limit with base 0, so a leading zero is octal: only plain decimal is read the same here.
 	n, err := strconv.ParseUint(limit, 10, 32)
-	return audit == "1" && err == nil && n >= backlogLimit
+	return audit == "1" && err == nil && limit[0] != '0' && n >= backlogLimit
 }
 
 // otherRules refuses any *.rules in rules.d but the recorder's: augenrules would merge it and the collector read the
@@ -267,8 +328,15 @@ func installedLedgerKey(cfg Config, host *os.Root) (absent bool, err error) {
 	switch {
 	case errors.Is(privErr, fs.ErrNotExist) && errors.Is(pubErr, fs.ErrNotExist):
 		return true, nil
-	case errors.Is(privErr, fs.ErrNotExist) || errors.Is(pubErr, fs.ErrNotExist):
-		return false, errors.New("only one of the ledger's key pair is installed")
+	case errors.Is(privErr, fs.ErrNotExist) && pubErr == nil:
+		// A public key alone, before the ledger's log exists, is what a stopped install leaves (writeLedgerKey
+		// writes it first): nothing was signed with its private half, so a new pair replaces it.
+		if _, err := host.Lstat(ledgerLog); errors.Is(err, fs.ErrNotExist) {
+			return true, nil
+		}
+		return false, errors.New("the ledger's public key is installed without its private key, and its log exists")
+	case errors.Is(pubErr, fs.ErrNotExist):
+		return false, errors.New("the ledger's private key is installed without its public key")
 	}
 	skey, err := rootFile(cfg, host, ledgerKey, 0o600, maxKeyBytes)
 	if err != nil {
@@ -342,11 +410,11 @@ func writeLedgerKey(host *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("step make the ledger key: %w", err)
 	}
-	if err := wholefile.WriteIn(host, ledgerKey, []byte(skey+"\n"), 0o600); err != nil {
-		return fmt.Errorf("step write /%s: %w", ledgerKey, err)
-	}
 	if err := wholefile.WriteIn(host, ledgerPub, []byte(vkey+"\n"), 0o644); err != nil {
 		return fmt.Errorf("step write /%s: %w", ledgerPub, err)
+	}
+	if err := wholefile.WriteIn(host, ledgerKey, []byte(skey+"\n"), 0o600); err != nil {
+		return fmt.Errorf("step write /%s: %w", ledgerKey, err)
 	}
 	return nil
 }

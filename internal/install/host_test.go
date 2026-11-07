@@ -48,7 +48,7 @@ func (h *fakeHost) mkdir(t *testing.T, name string, mode fs.FileMode) {
 func (h *fakeHost) put(t *testing.T, name string, data []byte, mode fs.FileMode) {
 	t.Helper()
 	p := filepath.Join(h.cfg.Root, name)
-	if err := os.WriteFile(p, data, mode); err != nil { //nolint:gosec // test temp dir
+	if err := os.WriteFile(p, data, mode); err != nil { //nolint:gosec,nolintlint // test temp dir; nolintlint misses gosec's G703 taint finding here
 		t.Fatal(err)
 	}
 	if err := os.Chmod(p, mode); err != nil {
