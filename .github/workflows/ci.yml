@@ -120,7 +120,7 @@ jobs:
 
   mutation:
     # A mutant on a changed line of a security-decision package that a test runs but no test kills fails the
-    # pull request (ADR 0066); uncovered mutants show as warnings.
+    # pull request (ADR 0066); uncovered mutants are listed in the job's log for review.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -151,11 +151,13 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@${MUTESTING_VERSION}"
       - name: Mutants on changed security-decision code must die
         run: |
-          "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --quiet --no-diffs \
-            --logger-github --disable=expression/errorf-wrap --blacklist=tools/ci/mutation-blacklist \
+          "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --no-diffs \
+            --output-statuses=en --logger-github --blacklist=tools/ci/mutation-blacklist \
+            --baseline="$RUNNER_TEMP/no-baseline.json" \
             --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
             ./internal/anchor/ ./internal/unixsock/ ./internal/cosign/ ./internal/link/ ./internal/collector/ \
-            ./internal/rangevm/ ./cmd/balistid-ledger/
+            ./internal/rangevm/ ./internal/relay/ ./internal/entry/ ./internal/shard/ ./internal/store/ \
+            ./cmd/balistid-ledger/
 
   go-race:
     runs-on: ubuntu-24.04
