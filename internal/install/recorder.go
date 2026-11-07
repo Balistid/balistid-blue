@@ -295,9 +295,9 @@ func dirNames(cfg Config, host *os.Root, dir string) ([]string, error) {
 	return names, nil
 }
 
-// sysctlFile reads p as systemd-sysctl would apply it: a link to /dev/null masks it (no bytes), another link is read
-// as its target, once. What is read must be root's plain file only root may write, on a trusted path, so A1 cannot
-// change it after the check; a FIFO or any other type refuses without blocking.
+// sysctlFile reads p as systemd-sysctl would apply it. A link is followed by nobody here: only a mask (to /dev/null)
+// and Debian's etc/sysctl.d/99-sysctl.conf to ../sysctl.conf, which is read on its own, pass; any other link refuses.
+// What is read must be root's plain file only root may write, on a trusted path; a FIFO or other type refuses.
 func sysctlFile(cfg Config, host *os.Root, p string) ([]byte, error) {
 	fi, err := host.Lstat(p)
 	if err != nil {
@@ -308,16 +308,10 @@ func sysctlFile(cfg Config, host *os.Root, p string) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("/%s: %w", p, err)
 		}
-		if target == "/dev/null" {
+		if target == "/dev/null" || target == "../sysctl.conf" && path.Dir(p) == "etc/sysctl.d" {
 			return nil, nil
 		}
-		if !path.IsAbs(target) {
-			target = path.Join("/", path.Dir(p), target)
-		}
-		p = strings.TrimPrefix(path.Clean(target), "/")
-		if fi, err = host.Lstat(p); err != nil {
-			return nil, fmt.Errorf("/%s: %w", p, err)
-		}
+		return nil, fmt.Errorf("/%s is a link the installer does not follow: make it a file or a mask", p)
 	}
 	if _, err := trustedPath(cfg, host, path.Dir(p)); err != nil {
 		return nil, err
