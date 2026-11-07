@@ -94,6 +94,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/unixsock/` | What every service needs from its local sockets: the peer's uid from the kernel, messages to systemd (ADR 0007) |
 | `internal/wholefile/` | Files written whole: temp file, fsync, rename, directory fsync (ENGINEERING.md 7) |
 | `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
+| `cmd/balistid-install/`, `internal/install/` | `balistid-install`: installs a component only from a MANIFEST the maintainer signed, each file checked (ADR 0053, 0058) |
 | `deploy/audit/` | Audit rules; the range image uses them, `balistid-install` will (ADR 0004) |
 | `deploy/auditd/` | auditd configuration and the Laurel plugin entry |
 | `deploy/laurel/` | Laurel configuration |
@@ -105,7 +106,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/net/` | The firewall that lets only the relay's uid reach the Pi, the WireGuard tunnel to it, and its user (ADR 0032) |
 | `deploy/announce/` | Units that announce a clean shutdown or suspend through the ledger's control socket (ADR 0030) |
 | `deploy/pi/` | The Pi's watcher unit, its failure alert and its user, installed on the Pi by hand (ADR 0031) |
-| `deploy/runner/` | Range runner's build and tick units, timer, users, directories and the script root installs them with (ADR 0011) |
+| `deploy/runner/` | Range runner's build and tick units, timer, users and directories; `balistid-install` installs them (ADR 0011, 0058) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
 | `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go), the runner's release manifest, and their tests |

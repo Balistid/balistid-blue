@@ -260,7 +260,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
         print(f"range-kvm: {err}", file=sys.stderr)
         return 1
     # The build prints package and crate output; with workflow commands off, none of it can become an
-    # annotation in the run whose log root reads the bundle sha256 from (ADR 0011, point 1).
+    # annotation in the run whose log the maintainer compares the MANIFEST with (ADR 0058, point 1).
     token = secrets.token_hex(16)
     print(f"::stop-commands::{token}", flush=True)
     try:

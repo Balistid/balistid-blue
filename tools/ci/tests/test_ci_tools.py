@@ -412,6 +412,7 @@ class GoLayoutTest(unittest.TestCase):
             "deploy/runner/balistid-runner-build.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.service": "[Service]\n",
             "deploy/runner/balistid-runner-tick.timer": "[Timer]\n",
+            "deploy/install/allowed_signers": "maintainer@balistid.dev\n",
             "deploy/collector/sysusers.conf": "u x -\n",
             "deploy/collector/tmpfiles.conf": "d /x 0700 x x -\n",
             "deploy/collector/balistid-collector.service": "[Service]\n",
@@ -432,6 +433,7 @@ class GoLayoutTest(unittest.TestCase):
                      "deploy/sysctl/other.conf", "deploy/auditd/other-plugin.conf",
                      "deploy/runner/other.conf", "deploy/runner/balistid-runner.service",
                      "deploy/runner/balistid-runner-tick.socket", "deploy/runner/sub/tmpfiles.conf",
+                     "deploy/install/other", "deploy/install/allowed_signers.pub",
                      "deploy/collector/other.socket", "deploy/collector/other.conf",
                      "deploy/collector/sub/balistid-collector.socket"):
             with self.subTest(name=name):
@@ -610,7 +612,8 @@ class OwnedDepsTest(unittest.TestCase):
     OWNERS = ("# owned\n\n/range/ @Jvc0n\n/deploy/ @Jvc0n\n/packaging/ @Jvc0n\n/cmd/balistid-range/ @Jvc0n\n"
               "/cmd/balistid-range-guest/ @Jvc0n\n/cmd/balistid-runner/ @Jvc0n\n/cmd/balistid/ @Jvc0n\n"
               "/cmd/balistid-collector/ @Jvc0n\n/cmd/balistid-ledger/ @Jvc0n\n/cmd/balistid-relay/ @Jvc0n\n"
-              "/cmd/balistid-pi/ @Jvc0n\n/cmd/balistid-auditstat/ @Jvc0n\n/internal/rangevm/ @Jvc0n\n")
+              "/cmd/balistid-pi/ @Jvc0n\n/cmd/balistid-auditstat/ @Jvc0n\n/cmd/balistid-install/ @Jvc0n\n"
+              "/internal/rangevm/ @Jvc0n\n")
     MOD = "module example.com/balistid\n\ngo 1.27\n\ntoolchain go1.27.1\n"
 
     def pkg(self, rel, **extra):
@@ -621,7 +624,7 @@ class OwnedDepsTest(unittest.TestCase):
                 self.pkg("cmd/balistid-range"), self.pkg("cmd/balistid-range-guest"),
                 self.pkg("cmd/balistid-runner"), self.pkg("cmd/balistid"), self.pkg("cmd/balistid-collector"),
                 self.pkg("cmd/balistid-ledger"), self.pkg("cmd/balistid-relay"), self.pkg("cmd/balistid-pi"),
-                self.pkg("cmd/balistid-auditstat"), *extra]
+                self.pkg("cmd/balistid-auditstat"), self.pkg("cmd/balistid-install"), *extra]
         return "\n".join(json.dumps(p, indent=1) for p in pkgs)
 
     def problems(self, deps=None, owners=None, mod=None):
@@ -759,7 +762,8 @@ class OwnedDepsTest(unittest.TestCase):
     # The binaries root installs are in the gate, and CI lists exactly the gate's roots (ADR 0011).
     def test_gate_roots_match_ci(self):
         root = Path(__file__).resolve().parents[3]
-        self.assertTrue({"cmd/balistid-runner", "cmd/balistid", "cmd/balistid-collector"} <= set(go_gate.OWNED_ROOTS))
+        self.assertTrue({"cmd/balistid-runner", "cmd/balistid", "cmd/balistid-collector", "cmd/balistid-install"}
+                        <= set(go_gate.OWNED_ROOTS))
         ci = (root / ".github/workflows/ci.yml").read_text()
         listed = [line for line in ci.splitlines() if "go list -deps -json" in line]
         self.assertEqual(len(listed), 1)

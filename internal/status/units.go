@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -40,15 +41,24 @@ const (
 	maxShow     = 64 << 10
 )
 
-// showProps are the properties asked for, exactly one line each per unit.
+// showProps are the properties status asks for, exactly one line each per unit.
 var showProps = []string{"Id", "LoadState", "ActiveState", "SubState"}
 
-// ShowUnits asks systemd for the state of names, in their order. systemctl runs by its absolute path with no
-// environment but the C locale, so neither PATH nor a bus address of the caller's choosing is used.
+// ShowUnits asks systemd for the state of names, in their order.
 func ShowUnits(ctx context.Context, names []string) ([]UnitState, error) {
+	blocks, err := Show(ctx, names, showProps)
+	if err != nil {
+		return nil, err
+	}
+	return unitStates(blocks, names)
+}
+
+// Show asks systemd for props of names, in their order; props must hold Id. systemctl runs by its absolute path with
+// no environment but the C locale, so neither PATH nor a bus address of the caller's choosing is used.
+func Show(ctx context.Context, names, props []string) ([]map[string]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, showTimeout)
 	defer cancel()
-	args := append([]string{"show", "--property=" + strings.Join(showProps, ","), "--"}, names...)
+	args := append([]string{"show", "--property=" + strings.Join(props, ","), "--"}, names...)
 	cmd := exec.CommandContext(ctx, systemctl, args...) //nolint:gosec // fixed binary and verb; names are units
 	cmd.Env = []string{"LC_ALL=C"}
 	out := &capped{limit: maxShow}
@@ -56,7 +66,7 @@ func ShowUnits(ctx context.Context, names []string) ([]UnitState, error) {
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("status: systemctl show: %w", err)
 	}
-	return parseShow(out.b.Bytes(), names)
+	return parseProps(out.b.Bytes(), names, props)
 }
 
 // capped keeps at most limit bytes and fails the write past them.
@@ -75,28 +85,37 @@ func (c *capped) Write(p []byte) (int, error) {
 // stateValue is the form of every value systemd prints for these properties; nothing else reaches the output.
 var stateValue = regexp.MustCompile(`^[a-z][a-z-]{0,31}$`)
 
-// parseShow reads systemctl show's blocks, one per name in order, each exactly showProps once, the Id the name
-// asked for. Anything else is refused whole: status reads no unit from output it cannot read (R6).
-func parseShow(out []byte, names []string) ([]UnitState, error) {
+// parseProps reads systemctl show's blocks, one per name in order, each exactly props once, the Id the name asked
+// for. Anything else is refused whole: nothing is read about a unit from output that cannot be read (R6).
+func parseProps(out []byte, names, props []string) ([]map[string]string, error) {
 	blocks := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n\n")
 	if len(blocks) != len(names) {
 		return nil, fmt.Errorf("status: systemctl show printed %d units for %d", len(blocks), len(names))
 	}
-	states := make([]UnitState, len(names))
+	got := make([]map[string]string, len(names))
 	for i, block := range blocks {
-		props := map[string]string{}
+		values := map[string]string{}
 		for _, line := range strings.Split(block, "\n") {
 			k, v, ok := strings.Cut(line, "=")
-			if _, dup := props[k]; !ok || dup {
-				return nil, fmt.Errorf("status: systemctl show: unit %d: a line that is not one new property", i)
+			if _, dup := values[k]; !ok || dup || !slices.Contains(props, k) {
+				return nil, fmt.Errorf("status: systemctl show: unit %d: a line that is not one new property asked for", i)
 			}
-			props[k] = v
+			values[k] = v
 		}
-		s := UnitState{ID: props["Id"], Load: props["LoadState"], Active: props["ActiveState"], Sub: props["SubState"]}
-		switch {
-		case len(props) != len(showProps) || s.ID != names[i]:
-			return nil, fmt.Errorf("status: systemctl show: unit %d is not %s with its %d properties", i, names[i], len(showProps))
-		case !stateValue.MatchString(s.Load) || !stateValue.MatchString(s.Active) || !stateValue.MatchString(s.Sub):
+		if len(values) != len(props) || values["Id"] != names[i] {
+			return nil, fmt.Errorf("status: systemctl show: unit %d is not %s with its %d properties", i, names[i], len(props))
+		}
+		got[i] = values
+	}
+	return got, nil
+}
+
+// unitStates are the states of names in blocks of showProps, each of the plain form stateValue allows.
+func unitStates(blocks []map[string]string, names []string) ([]UnitState, error) {
+	states := make([]UnitState, len(blocks))
+	for i, p := range blocks {
+		s := UnitState{ID: p["Id"], Load: p["LoadState"], Active: p["ActiveState"], Sub: p["SubState"]}
+		if !stateValue.MatchString(s.Load) || !stateValue.MatchString(s.Active) || !stateValue.MatchString(s.Sub) {
 			return nil, fmt.Errorf("status: systemctl show: %s: a state of another form", names[i])
 		}
 		states[i] = s
