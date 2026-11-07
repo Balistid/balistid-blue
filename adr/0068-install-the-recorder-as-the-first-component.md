@@ -23,9 +23,9 @@ Local mode (ADR 0043) needs files nothing ships yet: a relay unit without `balis
    and socket, the ledger's and auditstat's services, three `sysusers.conf` and two `tmpfiles.conf` (each checked
    alone), `balistid.rules`, `auditd.conf`, Laurel's plugin and config, the io_uring sysctl, `allowed_signers` and the
    installer. Units, sysusers and tmpfiles go under `/etc` as the runner's; the sensor's files where the range image
-   puts them. Before the first write it refuses unless: laurel, augenrules, auditd, auditctl and what augenrules runs
-   through PATH are root's executables in `/usr/bin` only root may write (a link only to a name beside it), and no
-   directory earlier on systemd's boot PATH holds those names; `_laurel` exists; the command line, printable ASCII,
+   puts them. Before the first write it refuses unless: laurel, augenrules, auditd, auditctl, env, restorecon if present
+   and what augenrules runs through PATH are root's executables only root may write (a link only to a name beside it),
+   and no directory earlier on systemd's boot PATH is a link (but `/usr/sbin` to bin) or holds those names; `_laurel` exists; the command line, printable ASCII,
    holds before `--` exactly one `audit=1` and one decimal `audit_backlog_limit` of at least 65536 and no other audit
    parameter (`-` read as `_`); `/etc/audit/rules.d` holds no `*.rules` but `balistid.rules` and no other root-only
    sysctl file names `io_uring_disabled` (this decides #240: the recorder owns both, moving nothing); the audit

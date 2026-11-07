@@ -222,6 +222,29 @@ func TestRecorderRefusesAHostNotReadyForTheSensor(t *testing.T) {
 		"usr/local/bin writable": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			h.chmod(t, "usr/local/bin", 0o777)
 		}, "/usr/local/bin: writable by group or other"},
+		"env others may write": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.chmod(t, "usr/bin/env", 0o757)
+		}, "/usr/bin/env is not an executable regular file"},
+		"restorecon others may write, merged /usr": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.symlink(t, "bin", "usr/sbin")
+			h.put(t, "usr/bin/restorecon", []byte("#!/bin/sh\n"), 0o757)
+		}, "/usr/bin/restorecon is not an executable regular file"},
+		"restorecon others may write, split /usr": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "usr/sbin", 0o755)
+			h.put(t, "usr/sbin/restorecon", []byte("#!/bin/sh\n"), 0o757)
+		}, "/usr/sbin/restorecon is not an executable regular file"},
+		"/usr/local/sbin a link": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "tmp", 0o777)
+			h.symlink(t, "../../tmp", "usr/local/sbin")
+		}, "/usr/local/sbin is a link"},
+		"/usr/sbin a link elsewhere": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.mkdir(t, "tmp", 0o777)
+			h.symlink(t, "../tmp", "usr/sbin")
+		}, "/usr/sbin is a link"},
+		"auditd.conf missing beside a kept original": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
+			h.put(t, auditdOrig, []byte(distroAuditd), 0o640)
+			must(t, os.Remove(filepath.Join(h.cfg.Root, auditdConf)))
+		}, "/etc/audit/auditd.conf: missing"},
 		"no xargs": {func(t *testing.T, h *fakeHost, _ *fakeSystem) {
 			must(t, os.Remove(filepath.Join(h.cfg.Root, "usr/bin/xargs")))
 		}, "/usr/bin/xargs"},
@@ -356,6 +379,7 @@ func TestRecorderReplacesALonePublicKeyAndKeepsItsOwnSysctl(t *testing.T) {
 	h.put(t, ledgerPub, []byte(vk+"\n"), 0o644)
 	h.put(t, "etc/sysctl.d/90-balistid.conf", []byte("kernel.io_uring_disabled = 2\n"), 0o644)
 	h.put(t, "etc/sysctl.d/README", []byte("kernel.io_uring_disabled\n"), 0o644)
+	h.symlink(t, "bin", "usr/sbin")
 	h.symlink(t, "/dev/null", "etc/sysctl.d/50-masked.conf")
 	h.put(t, "etc/sysctl.conf", []byte("vm.swappiness = 10\n"), 0o644)
 	h.symlink(t, "../sysctl.conf", "etc/sysctl.d/99-sysctl.conf")
