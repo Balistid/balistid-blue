@@ -476,6 +476,18 @@ func TestRecorderRefusesAnotherComponentOrFileSet(t *testing.T) {
 	h.refusedRecorder(t, s, "only the runner's bundle", recorderComponent.bundle()+": missing")
 }
 
+// A component's tmpfiles and late names are files of its table: a name that is not would silently check no
+// tmpfiles directory or write a file before the units are enabled.
+func TestComponentListsNameTableFiles(t *testing.T) {
+	for _, c := range components {
+		for _, name := range slices.Concat(c.tmpfiles, c.late) {
+			if !slices.ContainsFunc(c.table, func(f target) bool { return f.name == name }) {
+				t.Errorf("%s: %q is not in its table", c.name, name)
+			}
+		}
+	}
+}
+
 // Every destination lies in a directory the component trusts or creates, so preflight has checked its parent.
 func TestEveryDestinationIsInACheckedDirectory(t *testing.T) {
 	for _, c := range components {
