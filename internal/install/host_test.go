@@ -96,7 +96,7 @@ func (h *fakeHost) publish(t *testing.T, files map[string][]byte, manifest, sig 
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		entries = append(entries, entry{name: name, data: string(files[name])})
 	}
-	if err := os.WriteFile(filepath.Join(h.dir, bundleName), tarOf(t, entries...), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(h.dir, runnerComponent.bundle()), tarOf(t, entries...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if sig != nil {

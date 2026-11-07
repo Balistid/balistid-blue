@@ -19,7 +19,7 @@ func run(ctx context.Context, args []string, euid int) int {
 	cfg := install.DefaultConfig()
 	switch {
 	case len(args) >= 2 && len(args) <= 3 && args[0] == "verify":
-		r, err := install.Check(ctx, cfg, args[1], optional(args, 2))
+		r, err := install.Check(ctx, cfg, "runner", args[1], optional(args, 2))
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "balistid-install: refused: "+err.Error())
 			return 1

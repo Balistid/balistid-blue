@@ -41,7 +41,6 @@ func DefaultConfig() Config {
 }
 
 const (
-	bundleName  = "balistid-runner-bundle.tar"
 	sigName     = "MANIFEST.sig"
 	signersName = "allowed_signers"
 	signersDir  = "etc/balistid"
@@ -57,20 +56,24 @@ type Release struct {
 	Files          map[string][]byte // by name, MANIFEST excluded
 }
 
-// Check reads the bundle and its signature from dir once and returns the release only when the signature
-// verifies and every file matches its sha256; it writes nothing. The key is the installed allowed_signers, whose
-// copy in the bundle must be identical; given a fingerprint (the first install), the bundle's own key must have it,
-// and a key already installed must be that same key (ADR 0058, point 5).
-func Check(ctx context.Context, cfg Config, dir, fingerprint string) (Release, error) {
+// Check reads the named component's bundle and its signature from dir once and returns the release only when the
+// signature verifies and every file matches its sha256; it writes nothing. The key is the installed allowed_signers,
+// whose copy in the bundle must be identical; given a fingerprint (the first install), the bundle's own key must have
+// it, and a key already installed must be that same key (ADR 0058, point 5).
+func Check(ctx context.Context, cfg Config, name, dir, fingerprint string) (Release, error) {
+	c, ok := components[name]
+	if !ok {
+		return Release{}, fmt.Errorf("no component %q", name)
+	}
 	host, err := os.OpenRoot(cfg.Root)
 	if err != nil {
 		return Release{}, fmt.Errorf("open the root: %w", err)
 	}
 	defer host.Close() //nolint:errcheck // read-only here
-	return check(ctx, cfg, host, dir, fingerprint)
+	return c.released(ctx, cfg, host, dir, fingerprint, &Decision{})
 }
 
-func check(ctx context.Context, cfg Config, host *os.Root, dir, fingerprint string) (Release, error) {
+func check(ctx context.Context, cfg Config, host *os.Root, bundleName, dir, fingerprint string) (Release, error) {
 	in, err := os.OpenRoot(dir)
 	if err != nil {
 		return Release{}, fmt.Errorf("open %s: %w", dir, err)
