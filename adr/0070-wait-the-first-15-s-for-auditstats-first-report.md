@@ -22,8 +22,9 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
 
 ## Decision
 
-1. With no report read yet, health is `UNKNOWN starting` (reason 1) while the collector is under 15 s old
-   (`auditFresh`, ADR 0038 point 4's grace for 8 and 10), and 8 from 15 s on. It is never OK without a report.
+1. With no report read yet, health is `UNKNOWN starting` (reason 1) in the first 15 s of the boot's first start
+   of the collector (`auditFresh`, ADR 0038 point 4's grace for 8 and 10), and 8 from 15 s on; a restart in the
+   same boot, which reads that boot's seen file, is 8 at once. It is never OK without a report.
 2. Starting is named where 8 was, only where health would otherwise be OK; the order 9, 11, 10, 8 stays.
 3. balistid-auditstat starts after audit-rules.service, so its first report shows the rules the boot loaded.
 4. `balistid status` says starting lasts until the first canary is stored and auditstat's report is read.
@@ -39,9 +40,13 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
 
 ## Consequences
 
+- Measured at 01752d2 on KVM: `loss-control-none` 10 of 10 PASS, `loss-auditd-crash` 2 of 2 PASS (the alert 5.2
+  to 7.2 s after the loss).
 - R6 holds: a report that does not come alerts as 8 at 15 s of the collector's monotonic clock; were 8 never
-  logged, the Pi's watchdog alerts on a starting that lasts 60 s (ADR 0031 point 3). An auditstat that reports
+  logged, the Pi's watchdog alerts on a starting that lasts 60 s (ADR 0031 point 3). A boot whose auditstat reports
   later than 15 s after the collector starts still pages, as before ba1e366.
-- A collector restarted while auditstat runs reads the report in its first tick and logs no starting for it.
+- A restart in the same boot is 8 at once without a report, so a restart loop cannot hold starting; a restart
+  while auditstat runs reads the report in its first tick. A seen file not written, or no boot id, leaves a
+  start the grace.
 - The rules trials keep their 10 s from the first stored canary to `rules-differ`; their judge accepts starting.
 - Revert: a pull request removing this file, the starting case, the hint, the unit's `After=` and their tests.
