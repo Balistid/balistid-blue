@@ -126,6 +126,7 @@ func TestHealthEntryForEveryState(t *testing.T) {
 	for h, want := range map[string]entry.Health{
 		"OK":                          {State: entry.StateOK, Unstored: 2},
 		"UNKNOWN store: starting":     {State: entry.StateUnknown, Reason: entry.ReasonStarting, Unstored: 2},
+		auditStarting:                 {State: entry.StateUnknown, Reason: entry.ReasonStarting, Unstored: 2},
 		"UNKNOWN store: store-open":   {State: entry.StateUnknown, Reason: entry.ReasonStoreDown, Unstored: 2},
 		"UNKNOWN laurel-disconnected": {State: entry.StateUnknown, Reason: entry.ReasonLaurelDisconnected, Unstored: 2},
 		"UNKNOWN canary-missed":       {State: entry.StateUnknown, Reason: entry.ReasonCanaryMissed, Unstored: 2},

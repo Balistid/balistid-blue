@@ -309,7 +309,7 @@ func healthEntry(h string, unstored uint64) (entry.Health, error) {
 	switch {
 	case h == "OK":
 		e.State = entry.StateOK
-	case h == "UNKNOWN store: starting":
+	case h == "UNKNOWN store: starting" || h == auditStarting:
 		e.Reason = entry.ReasonStarting
 	case strings.HasPrefix(h, "UNKNOWN store: "):
 		e.Reason = entry.ReasonStoreDown

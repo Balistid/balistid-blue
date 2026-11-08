@@ -38,6 +38,9 @@ const (
 	auditdDown      = "UNKNOWN auditd-down"
 	auditdRestarted = "UNKNOWN auditd-restarted"
 	auditStale      = "UNKNOWN audit-stale"
+	// auditStarting is health with no report read yet in the collector's first auditFresh: at boot auditstat starts
+	// after the collector's first canary can be stored (ADR 0070).
+	auditStarting = "UNKNOWN starting"
 )
 
 // AuditConfig names what the collector reads of the kernel's and auditd's loss and health (ADR 0038, point 2):
@@ -187,11 +190,11 @@ func (a *Audit) restarting(now time.Time) bool {
 	return !a.restartAt.IsZero() && !a.stateAt.After(a.restartAt) && now.Sub(a.restartAt) < auditFresh
 }
 
-// reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; a fresh report shows rules or status fields
-// other than the shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the state's
-// mtime did not change within auditFresh. The last two wait the collector's first auditFresh; the rules do not, as
-// a fresh report that differs is evidence, not an absence. The clock is the writer's monotonic one, which a suspend
-// stops.
+// reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; no report read yet, starting in the
+// collector's first auditFresh and stale after it; a fresh report shows rules or status fields other than the
+// shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the state's mtime did not
+// change within auditFresh. The last two wait the collector's first auditFresh; the rules do not, as a fresh report
+// that differs is evidence, not an absence. The clock is the writer's monotonic one, which a suspend stops.
 func (a *Audit) reason(now time.Time) string {
 	warm := now.Sub(a.start) >= auditFresh
 	reportFresh := a.haveReport && now.Sub(a.reportAt) < auditFresh
@@ -199,6 +202,8 @@ func (a *Audit) reason(now time.Time) string {
 	switch {
 	case stateFresh && a.overflow:
 		return auditOverflow
+	case !a.haveReport && !warm: // never OK without a report, alerted only past the boot's grace (ADR 0070)
+		return auditStarting
 	case !a.haveReport: // nothing yet says which rules are loaded (ADR 0059, point 3)
 		return auditStale
 	case reportFresh && a.report.Loaded() != a.shipped:
