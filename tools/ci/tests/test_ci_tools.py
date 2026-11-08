@@ -775,6 +775,17 @@ class OwnedDepsTest(unittest.TestCase):
                 self.assertTrue(go_gate.is_owned(path, rules))
 
 
+class VulnScanTest(unittest.TestCase):
+    def test_govulncheck_scans_every_witness_program(self):
+        root = Path(__file__).resolve().parents[3]
+        programs = re.findall(r'"range/witness", "([^"]+)"', (root / "internal/rangevm/session.go").read_text())
+        scan = re.search(r'govulncheck@[^"]+" -C range/witness \\\n\s*([^\n]+)',
+                         (root / ".github/workflows/ci.yml").read_text())
+        self.assertTrue(programs)
+        self.assertIsNotNone(scan)
+        self.assertEqual(sorted(scan.group(1).split()), sorted(programs))
+
+
 A_SHA, B_SHA, ZERO_SHA = "a" * 40, "b" * 40, "0" * 40
 
 

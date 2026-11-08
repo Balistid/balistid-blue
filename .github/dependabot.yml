@@ -7,12 +7,3 @@ updates:
     commit-message:
       prefix: ci
     open-pull-requests-limit: 3
-  - package-ecosystem: gomod
-    directories: [/, /range/witness]
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 7
-    commit-message:
-      prefix: build
-    open-pull-requests-limit: 3
