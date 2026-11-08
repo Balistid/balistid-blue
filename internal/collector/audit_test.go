@@ -480,6 +480,47 @@ func TestGraceOnlyNearBoot(t *testing.T) {
 	}
 }
 
+// The grace never hides another failure: each input setHealth combines that can hold in a start's first 15 s
+// without a report names its own reason over starting, at once and 10 s later (ADR 0070). A missed canary needs two
+// deadlines of CanaryEvery and auditd-restarted a report, so neither meets the grace.
+func TestGraceHidesNoOtherFailure(t *testing.T) {
+	for _, c := range []struct {
+		want    string
+		openErr error
+		setup   func(r *rig, f *auditFake)
+		fail    func(r *rig)
+	}{
+		{streamUnknown, nil, func(r *rig, _ *auditFake) { r.w.stopped = "the ledger's batch is not the store's" }, nil},
+		{"UNKNOWN store: store-open", errors.New("no disk"), nil, nil},
+		{"UNKNOWN laurel-disconnected", nil, nil, func(r *rig) { r.w.Links.Disconnected(nil) }},
+		{"UNKNOWN canary-pending", nil, nil, func(r *rig) { r.w.Links.Disconnected(nil); r.step(time.Millisecond); connect(r, 78) }},
+		{auditOverflow, nil, func(_ *rig, f *auditFake) { f.overflow = true }, nil},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
+		r := newRig(t)
+		r.w.Audit = f.audit(seenPath(t), "boot")
+		if c.setup != nil {
+			c.setup(r, f)
+		}
+		r.start(c.openErr)
+		r.settle()
+		if c.openErr == nil {
+			healthy(r)
+		}
+		if c.fail != nil {
+			c.fail(r)
+		}
+		for _, at := range []time.Duration{0, 10 * time.Second} {
+			f.write()
+			r.step(at)
+			if health(r) != c.want {
+				t.Errorf("health %q %s later in the grace, not %q", health(r), at, c.want)
+			}
+		}
+	}
+}
+
 // A report read inside the first 15 s ends starting at once. A state file not read is 8 only after the collector's
 // first 15 s.
 func TestFirstReportInTheGraceIsOK(t *testing.T) {

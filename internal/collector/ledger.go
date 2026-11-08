@@ -541,7 +541,7 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 // alone goes at most every healthEvery.
 func (w *Writer) sendHealth() {
 	unstored, now, h := w.unstored(), w.Now(), w.health
-	if h == "OK" && w.streamFault() { // the tick's health predates this tick's stream
+	if (h == "OK" || h == auditStarting) && w.streamFault() { // the tick's health predates this tick's stream
 		h = streamUnknown
 	}
 	if h == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
