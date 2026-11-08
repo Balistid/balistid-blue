@@ -137,3 +137,16 @@ func TestAnchorLimitIsTheAcceptance(t *testing.T) {
 		t.Errorf("acceptance anchor_interval_s %q, the judge's limit %d ms", m, anchorLimitMS)
 	}
 }
+
+// The window is one interval short of the load, the interval rounded down: 0.5 ms at 2000/s counts as 0.
+func TestAnchorWindowIsOneIntervalShort(t *testing.T) {
+	for _, c := range []struct {
+		load uint64
+		rate int
+		want uint64
+	}{{600000, 2000, 600000}, {30000, 100, 29990}, {1000, 1001, 1000}, {1000, 999, 999}, {1000, 1000, 999}} {
+		if got := anchorWindowMS(c.load, c.rate); got != c.want {
+			t.Errorf("anchorWindowMS(%d, %d) = %d, want %d", c.load, c.rate, got, c.want)
+		}
+	}
+}

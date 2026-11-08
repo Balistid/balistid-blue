@@ -39,8 +39,8 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	gap, errG := plainNumber(f[FactAnchorGapMS])
 	batches, errB := plainNumber(f[FactAnchorBatches])
-	loadMS := uint64(tr.Load.Seconds) * 1000       //nolint:gosec // positive table value
-	windowMS := loadMS - uint64(1000/tr.Load.Rate) //nolint:gosec // positive table value
+	loadMS := uint64(tr.Load.Seconds) * 1000 //nolint:gosec // positive table value
+	windowMS := anchorWindowMS(loadMS, tr.Load.Rate)
 	switch {
 	case errG != nil || errB != nil:
 		return Invalid, fmt.Sprintf("the ledger's batches are not measured: gap \"%s\", batches \"%s\"",
@@ -56,4 +56,10 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 		return Miss, fmt.Sprintf("%d ms without a batch entry, over %d ms; %d batches", gap, anchorLimitMS, batches)
 	}
 	return Pass, fmt.Sprintf("at most %d ms between %d batch entries", gap, batches)
+}
+
+// anchorWindowMS is the generator's shortest window: the load less one interval between events, rounded down because
+// the guest rounds gaps up.
+func anchorWindowMS(loadMS uint64, rate int) uint64 {
+	return loadMS - uint64(1000/rate) //nolint:gosec // positive table value
 }
