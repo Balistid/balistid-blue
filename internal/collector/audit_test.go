@@ -441,16 +441,16 @@ func TestRestartInTheBootHasNoGrace(t *testing.T) {
 func TestGraceOnlyNearBoot(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		boot time.Duration
+		boot uint64 // ns
 		err  error
 		want []string // at 0 s, 14.999 s and 15 s
 	}{
-		{"under the bound", bootGrace - time.Millisecond, nil, []string{auditStarting, auditStarting, auditStale}},
-		{"at the bound", bootGrace, nil, []string{auditStale, auditStale, auditStale}},
-		{"clock not read", time.Second, errors.New("no clock"), []string{auditStale, auditStale, auditStale}},
+		{"under the bound", uint64(bootGrace - time.Millisecond), nil, []string{auditStarting, auditStarting, auditStale}},
+		{"at the bound", uint64(bootGrace), nil, []string{auditStale, auditStale, auditStale}},
+		{"clock not read", uint64(time.Second), errors.New("no clock"), []string{auditStale, auditStale, auditStale}},
 	} {
 		f := newAuditFake()
-		f.set(func(f *auditFake) { f.reportErr, f.boot, f.bootErr = os.ErrNotExist, uint64(c.boot), c.err })
+		f.set(func(f *auditFake) { f.reportErr, f.boot, f.bootErr = os.ErrNotExist, c.boot, c.err })
 		r := auditRig(t, f, seenPath(t), "boot")
 		healthy(r)
 		for i, at := range []time.Duration{0, auditFresh - time.Millisecond, time.Millisecond} {
