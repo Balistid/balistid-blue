@@ -709,8 +709,8 @@ func (w *Writer) refusals() {
 }
 
 // setHealth is UNKNOWN until the store is open, Laurel connected, the probe over this connection stored
-// and fewer than two probes missed, then for the audit's and the stream's reasons, and the audit's starting only
-// where health would otherwise be OK (ADR 0070); a new auditd pid comes before all (ADR 0038, point 4). A change is a record (ADR 0017).
+// and fewer than two probes missed, then for the audit's and the stream's reasons, the audit's starting only over a
+// read-back that still runs (ADR 0070); a new auditd pid comes before all (ADR 0038, point 4). A change is a record (ADR 0017).
 func (w *Writer) setHealth() {
 	now := w.Now()
 	failing := w.Canary.Due(now)
@@ -732,10 +732,12 @@ func (w *Writer) setHealth() {
 		h = "UNKNOWN canary-pending"
 	case audit != "" && audit != auditStarting: // ADR 0038, point 4, and ADR 0059: 9, 11, 10, 8, then the stream's 6
 		h = audit
-	case w.streamFault(): // every other reason stays recorded as it changes (ADR 0017, point 5)
+	case w.streamFailed(): // every other reason stays recorded as it changes (ADR 0017, point 5)
 		h = streamUnknown
-	case audit != "": // starting, only where health would otherwise be OK (ADR 0070)
+	case audit != "": // starting, where health would be OK or the ledger's batch is still read back (ADR 0070)
 		h = audit
+	case w.streamFault(): // the read-back still runs: never OK
+		h = streamUnknown
 	}
 	if h != w.health {
 		w.health = h

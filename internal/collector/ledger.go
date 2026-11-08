@@ -541,7 +541,8 @@ func (w *Writer) takeCosigned(m link.Cosigned) error {
 // alone goes at most every healthEvery.
 func (w *Writer) sendHealth() {
 	unstored, now, h := w.unstored(), w.Now(), w.health
-	if (h == "OK" || h == auditStarting) && w.streamFault() { // the tick's health predates this tick's stream
+	// the tick's health predates this tick's stream; a read-back that still runs keeps starting (ADR 0070)
+	if (h == "OK" && w.streamFault()) || (h == auditStarting && w.streamFailed()) {
 		h = streamUnknown
 	}
 	if h == w.healthSent && (unstored == w.unstoredSent || now.Sub(w.healthAt) < healthEvery) {
@@ -557,10 +558,16 @@ func (w *Writer) sendHealth() {
 	}
 }
 
-// streamFault reports a stream that stopped, cannot read leaves, or is still reading back the ledger's last
-// batch. It shows only where health would be OK: another UNKNOWN reason keeps its name, and alarms the same.
+// streamFault reports a stream that failed or is still reading back the ledger's last batch. It shows only where
+// health would be OK: another UNKNOWN reason keeps its name, and alarms the same.
 func (w *Writer) streamFault() bool {
-	return w.stopped != "" || w.leavesErr != "" || w.checkRoot != nil
+	return w.streamFailed() || w.checkRoot != nil
+}
+
+// streamFailed reports a stream that stopped or cannot read leaves: unlike a read-back that still runs, it names
+// the health over the audit's starting (ADR 0070).
+func (w *Writer) streamFailed() bool {
+	return w.stopped != "" || w.leavesErr != ""
 }
 
 // unstored counts the records the collector counted lost whose loss record the store has not committed.
