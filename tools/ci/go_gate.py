@@ -85,13 +85,13 @@ ALLOWED_MODULES: dict[str, tuple[str, str, str]] = {
         ("LICENSE", "Apache-2.0", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
     "go.opentelemetry.io/auto/sdk@v1.2.1":
         ("LICENSE", "Apache-2.0", "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"),
-    "go.opentelemetry.io/otel@v1.41.0":
+    "go.opentelemetry.io/otel@v1.44.0":
         ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
-    "go.opentelemetry.io/otel/metric@v1.41.0":
+    "go.opentelemetry.io/otel/metric@v1.44.0":
         ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
-    "go.opentelemetry.io/otel/trace@v1.41.0":
+    "go.opentelemetry.io/otel/trace@v1.44.0":
         ("LICENSE", "Apache-2.0 AND BSD-3-Clause", "1ae07514be1d7bb33f0698f8d91fb51b8b9fe1463157ec1c72081a49b9bc6f40"),
-    "golang.org/x/crypto@v0.52.0":
+    "golang.org/x/crypto@v0.58.1-0.20261009181718-2f1f834330b2":
         ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
     "golang.org/x/exp@v0.0.0-20240325151524-a685a6edb6d8":
         ("LICENSE", "BSD-3-Clause", "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"),
@@ -99,7 +99,7 @@ ALLOWED_MODULES: dict[str, tuple[str, str, str]] = {
         ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
     "golang.org/x/sync@v0.23.0":
         ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
-    "golang.org/x/sys@v0.48.0":
+    "golang.org/x/sys@v0.49.0":
         ("LICENSE", "BSD-3-Clause", "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"),
     "k8s.io/klog/v2@v2.130.1":
         ("LICENSE", "Apache-2.0", "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68"),
