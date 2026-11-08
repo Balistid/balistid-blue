@@ -70,7 +70,7 @@ func truncationRun(tr rangejob.Trial, f map[string]string, n map[string]uint64, 
 		return Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n[FactTruncExecs], want)
 	case n[FactTruncLastMS] < n[FactTruncFirstMS]:
 		return Invalid, "the last exec starts before the first"
-	case n[FactTruncEndMS] < n[FactTruncLastMS] || n[FactTruncEndMS]-n[FactTruncLastMS] < truncationWaitMS:
+	case n[FactTruncEndMS]-min(n[FactTruncEndMS], n[FactTruncLastMS]) < truncationWaitMS:
 		return Invalid, fmt.Sprintf("the sink was read %d ms after the last exec, before %s", n[FactTruncEndMS]-min(n[FactTruncEndMS],
 			n[FactTruncLastMS]), TruncationWait)
 	case n[FactTruncBefore] != 0 || n[FactTruncEntries] != want:
