@@ -9,12 +9,14 @@ import (
 
 // Facts of a truncation trial (truncation_alarm_per_hour, ADR 0069) besides an alarm trial's posts, watcher and
 // restarts and a loss trial's kernel and dispatcher counters: how many oversized execs ran, the uptime in ms at the
-// start of the first and the last and when the sink was read; the ledger's truncated entries before the first exec
-// and after it, and its entries of any other loss after it; and "yes" once the watcher is shown to have verified the
-// log past the last truncated entry, else why not. The posts are the first start and every truncated alert.
+// start of the first, the one before the last and the last, and when the sink was read; the ledger's truncated
+// entries before the first exec and after it, and its entries of any other loss after it; and "yes" once the watcher
+// is shown to have verified the log past the last truncated entry, else why not. The posts are the first start and
+// every truncated alert.
 const (
 	FactTruncExecs   = "trunc_execs"
 	FactTruncFirstMS = "trunc_first_ms"
+	FactTruncPrevMS  = "trunc_prev_ms"
 	FactTruncLastMS  = "trunc_last_ms"
 	FactTruncEndMS   = "trunc_end_ms"
 	FactTruncBefore  = "ledger_truncated_before"
@@ -29,23 +31,36 @@ const TruncatedTag = "truncated"
 // truncationLimit is truncation_alarm_per_hour: more truncated records than this within an hour alert.
 const truncationLimit = 10
 
-// TruncationWait is how long after the last oversized exec the guest reads the sink: lossAlarm, the bound of the
-// same watcher step that alerts a loss, and a margin.
+// TruncationEvery spaces all but the last oversized exec: 2 MB records at 2 execs/s overflowed auditd's dispatcher
+// (ADR 0054), and at one every 5 s Laurel is idle between them.
+const TruncationEvery = 5 * time.Second
+
+// TruncationWait is how long the guest waits before the last oversized exec and after it before it reads the sink:
+// lossAlarm, the bound of the same watcher step that alerts a loss, and a margin. An alert the execs before the last
+// raised has reached the sink before the last starts.
 const TruncationWait = lossAlarm + 15*time.Second
 
-const truncationWaitMS = uint64(TruncationWait / time.Millisecond)
+const (
+	truncationWaitMS  = uint64(TruncationWait / time.Millisecond)
+	truncationEveryMS = uint64(TruncationEvery / time.Millisecond)
+	// how late each of the guest's two waits may end
+	truncationSlackMS = 1000
+	// the window truncation_alarm_per_hour counts in holds the whole run
+	truncationHourMS = uint64(time.Hour / time.Millisecond)
+)
 
-var truncationFacts = []string{FactTrial, FactPhase, FactKernel, FactTruncExecs, FactTruncFirstMS, FactTruncLastMS, FactTruncEndMS,
-	FactTruncBefore, FactTruncEntries, FactOtherLoss, FactPosts, FactRefused, FactPiActive, FactRestartsPre, FactRestartsPost,
-	FactPiVerified, FactLostBefore, FactLostAfter, FactOverflowBefore, FactOverflowAfter}
+var truncationFacts = []string{FactTrial, FactPhase, FactKernel, FactTruncExecs, FactTruncFirstMS, FactTruncPrevMS, FactTruncLastMS,
+	FactTruncEndMS, FactTruncBefore, FactTruncEntries, FactOtherLoss, FactPosts, FactRefused, FactPiActive, FactRestartsPre,
+	FactRestartsPost, FactPiVerified, FactLostBefore, FactLostAfter, FactOverflowBefore, FactOverflowAfter}
 
-var truncationNums = []string{FactTruncExecs, FactTruncFirstMS, FactTruncLastMS, FactTruncEndMS, FactTruncBefore, FactTruncEntries,
-	FactOtherLoss, FactRefused, FactRestartsPre, FactRestartsPost, FactLostBefore, FactLostAfter}
+var truncationNums = []string{FactTruncExecs, FactTruncFirstMS, FactTruncPrevMS, FactTruncLastMS, FactTruncEndMS, FactTruncBefore,
+	FactTruncEntries, FactOtherLoss, FactRefused, FactRestartsPre, FactRestartsPost, FactLostBefore, FactLostAfter}
 
-// judgeTruncation: the closed facts, tr's count of execs and of the ledger's truncated entries and none before them,
-// no other loss, the watcher's start at the sink before the first exec, the sink read TruncationWait after the last
-// and the watcher shown to have verified it, else INVALID. With those, a refused push, a watcher that restarted or
-// is not running at the end is a MISS; then the alerts decide (truncationAlerts).
+// judgeTruncation: the closed facts, tr's count of execs on the guest's schedule, of the ledger's truncated entries
+// and none before them, no other loss, the watcher's start at the sink before the first exec, the sink read
+// TruncationWait after the last and within the hour, and the watcher shown to have verified it, else INVALID. With
+// those, a refused push, a watcher that restarted or is not running at the end is a MISS; then the alerts decide
+// (truncationAlerts).
 func judgeTruncation(tr rangejob.Trial, o Outcome) (string, string) {
 	f, n, why := probeFacts(tr, o, truncationFacts, truncationNums)
 	if why != "" {
@@ -65,14 +80,23 @@ func judgeTruncation(tr rangejob.Trial, o Outcome) (string, string) {
 func truncationRun(tr rangejob.Trial, f map[string]string, n map[string]uint64, posts []Post) (string, string) {
 	want := uint64(rangejob.TruncatedExecs(tr.Inject)) //nolint:gosec // a small table value
 	start := firstPost(posts, "start", 0)
+	first, prev, last := n[FactTruncFirstMS], n[FactTruncPrevMS], n[FactTruncLastMS]
+	span := (want - 2) * truncationEveryMS
 	switch {
 	case want == 0 || n[FactTruncExecs] != want:
 		return Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n[FactTruncExecs], want)
-	case n[FactTruncLastMS] < n[FactTruncFirstMS]:
-		return Invalid, "the last exec starts before the first"
+	case prev < first || last < prev:
+		return Invalid, fmt.Sprintf("the execs start out of order: %d, %d, %d ms", first, prev, last)
+	case prev-first < span || prev-first > span+truncationSlackMS:
+		return Invalid, fmt.Sprintf("the execs before the last span %d ms, the trial %d to %d", prev-first, span, span+truncationSlackMS)
+	case last-prev < truncationWaitMS || last-prev > truncationWaitMS+truncationSlackMS:
+		return Invalid, fmt.Sprintf("the last exec starts %d ms after the one before, the trial %d to %d", last-prev, truncationWaitMS,
+			truncationWaitMS+truncationSlackMS)
 	case n[FactTruncEndMS]-min(n[FactTruncEndMS], n[FactTruncLastMS]) < truncationWaitMS:
 		return Invalid, fmt.Sprintf("the sink was read %d ms after the last exec, before %s", n[FactTruncEndMS]-min(n[FactTruncEndMS],
 			n[FactTruncLastMS]), TruncationWait)
+	case n[FactTruncEndMS]-first > truncationHourMS:
+		return Invalid, fmt.Sprintf("the sink was read %d ms after the first exec, over %d", n[FactTruncEndMS]-first, truncationHourMS)
 	case n[FactTruncBefore] != 0 || n[FactTruncEntries] != want:
 		return Invalid, fmt.Sprintf("the ledger holds %d truncated entries before the execs and %d after, want 0 and %d",
 			n[FactTruncBefore], n[FactTruncEntries], want)

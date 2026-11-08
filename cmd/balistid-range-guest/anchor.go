@@ -59,6 +59,17 @@ func anchorGapsIn(ctx context.Context, root string, v note.Verifier, from, to in
 	if err != nil {
 		return "error: " + err.Error(), "error: " + err.Error()
 	}
+	return batchGaps(at, from, to)
+}
+
+// batchGaps is anchorGapsIn's result for the batch stamps at in log order. A stamp before the previous one where
+// the step back touches the window is an error: stampGaps, which takes them sorted, would see a shorter gap.
+func batchGaps(at []int64, from, to int64) (gap, batches string) {
+	for i := 1; i < len(at); i++ {
+		if at[i] < at[i-1] && at[i-1] >= from && at[i] <= to {
+			return "error: stamp before the previous one", "error: stamp before the previous one"
+		}
+	}
 	n, longest := stampGaps(at, from, to)
 	ms := (longest + int64(time.Millisecond) - 1) / int64(time.Millisecond)
 	return strconv.FormatInt(ms, 10), strconv.Itoa(n)

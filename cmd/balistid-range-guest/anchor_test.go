@@ -41,3 +41,25 @@ func TestAnchorGapsCountBatchesInTheWindow(t *testing.T) {
 		t.Errorf("another key: gap %q, batches %q", g, b)
 	}
 }
+
+// A batch stamp before the previous one where the step back touches the window is an error, so a step back cannot
+// shorten a stall; one wholly outside the window is not, and equal stamps are in order.
+func TestBatchGapsNeedOrderedStamps(t *testing.T) {
+	const back = "error: stamp before the previous one"
+	for _, c := range []struct {
+		at           []int64
+		gap, batches string
+	}{
+		{[]int64{1.1e9, 2.9e9, 2e9}, back, back}, // a step back inside the window
+		{[]int64{2e9, 2e9}, "1000", "2"},
+		{[]int64{1e9, 1e9 - 1}, back, back},           // the step back from the window's start
+		{[]int64{1e9 - 1, 1e9 - 2, 2e9}, "1000", "1"}, // wholly before the window
+		{[]int64{3e9 + 1, 3e9}, back, back},           // a step back to the window's end
+		{[]int64{2e9, 3e9 + 2, 3e9 + 1}, "1000", "1"}, // wholly after the window
+		{[]int64{0, 4e9}, "2000", "0"},                // both outside, in order
+	} {
+		if g, b := batchGaps(c.at, 1e9, 3e9); g != c.gap || b != c.batches {
+			t.Errorf("%v: gap %q, batches %q; want %q, %q", c.at, g, b, c.gap, c.batches)
+		}
+	}
+}

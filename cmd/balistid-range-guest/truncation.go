@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,10 +16,6 @@ import (
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 )
 
-// truncEvery spaces a truncation trial's oversized execs: 2 MB records at 2 execs/s overflowed auditd's dispatcher
-// (ADR 0054), and at one every 5 s Laurel is idle between them.
-const truncEvery = 5 * time.Second
-
 // argvTruncated is 17 arguments of 125000 B, 2 125 000 B: over record_max_kib's 2 MiB, so stored truncated, and over
 // ARG_MAX at the default stack, so it runs under the large one (ADR 0069, point 3).
 var argvTruncated = argvCase{"truncation", 17, 125000, largeStack, 2_097_152}
@@ -31,8 +28,8 @@ type truncLosses struct {
 }
 
 // runTruncation runs truncation trial tr (ADR 0069): with the watcher started through the sink and the log growing,
-// it runs tr's oversized execs one every truncEvery, waits TruncationWait after the last and reports the ledger's
-// loss entries since the first, the truncated alerts at the sink and whether the watcher verified the last entry.
+// it runs tr's oversized execs (truncSchedule), waits TruncationWait after the last and reports the ledger's loss
+// entries since the first, the truncated alerts at the sink and whether the watcher verified the last entry.
 func runTruncation(ctx context.Context, tr rangejob.Trial, r *report) error {
 	keys, err := rangeKeys()
 	if err != nil {
@@ -61,69 +58,102 @@ func runTruncation(ctx context.Context, tr rangejob.Trial, r *report) error {
 		return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "NRestarts", piUnit)))
 	}
 	lostBefore, overflowBefore, restartsBefore := auditLost(), stateLine(ctx, rangeguest.StateOverflow), restarts()
-	n, first, last, err := truncExecs(ctx, rangejob.TruncatedExecs(tr.Inject), tok)
+	starts, err := truncExecs(ctx, rangejob.TruncatedExecs(tr.Inject), tok)
 	if err != nil {
 		return r.fail(err.Error())
 	}
+	last := starts[len(starts)-1]
 	if !waitUptime(ctx, last+rangevm.TruncationWait) {
 		return r.fail("the wait after the last exec ended early")
-	}
-	end, err := uptime()
-	if err != nil {
-		return r.fail(err.Error())
 	}
 	stopLoad()
 	after, err := ledgerLossesIn(ctx, ledgerLog, keys.Log, before.size)
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	posts, refused, err := readSink()
-	if err != nil {
-		return r.fail(err.Error())
-	}
-	ms := func(d time.Duration) string { return strconv.FormatInt(d.Milliseconds(), 10) }
-	r.add(rangevm.FactTruncExecs, strconv.Itoa(n))
-	r.add(rangevm.FactTruncFirstMS, ms(first))
+	r.add(rangevm.FactTruncExecs, strconv.Itoa(len(starts)))
+	r.add(rangevm.FactTruncFirstMS, ms(starts[0]))
+	r.add(rangevm.FactTruncPrevMS, ms(starts[max(len(starts)-2, 0)]))
 	r.add(rangevm.FactTruncLastMS, ms(last))
-	r.add(rangevm.FactTruncEndMS, ms(end))
 	r.add(rangevm.FactTruncBefore, strconv.Itoa(before.truncated))
 	r.add(rangevm.FactTruncEntries, strconv.Itoa(after.truncated))
 	r.add(rangevm.FactOtherLoss, strconv.Itoa(after.other))
-	r.add(rangevm.FactPosts, truncPostsFact(posts))
-	r.add(rangevm.FactRefused, strconv.Itoa(refused))
-	r.add(rangevm.FactPiActive, valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit))))
 	r.add(rangevm.FactRestartsPre, restartsBefore)
-	r.add(rangevm.FactRestartsPost, restarts())
-	r.add(rangevm.FactPiVerified, truncVerified(ctx, cw.cosignedSize(), after, piVerified))
 	r.add(rangevm.FactLostBefore, lostBefore)
 	r.add(rangevm.FactLostAfter, auditLost())
 	r.add(rangevm.FactOverflowBefore, overflowBefore)
 	r.add(rangevm.FactOverflowAfter, stateLine(ctx, rangeguest.StateOverflow))
+	end := truncEnd{
+		active: func() string {
+			return valueOr(strings.TrimSpace(output(ctx, "/usr/bin/systemctl", "show", "-P", "ActiveState", piUnit)))
+		},
+		verify: piVerified, sink: readSink, restarts: restarts, clock: uptime,
+	}
+	if err := end.add(ctx, r, cw.cosignedSize(), after); err != nil {
+		return r.fail(err.Error())
+	}
 	return r.send(r.facts)
 }
 
-// truncExecs runs n oversized execs one every truncEvery and returns how many ran and the uptime at the start of the
-// first and the last.
-func truncExecs(ctx context.Context, n int, tok string) (ran int, first, last time.Duration, err error) {
+// truncEnd reads the end of a truncation run through its fields, the range's watcher, sink and clock.
+type truncEnd struct {
+	active, restarts func() string
+	verify           func(context.Context) string
+	sink             func() ([]rangevm.Post, int, error)
+	clock            func() (time.Duration, error)
+}
+
+// add adds the watcher's state, then whether it verified the log cosigned past the last truncated entry, then the
+// sink's posts and refusals, the watcher's restarts and the end time: verify waits, stops and may restart the
+// watcher, and what it lets through must be judged.
+func (e truncEnd) add(ctx context.Context, r *report, cosigned uint64, after truncLosses) error {
+	r.add(rangevm.FactPiActive, e.active())
+	r.add(rangevm.FactPiVerified, truncVerified(ctx, cosigned, after, e.verify))
+	posts, refused, err := e.sink()
+	if err != nil {
+		return err
+	}
+	r.add(rangevm.FactPosts, truncPostsFact(posts))
+	r.add(rangevm.FactRefused, strconv.Itoa(refused))
+	r.add(rangevm.FactRestartsPost, e.restarts())
+	end, err := e.clock()
+	if err != nil {
+		return err
+	}
+	r.add(rangevm.FactTruncEndMS, ms(end))
+	return nil
+}
+
+// truncExecs runs n oversized execs at the uptimes truncSchedule gives and returns when each started.
+func truncExecs(ctx context.Context, n int, tok string) ([]time.Duration, error) {
+	var starts []time.Duration
 	for i := range n {
-		if i > 0 && !pause(ctx, truncEvery) {
-			return ran, first, last, fmt.Errorf("after %d oversized execs: %w", ran, ctx.Err())
+		if i > 0 && !waitUptime(ctx, truncSchedule(starts, n)) {
+			return nil, errors.Join(fmt.Errorf("the wait after %d oversized execs ended early", i), ctx.Err())
 		}
-		if last, err = uptime(); err != nil {
-			return ran, first, last, err
-		}
-		if i == 0 {
-			first = last
+		at, err := uptime()
+		if err != nil {
+			return nil, err
 		}
 		if err := execArgv(ctx, argvTruncated, tok); err != nil {
-			return ran, first, last, err
+			return nil, err
 		}
-		ran++
+		starts = append(starts, at)
 	}
-	if ran == 0 {
-		return 0, 0, 0, fmt.Errorf("no oversized exec for %d", n)
+	if len(starts) == 0 {
+		return nil, fmt.Errorf("no oversized exec for %d", n)
 	}
-	return ran, first, last, nil
+	return starts, nil
+}
+
+// truncSchedule is the uptime of the next of n oversized execs after those that started at starts: all but the last
+// one every TruncationEvery from the first, the last TruncationWait after the one before, so an alert the others
+// raised has reached the sink before it starts (ADR 0069, point 3).
+func truncSchedule(starts []time.Duration, n int) time.Duration {
+	if len(starts) == n-1 {
+		return starts[len(starts)-1] + rangevm.TruncationWait
+	}
+	return starts[0] + time.Duration(len(starts))*rangevm.TruncationEvery
 }
 
 // ledgerLossesIn counts the loss entries of the log at root under v from index from on.
