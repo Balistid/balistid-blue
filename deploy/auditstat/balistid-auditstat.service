@@ -2,7 +2,8 @@
 # one long-running process with CAP_AUDIT_CONTROL, which sends only AUDIT_GET and AUDIT_LIST_RULES (ADR 0007, R13).
 [Unit]
 Description=Balistid Blue auditstat: the kernel's audit status for the collector
-After=systemd-sysusers.service
+# After audit-rules.service, so its first report shows the rules the boot loaded, not a part of them (ADR 0070).
+After=systemd-sysusers.service audit-rules.service
 StartLimitIntervalSec=0
 
 [Service]

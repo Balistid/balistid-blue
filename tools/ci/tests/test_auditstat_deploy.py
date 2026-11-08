@@ -25,7 +25,7 @@ FORBIDDEN = COLLECTOR_FORBIDDEN - {"AmbientCapabilities"} | {"PrivateUsers", "Pr
 
 SERVICE_UNIT = {
     "Description": ["Balistid Blue auditstat: the kernel's audit status for the collector"],
-    "After": ["systemd-sysusers.service"],
+    "After": ["systemd-sysusers.service audit-rules.service"],
     "StartLimitIntervalSec": ["0"],
 }
 SERVICE = {
