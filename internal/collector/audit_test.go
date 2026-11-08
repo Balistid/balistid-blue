@@ -392,6 +392,41 @@ func TestNoReportIsStartingThen8(t *testing.T) {
 	}
 }
 
+// The grace is the boot's first start only: a restart in the same boot, which reads that boot's seen file, is 8 at
+// once and through its first 15 s without a report, whether or not the first start read one; a seen file of another
+// boot leaves the grace to this boot's first start (ADR 0070).
+func TestRestartInTheBootHasNoGrace(t *testing.T) {
+	for _, c := range []struct {
+		name, boot string
+		first      error
+		want       string
+	}{
+		{"after a report", "boot", nil, auditStale},
+		{"without a report", "boot", os.ErrNotExist, auditStale},
+		{"another boot", "next", nil, auditStarting},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr = c.first })
+		path := seenPath(t)
+		r := auditRig(t, f, path, "boot")
+		healthy(r)
+		stepFresh(r, f, 5*time.Second)
+		if err := stopRig(r); err != nil {
+			t.Fatal(err)
+		}
+		f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
+		r = auditRig(t, f, path, c.boot)
+		healthy(r)
+		for _, at := range []time.Duration{0, auditFresh - time.Millisecond} {
+			f.write()
+			r.step(at)
+			if health(r) != c.want {
+				t.Errorf("%s: health %q at %s of the restart, not %q", c.name, health(r), at, c.want)
+			}
+		}
+	}
+}
+
 // A report read inside the first 15 s ends starting at once. A state file not read is 8 only after the collector's
 // first 15 s.
 func TestFirstReportInTheGraceIsOK(t *testing.T) {
