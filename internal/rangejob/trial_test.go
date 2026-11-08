@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -151,6 +152,17 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricSensorDown, Inject: InjectRulesStatus, Failure: FailReset}, ""},
 		{Trial{Metric: MetricLoss, Inject: InjectRulesExtra}, ""},
 		{Trial{Metric: MetricStatus, Inject: InjectRulesExtra}, ""},
+		{Trial{Metric: MetricAnchor, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}}, MethodAnchor},
+		{Trial{Metric: MetricAnchor, Expect: ExpectMiss, Inject: InjectLedgerStall, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, MethodAnchor},
+		{Trial{Metric: MetricAnchor, Inject: InjectLedgerStall, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
+		{Trial{Metric: MetricAnchor, Expect: ExpectPass, Inject: InjectLedgerStall, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
+		{Trial{Metric: MetricAnchor, Expect: ExpectMiss, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
+		{Trial{Metric: MetricAnchor, Load: Load{Kind: LoadPtrace, Rate: 10000, Seconds: 10}}, ""},
+		{Trial{Metric: MetricAnchor, Load: Load{Kind: LoadExec, Rate: 1000, Seconds: 30, Drop: true}}, ""},
+		{Trial{Metric: MetricAnchor}, ""},
+		{Trial{Metric: MetricAnchor, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, ""},
+		{Trial{Metric: MetricAnchor, Inject: InjectLedger, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
+		{Trial{Metric: MetricSustained, Expect: ExpectMiss, Inject: InjectLedgerStall, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -382,5 +394,28 @@ func TestFailureControlsAreTheADRs(t *testing.T) {
 		if !ok || tr.Failure != w.failure || tr.Expect != w.expect || tr.Load.Writer != w.writer || tr.Load.Rate != 2000 {
 			t.Errorf("%s = %+v, want %+v at 2000/s", name, tr, w)
 		}
+	}
+}
+
+// anchor_interval_s is decided at rate-sustained's load, two runs, by its own method; its one control stalls the
+// ledger and must miss (ADR 0069, points 1 and 2).
+func TestAnchorTrialsAreTheADR(t *testing.T) {
+	sustained, _ := Lookup("rate-sustained")
+	got := map[string]Trial{}
+	for _, tr := range Trials() {
+		if tr.Metric == MetricAnchor || tr.Inject == InjectLedgerStall || tr.Method() == MethodAnchor {
+			got[tr.Name] = tr
+		}
+	}
+	deciding, control := got["anchor-sustained"], got["anchor-control-stall"]
+	switch {
+	case len(got) != 2:
+		t.Errorf("anchor trials %v", slices.Collect(maps.Keys(got)))
+	case deciding.Load != sustained.Load || deciding.Count != sustained.Count || deciding.Expect != "" || deciding.Trend ||
+		deciding.Method() != MethodAnchor:
+		t.Errorf("anchor-sustained = %+v, want rate-sustained's load and count", deciding)
+	case control.Expect != ExpectMiss || control.Inject != InjectLedgerStall || control.Method() != MethodAnchor ||
+		control.Load.Kind != LoadExec || control.Load.Rate < 10:
+		t.Errorf("anchor-control-stall = %+v", control)
 	}
 }

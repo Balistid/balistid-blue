@@ -46,6 +46,7 @@ const (
 	MetricRSS               = "rss_mib"
 	MetricCanary            = "canary_interval_s"
 	MetricSensorDown        = "sensor_down_s"
+	MetricAnchor            = "anchor_interval_s"
 )
 
 // InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
@@ -83,6 +84,10 @@ const (
 // rss_mib's OOM path must give MISS (ADR 0054).
 const InjectOOM = "oom"
 
+// InjectLedgerStall stops the ledger by SIGSTOP for 2 s in the middle of an anchor control's load: the gap that
+// anchor_interval_s's judge must give MISS (ADR 0069, point 2).
+const InjectLedgerStall = "ledger-stall"
+
 // InjectAuditSet asks the kernel, as balistid-auditstat's uid with its one capability, for every audit change
 // under -e 2; the trial records which the kernel still allows (ADR 0038, Consequences).
 const InjectAuditSet = "audit-set"
@@ -111,7 +116,8 @@ func RulesInject(inject string) bool {
 // the CLI unprivileged after each break of the floor (ADR 0048), an RSS trial samples the resident memory of the
 // recorder's units under load (rss_mib), a canary trial times the collector's canary quiet and with Laurel and then
 // auditd frozen (ADR 0017), a sensor-down trial times health UNKNOWN after Laurel is killed and auditd stopped and
-// tries auditctl -e 0, a sensor-down rules trial boots with rules that differ from the repository (ADR 0059).
+// tries auditctl -e 0, a sensor-down rules trial boots with rules that differ from the repository (ADR 0059), an
+// anchor trial runs a rate trial's load and measures the gaps between the ledger's batch entries (ADR 0069).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -130,6 +136,7 @@ const (
 	MethodCanary           = "canary"
 	MethodSensorDown       = "sensor-down"
 	MethodSensorDownRules  = "sensor-down-rules"
+	MethodAnchor           = "anchor"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -148,6 +155,8 @@ func (tr Trial) Method() string {
 		return ""
 	case tr.Inject == InjectOOM:
 		return rssMethod(tr, tr.Expect == ExpectMiss)
+	case tr.Inject == InjectLedgerStall:
+		return anchorMethod(tr)
 	case tr.Inject != "":
 		return alarmMethod(tr)
 	case tr.Failure != "" && tr.Metric != MetricCrashLoss:
@@ -180,6 +189,19 @@ func (tr Trial) Method() string {
 		return MethodCanary
 	case tr.Metric == MetricSensorDown && tr.Load == (Load{}):
 		return MethodSensorDown
+	case tr.Metric == MetricAnchor:
+		return anchorMethod(tr)
+	}
+	return ""
+}
+
+// anchorMethod is MethodAnchor for an exec load of anchor_interval_s that drops nothing: a deciding row without an
+// injection, or the control that stalls the ledger and must miss; else "".
+func anchorMethod(tr Trial) string {
+	deciding := tr.Inject == "" && tr.Expect == ""
+	control := tr.Inject == InjectLedgerStall && tr.Expect == ExpectMiss
+	if tr.Metric == MetricAnchor && tr.Load.Kind == LoadExec && !tr.Load.Drop && tr.Failure == "" && (deciding || control) {
+		return MethodAnchor
 	}
 	return ""
 }
@@ -375,6 +397,14 @@ var trials = slices.Concat([]Trial{
 	// status_false_ok (ADR 0048): each run breaks every floor-0 part in turn, two runs.
 	repeated(Trial{Name: "status", Metric: MetricStatus, Wall: 20 * time.Minute, Serial: 1 << 20, Boots: 1,
 		Scratch: StoreScratch, Count: 1, Inject: InjectStatus}, 2),
+	// anchor_interval_s at rate-sustained's load; its control stalls the ledger under the least load that still has
+	// a record in each of the ledger's 100 ms ticks (ADR 0069, points 1 and 2).
+	[]Trial{
+		{Name: "anchor-sustained", Metric: MetricAnchor, Wall: 14 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: sustainedScratch,
+			Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
+		{Name: "anchor-control-stall", Metric: MetricAnchor, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
+			Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}, Inject: InjectLedgerStall},
+	},
 )
 
 // repeated returns n rows of tr named tr.Name-1 to tr.Name-n: a metric needs more trials than one row

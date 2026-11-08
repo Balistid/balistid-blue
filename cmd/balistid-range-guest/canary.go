@@ -72,7 +72,7 @@ func runCanary(ctx context.Context, r *report) error {
 		return r.fail("store: " + err.Error())
 	}
 	times := slices.Sorted(maps.Values(sent))
-	count, gap := canaryGaps(times, quietFrom, quietTo)
+	count, gap := stampGaps(times, quietFrom, quietTo)
 	r.add(rangevm.FactCanaryQuietMS, msString(quietTo-quietFrom))
 	r.add(rangevm.FactCanaryQuietHealth, timeline.over(quietFrom, quietTo))
 	r.add(rangevm.FactCanaryCount, strconv.Itoa(count))
@@ -182,10 +182,10 @@ func (fr canaryFreeze) facts(sent []int64, t healthTimeline) [][2]string {
 	}
 }
 
-// canaryGaps counts the canaries sent from from to to (ns, sorted) and returns the longest time without one, from
-// from to the first, between two and from the last to to: a canary that stopped shows as a long gap, never as
-// fewer gaps.
-func canaryGaps(sent []int64, from, to int64) (int, int64) {
+// stampGaps counts the stamps from from to to (ns, sorted), canaries sent or batch entries, and returns the longest
+// time without one, from from to the first, between two and from the last to to: a writer that stopped shows as a
+// long gap, never as fewer gaps.
+func stampGaps(sent []int64, from, to int64) (int, int64) {
 	count, last, longest := 0, from, int64(0)
 	for _, at := range sent {
 		if at < from || at > to {

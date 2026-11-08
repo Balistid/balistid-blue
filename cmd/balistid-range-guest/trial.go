@@ -80,6 +80,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runSensorDown(ctx, r)
 	case rangejob.MethodSensorDownRules:
 		return runSensorDownRules(ctx, tr, r)
+	case rangejob.MethodAnchor:
+		return runAnchor(ctx, tr, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }
@@ -87,7 +89,16 @@ func runTrial(ctx context.Context, name, phase string) error {
 // runRate generates the numbered load of rate trial tr (ADR 0018, point 4), reads what the collector
 // stored up to a barrier (ADR 0022, point 3) and reports the counts.
 func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
-	add, fail := r.add, r.fail
+	if _, _, why := rateLoad(ctx, tr, r, nil); why != "" {
+		return r.fail(why)
+	}
+	return r.send(r.facts)
+}
+
+// rateLoad is runRate up to its report: it runs during, when not nil, beside the load from its start and waits for
+// it, adds the rate facts to r and returns the load's span in the ledger's clock (wall ns), or why the trial failed.
+func rateLoad(ctx context.Context, tr rangejob.Trial, r *report, during func(context.Context) error) (from, to int64, why string) {
+	add := r.add
 	lostBefore := valueOr(rangeguest.AuditStatus(output(ctx, "/usr/bin/auditctl", "-s"))["lost"])
 	overflowBefore := stateLine(ctx, rangeguest.StateOverflow)
 	collector0 := sampleUnit(ctx, collectorUnitName)
@@ -98,7 +109,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	}
 	counter, err := rangeguest.NewCounter(tr.Load.Kind, skip)
 	if err != nil {
-		return fail(err.Error())
+		return 0, 0, err.Error()
 	}
 	emit, wait := rangeguest.Peek, func() error { return nil }
 	if tr.Load.Kind == rangejob.LoadExec {
@@ -106,8 +117,17 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 		emit, wait = execs.Emit, execs.Wait
 	}
 	stopSteal := sampleSteal(ctx)
+	duringErr := make(chan error, 1)
+	if during == nil {
+		duringErr <- nil
+	} else {
+		go func() { duringErr <- during(ctx) }()
+	}
+	from = time.Now().UnixNano()
 	generated, windowMin, genErr := rangeguest.Generate(tr.Load.Rate, tr.Load.Seconds, emit, rangeguest.WallClock)
+	to = time.Now().UnixNano()
 	genErr = errors.Join(genErr, wait())
+	besideErr := <-duringErr
 	// The collector's CPU and memory peak over the load and its drain: sampled once the read's wait for an
 	// idle audit is over, before its barrier and stop end the collector and its cgroup (measures only).
 	collector1 := unitSample{err: errors.New("no sample after the drain")}
@@ -121,9 +141,11 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	nums := counter.Numbers()
 	switch {
 	case genErr != nil:
-		return fail("generator: " + genErr.Error())
+		return 0, 0, "generator: " + genErr.Error()
 	case stealErr != nil:
-		return fail("steal: " + stealErr.Error())
+		return 0, 0, "steal: " + stealErr.Error()
+	case besideErr != nil:
+		return 0, 0, "beside the load: " + besideErr.Error()
 	}
 	follow := "ok"
 	stored, missing, duplicate, outside := uint64(0), generated, uint64(0), uint64(0)
@@ -157,7 +179,7 @@ func runRate(ctx context.Context, tr rangejob.Trial, r *report) error {
 	add(rangevm.FactCollectorUS, collectorCPU)
 	add(rangevm.FactCollectorMem, collectorMem)
 	printSerials(ctx, tr.Name, serials)
-	return r.send(r.facts)
+	return from, to, ""
 }
 
 // stateLine asks auditd to rewrite its state file and reads the line name from that rewrite, or "stale".

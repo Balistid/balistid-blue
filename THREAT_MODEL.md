@@ -36,7 +36,7 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T10 | A1 | Fill the shared filesystem so loss records cannot be written | Physically reserved headroom, free space a second cap (0013); auditd `disk_full_action` set, `-f 1` | test reserve | partial: a writer that keeps filling a shared filesystem takes the freed reserve; btrfs frees no part of it (UNKNOWN at once) |
 | T11 | A1 | Ptrace, alias or fake the CLI | Host CLI is advisory; truth is the Pi and phone | — | partial: host CLI output can lie; the health report is world-readable, and one the collector can neither rewrite nor remove stays OK up to 5 s (0048) |
 | T12 | A2 | Rewrite or roll back cosigned history | Witness refuses; Pi verifies (0006, 0031) | fork_refused (range); Pi tests (0031) | partial: Pi only in tests (L11, L12) |
-| T13 | A2 | Alter or replace records not yet cosigned | — | — | gap: undetected, window unbounded |
+| T13 | A2 | Alter or replace records not yet cosigned | — | anchor-sustained | gap: undetected, window unbounded |
 | T14 | A2 | Blind the sensor, forge health, loss or shutdown entries | Announced quiet capped; module, kexec and eBPF loads recorded at exit, after a module's init (0061) | announced_quiet_max_h, self-test tracks | gap: open beyond the cap |
 | T15 | A2 | Delete evidence and pass it off as retention | — | — | gap: open |
 | T16 | A2 | Attack the Pi through WireGuard, litewitness or tile fetching | Minimal Pi services, pinned, updated; entries decoded strictly (0026) | FuzzDecodeEntry, Pi fuzz (0031) | partial: Pi parsers face root; ntfy needs outbound internet (0026) |
