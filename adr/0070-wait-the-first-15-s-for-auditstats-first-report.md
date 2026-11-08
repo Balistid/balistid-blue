@@ -22,9 +22,11 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
 
 ## Decision
 
-1. With no report read yet, health is `UNKNOWN starting` (reason 1) in the first 15 s of the boot's first start
-   of the collector (`auditFresh`, ADR 0038 point 4's grace for 8 and 10), and 8 from 15 s on; a restart in the
-   same boot, which reads that boot's seen file, is 8 at once. It is never OK without a report.
+1. With no report read yet, health is `UNKNOWN starting` (reason 1) in the first 15 s (`auditFresh`, ADR 0038
+   point 4's grace for 8 and 10) of a start of the collector under 30 s of `CLOCK_BOOTTIME` that reads no seen file
+   of its boot, and 8 otherwise: from 15 s on, at a start from 30 s on, at a restart in the same boot, or when the
+   boot clock is not read (R6). It is never OK without a report. The 30 s are `ready_s`'s from boot to health OK:
+   the collector starts before auditd, so a boot that meets `ready_s` starts it under them.
 2. Starting is named where 8 was, only where health would otherwise be OK; the order 9, 11, 10, 8 stays.
 3. balistid-auditstat starts after audit-rules.service, so its first report shows the rules the boot loaded.
 4. `balistid status` says starting lasts until the first canary is stored and auditstat's report is read.
@@ -46,7 +48,9 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
   logged, the Pi's watchdog alerts on a starting that lasts 60 s (ADR 0031 point 3). A boot whose auditstat reports
   later than 15 s after the collector starts still pages, as before ba1e366.
 - A restart in the same boot is 8 at once without a report, so a restart loop cannot hold starting; a restart
-  while auditstat runs reads the report in its first tick. A seen file not written, or no boot id, leaves a
-  start the grace.
+  while auditstat runs reads the report in its first tick. Root removing the seen file, or no boot id, gives a
+  start the grace again only under 30 s into the boot: starting ends by 45 s into it, and 8 then pages at once.
+- A boot that starts the collector from 30 s on, a slow disk or a passphrase typed at boot, pages 8 whenever no
+  report is read by its first stored canary, as before this ADR; such a boot misses `ready_s` too.
 - The rules trials keep their 10 s from the first stored canary to `rules-differ`; their judge accepts starting.
 - Revert: a pull request removing this file, the starting case, the hint, the unit's `After=` and their tests.
