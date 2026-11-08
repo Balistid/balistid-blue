@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Balistid/balistid-blue/internal/anchor"
 	"github.com/Balistid/balistid-blue/internal/entry"
 	"github.com/Balistid/balistid-blue/internal/link"
+	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 )
@@ -102,5 +105,90 @@ func TestTruncPostsFact(t *testing.T) {
 	}
 	if _, err := rangevm.ParsePosts(truncPostsFact(many)); err == nil || !strings.Contains(truncPostsFact(many), "over 64") {
 		t.Errorf("65 alerts read as %q", truncPostsFact(many))
+	}
+}
+
+// All but the last oversized exec start one every TruncationEvery from the first, the last TruncationWait after the
+// one before it.
+func TestTruncScheduleWaitsBeforeTheLastExec(t *testing.T) {
+	s := time.Second
+	for _, c := range []struct {
+		starts []time.Duration
+		n      int
+		want   time.Duration
+	}{
+		{[]time.Duration{100 * s}, 11, 105 * s},
+		{[]time.Duration{100 * s, 106 * s}, 11, 110 * s}, // from the first, so a late exec does not shift the rest
+		{[]time.Duration{100 * s, 105 * s, 110 * s, 115 * s, 120 * s, 125 * s, 130 * s, 135 * s, 140 * s}, 11, 145 * s},
+		{[]time.Duration{100 * s, 105 * s, 110 * s, 115 * s, 120 * s, 125 * s, 130 * s, 135 * s, 140 * s, 145 * s}, 11, 225 * s},
+		{[]time.Duration{100 * s, 105 * s, 110 * s, 115 * s, 120 * s, 125 * s, 130 * s, 135 * s, 140 * s}, 10, 220 * s},
+	} {
+		if got := truncSchedule(c.starts, c.n); got != c.want {
+			t.Errorf("after %d of %d execs: %s, want %s", len(c.starts), c.n, got, c.want)
+		}
+	}
+}
+
+// truncFake is a range whose verification can change the sink, the watcher and the clock, as piVerified does.
+type truncFake struct {
+	posts             []rangevm.Post
+	active, restarts  string
+	now               time.Duration
+	sinkErr, clockErr error
+}
+
+func (f *truncFake) end(verify func(*truncFake)) truncEnd {
+	return truncEnd{
+		active: func() string { return f.active }, restarts: func() string { return f.restarts },
+		verify: func(context.Context) string { verify(f); return "yes" },
+		sink:   func() ([]rangevm.Post, int, error) { return f.posts, 0, f.sinkErr },
+		clock:  func() (time.Duration, error) { return f.now, f.clockErr },
+	}
+}
+
+// The end of a run is read after the verification, which stops and may restart the watcher: an alert, a restart or
+// time it lets through is judged, and the watcher's state is the one before it stopped it.
+func TestTruncEndReadsAfterTheVerification(t *testing.T) {
+	tr, ok := rangejob.Lookup("truncation-10")
+	if !ok {
+		t.Fatal("no truncation-10")
+	}
+	for _, c := range []struct {
+		verify          func(*truncFake)
+		verdict, reason string
+	}{
+		{func(*truncFake) {}, rangevm.Pass, "no truncated alert for 10 truncated records"},
+		{func(f *truncFake) { f.active = "inactive" }, rangevm.Pass, "no truncated alert for 10 truncated records"},
+		{func(f *truncFake) { f.posts = append(f.posts, rangevm.Post{MS: 250000, Tag: rangevm.TruncatedTag}) }, rangevm.Miss,
+			"a truncated alert at 250000 ms for 10 truncated records"},
+		{func(f *truncFake) { f.restarts = "1" }, rangevm.Miss, "the watcher is active at the end, restarts 0 to 1"},
+		{func(f *truncFake) { f.now = 299999 * time.Millisecond }, rangevm.Invalid,
+			"the sink was read 79999 ms after the last exec, before 1m20s"},
+	} {
+		f := &truncFake{posts: []rangevm.Post{{MS: 60000, Tag: "start"}}, active: "active", restarts: "0", now: 300 * time.Second}
+		r := &report{}
+		for _, kv := range [][2]string{{rangevm.FactTrial, tr.Name}, {rangevm.FactPhase, "1"}, {rangevm.FactKernel, rangevm.TargetKernel},
+			{rangevm.FactTruncExecs, "10"}, {rangevm.FactTruncFirstMS, "100000"}, {rangevm.FactTruncPrevMS, "140000"},
+			{rangevm.FactTruncLastMS, "220000"}, {rangevm.FactTruncBefore, "0"}, {rangevm.FactTruncEntries, "10"},
+			{rangevm.FactOtherLoss, "0"}, {rangevm.FactRestartsPre, "0"}, {rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"},
+			{rangevm.FactOverflowBefore, "no"}, {rangevm.FactOverflowAfter, "no"}} {
+			r.add(kv[0], kv[1])
+		}
+		if err := f.end(c.verify).add(t.Context(), r, 11, truncLosses{truncated: 10, last: 9}); err != nil {
+			t.Fatal(err)
+		}
+		var o rangevm.Outcome
+		for _, x := range r.facts {
+			o.Facts = append(o.Facts, rangevm.Record{Name: x.name, Value: x.value})
+		}
+		build := strings.Repeat("ab", 20)
+		if v, why := rangevm.JudgeTrial(tr, o, build, build); v != c.verdict || why != c.reason {
+			t.Errorf("%s (%s), want %s (%s)", v, why, c.verdict, c.reason)
+		}
+	}
+	for _, f := range []*truncFake{{sinkErr: errors.New("no posts")}, {clockErr: errors.New("no clock")}} {
+		if err := f.end(func(*truncFake) {}).add(t.Context(), &report{}, 11, truncLosses{truncated: 10, last: 9}); err == nil {
+			t.Errorf("%+v read as an end", f)
+		}
 	}
 }

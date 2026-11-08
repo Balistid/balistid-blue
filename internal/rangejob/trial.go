@@ -427,10 +427,11 @@ var trials = slices.Concat([]Trial{
 			Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
 		{Name: "anchor-control-stall", Metric: MetricAnchor, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}, Inject: InjectLedgerStall},
-		// truncation_alarm_per_hour: 11 truncated records alert once and 10 do not, two runs each (ADR 0069, point 3).
-		{Name: "truncation-11", Metric: MetricTruncation, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+		// truncation_alarm_per_hour: 11 truncated records alert once and 10 do not, two runs each (ADR 0069, point 3);
+		// the wait before the last exec adds 75 s to the run.
+		{Name: "truncation-11", Metric: MetricTruncation, Wall: 9 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
 			Count: 2, Inject: InjectTruncated11},
-		{Name: "truncation-10", Metric: MetricTruncation, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+		{Name: "truncation-10", Metric: MetricTruncation, Wall: 9 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
 			Count: 2, Inject: InjectTruncated10},
 	},
 )

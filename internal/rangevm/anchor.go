@@ -20,9 +20,9 @@ const anchorLimitMS = 1000
 
 var anchorFacts = append(slices.Clone(rateFacts), FactAnchorGapMS, FactAnchorBatches)
 
-// judgeAnchor: the closed facts, a rate run that passes its own judge, a gap and batch count that are plain numbers,
-// at least one batch and gaps that cover the load, else INVALID: a load not held or with any loss measured no
-// recording. With those, a gap over anchorLimitMS is a MISS.
+// judgeAnchor: the closed facts, a rate run that passes its own judge, a gap and batch count that are plain numbers
+// and gaps that cover the load, else INVALID: a load not held or with any loss measured no recording. With those, no
+// batch entry over the whole load or a gap over anchorLimitMS is a MISS.
 func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	f, err := closedFacts(o.Facts, anchorFacts)
 	if err != nil {
@@ -40,11 +40,11 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	case errG != nil || errB != nil:
 		return Invalid, fmt.Sprintf("the ledger's batches are not measured: gap \"%s\", batches \"%s\"",
 			Printable(f[FactAnchorGapMS], 128), Printable(f[FactAnchorBatches], 128))
-	case batches == 0:
-		return Invalid, "no batch entry during the load"
+	case batches == 0 && gap >= uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
+		return Miss, fmt.Sprintf("no batch entry during the %d s load", tr.Load.Seconds)
 	case gap > uint64(tr.Load.Seconds)*1000 || batches > uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
 		return Invalid, fmt.Sprintf("a gap of %d ms or %d batches do not fit a %d s load", gap, batches, tr.Load.Seconds)
-	case (batches+1)*gap < uint64(tr.Load.Seconds-1)*1000: //nolint:gosec // positive table value
+	case (batches+1)*gap < uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
 		// batches+1 spans cover the load, so the longest is at least their mean
 		return Invalid, fmt.Sprintf("a longest gap of %d ms between %d batches does not cover a %d s load", gap, batches, tr.Load.Seconds)
 	case gap > anchorLimitMS:

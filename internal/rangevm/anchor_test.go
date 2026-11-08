@@ -1,6 +1,8 @@
 package rangevm
 
 import (
+	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,9 +33,9 @@ func anchorRun(tr rangejob.Trial, change ...string) Outcome {
 	return o
 }
 
-// Every path to PASS with a false fact gives MISS or INVALID, each for its own reason: the gap over the limit misses,
-// at the limit passes; a load not shown whole, a gap not measured, no batch, a gap and count that do not fit or cannot
-// cover the load, a fact missing, repeated or unknown are INVALID (ADR 0069, point 1).
+// Every path to PASS with a false fact gives MISS or INVALID, each for its own reason: the gap over the limit and no
+// batch over the whole load miss, the gap at the limit passes; a load not shown whole, a gap not measured, a gap and
+// count that do not fit or cannot cover the load, a fact missing, repeated or unknown are INVALID (ADR 0069, point 1).
 func TestJudgeAnchor(t *testing.T) {
 	tr := trial(t, "anchor-sustained")
 	gap, batches := FactAnchorGapMS+"=", ";"+FactAnchorBatches+"="
@@ -41,7 +43,7 @@ func TestJudgeAnchor(t *testing.T) {
 		{"", Pass, "at most 900 ms between 700 batch entries"},
 		{gap + "1000", Pass, "at most 1000 ms between 700 batch entries"},
 		{gap + "1" + batches + "600000", Pass, "at most 1 ms between 600000 batch entries"}, // as many batches as the load has ms
-		{gap + "1000" + batches + "598", Pass, "at most 1000 ms between 598 batch entries"}, // 599 spans of 1 s just cover 599 s
+		{gap + "1000" + batches + "599", Pass, "at most 1000 ms between 599 batch entries"}, // 600 spans of 1 s just cover 600 s
 		{gap + "1001", Miss, "1001 ms without a batch entry, over 1000 ms; 700 batches"},
 		{gap + "2100", Miss, "2100 ms without a batch entry, over 1000 ms; 700 batches"},
 		{gap + "600000" + batches + "1", Miss, "600000 ms without a batch entry, over 1000 ms; 1 batches"}, // the whole load
@@ -57,13 +59,16 @@ func TestJudgeAnchor(t *testing.T) {
 		{gap + "error: checkpoint: no file", Invalid, `the ledger's batches are not measured: gap "error: checkpoint: no file", batches "700"`},
 		{FactAnchorBatches + "=error: bundle 3: short", Invalid, `not measured: gap "900", batches "error: bundle 3: short"`},
 		{gap + "0900", Invalid, `not measured: gap "0900", batches "700"`},
-		{FactAnchorBatches + "=0", Invalid, "no batch entry during the load"},
-		{gap + "599500" + batches + "0", Invalid, "no batch entry during the load"}, // a gap as long as the load
+		{gap + "600000" + batches + "0", Miss, "no batch entry during the 600 s load"},
+		{gap + "600050" + batches + "0", Miss, "no batch entry during the 600 s load"}, // the window a little over the load
+		{gap + "599999" + batches + "0", Invalid, "a longest gap of 599999 ms between 0 batches does not cover a 600 s load"},
+		{FactAnchorBatches + "=0", Invalid, "a longest gap of 900 ms between 0 batches does not cover a 600 s load"},
 		{gap + "600001" + batches + "1", Invalid, "a gap of 600001 ms or 1 batches do not fit a 600 s load"},
 		{gap + "1" + batches + "600001", Invalid, "a gap of 1 ms or 600001 batches do not fit a 600 s load"},
 		{gap + "900" + batches + "18446744073709551615", Invalid, "a gap of 900 ms or 18446744073709551615 batches do not fit"}, // wraps
 		{gap + "100" + batches + "50", Invalid, "a longest gap of 100 ms between 50 batches does not cover a 600 s load"},
-		{gap + "999" + batches + "598", Invalid, "a longest gap of 999 ms between 598 batches does not cover a 600 s load"},
+		{gap + "999" + batches + "599", Invalid, "a longest gap of 999 ms between 599 batches does not cover a 600 s load"},
+		{gap + "1000" + batches + "598", Invalid, "a longest gap of 1000 ms between 598 batches does not cover a 600 s load"},
 		{FactAnchorGapMS, Invalid, "report has 18 of 19 facts"},
 		{FactAnchorBatches, Invalid, "report has 18 of 19 facts"},
 		{FactStored, Invalid, "report has 18 of 19 facts"},
@@ -74,7 +79,7 @@ func TestJudgeAnchor(t *testing.T) {
 		if c.change != "" {
 			change = strings.Split(c.change, ";")
 		}
-		if v, r := JudgeTrial(tr, anchorRun(tr, change...), cleanBuild, cleanBuild); v != c.want || !strings.Contains(r, c.reason) {
+		if v, r := JudgeTrial(tr, anchorRun(tr, change...), cleanBuild, cleanBuild); v != c.want || !hasReason(r, c.reason) {
 			t.Errorf("%q: %s (%s), want %s (%s)", c.change, v, r, c.want, c.reason)
 		}
 	}
@@ -88,24 +93,41 @@ func TestJudgeAnchor(t *testing.T) {
 	}
 }
 
-// The stall control misses only by its gap: its sound run without a stall passes, so the control's MISS means the
-// judge saw the 2 s (ADR 0069, point 2); a stall that also lost records is INVALID, never a MISS.
+// The stall control misses only by its gap: its sound run without a stall passes, so the control's MISS shows the
+// judge can MISS on a stalled ledger (ADR 0069, point 2); a stall that also lost records is INVALID, never a MISS.
 func TestAnchorControlMissesOnlyByTheGap(t *testing.T) {
 	tr := trial(t, "anchor-control-stall")
+	gap, batches := FactAnchorGapMS+"=", ";"+FactAnchorBatches+"="
 	for _, c := range []struct{ change, want, reason string }{
 		{"", Pass, "at most 900 ms between 35 batch entries"},
 		{FactAnchorGapMS + "=2100", Miss, "2100 ms without a batch entry, over 1000 ms; 35 batches"},
 		{FactAnchorGapMS + "=2100;" + FactMissing + "=1;" + FactStored + "=2999", Invalid, "the rate load is not shown whole (MISS)"},
+		{gap + "1000" + batches + "29", Pass, "at most 1000 ms between 29 batch entries"}, // 30 spans of 1 s just cover 30 s
+		{gap + "1000" + batches + "28", Invalid, "a longest gap of 1000 ms between 28 batches does not cover a 30 s load"},
+		{gap + "30000" + batches + "0", Miss, "no batch entry during the 30 s load"},
+		{gap + "29999" + batches + "0", Invalid, "a longest gap of 29999 ms between 0 batches does not cover a 30 s load"},
 	} {
 		var change []string
 		if c.change != "" {
 			change = strings.Split(c.change, ";")
 		}
-		if v, r := JudgeTrial(tr, anchorRun(tr, change...), cleanBuild, cleanBuild); v != c.want || !strings.Contains(r, c.reason) {
+		if v, r := JudgeTrial(tr, anchorRun(tr, change...), cleanBuild, cleanBuild); v != c.want || !hasReason(r, c.reason) {
 			t.Errorf("%q: %s (%s), want %s (%s)", c.change, v, r, c.want, c.reason)
 		}
 	}
 	if m := Measures(tr, anchorRun(tr, FactAnchorGapMS+"=2100")); m[FactAnchorGapMS] != 2100 || m[FactAnchorBatches] != 35 {
 		t.Errorf("measures %v", m)
+	}
+}
+
+// The judge's limit is acceptance anchor_interval_s.
+func TestAnchorLimitIsTheAcceptance(t *testing.T) {
+	data, err := os.ReadFile("../../acceptance/0.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^id = "anchor_interval_s"\nmax = (\d+)\n`).FindSubmatch(data)
+	if m == nil || string(m[1])+"000" != strconv.Itoa(anchorLimitMS) {
+		t.Errorf("acceptance anchor_interval_s %q, the judge's limit %d ms", m, anchorLimitMS)
 	}
 }
