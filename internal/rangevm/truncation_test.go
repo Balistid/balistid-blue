@@ -1,6 +1,7 @@
 package rangevm
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,19 +23,21 @@ func truncRun(name string, change ...string) Outcome {
 	return probeRun(name, truncationFacts, base, change...)
 }
 
-// The judge's verdict on each change: every way to PASS with a false fact gives MISS or INVALID.
-func judgeTruncationCases(t *testing.T, name string, cases map[string][]string) {
+// truncCase is a change to a sound run, ";"-separated, and the verdict and the words of the reason it must give.
+type truncCase struct{ change, want, reason string }
+
+// judgeTruncationCases checks each case's verdict and reason: every way to PASS with a false fact gives MISS or
+// INVALID, each for its own reason.
+func judgeTruncationCases(t *testing.T, name string, cases []truncCase) {
 	t.Helper()
 	tr := trial(t, name)
-	for want, changes := range cases {
-		for _, c := range changes {
-			var change []string
-			if c != "" {
-				change = strings.Split(c, ";")
-			}
-			if v, r := JudgeTrial(tr, truncRun(name, change...), cleanBuild, cleanBuild); v != want {
-				t.Errorf("%s %q: %s (%s), want %s", name, c, v, r, want)
-			}
+	for _, c := range cases {
+		var change []string
+		if c.change != "" {
+			change = strings.Split(c.change, ";")
+		}
+		if v, r := JudgeTrial(tr, truncRun(name, change...), cleanBuild, cleanBuild); v != c.want || !strings.Contains(r, c.reason) {
+			t.Errorf("%s %q: %s (%s), want %s (%s)", name, c.change, v, r, c.want, c.reason)
 		}
 	}
 }
@@ -42,64 +45,82 @@ func judgeTruncationCases(t *testing.T, name string, cases map[string][]string) 
 // Eleven truncated records pass only with one truncated alert after the 11th exec began and within 65 s of it
 // (ADR 0069, points 3 and 4).
 func TestJudgeTruncationOverTheLimit(t *testing.T) {
-	judgeTruncationCases(t, "truncation-11", map[string][]string{
-		Pass: {"", FactPosts + "=60000:start,215000:truncated", FactPosts + "=60000:start,160000:truncated,170000:unknown"},
-		Miss: {
-			FactPosts + "=60000:start",                                   // no alert
-			FactPosts + "=60000:start,215001:truncated",                  // late
-			FactPosts + "=60000:start,150000:truncated",                  // at the 11th exec's start, before its record
-			FactPosts + "=60000:start,145000:truncated",                  // at the 10th: the limit is off by one
-			FactPosts + "=60000:start,90000:truncated",                   // before any exec
-			FactPosts + "=60000:start,160000:truncated,170000:truncated", // a second alert
-			FactPosts + "=60000:start,160000:unknown",                    // another tag
-			FactRefused + "=1",                                           // a refused push may be the alert
-			FactPosts + "=none;" + FactRefused + "=2",
-			FactPiActive + "=failed",
-			FactRestartsPost + "=1",
-		},
-		Invalid: truncationInvalid("12", "10"),
-	})
+	posts := FactPosts + "=60000:start,"
+	judgeTruncationCases(t, "truncation-11", append([]truncCase{
+		{"", Pass, "one truncated alert 10s after the last exec"},
+		{posts + "215000:truncated", Pass, "one truncated alert 1m5s after the last exec"},
+		{posts + "160000:truncated,170000:unknown", Pass, "one truncated alert 10s after"},
+		{FactTruncFirstMS + "=150000", Pass, "one truncated alert 10s after"},                 // the stamps of first and last may agree
+		{FactPosts + "=100000:start,160000:truncated", Pass, "one truncated alert 10s after"}, // the start in the first exec's ms
+		{FactPosts + "=0:start,160000:truncated", Pass, "one truncated alert 10s after"},      // a start at the clock's zero
+		{FactPosts + "=60000:start", Miss, "no truncated alert reached the sink"},
+		{posts + "215001:truncated", Miss, "the truncated alert 1m5.001s after the last exec, over 1m5s"},
+		{posts + "150000:truncated", Miss, "a truncated alert at 150000 ms, before the last exec at 150000"}, // before its record
+		{posts + "145000:truncated", Miss, "a truncated alert at 145000 ms, before the last exec"},           // at the 10th
+		{posts + "90000:truncated", Miss, "a truncated alert at 90000 ms, before the last exec"},             // before any exec
+		{posts + "160000:truncated,170000:truncated", Miss, "2 truncated alerts, the second at 170000 ms"},
+		{posts + "160000:unknown", Miss, "no truncated alert reached the sink"},  // another tag
+		{FactRefused + "=1", Miss, "the sink refused 1 of the watcher's pushes"}, // a refused push may be the alert
+		{FactPosts + "=none;" + FactRefused + "=2", Miss, "the sink refused 2 of the watcher's pushes"},
+		{FactPiActive + "=failed", Miss, "the watcher is failed at the end, restarts 0 to 0"},
+		{FactRestartsPost + "=1", Miss, "the watcher is active at the end, restarts 0 to 1"},
+		{FactPiActive + "=" + strings.Repeat("a", 80), Miss, "the watcher is " + strings.Repeat("a", 64) + " at the end"}, // quoted to 64
+	}, truncationInvalid("11", "12", "10", 150000)...))
 }
 
 // Ten truncated records pass only without any truncated alert in the whole window (ADR 0069, points 3 and 4).
 func TestJudgeTruncationAtTheLimit(t *testing.T) {
-	judgeTruncationCases(t, "truncation-10", map[string][]string{
-		Pass: {"", FactPosts + "=60000:start,200000:unknown"},
-		Miss: {
-			FactPosts + "=60000:start,200000:truncated", // an alert at the limit
-			FactPosts + "=60000:start,90000:truncated",  // before the first exec
-			FactPosts + "=60000:start,224999:truncated", // late in the window
-			FactRefused + "=1",                          // the refused push may be the alert
-			FactPiActive + "=inactive",                  // a watcher gone says nothing
-			FactRestartsPost + "=2",                     // a restart forgets the hour's count
-		},
-		Invalid: truncationInvalid("11", "9"),
-	})
+	posts := FactPosts + "=60000:start,"
+	judgeTruncationCases(t, "truncation-10", append([]truncCase{
+		{"", Pass, "no truncated alert for 10 truncated records"},
+		{posts + "200000:unknown", Pass, "no truncated alert for 10 truncated records"},
+		{posts + "200000:truncated", Miss, "a truncated alert at 200000 ms for 10 truncated records"},
+		{posts + "90000:truncated", Miss, "a truncated alert at 90000 ms for 10"}, // before the first exec
+		{posts + "224999:truncated", Miss, "a truncated alert at 224999 ms for 10"},
+		{FactRefused + "=1", Miss, "the sink refused 1 of"},                      // the refused push may be the alert
+		{FactPiActive + "=inactive", Miss, "the watcher is inactive at the end"}, // a watcher gone says nothing
+		{FactRestartsPost + "=2", Miss, "restarts 0 to 2"},                       // a restart forgets the hour's count
+	}, truncationInvalid("10", "11", "9", 145000)...))
 }
 
-// truncationInvalid are the changes that leave a truncation run unproven either way; more and fewer are execs or
-// entries off the trial's count.
-func truncationInvalid(more, fewer string) []string {
-	out := []string{
-		FactTruncExecs + "=" + more, FactTruncExecs + "=" + fewer, FactTruncEntries + "=" + more, FactTruncEntries + "=" + fewer,
-		FactTruncBefore + "=1",                                      // a truncated record before the run counts in the watcher's hour
-		FactOtherLoss + "=1",                                        // another loss, collector or kernel stage
-		FactLostAfter + "=4",                                        // the kernel lost records
-		FactOverflowAfter + "=yes",                                  // the dispatcher overflowed
-		FactOverflowBefore + "=stale",                               // its state unread
-		FactTruncEndMS + "=144000",                                  // the sink read before the last exec
-		FactTruncFirstMS + "=999999",                                // the last exec before the first
-		FactPosts + "=160000:truncated",                             // no start
-		FactPosts + "=110000:start,160000:truncated",                // the watcher started after the first exec
-		FactPosts + "=60000:start,160000:Truncated",                 // not a tag
-		FactPiVerified + "=error: the Pi verified 40 of 52 entries", // its verification not shown
-		FactPiActive + "=missing",
-		FactRestartsPre + "=missing",
-		FactTrial + "=truncation-1",
-		FactKernel + "=6.1.0",
-		"pi_alerts=1", // unknown
+// truncationInvalid are the changes that leave a run of want execs, the last at last ms, unproven either way; more
+// and fewer are execs or entries off its count.
+func truncationInvalid(want, more, fewer string, last int) []truncCase {
+	out := []truncCase{
+		{FactTruncExecs + "=" + more, Invalid, more + " oversized execs ran, the trial runs " + want},
+		{FactTruncExecs + "=" + fewer, Invalid, fewer + " oversized execs ran, the trial runs " + want},
+		{FactTruncEntries + "=" + more, Invalid, "holds 0 truncated entries before the execs and " + more + " after, want 0 and " + want},
+		{FactTruncEntries + "=" + fewer, Invalid, "and " + fewer + " after, want 0 and " + want},
+		{FactTruncBefore + "=1", Invalid, "holds 1 truncated entries before the execs and " + want + " after"}, // counts in the hour
+		{FactOtherLoss + "=1", Invalid, "records lost besides the truncated: 1 loss entries, kernel lost 0 to 0, overflow no to no"},
+		{FactLostAfter + "=4", Invalid, "kernel lost 0 to 4"},
+		{FactOverflowAfter + "=yes", Invalid, "overflow no to yes"},
+		{FactOverflowBefore + "=stale", Invalid, "overflow stale to no"},
+		{FactOverflowBefore + "=" + strings.Repeat("y", 40), Invalid, "overflow " + strings.Repeat("y", 16) + " to no"}, // quoted to 16
+		{FactOverflowAfter + "=" + strings.Repeat("z", 40), Invalid, "overflow no to " + strings.Repeat("z", 16)},
+		{FactTruncEndMS + "=" + strconv.Itoa(last-1000), Invalid, "the sink was read 0 ms after the last exec, before 1m20s"},
+		{FactTruncEndMS + "=" + strconv.Itoa(last+79999), Invalid, "the sink was read 79999 ms after the last exec, before 1m20s"},
+		{FactTruncFirstMS + "=999999", Invalid, "the last exec starts before the first"},
+		{FactPosts + "=160000:truncated", Invalid, "the sink saw no start of the watcher before the first exec"},
+		{FactPosts + "=110000:start,160000:truncated", Invalid, "the sink saw no start"}, // started after the first exec
+		{FactPosts + "=60000:start,160000:Truncated", Invalid, `post "160000:Truncated" is not ms:tag`},
+		{FactPiVerified + "=error: the Pi verified 40 of 52 entries", Invalid,
+			`not shown to have verified the truncated entries: "error: the Pi verified 40 of 52 entries"`},
+		{FactPiVerified + "=" + strings.Repeat("e", 300), Invalid, `entries: "` + strings.Repeat("e", 256) + `"`}, // quoted to 256
+		{FactPiActive + "=missing", Invalid, "the watcher's state could not be read"},
+		{FactRestartsPre + "=missing", Invalid, "fact pi_restarts_before is not a plain number"},
+		{FactTrial + "=truncation-1", Invalid, "the guest ran another trial"},
+		{FactKernel + "=6.1.0", Invalid, `guest kernel "6.1.0" is not the target`},
+		{"pi_alerts=1", Invalid, `unexpected fact "pi_alerts"`},
+		{FactTrial, Invalid, "the guest ran another trial"},
+		{FactKernel, Invalid, `guest kernel "" is not the target`},
 	}
-	return append(out, truncationFacts...) // each missing
+	for _, name := range truncationFacts {
+		if name != FactTrial && name != FactKernel {
+			out = append(out, truncCase{name, Invalid, "report has 19 of 20 facts, not " + name}) // each missing
+		}
+	}
+	return out
 }
 
 // The sink read must come TruncationWait after the last exec, so the window covers the 65 s and its margin; a fact
@@ -126,5 +147,15 @@ func TestTruncationIsThePis(t *testing.T) {
 	}
 	if rangejob.TruncatedExecs(rangejob.InjectTruncated11) != truncationLimit+1 || rangejob.TruncatedExecs(rangejob.InjectTruncated10) != truncationLimit {
 		t.Error("the truncation trials do not sit on either side of the limit")
+	}
+}
+
+// A trial whose injection runs no oversized exec is no truncation run, whatever its facts: it never passes.
+func TestJudgeTruncationNeedsItsExecs(t *testing.T) {
+	tr := trial(t, "truncation-10")
+	tr.Inject = rangejob.InjectNone
+	o := truncRun(tr.Name, FactTruncExecs+"=0", FactTruncEntries+"=0")
+	if v, r := judgeTruncation(tr, o); v != Invalid || !strings.Contains(r, "0 oversized execs ran, the trial runs 0") {
+		t.Errorf("no execs: %s (%s)", v, r)
 	}
 }
