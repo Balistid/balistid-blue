@@ -138,6 +138,10 @@ func TestTruncationWindowAndRepeatedFacts(t *testing.T) {
 	if TruncationWait <= lossAlarm {
 		t.Errorf("TruncationWait %s leaves no margin over %s", TruncationWait, lossAlarm)
 	}
+	_, r := JudgeTrial(tr, truncRun(tr.Name, FactOverflowAfter+"="+strings.Repeat("z", 40)), cleanBuild, cleanBuild)
+	if !strings.HasSuffix(r, " to "+strings.Repeat("z", 16)) {
+		t.Errorf("an overflow value must end the reason quoted to 16 bytes: %q", r)
+	}
 }
 
 // The judge's key and limit are the Pi's (internal/watch) and the table's counts sit on either side of the limit.
