@@ -2,27 +2,26 @@ package rangevm
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 )
 
 // Facts of a truncation trial (truncation_alarm_per_hour, ADR 0069) besides an alarm trial's posts, watcher and
-// restarts and a loss trial's kernel and dispatcher counters: how many oversized execs ran, the uptime in ms at the
-// start of the first, the one before the last and the last, and when the sink was read; the ledger's truncated
-// entries before the first exec and after it, and its entries of any other loss after it; and "yes" once the watcher
-// is shown to have verified the log past the last truncated entry, else why not. The posts are the first start and
-// every truncated alert.
+// restarts and a loss trial's kernel and dispatcher counters: the uptime in ms at the start of each oversized exec,
+// in order and comma-separated, and when the sink was read; the ledger's truncated entries before the first exec and
+// after it, and its entries of any other loss after it; the watcher's restarts as its verification began; and "yes"
+// once the watcher is shown to have verified the log past the last truncated entry, else why not. The posts are the
+// first start and every truncated alert.
 const (
-	FactTruncExecs   = "trunc_execs"
-	FactTruncFirstMS = "trunc_first_ms"
-	FactTruncPrevMS  = "trunc_prev_ms"
-	FactTruncLastMS  = "trunc_last_ms"
-	FactTruncEndMS   = "trunc_end_ms"
-	FactTruncBefore  = "ledger_truncated_before"
-	FactTruncEntries = "ledger_truncated"
-	FactOtherLoss    = "ledger_other_loss"
-	FactPiVerified   = "pi_verified"
+	FactTruncStartsMS  = "trunc_starts_ms"
+	FactTruncEndMS     = "trunc_end_ms"
+	FactTruncBefore    = "ledger_truncated_before"
+	FactTruncEntries   = "ledger_truncated"
+	FactOtherLoss      = "ledger_other_loss"
+	FactRestartsVerify = "pi_restarts_verify"
+	FactPiVerified     = "pi_verified"
 )
 
 // TruncatedTag is the Pi's alert key of more than truncation_alarm_per_hour truncated records in an hour.
@@ -43,21 +42,21 @@ const TruncationWait = lossAlarm + 15*time.Second
 const (
 	truncationWaitMS  = uint64(TruncationWait / time.Millisecond)
 	truncationEveryMS = uint64(TruncationEvery / time.Millisecond)
-	// how late each of the guest's two waits may end
+	// how late each of the guest's waits may end
 	truncationSlackMS = 1000
 	// the window truncation_alarm_per_hour counts in holds the whole run
 	truncationHourMS = uint64(time.Hour / time.Millisecond)
 )
 
-var truncationFacts = []string{FactTrial, FactPhase, FactKernel, FactTruncExecs, FactTruncFirstMS, FactTruncPrevMS, FactTruncLastMS,
-	FactTruncEndMS, FactTruncBefore, FactTruncEntries, FactOtherLoss, FactPosts, FactRefused, FactPiActive, FactRestartsPre,
-	FactRestartsPost, FactPiVerified, FactLostBefore, FactLostAfter, FactOverflowBefore, FactOverflowAfter}
+var truncationFacts = []string{FactTrial, FactPhase, FactKernel, FactTruncStartsMS, FactTruncEndMS, FactTruncBefore,
+	FactTruncEntries, FactOtherLoss, FactPosts, FactRefused, FactPiActive, FactRestartsPre, FactRestartsVerify, FactRestartsPost,
+	FactPiVerified, FactLostBefore, FactLostAfter, FactOverflowBefore, FactOverflowAfter}
 
-var truncationNums = []string{FactTruncExecs, FactTruncFirstMS, FactTruncPrevMS, FactTruncLastMS, FactTruncEndMS, FactTruncBefore,
-	FactTruncEntries, FactOtherLoss, FactRefused, FactRestartsPre, FactRestartsPost, FactLostBefore, FactLostAfter}
+var truncationNums = []string{FactTruncEndMS, FactTruncBefore, FactTruncEntries, FactOtherLoss, FactRefused, FactRestartsPre,
+	FactRestartsVerify, FactRestartsPost, FactLostBefore, FactLostAfter}
 
-// judgeTruncation: the closed facts, tr's count of execs on the guest's schedule, of the ledger's truncated entries
-// and none before them, no other loss, the watcher's start at the sink before the first exec, the sink read
+// judgeTruncation: the closed facts, tr's count of execs each on the guest's schedule, of the ledger's truncated
+// entries and none before them, no other loss, the watcher's start at the sink before the first exec, the sink read
 // TruncationWait after the last and within the hour, and the watcher shown to have verified it, else INVALID. With
 // those, a refused push, a watcher that restarted or is not running at the end is a MISS; then the alerts decide
 // (truncationAlerts).
@@ -70,31 +69,57 @@ func judgeTruncation(tr rangejob.Trial, o Outcome) (string, string) {
 	if err != nil {
 		return Invalid, err.Error()
 	}
-	if v, why := truncationRun(tr, f, n, posts); v != "" {
+	starts, why := truncationStarts(f[FactTruncStartsMS], rangejob.TruncatedExecs(tr.Inject))
+	if why != "" {
+		return Invalid, why
+	}
+	if v, why := truncationRun(tr, f, n, posts, starts); v != "" {
 		return v, why
 	}
-	return truncationAlerts(tr, posts, n[FactTruncLastMS])
+	return truncationAlerts(tr, posts, starts[len(starts)-1])
+}
+
+// truncationStarts reads want exec starts from s, each after the one before: all but the last up to a second after
+// TruncationEvery times its place from the first, the last up to a second after TruncationWait from the one before;
+// else why not.
+func truncationStarts(s string, want int) ([]uint64, string) {
+	parts := strings.Split(s, ",")
+	if len(parts) != want {
+		return nil, fmt.Sprintf("%d oversized execs ran, the trial runs %d", len(parts), want)
+	}
+	starts := make([]uint64, want)
+	for i, p := range parts {
+		var err error
+		if starts[i], err = plainNumber(p); err != nil {
+			return nil, fmt.Sprintf("fact %s is not %d plain numbers", FactTruncStartsMS, want)
+		}
+	}
+	for i := 1; i < want; i++ {
+		ref, due := 0, uint64(i)*truncationEveryMS
+		if i == want-1 {
+			ref, due = i-1, truncationWaitMS
+		}
+		// the order check comes first, so the gap cannot wrap
+		gap := starts[i] - starts[ref]
+		switch {
+		case starts[i] <= starts[i-1]:
+			return nil, fmt.Sprintf("exec %d starts at %d ms, not after exec %d at %d", i+1, starts[i], i, starts[i-1])
+		case gap < due || gap > due+truncationSlackMS:
+			return nil, fmt.Sprintf("exec %d starts %d ms after exec %d, the trial %d to %d", i+1, gap, ref+1, due, due+truncationSlackMS)
+		}
+	}
+	return starts, ""
 }
 
 // truncationRun is INVALID or MISS and why when the run cannot show tr's alert or its absence, else "".
-func truncationRun(tr rangejob.Trial, f map[string]string, n map[string]uint64, posts []Post) (string, string) {
+func truncationRun(tr rangejob.Trial, f map[string]string, n map[string]uint64, posts []Post, starts []uint64) (string, string) {
 	want := uint64(rangejob.TruncatedExecs(tr.Inject)) //nolint:gosec // a small table value
 	start := firstPost(posts, "start", 0)
-	first, prev, last := n[FactTruncFirstMS], n[FactTruncPrevMS], n[FactTruncLastMS]
-	span := (want - 2) * truncationEveryMS
+	first, last := starts[0], starts[len(starts)-1]
 	switch {
-	case want == 0 || n[FactTruncExecs] != want:
-		return Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n[FactTruncExecs], want)
-	case prev < first || last < prev:
-		return Invalid, fmt.Sprintf("the execs start out of order: %d, %d, %d ms", first, prev, last)
-	case prev-first < span || prev-first > span+truncationSlackMS:
-		return Invalid, fmt.Sprintf("the execs before the last span %d ms, the trial %d to %d", prev-first, span, span+truncationSlackMS)
-	case last-prev < truncationWaitMS || last-prev > truncationWaitMS+truncationSlackMS:
-		return Invalid, fmt.Sprintf("the last exec starts %d ms after the one before, the trial %d to %d", last-prev, truncationWaitMS,
-			truncationWaitMS+truncationSlackMS)
-	case n[FactTruncEndMS]-min(n[FactTruncEndMS], n[FactTruncLastMS]) < truncationWaitMS:
-		return Invalid, fmt.Sprintf("the sink was read %d ms after the last exec, before %s", n[FactTruncEndMS]-min(n[FactTruncEndMS],
-			n[FactTruncLastMS]), TruncationWait)
+	case n[FactTruncEndMS]-min(n[FactTruncEndMS], last) < truncationWaitMS:
+		return Invalid, fmt.Sprintf("the sink was read %d ms after the last exec, before %s", n[FactTruncEndMS]-min(n[FactTruncEndMS], last),
+			TruncationWait)
 	case n[FactTruncEndMS]-first > truncationHourMS:
 		return Invalid, fmt.Sprintf("the sink was read %d ms after the first exec, over %d", n[FactTruncEndMS]-first, truncationHourMS)
 	case n[FactTruncBefore] != 0 || n[FactTruncEntries] != want:
@@ -108,10 +133,17 @@ func truncationRun(tr rangejob.Trial, f map[string]string, n map[string]uint64, 
 	case n[FactRefused] > 0:
 		// a refused push may be the alert itself
 		return Miss, fmt.Sprintf("the sink refused %d of the watcher's pushes: its token is not the range's", n[FactRefused])
-	case start == nil || start.MS > n[FactTruncFirstMS]:
+	case start == nil || start.MS > first:
 		return Invalid, "the sink saw no start of the watcher before the first exec"
 	case f[FactPiVerified] != "yes":
 		return Invalid, fmt.Sprintf("the watcher is not shown to have verified the truncated entries: \"%s\"", Printable(f[FactPiVerified], 256))
+	case n[FactRestartsVerify] != n[FactRestartsPre]:
+		// the verification's own start of the watcher resets the count read after it
+		return Miss, fmt.Sprintf("the watcher restarted before its verification, restarts %d to %d", n[FactRestartsPre],
+			n[FactRestartsVerify])
+	case n[FactRestartsPost] < n[FactRestartsVerify]:
+		return Invalid, fmt.Sprintf("the watcher's restarts fell from %d to %d over its verification", n[FactRestartsVerify],
+			n[FactRestartsPost])
 	case f[FactPiActive] != "active" || n[FactRestartsPost] != n[FactRestartsPre]:
 		return Miss, fmt.Sprintf("the watcher is %s at the end, restarts %d to %d", Printable(f[FactPiActive], 64),
 			n[FactRestartsPre], n[FactRestartsPost])
