@@ -61,9 +61,12 @@ func TestJudgeAnchor(t *testing.T) {
 		{gap + "0900", Invalid, `not measured: gap "0900", batches "700"`},
 		{gap + "600000" + batches + "0", Miss, "no batch entry during the 600 s load"},
 		{gap + "600050" + batches + "0", Miss, "no batch entry during the 600 s load"}, // the window a little over the load
-		{gap + "599999" + batches + "0", Invalid, "a longest gap of 599999 ms between 0 batches does not cover a 600 s load"},
+		{gap + "599999" + batches + "0", Miss, "no batch entry during the 600 s load"}, // the last event 0.5 ms before the end
+		{gap + "599998" + batches + "0", Invalid, "a longest gap of 599998 ms between 0 batches does not cover a 600 s load"},
+		{gap + "600100" + batches + "0", Miss, "no batch entry during the 600 s load"},
 		{FactAnchorBatches + "=0", Invalid, "a longest gap of 900 ms between 0 batches does not cover a 600 s load"},
-		{gap + "600001" + batches + "1", Invalid, "a gap of 600001 ms or 1 batches do not fit a 600 s load"},
+		{gap + "600101" + batches + "1", Invalid, "a gap of 600101 ms or 1 batches do not fit a 600 s load"},
+		{gap + "600101" + batches + "0", Invalid, "a gap of 600101 ms or 0 batches do not fit a 600 s load"},
 		{gap + "1" + batches + "600001", Invalid, "a gap of 1 ms or 600001 batches do not fit a 600 s load"},
 		{gap + "900" + batches + "18446744073709551615", Invalid, "a gap of 900 ms or 18446744073709551615 batches do not fit"}, // wraps
 		{gap + "100" + batches + "50", Invalid, "a longest gap of 100 ms between 50 batches does not cover a 600 s load"},
@@ -105,7 +108,9 @@ func TestAnchorControlMissesOnlyByTheGap(t *testing.T) {
 		{gap + "1000" + batches + "29", Pass, "at most 1000 ms between 29 batch entries"}, // 30 spans of 1 s just cover 30 s
 		{gap + "1000" + batches + "28", Invalid, "a longest gap of 1000 ms between 28 batches does not cover a 30 s load"},
 		{gap + "30000" + batches + "0", Miss, "no batch entry during the 30 s load"},
-		{gap + "29999" + batches + "0", Invalid, "a longest gap of 29999 ms between 0 batches does not cover a 30 s load"},
+		{gap + "29990" + batches + "0", Miss, "no batch entry during the 30 s load"}, // the last event 10 ms before the end
+		{gap + "29989" + batches + "0", Invalid, "a longest gap of 29989 ms between 0 batches does not cover a 30 s load"},
+		{gap + "599999" + batches + "0", Invalid, "a gap of 599999 ms or 0 batches do not fit a 30 s load"},
 	} {
 		var change []string
 		if c.change != "" {
