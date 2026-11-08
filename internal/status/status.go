@@ -130,7 +130,8 @@ func healthPart(src Sources) Part {
 
 // reasons name each UNKNOWN of the collector (entry.Reason) and say where to look.
 var reasons = map[entry.Reason]struct{ name, hint string }{
-	entry.ReasonStarting: {"starting", "the collector started; health is UNKNOWN until its first canary is stored"},
+	entry.ReasonStarting: {"starting",
+		"the collector started; health is UNKNOWN until its first canary is stored and auditstat's report read (up to 15 s)"},
 	entry.ReasonStoreDown: {"store-down",
 		"the store refuses writes: a full disk, an I/O error or a damaged shard; journalctl -u balistid-collector.service"},
 	entry.ReasonLaurelDisconnected: {"laurel-disconnected",

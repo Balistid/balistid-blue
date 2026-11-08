@@ -368,22 +368,47 @@ func TestAuditStaleAfter15s(t *testing.T) {
 	}
 }
 
-// No report read yet is 8 at once: nothing says which rules are loaded (ADR 0059). A state file not read is 8 only
-// after the collector's first 15 s.
-func TestNothingReadIsStale(t *testing.T) {
+// No report read yet is never OK: starting in the collector's first 15 s, as auditstat starts after the boot's first
+// canary, and 8 from then on, with the state file fresh (ADR 0059, point 3; ADR 0070).
+func TestNoReportIsStartingThen8(t *testing.T) {
+	for _, c := range []struct {
+		at   time.Duration
+		want string
+	}{
+		{0, auditStarting},
+		{auditFresh - time.Millisecond, auditStarting},
+		{auditFresh, auditStale},
+		{auditFresh + time.Millisecond, auditStale},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
+		r := auditRig(t, f, seenPath(t), "boot")
+		healthy(r)
+		f.write()
+		r.step(c.at)
+		if health(r) != c.want {
+			t.Errorf("health %q at %s without a report, not %q", health(r), c.at, c.want)
+		}
+	}
+}
+
+// A report read inside the first 15 s ends starting at once. A state file not read is 8 only after the collector's
+// first 15 s.
+func TestFirstReportInTheGraceIsOK(t *testing.T) {
 	f := newAuditFake()
 	f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
 	r := auditRig(t, f, seenPath(t), "boot")
 	healthy(r)
-	if health(r) != auditStale {
+	r.step(auditFresh - time.Millisecond)
+	if health(r) != auditStarting {
 		t.Fatalf("health %q before the first report", health(r))
 	}
 	f.set(func(f *auditFake) { f.reportErr, f.stateErr = nil, os.ErrNotExist })
-	r.step(time.Second)
+	r.step(0)
 	if health(r) != "OK" {
 		t.Fatalf("health %q with a report and no state file in the first 15 s", health(r))
 	}
-	r.step(15 * time.Second)
+	r.step(time.Millisecond)
 	if health(r) != auditStale {
 		t.Fatalf("health %q after 15 s", health(r))
 	}
