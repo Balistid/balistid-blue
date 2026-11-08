@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/auditstat"
+	"github.com/Balistid/balistid-blue/internal/status"
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
@@ -25,6 +26,9 @@ const (
 
 	// auditFresh is three of auditd's state writes and of auditstat's reports, 5 s apart (ADR 0038, point 4).
 	auditFresh = 15 * time.Second
+	// bootGrace bounds the boot clock at a start that gets auditFresh's grace for auditstat's first report:
+	// ready_s's 30 s from boot to health OK, which a later start of the collector misses anyway (ADR 0070).
+	bootGrace = 30 * time.Second
 	// maxStateBytes bounds auditd's state file, which holds a dozen short lines.
 	maxStateBytes = 4 << 10
 	overflowName  = "plugin queue overflow detected"
@@ -38,8 +42,8 @@ const (
 	auditdDown      = "UNKNOWN auditd-down"
 	auditdRestarted = "UNKNOWN auditd-restarted"
 	auditStale      = "UNKNOWN audit-stale"
-	// auditStarting is health with no report read yet in the first auditFresh of the boot's first start: at boot
-	// auditstat starts after the collector's first canary can be stored (ADR 0070).
+	// auditStarting is health with no report read yet in the first auditFresh of the boot's first start, under
+	// bootGrace into the boot: auditstat starts after the collector's first canary can be stored (ADR 0070).
 	auditStarting = "UNKNOWN starting"
 )
 
@@ -68,12 +72,13 @@ type seen struct {
 type Audit struct {
 	readReport func() (auditstat.Report, error)
 	readState  func() (overflow bool, mtime int64, err error)
-	shipped    auditstat.Loaded // what the report must say is loaded (ADR 0059, point 3)
+	boottime   func() (uint64, error) // CLOCK_BOOTTIME in ns (status.Boottime)
+	shipped    auditstat.Loaded       // what the report must say is loaded (ADR 0059, point 3)
 	seenPath   string
 	bootID     string
 
 	start                 time.Time
-	restarted             bool // this boot's seen file was read: not the boot's first start, so no grace (ADR 0070)
+	grace                 bool // the boot's first start, under bootGrace into the boot (ADR 0070)
 	report                auditstat.Report
 	loaded                auditstat.Loaded // the last report's, journaled when it changes to one not shipped
 	haveReport, haveState bool
@@ -91,6 +96,7 @@ func NewAudit(cfg AuditConfig) *Audit {
 	return &Audit{
 		readReport: func() (auditstat.Report, error) { return auditstat.ReadReport(cfg.ReportPath, cfg.ReportUID) },
 		readState:  func() (bool, int64, error) { return readAuditdState(cfg.StatePath) },
+		boottime:   status.Boottime,
 		shipped:    auditstat.Shipped(),
 		seenPath:   cfg.SeenPath, bootID: cfg.BootID,
 	}
@@ -100,10 +106,12 @@ func NewAudit(cfg AuditConfig) *Audit {
 // since (ADR 0038, point 3); without one a non-zero lost or a yes counts once.
 func (a *Audit) begin(now time.Time, log *slog.Logger) {
 	a.start, a.reportAt, a.stateAt = now, now, now
+	up, err := a.boottime()
+	a.grace = err == nil && up < uint64(bootGrace) // a clock not read gives no grace (R6)
 	s, err := readSeen(a.seenPath)
 	switch {
-	case err == nil && a.bootID != "" && s.BootID == a.bootID:
-		a.base, a.stored, a.restarted = s, s, true
+	case err == nil && a.bootID != "" && s.BootID == a.bootID: // a restart in this boot
+		a.base, a.stored, a.grace = s, s, false
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		log.Error("stored audit report not read, counting this boot's losses from zero", "err", err)
 	}
@@ -192,7 +200,7 @@ func (a *Audit) restarting(now time.Time) bool {
 }
 
 // reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; no report read yet, starting in the first
-// auditFresh of the boot's first start and stale otherwise; a fresh report shows rules or status fields other than
+// auditFresh of a start with the grace and stale otherwise; a fresh report shows rules or status fields other than
 // the shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the state's mtime did not
 // change within auditFresh. The last two wait the collector's first auditFresh; the rules do not, as a fresh report
 // that differs is evidence, not an absence. The clock is the writer's monotonic one, which a suspend stops.
@@ -203,7 +211,7 @@ func (a *Audit) reason(now time.Time) string {
 	switch {
 	case stateFresh && a.overflow:
 		return auditOverflow
-	case !a.haveReport && !warm && !a.restarted: // never OK without a report, alerted past the boot's grace (ADR 0070)
+	case !a.haveReport && !warm && a.grace: // never OK without a report, alerted past the boot's grace (ADR 0070)
 		return auditStarting
 	case !a.haveReport: // nothing yet says which rules are loaded (ADR 0059, point 3)
 		return auditStale

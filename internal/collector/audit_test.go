@@ -26,13 +26,16 @@ type auditFake struct {
 	overflow  bool
 	mtime     int64
 	stateErr  error
+	boot      uint64 // CLOCK_BOOTTIME at a start, in ns
+	bootErr   error
 }
 
 // newAuditFake is a healthy auditd 100 with the shipped rules locked, no loss and no overflow.
 func newAuditFake() *auditFake {
 	sh := auditstat.Shipped()
 	return &auditFake{report: auditstat.Report{Seq: 1, Rules: sh.Rules, Status: auditstat.Status{PID: 100, Enabled: 2,
-		Failure: sh.Failure, RateLimit: sh.RateLimit, BacklogLimit: sh.BacklogLimit, BacklogWaitTime: sh.BacklogWaitTime}}, mtime: 1}
+		Failure: sh.Failure, RateLimit: sh.RateLimit, BacklogLimit: sh.BacklogLimit, BacklogWaitTime: sh.BacklogWaitTime}}, mtime: 1,
+		boot: uint64(time.Second)}
 }
 
 func (f *auditFake) set(fn func(*auditFake)) {
@@ -55,6 +58,11 @@ func (f *auditFake) audit(seenPath, bootID string) *Audit {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			return f.overflow, f.mtime, f.stateErr
+		},
+		boottime: func() (uint64, error) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.boot, f.bootErr
 		},
 		shipped:  auditstat.Shipped(),
 		seenPath: seenPath, bootID: bootID,
@@ -424,6 +432,51 @@ func TestRestartInTheBootHasNoGrace(t *testing.T) {
 				t.Errorf("%s: health %q at %s of the restart, not %q", c.name, health(r), at, c.want)
 			}
 		}
+	}
+}
+
+// The grace needs a start under bootGrace into the boot: at bootGrace less 1 ms starting holds the first 15 s, at
+// bootGrace or with the boot clock not read it is 8 at once; so is a restart past bootGrace whose seen file was
+// removed (ADR 0070).
+func TestGraceOnlyNearBoot(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		boot time.Duration
+		err  error
+		want []string // at 0 s, 14.999 s and 15 s
+	}{
+		{"under the bound", bootGrace - time.Millisecond, nil, []string{auditStarting, auditStarting, auditStale}},
+		{"at the bound", bootGrace, nil, []string{auditStale, auditStale, auditStale}},
+		{"clock not read", time.Second, errors.New("no clock"), []string{auditStale, auditStale, auditStale}},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr, f.boot, f.bootErr = os.ErrNotExist, uint64(c.boot), c.err })
+		r := auditRig(t, f, seenPath(t), "boot")
+		healthy(r)
+		for i, at := range []time.Duration{0, auditFresh - time.Millisecond, time.Millisecond} {
+			f.write()
+			r.step(at)
+			if health(r) != c.want[i] {
+				t.Errorf("%s: health %q at step %d, not %q", c.name, health(r), i, c.want[i])
+			}
+		}
+	}
+	f := newAuditFake()
+	path := seenPath(t)
+	r := auditRig(t, f, path, "boot")
+	healthy(r)
+	stepFresh(r, f, 20*time.Second)
+	if err := stopRig(r); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	f.set(func(f *auditFake) { f.reportErr, f.boot = os.ErrNotExist, uint64(bootGrace) })
+	r = auditRig(t, f, path, "boot")
+	healthy(r)
+	if health(r) != auditStale {
+		t.Errorf("health %q at a restart past the bound without the seen file", health(r))
 	}
 }
 
