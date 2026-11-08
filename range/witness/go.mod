@@ -1,8 +1,6 @@
 module github.com/Balistid/balistid-blue/range/witness
 
-go 1.27.0
-
-toolchain go1.27.3
+go 1.27.3
 
 require (
 	filippo.io/torchwood v0.10.0 // indirect
