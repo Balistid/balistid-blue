@@ -484,7 +484,8 @@ func TestStreamChecksTheResumeBatchOverTicks(t *testing.T) {
 // A stream fault names the health only where it would be OK; another UNKNOWN reason keeps its name.
 func TestStreamFaultShowsWhereHealthWouldBeOK(t *testing.T) {
 	for h, want := range map[string]entry.Reason{"OK": entry.ReasonStream, "UNKNOWN laurel-disconnected": entry.ReasonLaurelDisconnected,
-		"UNKNOWN canary-missed": entry.ReasonCanaryMissed, "UNKNOWN store: store-open": entry.ReasonStoreDown} {
+		"UNKNOWN canary-missed": entry.ReasonCanaryMissed, "UNKNOWN store: store-open": entry.ReasonStoreDown,
+		auditStarting: entry.ReasonStream} {
 		w, l := streamWriter(openStore(t, 2))
 		w.health, w.stopped = h, "a stop"
 		l.hello <- helloOf{1, link.Hello{}}
