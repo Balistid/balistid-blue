@@ -147,7 +147,8 @@ func (f *truncFake) end(verify func(*truncFake)) truncEnd {
 }
 
 // The end of a run is read after the verification, which stops and may restart the watcher: an alert, a restart or
-// time it lets through is judged, and the watcher's state is the one before it stopped it.
+// time it lets through is judged, and the watcher's state is the one before it stopped it. Its restarts are read
+// before it as well, as its start of the watcher resets them.
 func TestTruncEndReadsAfterTheVerification(t *testing.T) {
 	tr, ok := rangejob.Lookup("truncation-10")
 	if !ok {
@@ -156,21 +157,25 @@ func TestTruncEndReadsAfterTheVerification(t *testing.T) {
 	for _, c := range []struct {
 		verify          func(*truncFake)
 		verdict, reason string
+		pre, restarts   string
 	}{
-		{func(*truncFake) {}, rangevm.Pass, "no truncated alert for 10 truncated records"},
-		{func(f *truncFake) { f.active = "inactive" }, rangevm.Pass, "no truncated alert for 10 truncated records"},
+		{func(*truncFake) {}, rangevm.Pass, "no truncated alert for 10 truncated records", "0", "0"},
+		{func(f *truncFake) { f.active = "inactive" }, rangevm.Pass, "no truncated alert for 10 truncated records", "0", "0"},
 		{func(f *truncFake) { f.posts = append(f.posts, rangevm.Post{MS: 250000, Tag: rangevm.TruncatedTag}) }, rangevm.Miss,
-			"a truncated alert at 250000 ms for 10 truncated records"},
-		{func(f *truncFake) { f.restarts = "1" }, rangevm.Miss, "the watcher is active at the end, restarts 0 to 1"},
+			"a truncated alert at 250000 ms for 10 truncated records", "0", "0"},
+		{func(f *truncFake) { f.restarts = "1" }, rangevm.Miss, "the watcher is active at the end, restarts 0 to 1", "0", "0"},
 		{func(f *truncFake) { f.now = 299999 * time.Millisecond }, rangevm.Invalid,
-			"the sink was read 79999 ms after the last exec, before 1m20s"},
+			"the sink was read 79999 ms after the last exec, before 1m20s", "0", "0"},
+		{func(f *truncFake) { f.restarts = "0" }, rangevm.Miss, "the watcher restarted before its verification, restarts 0 to 1", "0", "1"},
+		{func(f *truncFake) { f.restarts = "0" }, rangevm.Invalid, "the watcher's restarts fell from 1 to 0 over its verification", "1", "1"},
+		{func(*truncFake) {}, rangevm.Pass, "no truncated alert for 10 truncated records", "1", "1"},
 	} {
-		f := &truncFake{posts: []rangevm.Post{{MS: 60000, Tag: "start"}}, active: "active", restarts: "0", now: 300 * time.Second}
+		f := &truncFake{posts: []rangevm.Post{{MS: 60000, Tag: "start"}}, active: "active", restarts: c.restarts, now: 300 * time.Second}
 		r := &report{}
 		for _, kv := range [][2]string{{rangevm.FactTrial, tr.Name}, {rangevm.FactPhase, "1"}, {rangevm.FactKernel, rangevm.TargetKernel},
-			{rangevm.FactTruncExecs, "10"}, {rangevm.FactTruncFirstMS, "100000"}, {rangevm.FactTruncPrevMS, "140000"},
-			{rangevm.FactTruncLastMS, "220000"}, {rangevm.FactTruncBefore, "0"}, {rangevm.FactTruncEntries, "10"},
-			{rangevm.FactOtherLoss, "0"}, {rangevm.FactRestartsPre, "0"}, {rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"},
+			{rangevm.FactTruncStartsMS, "100000,105000,110000,115000,120000,125000,130000,135000,140000,220000"},
+			{rangevm.FactTruncBefore, "0"}, {rangevm.FactTruncEntries, "10"}, {rangevm.FactOtherLoss, "0"},
+			{rangevm.FactRestartsPre, c.pre}, {rangevm.FactLostBefore, "0"}, {rangevm.FactLostAfter, "0"},
 			{rangevm.FactOverflowBefore, "no"}, {rangevm.FactOverflowAfter, "no"}} {
 			r.add(kv[0], kv[1])
 		}

@@ -71,10 +71,11 @@ func runTruncation(ctx context.Context, tr rangejob.Trial, r *report) error {
 	if err != nil {
 		return r.fail(err.Error())
 	}
-	r.add(rangevm.FactTruncExecs, strconv.Itoa(len(starts)))
-	r.add(rangevm.FactTruncFirstMS, ms(starts[0]))
-	r.add(rangevm.FactTruncPrevMS, ms(starts[max(len(starts)-2, 0)]))
-	r.add(rangevm.FactTruncLastMS, ms(last))
+	each := make([]string, len(starts))
+	for i, at := range starts {
+		each[i] = ms(at)
+	}
+	r.add(rangevm.FactTruncStartsMS, strings.Join(each, ","))
 	r.add(rangevm.FactTruncBefore, strconv.Itoa(before.truncated))
 	r.add(rangevm.FactTruncEntries, strconv.Itoa(after.truncated))
 	r.add(rangevm.FactOtherLoss, strconv.Itoa(after.other))
@@ -103,11 +104,12 @@ type truncEnd struct {
 	clock            func() (time.Duration, error)
 }
 
-// add adds the watcher's state, then whether it verified the log cosigned past the last truncated entry, then the
-// sink's posts and refusals, the watcher's restarts and the end time: verify waits, stops and may restart the
-// watcher, and what it lets through must be judged.
+// add adds the watcher's state and restarts, then whether it verified the log cosigned past the last truncated entry,
+// then the sink's posts and refusals, the watcher's restarts and the end time: verify waits, stops and may restart
+// the watcher, which resets its restarts, and what it lets through must be judged.
 func (e truncEnd) add(ctx context.Context, r *report, cosigned uint64, after truncLosses) error {
 	r.add(rangevm.FactPiActive, e.active())
+	r.add(rangevm.FactRestartsVerify, e.restarts())
 	r.add(rangevm.FactPiVerified, truncVerified(ctx, cosigned, after, e.verify))
 	posts, refused, err := e.sink()
 	if err != nil {

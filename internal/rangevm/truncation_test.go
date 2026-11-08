@@ -16,15 +16,45 @@ import (
 // others but the last one every 5 s, the last 80 s after the one before, the sink read 80 s after the last;
 // truncation-11's alert 10 s after its last exec.
 func truncRun(name string, change ...string) Outcome {
-	base := map[string]string{FactTruncExecs: "11", FactTruncFirstMS: "100000", FactTruncPrevMS: "145000", FactTruncLastMS: "225000",
-		FactTruncEndMS: "305000", FactTruncBefore: "0", FactTruncEntries: "11", FactOtherLoss: "0", FactPosts: "60000:start,235000:truncated",
-		FactRefused: "0", FactPiActive: "active", FactRestartsPre: "0", FactRestartsPost: "0", FactPiVerified: "yes", FactLostBefore: "0",
+	base := map[string]string{FactTruncStartsMS: startsValue(soundStarts(11)), FactTruncEndMS: "305000", FactTruncBefore: "0",
+		FactTruncEntries: "11", FactOtherLoss: "0", FactPosts: "60000:start,235000:truncated", FactRefused: "0", FactPiActive: "active",
+		FactRestartsPre: "0", FactRestartsVerify: "0", FactRestartsPost: "0", FactPiVerified: "yes", FactLostBefore: "0",
 		FactLostAfter: "0", FactOverflowBefore: "no", FactOverflowAfter: "no"}
 	if name == "truncation-10" {
-		base[FactTruncExecs], base[FactTruncEntries], base[FactPosts] = "10", "10", "60000:start"
-		base[FactTruncPrevMS], base[FactTruncLastMS], base[FactTruncEndMS] = "140000", "220000", "300000"
+		base[FactTruncStartsMS], base[FactTruncEntries], base[FactPosts] = startsValue(soundStarts(10)), "10", "60000:start"
+		base[FactTruncEndMS] = "300000"
 	}
 	return probeRun(name, truncationFacts, base, change...)
+}
+
+// soundStarts are the starts in ms of a sound run of n execs: from 100 s one every 5 s, the last 80 s after the one
+// before.
+func soundStarts(n int) []int {
+	s := make([]int, n)
+	for i := range n - 1 {
+		s[i] = 100000 + i*5000
+	}
+	s[n-1] = s[n-2] + 80000
+	return s
+}
+
+// startsFact is the starts fact of s, each at its place set to the value after it in set.
+func startsFact(s []int, set ...int) string {
+	s = append([]int(nil), s...)
+	for i := 0; i+1 < len(set); i += 2 {
+		s[set[i]] = set[i+1]
+	}
+	each := make([]string, len(s))
+	for i, v := range s {
+		each[i] = strconv.Itoa(v)
+	}
+	return FactTruncStartsMS + "=" + strings.Join(each, ",")
+}
+
+// startsValue is the value of the starts fact of s.
+func startsValue(s []int) string {
+	_, v, _ := strings.Cut(startsFact(s), "=")
+	return v
 }
 
 // truncCase is a change to a sound run, ";"-separated, and the verdict and the words of the reason it must give.
@@ -87,7 +117,7 @@ func TestJudgeTruncationOverTheLimit(t *testing.T) {
 		{FactPiActive + "=failed", Miss, "the watcher is failed at the end, restarts 0 to 0"},
 		{FactRestartsPost + "=1", Miss, "the watcher is active at the end, restarts 0 to 1"},
 		{FactPiActive + "=" + strings.Repeat("a", 80), Miss, "the watcher is " + strings.Repeat("a", 64) + " at the end"}, // quoted to 64
-	}, append(truncationSchedule(11, 100000, 145000, 225000, sound), truncationInvalid("11", "12", "10")...)...))
+	}, append(append(truncationSchedule(11, sound, "one truncated alert 9s after the last exec"), truncationRestarts(sound)...), truncationInvalid("11", "12", "10")...)...))
 }
 
 // Ten truncated records pass only without any truncated alert in the whole window (ADR 0069, points 3 and 4).
@@ -103,49 +133,88 @@ func TestJudgeTruncationAtTheLimit(t *testing.T) {
 		{FactRefused + "=1", Miss, "the sink refused 1 of"},                      // the refused push may be the alert
 		{FactPiActive + "=inactive", Miss, "the watcher is inactive at the end"}, // a watcher gone says nothing
 		{FactRestartsPost + "=2", Miss, "restarts 0 to 2"},                       // a restart forgets the hour's count
-	}, append(truncationSchedule(10, 100000, 140000, 220000, sound), truncationInvalid("10", "11", "9")...)...))
+	}, append(append(truncationSchedule(10, sound, sound), truncationRestarts(sound)...), truncationInvalid("10", "11", "9")...)...))
 }
 
-// truncationSchedule are the changes to the times of a sound run of n execs, the first, the one before the last and
-// the last at first, prev and last ms, at and past each bound of the schedule: all but the last one every 5 s, the
-// last 80 s after the one before, each up to a second late, and the sink read within the hour.
-func truncationSchedule(n, first, prev, last int, sound string) []truncCase {
-	span := (n - 2) * 5000
-	at := func(k string, v int) string { return k + "=" + strconv.Itoa(v) }
-	spaced := func(gap int) string { // the one before the last gap ms before the last, the first span before it
-		return at(FactTruncPrevMS, last-gap) + ";" + at(FactTruncFirstMS, last-gap-span)
+// truncationSchedule are the changes to the starts of a sound run of n execs at and past each bound of the schedule:
+// all but the last from the first every 5 s, the last 80 s after the one before, each up to a second late and never
+// early, every one in order, and the sink read 80 s after the last and within the hour; lateSound is the PASS of a
+// last exec a second late.
+func truncationSchedule(n int, sound, lateSound string) []truncCase {
+	s := soundStarts(n)
+	first, prev, last := s[0], s[n-2], s[n-1]
+	late := func(exec, ms, ref, due int) string {
+		return fmt.Sprintf("exec %d starts %d ms after exec %d, the trial %d to %d", exec, ms, ref, due, due+1000)
 	}
-	spanWhy := func(ms int) string {
-		return "the execs before the last span " + strconv.Itoa(ms) + " ms, the trial " + strconv.Itoa(span) + " to " + strconv.Itoa(span+1000)
+	order := func(exec, ms int) string {
+		return fmt.Sprintf("exec %d starts at %d ms, not after exec %d at %d", exec, ms, exec-1, s[exec-2])
 	}
-	gapWhy := func(ms int) string {
-		return "the last exec starts " + strconv.Itoa(ms) + " ms after the one before, the trial 80000 to 81000"
+	burst := []int{1, 120000} // 20 s late, then the rest at once
+	for i := 2; i < n; i++ {
+		burst = append(burst, i, 120000+i)
+	}
+	end81 := ";" + FactTruncEndMS + "=" + strconv.Itoa(prev+161000) // the sink read 80 s after a last exec a second late
+	middle := []int{5, prev - 4000}                                 // late in the middle, then at once until the one before the last is due
+	for i := 6; i < n-2; i++ {
+		middle = append(middle, i, prev-4000+i-5)
 	}
 	return []truncCase{
-		{at(FactTruncFirstMS, prev-span-1000), Pass, sound}, // a second late over all but the last
-		{spaced(81000), Pass, sound},
-		{at(FactTruncEndMS, first+3600000), Pass, sound},
-		{at(FactTruncFirstMS, prev-span-1001), Invalid, spanWhy(span + 1001)},
-		{at(FactTruncFirstMS, prev-span+1), Invalid, spanWhy(span - 1)},
-		{at(FactTruncFirstMS, prev), Invalid, spanWhy(0)},
-		{at(FactTruncFirstMS, prev+1), Invalid, fmt.Sprintf("the execs start out of order: %d, %d, %d ms", prev+1, prev, last)},
-		{spaced(81001), Invalid, gapWhy(81001)},
-		{spaced(79999), Invalid, gapWhy(79999)},
-		{at(FactTruncLastMS, prev), Invalid, gapWhy(0)},
-		{at(FactTruncLastMS, prev-1), Invalid, fmt.Sprintf("the execs start out of order: %d, %d, %d ms", first, prev, prev-1)},
-		{at(FactTruncLastMS, 3800000), Invalid, gapWhy(3800000 - prev)}, // ordered, but not the schedule
-		{at(FactTruncEndMS, first+3600001), Invalid, "the sink was read 3600001 ms after the first exec, over 3600000"},
-		{at(FactTruncEndMS, last-1000), Invalid, "the sink was read 0 ms after the last exec, before 1m20s"},
-		{at(FactTruncEndMS, last+79999), Invalid, "the sink was read 79999 ms after the last exec, before 1m20s"},
+		{startsFact(s, 3, s[3]+1000), Pass, sound},
+		{startsFact(s, 3, s[3]+1000, 4, s[4]+1000), Pass, sound},
+		{startsFact(s, n-1, prev+81000) + end81, Pass, lateSound},
+		{startsFact(s, n-2, prev+1000, n-1, prev+81000) + end81, Pass, lateSound},
+		{startsFact(s, 3, s[3]+1001), Invalid, late(4, 16001, 1, 15000)},
+		{startsFact(s, 3, s[3]-1), Invalid, late(4, 14999, 1, 15000)},
+		{startsFact(s, 1, s[1]-1), Invalid, late(2, 4999, 1, 5000)},
+		{startsFact(s, n-2, prev+1001), Invalid, late(n-1, (n-2)*5000+1001, 1, (n-2)*5000)},
+		{startsFact(s, n-1, prev+81001), Invalid, late(n, 81001, n-1, 80000)},
+		{startsFact(s, n-1, prev+79999), Invalid, late(n, 79999, n-1, 80000)},
+		{startsFact(s, burst...), Invalid, late(2, 20000, 1, 5000)},
+		{startsFact(s, 3, s[3]+1000, 4, s[3]+1001), Invalid, late(5, 16001, 1, 20000)},
+		{startsFact(s, middle...), Invalid, late(6, prev-4000-first, 1, 25000)},
+		{startsFact(s, 1, first), Invalid, order(2, first)},
+		{startsFact(s, 3, s[2]), Invalid, order(4, s[2])},
+		{startsFact(s, 3, s[2]-1), Invalid, order(4, s[2]-1)},
+		{startsFact(s, n-1, prev), Invalid, order(n, prev)},
+		{startsFact(s, 2, s[3], 3, s[2]), Invalid, late(3, 15000, 1, 10000)},
+		{startsFact(s[:n-1]), Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n-1, n)},
+		{startsFact(append(s, last+5000)), Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n+1, n)},
+		{startsFact(s) + ",", Invalid, fmt.Sprintf("%d oversized execs ran, the trial runs %d", n+1, n)},
+		{FactTruncStartsMS + "=", Invalid, fmt.Sprintf("1 oversized execs ran, the trial runs %d", n)},
+		{strings.Replace(startsFact(s), ",115000,", ",115e3,", 1), Invalid, fmt.Sprintf("fact trunc_starts_ms is not %d plain numbers", n)},
+		{strings.Replace(startsFact(s), ",115000,", ",-1,", 1), Invalid, fmt.Sprintf("fact trunc_starts_ms is not %d plain numbers", n)},
+		{strings.Replace(startsFact(s), ",115000,", ", 115000,", 1), Invalid, fmt.Sprintf("fact trunc_starts_ms is not %d plain numbers", n)},
+		{strings.Replace(startsFact(s), ",115000,", ",0115000,", 1), Invalid, fmt.Sprintf("fact trunc_starts_ms is not %d plain numbers", n)},
+		{FactTruncEndMS + "=" + strconv.Itoa(first+3600000), Pass, sound},
+		{FactTruncEndMS + "=" + strconv.Itoa(first+3600001), Invalid, "the sink was read 3600001 ms after the first exec, over 3600000"},
+		{FactTruncEndMS + "=" + strconv.Itoa(last-1000), Invalid, "the sink was read 0 ms after the last exec, before 1m20s"},
+		{FactTruncEndMS + "=" + strconv.Itoa(last+79999), Invalid, "the sink was read 79999 ms after the last exec, before 1m20s"},
 	}
 }
 
-// truncationInvalid are the changes that leave a run of want execs unproven either way; more and fewer are execs or
-// entries off its count.
+// truncationRestarts are the watcher's restarts before the run, as its verification began and after it: one before
+// the verification is a MISS even when the verification's start of the watcher reset the count, and a count that
+// fell without such a restart is no count.
+func truncationRestarts(sound string) []truncCase {
+	at := func(pre, verify, post int) string {
+		return fmt.Sprintf("%s=%d;%s=%d;%s=%d", FactRestartsPre, pre, FactRestartsVerify, verify, FactRestartsPost, post)
+	}
+	return []truncCase{
+		{at(1, 1, 1), Pass, sound},
+		{at(0, 1, 0), Miss, "the watcher restarted before its verification, restarts 0 to 1"},
+		{at(0, 1, 1), Miss, "the watcher restarted before its verification, restarts 0 to 1"},
+		{at(2, 1, 1), Miss, "the watcher restarted before its verification, restarts 2 to 1"},
+		{at(1, 1, 0), Invalid, "the watcher's restarts fell from 1 to 0 over its verification"},
+		{at(3, 3, 2), Invalid, "the watcher's restarts fell from 3 to 2 over its verification"},
+		{at(1, 1, 2), Miss, "the watcher is active at the end, restarts 1 to 2"},
+		{FactRestartsVerify + "=missing", Invalid, "fact pi_restarts_verify is not a plain number"},
+	}
+}
+
+// truncationInvalid are the changes that leave a run of want execs unproven either way; more and fewer are entries
+// off its count.
 func truncationInvalid(want, more, fewer string) []truncCase {
 	out := []truncCase{
-		{FactTruncExecs + "=" + more, Invalid, more + " oversized execs ran, the trial runs " + want},
-		{FactTruncExecs + "=" + fewer, Invalid, fewer + " oversized execs ran, the trial runs " + want},
 		{FactTruncEntries + "=" + more, Invalid, "holds 0 truncated entries before the execs and " + more + " after, want 0 and " + want},
 		{FactTruncEntries + "=" + fewer, Invalid, "and " + fewer + " after, want 0 and " + want},
 		{FactTruncBefore + "=1", Invalid, "holds 1 truncated entries before the execs and " + want + " after"}, // counts in the hour
@@ -163,7 +232,6 @@ func truncationInvalid(want, more, fewer string) []truncCase {
 		{FactPiVerified + "=" + strings.Repeat("e", 300), Invalid, `entries: "` + strings.Repeat("e", 256) + `"`}, // quoted to 256
 		{FactPiActive + "=missing", Invalid, "the watcher's state could not be read"},
 		{FactRestartsPre + "=missing", Invalid, "fact pi_restarts_before is not a plain number"},
-		{FactTruncPrevMS + "=-1", Invalid, "fact trunc_prev_ms is not a plain number"},
 		{FactTrial + "=truncation-1", Invalid, "the guest ran another trial"},
 		{FactKernel + "=6.1.0", Invalid, `guest kernel "6.1.0" is not the target`},
 		{"pi_alerts=1", Invalid, `unexpected fact "pi_alerts"`},
@@ -172,7 +240,8 @@ func truncationInvalid(want, more, fewer string) []truncCase {
 	}
 	for _, name := range truncationFacts {
 		if name != FactTrial && name != FactKernel {
-			out = append(out, truncCase{name, Invalid, "report has 20 of 21 facts, not " + name}) // each missing
+			out = append(out, truncCase{name, Invalid, fmt.Sprintf("report has %d of %d facts, not %s", len(truncationFacts)-1,
+				len(truncationFacts), name)}) // each missing
 		}
 	}
 	return out
@@ -185,10 +254,13 @@ func TestTruncationWindowAndRepeatedFacts(t *testing.T) {
 	if v, r := JudgeTrial(tr, truncRun(tr.Name, FactTruncEndMS+"=304999"), cleanBuild, cleanBuild); v != Invalid {
 		t.Errorf("sink read a millisecond early: %s (%s)", v, r)
 	}
-	o := truncRun(tr.Name)
-	o.Facts = append(o.Facts, Record{Name: FactPosts, Value: "60000:start,235000:truncated"})
-	if v, r := JudgeTrial(tr, o, cleanBuild, cleanBuild); v != Invalid {
-		t.Errorf("posts reported twice: %s (%s)", v, r)
+	for _, again := range []Record{{Name: FactPosts, Value: "60000:start,235000:truncated"},
+		{Name: FactTruncStartsMS, Value: startsValue(soundStarts(11))}} {
+		o := truncRun(tr.Name)
+		o.Facts = append(o.Facts, again)
+		if v, r := JudgeTrial(tr, o, cleanBuild, cleanBuild); v != Invalid || !hasReason(r, "fact "+again.Name+" reported twice") {
+			t.Errorf("%s reported twice: %s (%s)", again.Name, v, r)
+		}
 	}
 	if TruncationWait <= lossAlarm {
 		t.Errorf("TruncationWait %s leaves no margin over %s", TruncationWait, lossAlarm)
@@ -231,8 +303,8 @@ func TestTruncationIsThePis(t *testing.T) {
 func TestJudgeTruncationNeedsItsExecs(t *testing.T) {
 	tr := trial(t, "truncation-10")
 	tr.Inject = rangejob.InjectNone
-	o := truncRun(tr.Name, FactTruncExecs+"=0", FactTruncEntries+"=0")
-	if v, r := judgeTruncation(tr, o); v != Invalid || !strings.Contains(r, "0 oversized execs ran, the trial runs 0") {
+	o := truncRun(tr.Name, FactTruncEntries+"=0")
+	if v, r := judgeTruncation(tr, o); v != Invalid || !strings.Contains(r, "10 oversized execs ran, the trial runs 0") {
 		t.Errorf("no execs: %s (%s)", v, r)
 	}
 }
