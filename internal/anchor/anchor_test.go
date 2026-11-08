@@ -17,6 +17,7 @@ import (
 	"github.com/transparency-dev/formats/log"
 	"github.com/transparency-dev/merkle/proof"
 	"github.com/transparency-dev/merkle/rfc6962"
+	"github.com/transparency-dev/tessera"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
@@ -352,6 +353,48 @@ func TestOpenRefusesALogPastItsCap(t *testing.T) {
 	}
 	cfg.CapBytes = 5 * entryBytes
 	closeLog(t, openLog(t, cfg)) // 3 of 5: room for the UNKNOWN and the final entry
+}
+
+// bundleReader serves every entry bundle as n copies of the entry raw.
+type bundleReader struct {
+	tessera.LogReader
+	raw []byte
+	n   int
+}
+
+func (r bundleReader) ReadEntryBundle(context.Context, uint64, uint8) ([]byte, error) {
+	var out []byte
+	for range r.n {
+		out = append(append(out, byte(len(r.raw)>>8), byte(len(r.raw))), r.raw...) //nolint:gosec // entries are at most 256 bytes
+	}
+	return out, nil
+}
+
+// The cap check reads the log's last entry from a bundle holding exactly the log's entries in it: a shorter or
+// longer bundle would put another entry, or none, in the cap's slot.
+func TestCapCheckRefusesABundleOfAnotherCount(t *testing.T) {
+	unknown, err := entry.Entry{Body: capHealth}.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const size = layout.EntryBundleWidth + 44 // the cap's UNKNOWN slot is the 44th entry of bundle 1
+	for _, c := range []struct {
+		n    int
+		want string
+	}{
+		{0, "bundle 1 holds 0 entries"},
+		{43, "bundle 1 holds 43 entries"},
+		{44, ""},
+		{45, "bundle 1 holds 45 entries"},
+	} {
+		t.Run(strconv.Itoa(c.n), func(t *testing.T) {
+			l := &Log{size: size, maxSize: size + 1}
+			err := l.withinCap(t.Context(), bundleReader{raw: unknown, n: c.n})
+			if c.want == "" && err != nil || c.want != "" && (err == nil || err.Error() != c.want) {
+				t.Fatalf("a bundle of %d entries: %v; want %q", c.n, err, c.want)
+			}
+		})
+	}
 }
 
 // A log that holds its cap's UNKNOWN stays at its cap when reopened with a higher one: nothing but the final

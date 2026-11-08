@@ -155,6 +155,9 @@ func (l *Log) withinCap(ctx context.Context, r tessera.LogReader) error {
 	if err != nil {
 		return fmt.Errorf("read the log's last entry: %w", err)
 	}
+	if uint64(len(b.Entries)) != l.size-idx*layout.EntryBundleWidth {
+		return fmt.Errorf("bundle %d holds %d entries", idx, len(b.Entries))
+	}
 	last := b.Entries[len(b.Entries)-1]
 	e, err := entry.Decode(last)
 	if err != nil {
