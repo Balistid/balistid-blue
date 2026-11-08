@@ -82,6 +82,8 @@ func runTrial(ctx context.Context, name, phase string) error {
 		return runSensorDownRules(ctx, tr, r)
 	case rangejob.MethodAnchor:
 		return runAnchor(ctx, tr, r)
+	case rangejob.MethodTruncation:
+		return runTruncation(ctx, tr, r)
 	}
 	return r.fail("no method runs trial " + tr.Name)
 }

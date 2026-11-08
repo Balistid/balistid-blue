@@ -339,6 +339,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeRulesDiffer(tr, o)
 	case rangejob.MethodAnchor:
 		return judgeAnchor(tr, o)
+	case rangejob.MethodTruncation:
+		return judgeTruncation(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

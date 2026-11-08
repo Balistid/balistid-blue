@@ -38,7 +38,8 @@ dispatcher (ADR 0054), and the acceptance file gives the truncation alarm no lat
 
 - The gap as two more facts of rate-sustained: the rate judge's closed facts would change for every rate run, and
   a load that misses would also have to decide a gap.
-- A control of 2000 execs/s: a stall of the ledger then backs up the collector's link near its 5 s write deadline.
+- The control at rate-sustained's load: 14 min to show a 2 s stall that 30 s at 100/s shows as well, and the
+  stall stays under the collector's 5 s write deadline to the ledger at either load.
 - Truncated records at 1/s: rss-large's rate, which held for 30 s; 5 s keeps the dispatcher idle between them.
 - A shorter truncation window in the range: a range-only limit would decide a number the host does not run.
 

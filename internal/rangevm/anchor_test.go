@@ -49,6 +49,7 @@ func TestJudgeAnchor(t *testing.T) {
 			FactAnchorGapMS + "=error: checkpoint: no file",                         // gap not measured
 			FactAnchorBatches + "=error: bundle 3: short",                           // batches not counted
 			FactAnchorBatches + "=0",                                                // no batch in the window
+			FactAnchorGapMS + "=599500," + FactAnchorBatches + "=0",                 // no batch, a gap as long as the load
 			FactAnchorGapMS + "=100," + FactAnchorBatches + "=50",                   // spans that do not cover the load
 			FactAnchorGapMS + "=900," + FactAnchorBatches + "=18446744073709551615", // a count that wraps
 			FactAnchorGapMS + "=600001," + FactAnchorBatches + "=1",                 // a gap longer than the load

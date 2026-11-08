@@ -47,6 +47,7 @@ const (
 	MetricCanary            = "canary_interval_s"
 	MetricSensorDown        = "sensor_down_s"
 	MetricAnchor            = "anchor_interval_s"
+	MetricTruncation        = "truncation_alarm_per_hour"
 )
 
 // InjectStatus breaks each floor-0 part in turn and runs balistid status after each (ADR 0048).
@@ -88,6 +89,24 @@ const InjectOOM = "oom"
 // anchor_interval_s's judge must give MISS (ADR 0069, point 2).
 const InjectLedgerStall = "ledger-stall"
 
+// Injections of a truncation trial (ADR 0069, point 3): one oversized exec more than truncation_alarm_per_hour's 10,
+// which must alert once, and exactly 10, which must not.
+const (
+	InjectTruncated11 = "truncated-11"
+	InjectTruncated10 = "truncated-10"
+)
+
+// TruncatedExecs is how many oversized execs truncation injection inject runs, 0 for any other.
+func TruncatedExecs(inject string) int {
+	switch inject {
+	case InjectTruncated11:
+		return 11
+	case InjectTruncated10:
+		return 10
+	}
+	return 0
+}
+
 // InjectAuditSet asks the kernel, as balistid-auditstat's uid with its one capability, for every audit change
 // under -e 2; the trial records which the kernel still allows (ADR 0038, Consequences).
 const InjectAuditSet = "audit-set"
@@ -117,7 +136,8 @@ func RulesInject(inject string) bool {
 // recorder's units under load (rss_mib), a canary trial times the collector's canary quiet and with Laurel and then
 // auditd frozen (ADR 0017), a sensor-down trial times health UNKNOWN after Laurel is killed and auditd stopped and
 // tries auditctl -e 0, a sensor-down rules trial boots with rules that differ from the repository (ADR 0059), an
-// anchor trial runs a rate trial's load and measures the gaps between the ledger's batch entries (ADR 0069).
+// anchor trial runs a rate trial's load and measures the gaps between the ledger's batch entries, a truncation trial
+// stores oversized records and times the Pi's alert at the sink (ADR 0069).
 const (
 	MethodRate             = "rate"
 	MethodWriterFailure    = "writer-failure"
@@ -137,6 +157,7 @@ const (
 	MethodSensorDown       = "sensor-down"
 	MethodSensorDownRules  = "sensor-down-rules"
 	MethodAnchor           = "anchor"
+	MethodTruncation       = "truncation"
 )
 
 // Method is how tr is run and judged, "" for none: the guest reports it cannot run it and the host
@@ -215,7 +236,7 @@ func rssMethod(tr Trial, ok bool) string {
 	return ""
 }
 
-// alarmMethod is MethodAlarm or MethodLoss for an injection of tr's metric and nothing else, else "".
+// alarmMethod is MethodAlarm, MethodLoss or MethodTruncation for an injection of tr's metric and nothing else, else "".
 func alarmMethod(tr Trial) string {
 	silence := tr.Inject == InjectWireGuard || tr.Inject == InjectLedger || tr.Inject == InjectHardStop
 	quiet := tr.Inject == InjectQuietOff || tr.Inject == InjectQuietMasked || tr.Inject == InjectQuietAgain
@@ -229,6 +250,8 @@ func alarmMethod(tr Trial) string {
 		return MethodAlarm
 	case tr.Metric == MetricLoss && loss:
 		return MethodLoss
+	case tr.Metric == MetricTruncation && TruncatedExecs(tr.Inject) > 0 && tr.Expect == "":
+		return MethodTruncation
 	}
 	return ""
 }
@@ -404,6 +427,11 @@ var trials = slices.Concat([]Trial{
 			Count: 2, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 600}},
 		{Name: "anchor-control-stall", Metric: MetricAnchor, Expect: ExpectMiss, Wall: 5 * time.Minute, Serial: 1 << 20, Boots: 1,
 			Scratch: StoreScratch, Count: 1, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}, Inject: InjectLedgerStall},
+		// truncation_alarm_per_hour: 11 truncated records alert once and 10 do not, two runs each (ADR 0069, point 3).
+		{Name: "truncation-11", Metric: MetricTruncation, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+			Count: 2, Inject: InjectTruncated11},
+		{Name: "truncation-10", Metric: MetricTruncation, Wall: 8 * time.Minute, Serial: 1 << 20, Boots: 1, Scratch: StoreScratch,
+			Count: 2, Inject: InjectTruncated10},
 	},
 )
 
