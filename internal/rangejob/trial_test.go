@@ -163,6 +163,16 @@ func TestMethod(t *testing.T) {
 		{Trial{Metric: MetricAnchor, Failure: FailKill, Load: Load{Kind: LoadExec, Rate: 2000, Seconds: 20}}, ""},
 		{Trial{Metric: MetricAnchor, Inject: InjectLedger, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
 		{Trial{Metric: MetricSustained, Expect: ExpectMiss, Inject: InjectLedgerStall, Load: Load{Kind: LoadExec, Rate: 100, Seconds: 30}}, ""},
+		{Trial{Metric: MetricTruncation, Inject: InjectTruncated11}, MethodTruncation},
+		{Trial{Metric: MetricTruncation, Inject: InjectTruncated10}, MethodTruncation},
+		{Trial{Metric: MetricTruncation}, ""},
+		{Trial{Metric: MetricTruncation, Inject: "truncated-12"}, ""},
+		{Trial{Metric: MetricTruncation, Inject: InjectNone}, ""},
+		{Trial{Metric: MetricTruncation, Expect: ExpectPass, Inject: InjectTruncated10}, ""},
+		{Trial{Metric: MetricTruncation, Inject: InjectTruncated11, Load: Load{Kind: LoadExecLarge, Rate: 1, Seconds: 30}}, ""},
+		{Trial{Metric: MetricTruncation, Inject: InjectTruncated11, Failure: FailKill}, ""},
+		{Trial{Metric: MetricLoss, Inject: InjectTruncated11}, ""},
+		{Trial{Metric: MetricRecordMax, Inject: InjectTruncated10}, ""},
 	} {
 		if got := c.tr.Method(); got != c.want {
 			t.Errorf("%+v: method %q, want %q", c.tr, got, c.want)
@@ -417,5 +427,30 @@ func TestAnchorTrialsAreTheADR(t *testing.T) {
 	case control.Expect != ExpectMiss || control.Inject != InjectLedgerStall || control.Method() != MethodAnchor ||
 		control.Load.Kind != LoadExec || control.Load.Rate < 10:
 		t.Errorf("anchor-control-stall = %+v", control)
+	}
+}
+
+// truncation_alarm_per_hour is decided by one row over its limit and one at it, each deciding, and acceptance/0.toml
+// names the same count and limit (ADR 0069, point 3).
+func TestTruncationTrialsAreTheADR(t *testing.T) {
+	got := map[string]int{}
+	for _, tr := range Trials() {
+		if tr.Metric != MetricTruncation && tr.Method() != MethodTruncation {
+			continue
+		}
+		got[tr.Name] = TruncatedExecs(tr.Inject)
+		if tr.Method() != MethodTruncation || tr.Expect != "" || tr.Trend || tr.Count < 2 {
+			t.Errorf("%s: method %q, expect %q, trend %v, count %d", tr.Name, tr.Method(), tr.Expect, tr.Trend, tr.Count)
+		}
+	}
+	if want := map[string]int{"truncation-11": 11, "truncation-10": 10}; !maps.Equal(got, want) {
+		t.Errorf("truncation trials %v, want %v", got, want)
+	}
+	data, err := os.ReadFile("../../acceptance/0.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^id = "truncation_alarm_per_hour"\nmax = 10\n`).Match(data) {
+		t.Error("acceptance/0.toml: truncation_alarm_per_hour is not a maximum of 10")
 	}
 }
