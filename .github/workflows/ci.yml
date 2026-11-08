@@ -89,6 +89,8 @@ jobs:
           (cd "$RUNNER_TEMP" && go mod download -json "golang.org/x/vuln@${GOVULNCHECK_VERSION}") > "$RUNNER_TEMP/vuln.json"
           python3 tools/ci/go_gate.py modsum --json "$RUNNER_TEMP/vuln.json" --expect "$GOVULNCHECK_SUM"
           go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+          go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" -C range/witness \
+            filippo.io/torchwood/cmd/litewitness filippo.io/torchwood/cmd/witnessctl
 
   go-test:
     runs-on: ubuntu-24.04
