@@ -90,7 +90,7 @@ max = 10
 unit = "truncated records per hour above which the Pi alerts"
 rows = ["T8", "T20"]
 adr = "0006"
-method = "Run 11 oversized execs within an hour: one alert; run 10: none."
+method = "Range trials truncation-11 and truncation-10 (ADR 0069): 11 oversized execs within an hour alert once at the sink within 65 s of the 11th, 10 do not; the hour's expiry is a Go test."
 
 [[metric]]
 id = "fuzz_hours"
@@ -190,7 +190,7 @@ max = 1
 unit = "s between batch entries while recording"
 rows = ["T13"]
 adr = "0006"
-method = "Maximum gap between log entries over a 1 h run."
+method = "Range trial anchor-sustained (ADR 0069): the largest gap between batch entries of the ledger's log under rate-sustained's load, its control anchor-control-stall must miss; the 24 h run is L12's (#210)."
 
 [[metric]]
 id = "cosign_gap_s"
