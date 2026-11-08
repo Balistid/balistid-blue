@@ -224,6 +224,8 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		}
 	case rangejob.MethodSensorDownRules:
 		names = []string{FactRulesDifferMS}
+	case rangejob.MethodAnchor:
+		names = append(slices.Clone(counts), FactAnchorGapMS, FactAnchorBatches)
 	}
 	m := map[string]uint64{}
 	for _, name := range names {
@@ -245,7 +247,7 @@ func Measures(tr rangejob.Trial, o Outcome) map[string]uint64 {
 		alarmMeasures(tr, o, m)
 	case rangejob.MethodLoss:
 		lossMeasures(tr, o, m)
-	case rangejob.MethodRate, rangejob.MethodCPU:
+	case rangejob.MethodRate, rangejob.MethodCPU, rangejob.MethodAnchor:
 		stealMeasure(tr, o, m)
 	}
 	if tr.Failure == "" || o.Marks.Fail.IsZero() {
@@ -335,6 +337,8 @@ func JudgeTrial(tr rangejob.Trial, o Outcome, launcher, image string) (verdict, 
 		return judgeSensorDown(tr, o)
 	case rangejob.MethodSensorDownRules:
 		return judgeRulesDiffer(tr, o)
+	case rangejob.MethodAnchor:
+		return judgeAnchor(tr, o)
 	}
 	return Invalid, fmt.Sprintf("no method judges trial %s", tr.Name)
 }

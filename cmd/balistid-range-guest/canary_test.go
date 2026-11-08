@@ -115,7 +115,7 @@ func TestCanaryGapsCoverThePhase(t *testing.T) {
 		{"none", nil, 0, 150},
 		{"one missing", s(110, 139, 197, 226), 4, 58},
 	} {
-		count, gap := canaryGaps(c.sent, from, to)
+		count, gap := stampGaps(c.sent, from, to)
 		if count != c.count || gap != c.gap*int64(time.Second) {
 			t.Errorf("%s: %d canaries, longest gap %s; want %d, %d s", c.name, count, time.Duration(gap), c.count, c.gap)
 		}
