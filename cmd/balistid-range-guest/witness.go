@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	fnote "github.com/transparency-dev/formats/note"
+	"github.com/transparency-dev/merkle/compact"
+	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api/layout"
 	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/crypto/ssh"
@@ -401,25 +404,61 @@ func lastEntry(ctx context.Context, root string, v note.Verifier, match func(ent
 }
 
 // eachEntry hands each entry of the log at root, under its signed checkpoint, to fn in index order and returns the
-// checkpoint's size.
+// checkpoint's size. It calls fn only once the bundles' first size entries hash to the checkpoint's root, as the Pi
+// verifies them (watch.Advance): bytes on disk the checkpoint does not cover never count, and a short bundle is an error.
 func eachEntry(ctx context.Context, root string, v note.Verifier, fn func(uint64, entry.Entry)) (uint64, error) {
-	f := client.FileFetcher{Root: root}
-	cp, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, v, ledgerOrigin)
+	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return 0, fmt.Errorf("checkpoint: %w", err)
 	}
+	defer dir.Close() //nolint:errcheck // read-only
+	cp, _, _, err := client.FetchCheckpoint(ctx, func(context.Context) ([]byte, error) {
+		return cosign.ReadFile(dir, layout.CheckpointPath, cosign.MaxNote)
+	}, v, ledgerOrigin)
+	if err != nil {
+		return 0, fmt.Errorf("checkpoint: %w", err)
+	}
+	r := (&compact.RangeFactory{Hash: rfc6962.DefaultHasher.HashChildren}).NewEmptyRange(0)
+	var entries []entry.Entry
 	for idx := uint64(0); idx*layout.EntryBundleWidth < cp.Size; idx++ {
-		b, err := client.GetEntryBundle(ctx, f.ReadEntryBundle, idx, cp.Size)
+		// A log that grew past the checkpoint may hold only the full bundle (Tessera removes partial ones).
+		b, err := client.GetEntryBundle(ctx, func(_ context.Context, i uint64, p uint8) ([]byte, error) {
+			raw, err := cosign.ReadFile(dir, layout.EntriesPath(i, p), ledgerBundleBytes)
+			if errors.Is(err, fs.ErrNotExist) && p > 0 {
+				return cosign.ReadFile(dir, layout.EntriesPath(i, 0), ledgerBundleBytes)
+			}
+			return raw, err //nolint:wrapcheck // GetEntryBundle names the bundle
+		}, idx, cp.Size)
 		if err != nil {
 			return 0, fmt.Errorf("bundle %d: %w", idx, err)
 		}
-		for i, raw := range b.Entries {
+		want := min(cp.Size-idx*layout.EntryBundleWidth, layout.EntryBundleWidth)
+		if uint64(len(b.Entries)) < want {
+			return 0, fmt.Errorf("bundle %d holds %d entries, want %d", idx, len(b.Entries), want)
+		}
+		for _, raw := range b.Entries[:want] {
 			e, err := entry.Decode(raw)
 			if err != nil {
 				return 0, fmt.Errorf("bundle %d: %w", idx, err)
 			}
-			fn(idx*layout.EntryBundleWidth+uint64(i), e)
+			if err := r.Append(rfc6962.DefaultHasher.HashLeaf(raw), nil); err != nil {
+				return 0, fmt.Errorf("bundle %d: %w", idx, err)
+			}
+			entries = append(entries, e)
 		}
+	}
+	got, err := r.GetRootHash(nil)
+	if cp.Size == 0 { // an empty range has no hash
+		got = rfc6962.DefaultHasher.EmptyRoot()
+	}
+	switch {
+	case err != nil:
+		return 0, fmt.Errorf("root: %w", err)
+	case !bytes.Equal(got, cp.Hash):
+		return 0, fmt.Errorf("the bundles do not hash to the checkpoint's root at %d entries", cp.Size)
+	}
+	for i, e := range entries {
+		fn(uint64(i), e)
 	}
 	return cp.Size, nil
 }

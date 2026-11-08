@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/transparency-dev/tessera/api/layout"
-	"github.com/transparency-dev/tessera/client"
 	"golang.org/x/mod/sumdb/note"
 
 	"github.com/Balistid/balistid-blue/internal/entry"
@@ -25,6 +24,8 @@ const (
 	ledgerSocket = "/run/balistid-ledger/ledger.sock"
 	// ledgerOrigin names the range's log; the host's comes from balistid-install.
 	ledgerOrigin = "balistid-range/log"
+	// ledgerBundleBytes caps a bundle file: a full bundle of entries at their largest, each after its length.
+	ledgerBundleBytes = layout.EntryBundleWidth * (2 + entry.MaxBytes)
 )
 
 // ledgerKey writes the range's checkpoint key into dir before the ledger starts (range unit
@@ -77,29 +78,19 @@ func ledgerAnchored(ctx context.Context) string {
 // ledgerBatches checks the batches of the log at root under its signed checkpoint and returns their
 // last seq: each must start where the one before ended.
 func ledgerBatches(ctx context.Context, root string, v note.Verifier) (uint64, error) {
-	f := client.FileFetcher{Root: root}
-	cp, _, _, err := client.FetchCheckpoint(ctx, f.ReadCheckpoint, v, ledgerOrigin)
-	if err != nil {
-		return 0, fmt.Errorf("checkpoint: %w", err)
-	}
-	next := uint64(1)
-	for idx := uint64(0); idx*layout.EntryBundleWidth < cp.Size; idx++ {
-		b, err := client.GetEntryBundle(ctx, f.ReadEntryBundle, idx, cp.Size)
-		if err != nil {
-			return 0, fmt.Errorf("bundle %d: %w", idx, err)
+	next, gap := uint64(1), error(nil)
+	_, err := eachEntry(ctx, root, v, func(_ uint64, e entry.Entry) {
+		batch, ok := e.Body.(entry.Batch)
+		switch {
+		case !ok || gap != nil:
+		case batch.First != next:
+			gap = fmt.Errorf("batch %d-%d after %d", batch.First, batch.Last, next-1)
+		default:
+			next = batch.Last + 1
 		}
-		for _, raw := range b.Entries {
-			e, err := entry.Decode(raw)
-			if err != nil {
-				return 0, fmt.Errorf("bundle %d: %w", idx, err)
-			}
-			if batch, ok := e.Body.(entry.Batch); ok {
-				if batch.First != next {
-					return 0, fmt.Errorf("batch %d-%d after %d", batch.First, batch.Last, next-1)
-				}
-				next = batch.Last + 1
-			}
-		}
+	})
+	if err := errors.Join(err, gap); err != nil {
+		return 0, err
 	}
 	return next - 1, nil
 }
