@@ -24,10 +24,12 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
 
 1. With no report read yet, health is `UNKNOWN starting` (reason 1) in the first 15 s (`auditFresh`, ADR 0038
    point 4's grace for 8 and 10) of a start of the collector under 30 s of `CLOCK_BOOTTIME` that reads no seen file
-   of its boot, and 8 otherwise: from 15 s on, at a start from 30 s on, at a restart in the same boot, or when the
-   boot clock is not read (R6). It is never OK without a report. The 30 s are `ready_s`'s from boot to health OK:
+   of its boot, and 8 otherwise: from 15 s on, on the monotonic clock or on `CLOCK_BOOTTIME`, which a suspend does
+   not stop (ENGINEERING §7); at a start from 30 s on; at a restart in the same boot; or from a failed read of the
+   boot clock on (R6). It is never OK without a report. The 30 s are `ready_s`'s from boot to health OK:
    the collector starts before auditd, so a boot that meets `ready_s` starts it under them.
-2. Starting is named only where health would otherwise be OK, after the stream's 6; the order 9, 11, 10, 8, 6 stays.
+2. Starting is named only where health would otherwise be OK, after a failed stream's 6 (stopped, or leaves not
+   read), and over a read-back of the ledger's last batch that still runs, which is never OK and is 6 without it.
 3. balistid-auditstat starts after audit-rules.service, so its first report shows the rules the boot loaded.
 4. `balistid status` says starting lasts until the first canary is stored and auditstat's report is read.
 
@@ -42,9 +44,8 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
 
 ## Consequences
 
-- Measured at 01752d2 on KVM: `loss-control-none` 10 of 10 PASS, `loss-auditd-crash` 2 of 2 PASS (the alert 5.2
-  to 7.2 s after the loss).
-- R6 holds: a report that does not come alerts as 8 at 15 s of the collector's monotonic clock; were 8 never
+- At 01752d2 on KVM: `loss-control-none` 10 of 10 PASS, `loss-auditd-crash` 2 of 2 PASS (alerts in 5.2 to 7.2 s).
+- R6 holds: a report that does not come alerts as 8 at 15 s from the start, a suspend counted; were 8 never
   logged, the Pi's watchdog alerts on a starting that lasts 60 s (ADR 0031 point 3). A boot whose auditstat reports
   later than 15 s after the collector starts still pages, as before ba1e366.
 - A restart in the same boot is 8 at once without a report, so a restart loop cannot hold starting; a restart
@@ -52,7 +53,8 @@ shows a part of them, reason 11 at once if the canary, whose watch loads early, 
   start the grace again only under 30 s into the boot: starting ends by 45 s into it, and 8 then pages at once.
 - A boot that starts the collector from 30 s on, a slow disk or a passphrase typed at boot, pages 8 whenever no
   report is read by its first stored canary, as before this ADR; such a boot misses `ready_s` too.
-- The grace hides no other failure: the store's, Laurel's, the canary's, auditd's and the stream's reasons and 9
-  each name the health over starting, on the ledger too, where a stream that stops in a tick replaces it as OK.
+- The grace hides no other failure: the store's, Laurel's, the canary's, auditd's and a failed stream's reasons and
+  9 each name the health over starting, on the ledger too, where a stream that fails in a tick replaces it as OK.
+  A resume's read-back that ends well does not page in the grace; one that finds another batch stops the stream.
 - The rules trials keep their 10 s from the first stored canary to `rules-differ`; their judge accepts starting.
 - Revert: a pull request removing this file, the starting case, the hint, the unit's `After=` and their tests.
