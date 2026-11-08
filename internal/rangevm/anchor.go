@@ -18,6 +18,9 @@ const (
 // anchorLimitMS is anchor_interval_s: 1 s between batch entries while recording.
 const anchorLimitMS = 1000
 
+// anchorLateMS is how late the load's last event may come and still count (rangeguest's grace, ADR 0019).
+const anchorLateMS = 100
+
 var anchorFacts = append(slices.Clone(rateFacts), FactAnchorGapMS, FactAnchorBatches)
 
 // judgeAnchor: the closed facts, a rate run that passes its own judge, a gap and batch count that are plain numbers
@@ -36,17 +39,19 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	gap, errG := plainNumber(f[FactAnchorGapMS])
 	batches, errB := plainNumber(f[FactAnchorBatches])
+	loadMS := uint64(tr.Load.Seconds) * 1000                        //nolint:gosec // positive table value
+	windowMS := loadMS - uint64((1000+tr.Load.Rate-1)/tr.Load.Rate) //nolint:gosec // positive table value
 	switch {
 	case errG != nil || errB != nil:
 		return Invalid, fmt.Sprintf("the ledger's batches are not measured: gap \"%s\", batches \"%s\"",
 			Printable(f[FactAnchorGapMS], 128), Printable(f[FactAnchorBatches], 128))
-	case batches == 0 && gap >= uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
-		return Miss, fmt.Sprintf("no batch entry during the %d s load", tr.Load.Seconds)
-	case gap > uint64(tr.Load.Seconds)*1000 || batches > uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
+	case gap > loadMS+anchorLateMS || batches > loadMS:
 		return Invalid, fmt.Sprintf("a gap of %d ms or %d batches do not fit a %d s load", gap, batches, tr.Load.Seconds)
-	case (batches+1)*gap < uint64(tr.Load.Seconds)*1000: //nolint:gosec // positive table value
-		// batches+1 spans cover the load, so the longest is at least their mean
+	case (batches+1)*gap < windowMS:
+		// batches+1 spans cover the window from the first event to the last, one interval short of the load
 		return Invalid, fmt.Sprintf("a longest gap of %d ms between %d batches does not cover a %d s load", gap, batches, tr.Load.Seconds)
+	case batches == 0:
+		return Miss, fmt.Sprintf("no batch entry during the %d s load", tr.Load.Seconds)
 	case gap > anchorLimitMS:
 		return Miss, fmt.Sprintf("%d ms without a batch entry, over %d ms; %d batches", gap, anchorLimitMS, batches)
 	}
