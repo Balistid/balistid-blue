@@ -39,8 +39,8 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	}
 	gap, errG := plainNumber(f[FactAnchorGapMS])
 	batches, errB := plainNumber(f[FactAnchorBatches])
-	loadMS := uint64(tr.Load.Seconds) * 1000                        //nolint:gosec // positive table value
-	windowMS := loadMS - uint64((1000+tr.Load.Rate-1)/tr.Load.Rate) //nolint:gosec // positive table value
+	loadMS := uint64(tr.Load.Seconds) * 1000       //nolint:gosec // positive table value
+	windowMS := loadMS - uint64(1000/tr.Load.Rate) //nolint:gosec // positive table value
 	switch {
 	case errG != nil || errB != nil:
 		return Invalid, fmt.Sprintf("the ledger's batches are not measured: gap \"%s\", batches \"%s\"",
@@ -48,7 +48,7 @@ func judgeAnchor(tr rangejob.Trial, o Outcome) (string, string) {
 	case gap > loadMS+anchorLateMS || batches > loadMS:
 		return Invalid, fmt.Sprintf("a gap of %d ms or %d batches do not fit a %d s load", gap, batches, tr.Load.Seconds)
 	case (batches+1)*gap < windowMS:
-		// batches+1 spans cover the window from the first event to the last, one interval short of the load
+		// batches+1 rounded-up spans cover the window from the first event to the last, one interval short of the load
 		return Invalid, fmt.Sprintf("a longest gap of %d ms between %d batches does not cover a %d s load", gap, batches, tr.Load.Seconds)
 	case batches == 0:
 		return Miss, fmt.Sprintf("no batch entry during the %d s load", tr.Load.Seconds)

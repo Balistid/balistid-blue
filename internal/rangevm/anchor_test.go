@@ -60,9 +60,10 @@ func TestJudgeAnchor(t *testing.T) {
 		{FactAnchorBatches + "=error: bundle 3: short", Invalid, `not measured: gap "900", batches "error: bundle 3: short"`},
 		{gap + "0900", Invalid, `not measured: gap "0900", batches "700"`},
 		{gap + "600000" + batches + "0", Miss, "no batch entry during the 600 s load"},
-		{gap + "600050" + batches + "0", Miss, "no batch entry during the 600 s load"}, // the window a little over the load
-		{gap + "599999" + batches + "0", Miss, "no batch entry during the 600 s load"}, // the last event 0.5 ms before the end
-		{gap + "599998" + batches + "0", Invalid, "a longest gap of 599998 ms between 0 batches does not cover a 600 s load"},
+		{gap + "600050" + batches + "0", Miss, "no batch entry during the 600 s load"},                                        // the window a little over the load
+		{gap + "599999" + batches + "0", Invalid, "a longest gap of 599999 ms between 0 batches does not cover a 600 s load"}, // 599999.5 ms rounds up
+		{gap + "1" + batches + "599998", Invalid, "a longest gap of 1 ms between 599998 batches does not cover a 600 s load"},
+		{gap + "1" + batches + "599999", Pass, "at most 1 ms between 599999 batch entries"}, // 600000 spans of 1 ms just cover it
 		{gap + "600100" + batches + "0", Miss, "no batch entry during the 600 s load"},
 		{FactAnchorBatches + "=0", Invalid, "a longest gap of 900 ms between 0 batches does not cover a 600 s load"},
 		{gap + "600101" + batches + "1", Invalid, "a gap of 600101 ms or 1 batches do not fit a 600 s load"},
