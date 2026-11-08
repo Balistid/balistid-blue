@@ -481,6 +481,25 @@ func TestStreamChecksTheResumeBatchOverTicks(t *testing.T) {
 	}
 }
 
+// A resume's read-back over ticks that ends well leaves starting what the ledger gets: it is no failure of the
+// stream, so it does not page in the grace (ADR 0070).
+func TestReadBackOverTicksKeepsStarting(t *testing.T) {
+	st := openStore(t, 5)
+	w, l := streamWriter(oneLeafStore{st})
+	w.health = auditStarting
+	l.hello <- helloOf{1, link.Hello{Last: 3, First: 1, Root: rootOf(t, st, 1, 3)}}
+	var health []entry.Health
+	for range 4 {
+		w.stream(t.Context())
+		_, o := taken(l)
+		health = append(health, healthOf(o)...)
+	}
+	if want := []entry.Health{{State: entry.StateUnknown, Reason: entry.ReasonStarting}}; w.stopped != "" ||
+		fmt.Sprint(health) != fmt.Sprint(want) {
+		t.Fatalf("stopped %q, health %+v over a read-back in the grace", w.stopped, health)
+	}
+}
+
 // A stream fault names the health only where it would be OK; another UNKNOWN reason keeps its name.
 func TestStreamFaultShowsWhereHealthWouldBeOK(t *testing.T) {
 	for h, want := range map[string]entry.Reason{"OK": entry.ReasonStream, "UNKNOWN laurel-disconnected": entry.ReasonLaurelDisconnected,

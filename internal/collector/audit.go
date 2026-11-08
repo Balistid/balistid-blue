@@ -78,7 +78,8 @@ type Audit struct {
 	bootID     string
 
 	start                 time.Time
-	grace                 bool // the boot's first start, under bootGrace into the boot (ADR 0070)
+	grace                 bool   // the boot's first start, under bootGrace into the boot, until graceEnd (ADR 0070)
+	graceEnd              uint64 // the boot clock auditFresh after the start: a suspend does not stop it
 	report                auditstat.Report
 	loaded                auditstat.Loaded // the last report's, journaled when it changes to one not shipped
 	haveReport, haveState bool
@@ -107,10 +108,10 @@ func NewAudit(cfg AuditConfig) *Audit {
 func (a *Audit) begin(now time.Time, log *slog.Logger) {
 	a.start, a.reportAt, a.stateAt = now, now, now
 	up, err := a.boottime()
-	a.grace = err == nil && up < uint64(bootGrace) // a clock not read gives no grace (R6)
+	a.grace, a.graceEnd = err == nil && up < uint64(bootGrace), up+uint64(auditFresh) // no clock, no grace (R6)
 	s, err := readSeen(a.seenPath)
 	switch {
-	case err == nil && a.bootID != "" && s.BootID == a.bootID: // a restart in this boot
+	case err == nil && s.BootID == a.bootID: // a restart in this boot; a seen file always has a boot id
 		a.base, a.stored, a.grace = s, s, false
 	case err != nil && !errors.Is(err, fs.ErrNotExist):
 		log.Error("stored audit report not read, counting this boot's losses from zero", "err", err)
@@ -194,16 +195,25 @@ func journalRead(log *slog.Logger, failing *bool, msg string, err error) {
 	*failing = err != nil
 }
 
+// inGrace is whether the start's grace holds on the boot clock too, which runs through a suspend (ENGINEERING §7,
+// Time): once a read of it fails or reaches graceEnd, the grace is over for good.
+func (a *Audit) inGrace() bool {
+	up, err := a.boottime()
+	a.grace = a.grace && err == nil && up < a.graceEnd
+	return a.grace
+}
+
 // restarting holds health UNKNOWN for a new auditd pid until that auditd's first fresh state, or auditFresh.
 func (a *Audit) restarting(now time.Time) bool {
 	return !a.restartAt.IsZero() && !a.stateAt.After(a.restartAt) && now.Sub(a.restartAt) < auditFresh
 }
 
 // reason is the audit's UNKNOWN, "" for none: the fresh flag reads yes; no report read yet, starting in the first
-// auditFresh of a start with the grace and stale otherwise; a fresh report shows rules or status fields other than
-// the shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the state's mtime did not
-// change within auditFresh. The last two wait the collector's first auditFresh; the rules do not, as a fresh report
-// that differs is evidence, not an absence. The clock is the writer's monotonic one, which a suspend stops.
+// auditFresh of a start with the grace, on both clocks, and stale otherwise; a fresh report shows rules or status
+// fields other than the shipped ones; a fresh report has no auditd or audit not locked; the report's seq or the
+// state's mtime did not change within auditFresh. The last two wait the collector's first auditFresh; the rules do
+// not, as a fresh report that differs is evidence, not an absence. The clock is the writer's monotonic one, which a
+// suspend stops; the grace also ends on the boot clock.
 func (a *Audit) reason(now time.Time) string {
 	warm := now.Sub(a.start) >= auditFresh
 	reportFresh := a.haveReport && now.Sub(a.reportAt) < auditFresh
@@ -211,7 +221,7 @@ func (a *Audit) reason(now time.Time) string {
 	switch {
 	case stateFresh && a.overflow:
 		return auditOverflow
-	case !a.haveReport && !warm && a.grace: // never OK without a report, alerted past the boot's grace (ADR 0070)
+	case !a.haveReport && !warm && a.inGrace(): // never OK without a report, alerted past the boot's grace (ADR 0070)
 		return auditStarting
 	case !a.haveReport: // nothing yet says which rules are loaded (ADR 0059, point 3)
 		return auditStale

@@ -28,6 +28,7 @@ type auditFake struct {
 	stateErr  error
 	boot      uint64 // CLOCK_BOOTTIME at a start, in ns
 	bootErr   error
+	firstErr  error // the boot clock's first read only, which begin makes
 }
 
 // newAuditFake is a healthy auditd 100 with the shipped rules locked, no loss and no overflow.
@@ -62,6 +63,10 @@ func (f *auditFake) audit(seenPath, bootID string) *Audit {
 		boottime: func() (uint64, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if err := f.firstErr; err != nil {
+				f.firstErr = nil
+				return f.boot, err
+			}
 			return f.boot, f.bootErr
 		},
 		shipped:  auditstat.Shipped(),
@@ -412,11 +417,16 @@ func TestRestartInTheBootHasNoGrace(t *testing.T) {
 		{"after a report", "boot", nil, auditStale},
 		{"without a report", "boot", os.ErrNotExist, auditStale},
 		{"another boot", "next", nil, auditStarting},
+		{"no boot id", "", nil, auditStarting},
 	} {
 		f := newAuditFake()
 		f.set(func(f *auditFake) { f.reportErr = c.first })
 		path := seenPath(t)
-		r := auditRig(t, f, path, "boot")
+		first := "boot"
+		if c.boot == "" {
+			first = ""
+		}
+		r := auditRig(t, f, path, first)
 		healthy(r)
 		stepFresh(r, f, 5*time.Second)
 		if err := stopRig(r); err != nil {
@@ -445,8 +455,8 @@ func TestGraceOnlyNearBoot(t *testing.T) {
 		err  error
 		want []string // at 0 s, 14.999 s and 15 s
 	}{
-		{"under the bound", uint64(bootGrace - time.Millisecond), nil, []string{auditStarting, auditStarting, auditStale}},
-		{"at the bound", uint64(bootGrace), nil, []string{auditStale, auditStale, auditStale}},
+		{"under the bound", uint64(29_999 * time.Millisecond), nil, []string{auditStarting, auditStarting, auditStale}},
+		{"at the bound", uint64(30 * time.Second), nil, []string{auditStale, auditStale, auditStale}},
 		{"clock not read", uint64(time.Second), errors.New("no clock"), []string{auditStale, auditStale, auditStale}},
 	} {
 		f := newAuditFake()
@@ -491,6 +501,7 @@ func TestGraceHidesNoOtherFailure(t *testing.T) {
 		fail    func(r *rig)
 	}{
 		{streamUnknown, nil, func(r *rig, _ *auditFake) { r.w.stopped = "the ledger's batch is not the store's" }, nil},
+		{streamUnknown, nil, func(r *rig, _ *auditFake) { r.w.leavesErr = "no leaf read" }, nil},
 		{"UNKNOWN store: store-open", errors.New("no disk"), nil, nil},
 		{"UNKNOWN laurel-disconnected", nil, nil, func(r *rig) { r.w.Links.Disconnected(nil) }},
 		{"UNKNOWN canary-pending", nil, nil, func(r *rig) { r.w.Links.Disconnected(nil); r.step(time.Millisecond); connect(r, 78) }},
@@ -516,6 +527,78 @@ func TestGraceHidesNoOtherFailure(t *testing.T) {
 			r.step(at)
 			if health(r) != c.want {
 				t.Errorf("health %q %s later in the grace, not %q", health(r), at, c.want)
+			}
+		}
+	}
+}
+
+// The grace also ends on the boot clock, which a suspend does not stop: one awake second after a start at 1 s, the
+// boot clock at 16 s less 1 ns keeps starting, at 16 s or not read it is 8, and 8 stays once the clock reads again.
+func TestGraceEndsOnTheBootClock(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		boot uint64 // ns
+		err  error
+		want string
+	}{
+		{"inside", uint64(16*time.Second - 1), nil, auditStarting},
+		{"at the end", uint64(16 * time.Second), nil, auditStale},
+		{"not read", uint64(2 * time.Second), errors.New("no clock"), auditStale},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr = os.ErrNotExist })
+		r := auditRig(t, f, seenPath(t), "boot")
+		healthy(r)
+		f.set(func(f *auditFake) { f.boot, f.bootErr = c.boot, c.err })
+		f.write()
+		r.step(time.Second)
+		if health(r) != c.want {
+			t.Errorf("%s: health %q after a suspend, not %q", c.name, health(r), c.want)
+		}
+		f.set(func(f *auditFake) { f.boot, f.bootErr = uint64(2*time.Second), nil })
+		f.write()
+		r.step(time.Second)
+		if want := map[bool]string{true: auditStarting, false: auditStale}[c.want == auditStarting]; health(r) != want {
+			t.Errorf("%s: health %q once the clock reads 2 s, not %q", c.name, health(r), want)
+		}
+	}
+}
+
+// A start whose read of the boot clock failed has no grace, though the clock reads 1 s at every later tick (R6).
+func TestNoGraceWithoutTheStartsBootClock(t *testing.T) {
+	f := newAuditFake()
+	f.set(func(f *auditFake) { f.reportErr, f.firstErr = os.ErrNotExist, errors.New("no clock") })
+	r := auditRig(t, f, seenPath(t), "boot")
+	healthy(r)
+	if health(r) != auditStale {
+		t.Errorf("health %q without the start's boot clock", health(r))
+	}
+}
+
+// A read-back of the ledger's last batch that still runs is never OK, yet no failure: starting stays over it in the
+// grace, 8 comes after the grace, and with a report it is the stream's reason; a failed leaf read is a failure.
+func TestReadBackKeepsStarting(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		report error
+		want   []string // at once, 10 s and 15 s after
+	}{
+		{"no report", os.ErrNotExist, []string{auditStarting, auditStarting, auditStale}},
+		{"a report", nil, []string{streamUnknown, streamUnknown, streamUnknown}},
+	} {
+		f := newAuditFake()
+		f.set(func(f *auditFake) { f.reportErr = c.report })
+		r := newRig(t)
+		r.w.Audit = f.audit(seenPath(t), "boot")
+		r.w.checkRoot = entry.NewRoot()
+		r.start(nil)
+		r.settle()
+		healthy(r)
+		for i, at := range []time.Duration{0, 10 * time.Second, 5 * time.Second} {
+			f.write()
+			r.step(at)
+			if health(r) != c.want[i] {
+				t.Errorf("%s: health %q at step %d of a running read-back, not %q", c.name, health(r), i, c.want[i])
 			}
 		}
 	}
