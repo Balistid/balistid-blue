@@ -296,7 +296,7 @@ func dirNames(cfg Config, host *os.Root, dir string) ([]string, error) {
 }
 
 // sysctlFile reads p as systemd-sysctl would apply it. A link is followed by nobody here: only a mask (to /dev/null)
-// and Debian's etc/sysctl.d/99-sysctl.conf to ../sysctl.conf, which is read on its own, pass; any other link refuses.
+// and any etc/sysctl.d link to ../sysctl.conf (Debian's 99-sysctl.conf), read on its own, pass; any other refuses.
 // What is read must be root's plain file only root may write, on a trusted path; a FIFO or other type refuses.
 func sysctlFile(cfg Config, host *os.Root, p string) ([]byte, error) {
 	fi, err := host.Lstat(p)
