@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -152,6 +153,17 @@ func TestParseSignersReadsTheMaintainersLine(t *testing.T) {
 	}
 	if got, want := s.Fingerprint(), k.fingerprint(t); got != want {
 		t.Fatalf("fingerprint %s, ssh-keygen says %s", got, want)
+	}
+}
+
+// The committed key is one the installer accepts; release.py checks fewer fields.
+func TestParseSignersReadsTheCommittedKey(t *testing.T) {
+	b, err := os.ReadFile("../../deploy/install/allowed_signers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParseSigners(b); err != nil {
+		t.Fatal(err)
 	}
 }
 

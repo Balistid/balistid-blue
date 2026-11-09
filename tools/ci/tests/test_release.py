@@ -361,6 +361,12 @@ class FingerprintTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.fingerprint(tmp / "s")
 
+    def test_the_readme_publishes_the_committed_key(self):
+        # The fingerprint README.md publishes is the committed key's; ownership of both files guards the rest.
+        repo = Path(__file__).resolve().parents[3]
+        published = re.findall(r"SHA256:[A-Za-z0-9+/]{43}", (repo / "README.md").read_text())
+        self.assertEqual(published, [release.fingerprint(repo / "deploy" / "install" / release.SIGNERS)])
+
 
 class BootstrapTest(unittest.TestCase):
     """Runs the command CI prints, as root types it, with stand-ins for runuser (reads as the caller), logger
