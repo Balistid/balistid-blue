@@ -1,6 +1,6 @@
 # Threat model — floor 0 (recorder)
 
-Scope: an Arch Linux host recording via auditd and Laurel (ADR 0004), raw SQLite shards (0005),
+Scope: an Arch Linux host recording via auditd and Laurel (0004), raw SQLite shards (0005),
 a Tessera log cosigned and watched from a Raspberry Pi (0006), five processes (0007), and the attack
 range VM testing them (0009) and its runner (0011). Rows assume the higher level with a witness off the host; in
 local mode, the 9.5 default, no off-host witness or Pi exists, A2 is unopposed and a dead host alarms only through the opt-in
@@ -51,9 +51,9 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 | T25 | A6 | Loss between Laurel and collector | Reconnects are events (0004); drops counted per stage, never blocking (0016) | reconnects_per_day; canary (canary_interval_s) | partial: unread bytes at a collector restart or of a dead Laurel stay uncounted (0016); range trials' barriers and exec windows hold only as ADR 0022 bounds them, and a guest clock step back (root or hypervisor) undoes them; a health record dropped under load is unseen; a Laurel restart mid-event stores it twice under one ID, a partial event then the whole, neither counted, and a line read across it can be lost (#219) |
 | T26 | A6 | Kernel upgrade breaks the sensor, or alarms every week | Results bound to versions; one alarm per kernel | smoke test; ready-1..4 (0023) | designed |
 | T27 | A6 | Pi or its alarms die | Dead-man ping (0034) | dead_site_alarm_s | partial (0034): A2 on the Pi's path, or whoever holds a channel's credentials or the ping URL, silences it; a revoked topic is not probed; an accepted push does not prove the phone showed it |
-| T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (ADR 0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |
+| T29 | A1 | Land a secret or untested code via an intermediate commit, a file gitleaks skips, or a swapped toolchain | Layout gate on every commit, rescan of skipped files, pinned toolchain and module hashes (0003) | tests RangeTest, RescanTest, RescanDetectionTest, ChangeRangeTest, GoGateTest | partial: Go checks run on the head tree only; intermediate commits may not build |
 | T28 | A6 | Host offline: outage looks like attack | Cosigned shutdown, suspend announcements (0030); silence alarm | silence_alarm_s | partial: outages and missed announcements alarm too; a dead disk alarms only by the Pi's silence (900 s, 0017) |
-| T30 | A3 | Hostile guest output (results disk, serial, CI log) attacks the host reader, QEMU tools or the log | Read as bytes: length-prefixed, capped, unknown JSON fields refused, zero padding after the end; `format=` on every drive; serial budget; no guest filesystem opened (0009); a trial's log shows only whole marked printable-ASCII lines (300 B, 400), no link followed, commands stopped | TestParse*, TestQemuArgv, TestRunCommand, TestPlantedQcow2HeaderIsData, TestExecReport, Fuzz*, HostLines, TestHostLine* | designed |
+| T30 | A3 | Hostile guest output (results disk, serial, CI log) attacks the host reader, QEMU tools or the log | Read as bytes: length-prefixed, capped, unknown JSON fields and nonzero padding refused; `format=` on every drive; serial budget; no guest filesystem opened (0009); image trusted (0071); a trial's log shows only whole marked printable-ASCII lines (300 B, 400), no link followed, commands stopped | TestParse*, TestQemuArgv, TestRunCommand, TestPlantedQcow2HeaderIsData, TestExecReport, Fuzz*, HostLines, TestHostLine* | designed |
 | T31 | A3 | Guest escapes QEMU or KVM | QEMU in bwrap: no network or `$HOME`, read-only root, `/dev` and run dir, 3 capped writable files; `-sandbox` (0009); seccomp allowlist (0011) | TestSandboxIsolatesHost (range host only) | partial: QEMU escape: runner's uid (CLI: maintainer's) in bwrap; KVM escape: host kernel (0011) |
 | T32 | A5 | Malicious or changed Atomic Red Team test or runner | — | — | gap: pinned commit and review, floor 1 |
 | T33 | A1 | Forge or edit range results, or the local git state an image is built from, at the maintainer's uid | Result names image and launcher commit; PASS only if the launcher is a clean build of the image commit, else UNKNOWN (a FAIL stays FAIL) | TestJudge | designed (0011, 0018) |
@@ -66,4 +66,4 @@ truth of health and loss signals, the alert path to the maintainer's phone.
 
 The kernel, firmware and boot chain are not compromised. The maintainer reads alerts on the phone,
 runs no alert client on the host and keeps the Pi's admin credentials off the host. auditd and
-Laurel are trusted OS components (ADR 0004). A gap stays listed until a floor closes it with a test.
+Laurel are trusted OS components (0004). A gap stays listed until a floor closes it with a test.
