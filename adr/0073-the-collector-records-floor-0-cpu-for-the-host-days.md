@@ -13,48 +13,47 @@ host, and who computes the binding result "is decided in 9.5": a result at the m
 (T33, ADR 0018, 0025). Health, loss and connection records are already in the collector's store, 0700 and its
 own uid, sealed and anchored in the ledger, and nothing retires them before a witness cosigns (ADR 0029, 0043);
 they can be counted after the days. CPU cannot: nothing on the host reads it, and what a unit spent is gone with
-its cgroup. The range's CPU trials read cgroups through `systemctl show`, which the collector, without exec
-(T18), cannot run.
+its cgroup. The range reads cgroups through `systemctl show`, which the collector, without exec (T18), cannot run.
 
 ## Decision
 
-1. The collector reads `usage_usec` of each floor-0 unit's cgroup once a second (`CPUUnits`: auditd with Laurel and
-   every balistid service but the runner's, a test holding the list to `deploy/`), through one directory fd for the
-   inode and the counter. An invocation ends when its cgroup is gone, has another inode or counts less; its last
-   read adds to `gone_usec`. A failed read keeps the last good one and names why.
-2. The started, stats (every minute) and stopping records carry it as `cpu`: `awake_ms` since the start on the
-   monotonic clock, which a suspend stops, `boot_ns` (CLOCK_BOOTTIME) or `boot_err`, `ncpu`, and per unit `ino` and
-   `usec` or `absent`, `gone`, `gone_usec` and `err`. The counters are cumulative, so a stats record that gives way
-   in the queue loses no CPU. stopping reads again first.
-3. The binding results are computed after the days by a oneshot of the collector's uid over the sealed shards,
-   installed as its own component, so the recorder is not reinstalled within the days (ADR 0068 point 2). Its own
-   ADR fixes the method; this one fixes what it reads and these rules:
-   - A day is a UTC day. `cpu_cores_typical` divides a day's CPU by its awake time, the monotonic time between
-     the day's records, so a suspend neither dilutes nor fills it.
+1. The collector reads `usage_usec` of each floor-0 unit's cgroup in system.slice at most once a second
+   (`CPUUnits`: auditd with Laurel and every balistid service but the runner's; a test holds the list to `deploy/`
+   and refuses `Slice=` there), through one directory fd for the inode and the counter. An invocation ends when its
+   cgroup is gone, has another inode or counts less; its last read adds to `gone_usec` and the time since it to
+   `gone_unread_ms`. A failed read keeps the last good one and names why, in the record and once in the journal.
+2. Started, stats (every minute) and stopping carry it as `cpu`: `mono_ns` (CLOCK_MONOTONIC, which a suspend stops)
+   and `boot_ns`, or `mono_err`/`boot_err`, `ncpu` (the collector's CPUs), per unit `ino` and `usec` or `absent`,
+   `gone`, `gone_usec`, `gone_unread_ms`, `err`, and `err` when the collector's own cgroup is absent. The counters
+   are cumulative, so a stats record that gives way loses no CPU; stopping reads again first.
+3. A oneshot of the collector's uid computes the binding results over the sealed shards after the days, installed
+   as its own component so the recorder is not reinstalled within them (ADR 0068 point 2). Its ADR fixes the method
+   within these rules:
+   - A day is a UTC day; CPU between two records across midnight splits by their `mono_ns`. `cpu_cores_typical`
+     divides a day's CPU by its awake time, the `mono_ns` between its records of each boot.
+   - A unit counts from 0 when first seen absent or new in a boot; from the last record of the same inode, also of
+     an earlier collector run; otherwise the day is UNKNOWN.
+   - What went unread counts at `ncpu` cores: `gone_unread_ms` for ended invocations, and for a collector that
+     ended without stopping the time from its last record to the next started, unless that record finds the inode.
    - A day counts with at least 4 h awake; the 7 days are the first 7 such days from the first started record of
-     the installed version, none chosen after the fact.
-   - An invocation that ended adds `ncpu` × the 1 s it went unread. After a collector that ended without stopping,
-     the next started record closes each unit it finds in the same invocation; any other, the collector's own
-     among them, counts at `ncpu` cores since its last stored read. A day only such a bound fails is UNKNOWN with
-     that reason, which fails it as a MISS does (R6).
-   - `healthy_ok`'s 30 s samples are taken on the awake time; one without a health record behind it is UNKNOWN.
+     the installed version. `healthy_ok` samples every 30 s of awake time; a gap in the records is UNKNOWN.
+   - Any UNKNOWN fails the day as a MISS does (R6).
 
 ## Alternatives considered
 
-- systemd's `CPUUsageNSec`: the same counter, read over D-Bus or `systemctl`, which the collector cannot exec, and
-  gone once the unit stops, except a journal line only adm or wheel read.
-- sysstat (`pidstat`, `sadc`) and `atop`/`below`: per process or every cgroup from root, a privileged recorder
-  against R13 with history nobody signs.
-- node_exporter or a sampling timer: a daemon with an HTTP listener, or an exec every interval, each audited by
-  the rules it measures.
-- A meter of its own uid: one more daemon and uid; the collector's store already gives cap, retention, seal and
-  ledger (R5).
-- Wall time as the divisor: an idle night or a suspend halves a day's mean without changing what a user sees.
+- systemd's `CPUUsageNSec`: the same counter over D-Bus or `systemctl`, which the collector cannot exec, gone once
+  the unit stops but for a journal line only adm or wheel read.
+- sysstat, `atop` or `below`: per process or every cgroup from root, a privileged recorder against R13.
+- node_exporter or a sampling timer: a daemon with a listener, or an exec every interval the rules audit.
+- A meter of its own uid: one more daemon; the collector's store already has cap, retention, seal and ledger (R5).
+- Wall time as the divisor: a suspend would halve a day's mean without changing what a user sees.
 
 ## Consequences
 
-- A stats record grows by about 0.9 KiB, 2.5 KiB with every counter at its largest, under the store's 4 KiB (a test).
-- `cpu_cores_typical` counts the collector's own reads; `cpu_cores` (the 1000 execs a second run) is not decided
-  here and can bracket its load with these records.
-- Kernel audit work charged to kauditd or to the audited processes is outside every unit's cgroup and not counted.
+- A stats record grows by about 1 KiB, 2.5 KiB with every counter at its largest, under the store's 4 KiB (a test).
+- Not counted: kernel audit work outside the units' cgroups, and a oneshot that starts and ends between two reads.
+  The recorder has no oneshot; before `witness` installs net, announce and pi-failed, floor 0 moves into a
+  `balistid.slice`, whose counter keeps its ended children's CPU.
+- Awake time counts an idle host kept awake, which a sleep inhibitor at the user's uid can lengthen; the result
+  shows each day's awake hours. At a stop with a backlog stopping gives way first; the stats before it bounds it.
 - Revert: a pull request removing this file, `cpu.go`, the `cpu` fields and the methods' clauses.
