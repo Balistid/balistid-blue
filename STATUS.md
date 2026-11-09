@@ -18,7 +18,7 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 ## Done in the last sessions
 - ADR 0071 (#275): the range trusts the guest image it builds; a replay is one case of a guest that lies, which only
   host-observed facts would stop (an assumption for T30). ADR 0072 (#204): no alarm gates the recorder's 7 days;
-  in local mode the ntfy-to-phone leg is shown with five posts at the `witness` install; dead-man metrics wait.
+  in local mode the host-to-phone leg is shown with five alerts at the `witness` install; dead-man metrics wait.
 - #281 (3f72c75, ADR 0070, #279): starting, not 8, in the collector's first 15 s before auditstat's first report;
   `loss-control-none` PASS on KVM (ADR 0070). #277 (61bd5db, #274) and #280 (bdc0cb5, #278): the range proves the
   ledger's bundles against its signed root and refuses a cap check bundle of another count.

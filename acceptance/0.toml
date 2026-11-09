@@ -214,7 +214,7 @@ max = 900
 unit = "s of unannounced silence (no cosigned checkpoint) before a phone alert"
 rows = ["T13", "T28"]
 adr = "0006"
-method = "Cut WireGuard, kill the ledger, stop the host hard without announcement (power-off on the Pi, L12): each alerts at the range's ntfy sink within 845 s of the last cosigned checkpoint, delivery within the 55 s left shown on the Pi (L12, ADR 0036). In local mode only the killed ledger applies, its delivery shown at the witness install; the rest needs the dead-man (ADR 0043, 0072). Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
+method = "Cut WireGuard, kill the ledger, stop the host hard without announcement (power-off on the Pi, L12): each alerts at the range's ntfy sink within 845 s of the last cosigned checkpoint, delivery within the 55 s left shown on the Pi (L12, ADR 0036). In local mode the killed ledger applies, its delivery shown at the witness install; there is no WireGuard, and power-off needs the dead-man (ADR 0043, 0072). Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
 
 [[metric]]
 id = "announced_quiet_max_h"
