@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-08 by claude/opus-5.5 (#272 OSV, #273 ADR 0069, mutation required; #270 waits for the key)
+Updated: 2026-11-09 by claude/opus-5.5 (#270 has the maintainer's key, rebased on main)
 
 ## Where we are
 
@@ -22,12 +22,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   on GitHub's runner (steal), so the host runner decides it; a voided run measured 2100 ms over 658 batches.
 - #272 (2e9edba): the 12 OSV advisories Scorecard counted cleared (x/crypto, otel, the range witness's x/net and Go
   1.27.3); govulncheck also scans the witness programs. `mutation` (ADR 0066) is a required check since 2026-11-08.
-- #270 (draft on its branch, ADR 0068, replaces #238): `balistid-install recorder`; critic and Codex CLOSED;
-  CI red only for `deploy/install/allowed_signers` until the maintainer's key.
+- #270 (ADR 0068, replaces #238): `balistid-install recorder`; critic and Codex CLOSED; the maintainer's FIDO2
+  key in `deploy/install/allowed_signers`, its fingerprint in the README map.
 - #207, #245, #250, #242, #236: as before (git log of this file).
 ## Next step
-1. #270: the maintainer's FIDO2 key, `deploy/install/allowed_signers`, README row and fingerprint (2026-11-09), CI,
-   approve, merge; then the host: Laurel, the boot entry's audit options, other rules out of `rules.d`, the
+1. #270: CI, approve, merge; then the host: Laurel, the boot entry's audit options, other rules out of `rules.d`, the
    bootstrap, a reboot (ADR 0068). The 7 days start there (ADR 0064, #201).
 2. 9.5 before the 7 days end: #274 (the guest counts ledger entries not proven against the signed checkpoint),
    #275 (a replayed result stream), #203, #204, #199, #200, #202, #244, #252; after install #243, #245-#248.
