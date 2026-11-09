@@ -78,7 +78,7 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	time.Sleep(100 * time.Millisecond) // the store opens and the reader starts
+	time.Sleep(100 * time.Millisecond)                                     // the store opens and the reader starts
 	until(t, func() bool { _, err := os.Stat(report); return err == nil }) // Config.StatusPath reaches the writer
 	if err := stop(); err != nil {
 		t.Fatal(err)
