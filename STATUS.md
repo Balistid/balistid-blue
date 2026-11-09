@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-09 by claude/opus-5.5 (ADR 0071 for #275, ADR 0072 for #204; #270 merged)
+Updated: 2026-11-09 by claude/opus-5.5 (ADR 0071 for #275, ADR 0072 for #204; #270 and #283 merged)
 
 ## Where we are
 
@@ -24,10 +24,11 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   ledger's bundles against its signed root and refuses a cap check bundle of another count.
 - #270 (59c8bd7, ADR 0068): `balistid-install recorder`; the maintainer's FIDO2 key in `deploy/install/allowed_signers`,
   its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
+- #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
 ## Next step
 1. The host: Laurel, the boot entry's audit options, other rules out of `rules.d`, the bootstrap, a reboot (ADR 0068).
-2. #201: who computes `healthy_ok`, `loss_per_day` and the CPU per day on the host, decided with its code in the
-   recorder's bundle; the 7 days (ADR 0064) count from its first day, as nothing measures CPU per day today.
+2. The 7 days (ADR 0064) count from the first install with #283; during them the judge `balistid days` (ADR 0073
+   point 3), a oneshot over the sealed shards.
 3. 9.5 besides: #203, #199, #200, #252; #244 when Laurel releases
    laurel#313 (v0.8.2 is the latest on 2026-11-09). After install #243, #245-#248; then ADR 0055 and 0067.
 ## Open decisions (maintainer)
