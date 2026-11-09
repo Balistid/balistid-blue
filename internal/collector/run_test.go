@@ -38,6 +38,8 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 	t.Helper()
 	ln := &closingListener{fakeListener: make(fakeListener, 2)}
 	st := &fakeStore{}
+	cg := cgroups{t: t, root: t.TempDir()}
+	cg.set("balistid-collector.service", "usage_usec 77")
 	var notified sync.Map
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -47,7 +49,7 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 			OpenStore: func(context.Context) (Store, error) { return st, nil },
 			Notify:    func(s string) error { notified.Store(s, true); return nil },
 			Log:       slog.New(slog.NewTextHandler(log, nil)), LogCommits: true,
-			Audit: newAuditFake().audit(seenPath(t), "boot"), QueueBytes: QueueBytes,
+			Audit: newAuditFake().audit(seenPath(t), "boot"), QueueBytes: QueueBytes, CgroupRoot: cg.root,
 		})
 	}()
 	return ln, st, &notified, func() error {
@@ -88,6 +90,10 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 	}
 	if conns := st.kinds("connection"); len(conns) == 0 || conns[0]["causes"].(map[string]any)["collector-start"] != 1.0 {
 		t.Fatalf("connection records %v", conns)
+	}
+	c, _ := st.kinds("stopping")[0]["cpu"].(map[string]any) // Config.CgroupRoot and both clocks reach the writer
+	if c["mono_ns"] == nil || c["boot_ns"] == nil || unitOf(t, st.kinds("stopping")[0], "balistid-collector.service")["usec"] != 77.0 {
+		t.Fatalf("stopping's cpu %v", c)
 	}
 }
 

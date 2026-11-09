@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestUsageUsec(t *testing.T) {
@@ -24,8 +27,136 @@ func TestUsageUsec(t *testing.T) {
 			t.Errorf("%q parsed", s)
 		}
 	}
-	if _, err := UsageUsec("usage_usec " + strings.Repeat("9", 4000)); err == nil || len(err.Error()) > 64 {
-		t.Errorf("an overlong value: %v", err)
+	if n, err := UsageUsec("usage_usec 18446744073709551615"); err != nil || n != math.MaxUint64 {
+		t.Errorf("the largest counter: %d, %v", n, err)
+	}
+	for _, s := range []string{"usage_usec x", "user_usec 1", "usage_usec " + strings.Repeat("9", 4000)} {
+		if n, err := UsageUsec(s); err == nil || n != 0 || len(err.Error()) > 64 {
+			t.Errorf("%.20q: %d, %v", s, n, err)
+		}
+	}
+}
+
+func TestMonotonicRuns(t *testing.T) {
+	a, err := Monotonic()
+	if err != nil || a == 0 {
+		t.Fatal(a, err)
+	}
+	time.Sleep(time.Millisecond)
+	if b, err := Monotonic(); err != nil || b <= a {
+		t.Fatal(a, b, err)
+	}
+}
+
+// readCgroup follows no symlink, opens only a directory and reads at most statLimit of cpu.stat; a cgroup that
+// has no cpu.stat is absent, one it cannot read is an error.
+func TestReadCgroup(t *testing.T) {
+	root := t.TempDir()
+	cg := cgroups{t: t, root: root}
+	at := func(name string) string { return filepath.Join(root, name) }
+	cg.set("good", "usage_usec 42")
+	cg.set("target", "usage_usec 5")
+	if err := os.Symlink(at("target"), at("linked")); err != nil {
+		t.Fatal(err)
+	}
+	cg.set("statlink", "")
+	if err := os.Remove(filepath.Join(at("statlink"), "cpu.stat")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(at("target"), "cpu.stat"), filepath.Join(at("statlink"), "cpu.stat")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(at("file"), []byte("usage_usec 1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(at("statdir"), "cpu.stat"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(at("nostat"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pad := func(n int) string { return strings.Repeat("x", n) + "\n" }
+	cg.set("edge", pad(statLimit-len("usage_usec 9")-1)+"usage_usec 9")
+	cg.set("over", pad(statLimit-1)+"usage_usec 9")
+	for _, tc := range []struct{ name, err string }{
+		{"linked", "cgroup: not a directory"}, {"file", "cgroup: not a directory"},
+		{"statlink", "cpu.stat: too many levels"}, {"statdir", "is a directory"},
+		{"over", "no usage_usec"}, {"nostat", "no such file"},
+	} {
+		if _, err := readCgroup(at(tc.name)); err == nil || !strings.Contains(err.Error(), tc.err) {
+			t.Errorf("%s: %v, want %q", tc.name, err, tc.err)
+		}
+	}
+	if _, err := readCgroup(at("nostat")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a cgroup without cpu.stat is not absent: %v", err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(at("good"), &st); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readCgroup(at("good")); err != nil || got != (cgroupUsage{st.Ino, 42}) {
+		t.Errorf("good: %+v %v", got, err)
+	}
+	if got, err := readCgroup(at("edge")); err != nil || got.usec != 9 {
+		t.Errorf("usage_usec ending at statLimit: %+v %v", got, err)
+	}
+}
+
+// Each record says which clock failed instead of a number.
+func TestCPUClockFailures(t *testing.T) {
+	r, _ := cpuRig(t)
+	r.w.Monotonic = func() (uint64, error) { return 0, errors.New("mono broke") }
+	r.w.Boottime = func() (uint64, error) { return 0, errors.New("boot broke") }
+	r.start(nil)
+	r.settle()
+	c := last(t, r, "started")["cpu"].(map[string]any)
+	if c["mono_ns"] != nil || c["boot_ns"] != nil || c["mono_err"] != "mono broke" || c["boot_err"] != "boot broke" {
+		t.Fatalf("%v", c)
+	}
+}
+
+// The collector's own cgroup that it cannot read is that unit's error, not the absent root's.
+func TestCPUOwnCgroupUnreadableIsNotAbsent(t *testing.T) {
+	r, cg := cpuRig(t)
+	cg.set("balistid-collector.service", "usage_usec x")
+	r.start(nil)
+	r.settle()
+	rec := last(t, r, "started")
+	if c := rec["cpu"].(map[string]any); c["err"] != nil || unitOf(t, rec, "balistid-collector.service")["err"] == nil {
+		t.Fatalf("%v", c)
+	}
+}
+
+// A clock that steps back between the last read and the one that finds the invocation ended adds no unread time.
+func TestCPUClockBackAddsNoUnreadTime(t *testing.T) {
+	r, cg := cpuRig(t)
+	cg.set("auditd.service", "usage_usec 500")
+	r.start(nil)
+	r.settle()
+	if err := os.RemoveAll(filepath.Join(cg.root, "auditd.service")); err != nil {
+		t.Fatal(err)
+	}
+	r.advance(-5 * time.Second)
+	close(r.stop)
+	if err := <-r.done; err != nil {
+		t.Fatal(err)
+	}
+	r.done <- nil
+	if u := unitOf(t, last(t, r, "stopping"), "auditd.service"); u["gone"] != 1.0 || u["gone_unread_ms"] != 0.0 {
+		t.Fatalf("%v", u)
+	}
+}
+
+// A stats record keeps every count it carried before the cpu field.
+func TestCPUStatsKeepsItsCounts(t *testing.T) {
+	r, _ := cpuRig(t)
+	r.start(nil)
+	r.settle()
+	stats := statsAfter(t, r, statsEvery)
+	for _, k := range []string{"records", "bytes", "truncated", "malformed", "lost", "lost_health", "queue_high_water", "max_lag_ms"} {
+		if _, ok := stats[k]; !ok {
+			t.Errorf("stats has no %s: %v", k, stats)
+		}
 	}
 }
 
@@ -237,12 +368,13 @@ func TestCPUReadFailureKeepsTheLastRead(t *testing.T) {
 	r.settle()
 	cg.set("auditd.service", "usage_usec x")
 	r.step(cpuEvery)
+	r.step(cpuEvery)
 	u := unitOf(t, statsAfter(t, r, statsEvery), "auditd.service")
 	if u["usec"] != 500.0 || u["gone"] != 0.0 || !strings.Contains(u["err"].(string), "usage_usec") {
 		t.Fatalf("%v", u)
 	}
 	if n := strings.Count(journal.String(), "unit CPU not read"); n != 1 {
-		t.Fatalf("journaled %d times over two reads:\n%s", n, journal.String())
+		t.Fatalf("journaled %d times over three reads:\n%s", n, journal.String())
 	}
 	cg.set("auditd.service", "usage_usec 700")
 	if u := unitOf(t, statsAfter(t, r, statsEvery), "auditd.service"); u["usec"] != 700.0 || u["err"] != nil || u["gone"] != 0.0 {
