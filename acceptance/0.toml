@@ -214,7 +214,7 @@ max = 900
 unit = "s of unannounced silence (no cosigned checkpoint) before a phone alert"
 rows = ["T13", "T28"]
 adr = "0006"
-method = "Cut WireGuard, kill the ledger, stop the host hard without announcement (power-off on the Pi, L12): each alerts at the range's ntfy sink within 845 s of the last cosigned checkpoint, delivery within the 55 s left shown on the Pi (L12, ADR 0036), in local mode at the witness install (ADR 0072). Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
+method = "Cut WireGuard, kill the ledger, stop the host hard without announcement (power-off on the Pi, L12): each alerts at the range's ntfy sink within 845 s of the last cosigned checkpoint, delivery within the 55 s left shown on the Pi (L12, ADR 0036). In local mode only the killed ledger applies, its delivery shown at the witness install; the rest needs the dead-man (ADR 0043, 0072). Announced shutdown and suspend stay quiet only up to announced_quiet_max_h."
 
 [[metric]]
 id = "announced_quiet_max_h"
@@ -264,7 +264,7 @@ max = 900
 unit = "s from the Pi dying or failing to push to the dead-man service's alert on the phone"
 rows = ["T27"]
 adr = "0034"
-method = "On the Pi (L12), 10 trials each, the worst phase (right after a ping): power it off, cut its uplink, stop balistid-pi, make ntfy unreachable; each alerts through the service's non-ntfy channel within the limit. One dropped ping, or a push accepted on retry within 3 minutes, alerts nothing."
+method = "On the Pi (L12), 10 trials each, the worst phase (right after a ping): power it off, cut its uplink, stop balistid-pi, make ntfy unreachable; each alerts through the service's non-ntfy channel within the limit. One dropped ping, or a push accepted on retry within 3 minutes, alerts nothing. In local mode it applies only with the dead-man installed (ADR 0043, 0072)."
 
 [[metric]]
 id = "push_refused_alarm_s"
@@ -272,7 +272,7 @@ max = 2700
 unit = "s from ntfy refusing the Pi's token to the dead-man service's alert on the phone"
 rows = ["T27"]
 adr = "0034"
-method = "On the Pi (L12), 10 trials at the worst phase (right after a probe): revoke the token or exhaust the quota; each alerts through the service's non-ntfy channel within the limit. A probe refused once and accepted on retry within 3 minutes alerts nothing."
+method = "On the Pi (L12), 10 trials at the worst phase (right after a probe): revoke the token or exhaust the quota; each alerts through the service's non-ntfy channel within the limit. A probe refused once and accepted on retry within 3 minutes alerts nothing. In local mode it applies only with the dead-man installed (ADR 0043, 0072)."
 
 # --- Process isolation (ADR 0007) ---
 
