@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 			t.Errorf("%s is not in CPUUnits", name)
 		}
 		b, err := os.ReadFile(u) //nolint:gosec // a glob of the repository's deploy/
-		if err != nil || strings.Contains(string(b), "\nSlice=") {
+		if err != nil || sliceSet.Match(b) {
 			t.Errorf("%s: %v, or it leaves system.slice, where the collector reads it", name, err)
 		}
 	}
@@ -49,6 +50,9 @@ func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 		t.Error("auditd, which holds Laurel, is not counted")
 	}
 }
+
+// sliceSet is a Slice= line as systemd reads it, spaces around the = allowed.
+var sliceSet = regexp.MustCompile(`(?m)^\s*Slice\s*=`)
 
 // cgroups is a fake cgroup root: one directory per unit with its cpu.stat.
 type cgroups struct {
@@ -204,6 +208,21 @@ func TestCPUInvocationsAddUp(t *testing.T) {
 	u := unitOf(t, statsAfter(t, r, statsEvery), "auditd.service")
 	if u["gone"] != 2.0 || u["gone_usec"] != 540.0 || u["usec"] != 70.0 || u["gone_unread_ms"] != 3000.0 {
 		t.Fatalf("%v", u)
+	}
+}
+
+// A tick that stalls in its flush reads the units after it, so the stall counts as unread time.
+func TestCPUStalledTickCountsAsUnread(t *testing.T) {
+	r, cg := cpuRig(t)
+	cg.set("auditd.service", "usage_usec 500")
+	r.start(nil)
+	r.settle()
+	cg.replace("auditd.service", "usage_usec 9")
+	r.st.set(func(s *fakeStore) { s.onFlush = func() { r.advance(5 * time.Second) } })
+	r.step(cpuEvery)
+	r.st.set(func(s *fakeStore) { s.onFlush = nil })
+	if u := r.w.cpu["auditd.service"]; u.gone != 1 || u.unreadMS != 6000 {
+		t.Fatalf("%+v", u)
 	}
 }
 
