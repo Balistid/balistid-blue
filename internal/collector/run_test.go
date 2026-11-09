@@ -33,8 +33,9 @@ func (l *closingListener) Close() error {
 	return nil
 }
 
-// runCollector starts Run on a fake listener and store; cancel stops it and returns Run's error.
-func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *sync.Map, func() error) {
+// runCollector starts Run on a fake listener and store, publishing its report at statusPath; cancel stops it and
+// returns Run's error.
+func runCollector(t *testing.T, log io.Writer, statusPath string) (*closingListener, *fakeStore, *sync.Map, func() error) {
 	t.Helper()
 	ln := &closingListener{fakeListener: make(fakeListener, 2)}
 	st := &fakeStore{}
@@ -50,6 +51,7 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 			Notify:    func(s string) error { notified.Store(s, true); return nil },
 			Log:       slog.New(slog.NewTextHandler(log, nil)), LogCommits: true,
 			Audit: newAuditFake().audit(seenPath(t), "boot"), QueueBytes: QueueBytes, CgroupRoot: cg.root,
+			StatusPath: statusPath,
 		})
 	}()
 	return ln, st, &notified, func() error {
@@ -67,7 +69,8 @@ func runCollector(t *testing.T, log io.Writer) (*closingListener, *fakeStore, *s
 // Lines Laurel already wrote when the collector is told to stop are read, stored and the store closed.
 func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 	j := &journal{}
-	ln, st, notified, stop := runCollector(t, j)
+	report := filepath.Join(t.TempDir(), "status")
+	ln, st, notified, stop := runCollector(t, j, report)
 	server, client := pair(t)
 	ln.fakeListener <- server
 	for i := 1; i <= 50; i++ {
@@ -76,6 +79,7 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 		}
 	}
 	time.Sleep(100 * time.Millisecond) // the store opens and the reader starts
+	until(t, func() bool { _, err := os.Stat(report); return err == nil }) // Config.StatusPath reaches the writer
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +102,7 @@ func TestRunStoresWhatLaurelSentBeforeStop(t *testing.T) {
 }
 
 func TestRunStopsWithLaurelStillConnected(t *testing.T) {
-	ln, _, _, stop := runCollector(t, io.Discard)
+	ln, _, _, stop := runCollector(t, io.Discard, filepath.Join(t.TempDir(), "status"))
 	server, _ := pair(t) // Laurel connected, writing nothing
 	ln.fakeListener <- server
 	time.Sleep(50 * time.Millisecond)

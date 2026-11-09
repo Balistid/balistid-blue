@@ -75,9 +75,10 @@ func TestReadCgroup(t *testing.T) {
 	if err := os.MkdirAll(at("nostat"), 0o750); err != nil {
 		t.Fatal(err)
 	}
+	const limit = 4096 // statLimit, written out so a changed constant fails here
 	pad := func(n int) string { return strings.Repeat("x", n) + "\n" }
-	cg.set("edge", pad(statLimit-len("usage_usec 9")-1)+"usage_usec 9")
-	cg.set("over", pad(statLimit-1)+"usage_usec 9")
+	cg.set("edge", pad(limit-len("usage_usec 9")-1)+"usage_usec 9")
+	cg.set("over", pad(limit-1)+"usage_usec 9")
 	for _, tc := range []struct{ name, err string }{
 		{"linked", "cgroup: not a directory"}, {"file", "cgroup: not a directory"},
 		{"statlink", "cpu.stat: too many levels"}, {"statdir", "is a directory"},
@@ -89,6 +90,9 @@ func TestReadCgroup(t *testing.T) {
 	}
 	if _, err := readCgroup(at("nostat")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a cgroup without cpu.stat is not absent: %v", err)
+	}
+	if _, err := readCgroup(at("statdir")); !errors.Is(err, unix.EISDIR) {
+		t.Errorf("a failed read is not wrapped: %v", err)
 	}
 	var st unix.Stat_t
 	if err := unix.Stat(at("good"), &st); err != nil {
