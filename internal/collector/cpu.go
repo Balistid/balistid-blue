@@ -38,17 +38,18 @@ type cgroupUsage struct{ ino, usec uint64 }
 // unitCPU is what the writer knows of one unit's CPU since the collector started.
 type unitCPU struct {
 	cur      cgroupUsage // the last good read of the running invocation, while present
+	goodAt   time.Time   // when it was read
 	present  bool
 	err      string // why the last read failed, other than an absent cgroup; "" after a good one
 	gone     uint64 // invocations that ended since the collector started
 	goneUsec uint64 // their usage_usec at their last read
+	unreadMS uint64 // their time from that read to the read that found them ended, which bounds what went unread
 }
 
 // cpuState is the writer's reading of the floor-0 units' CPU, stored with each stats record (#201).
 type cpuState struct {
-	cpu      map[string]*unitCPU
-	cpuAt    time.Time // the last read
-	cpuStart time.Time // the start of awake_ms, on the monotonic clock, which a suspend stops
+	cpu   map[string]*unitCPU
+	cpuAt time.Time // the last read
 }
 
 // readCPU reads every unit's cgroup once per cpuEvery. An invocation ends when its cgroup is gone, has another
@@ -64,7 +65,7 @@ func (w *Writer) readCPU(now time.Time) {
 		got, err := readCgroup(filepath.Join(w.CgroupRoot, name))
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
-			u.end()
+			u.end(now)
 		case err != nil:
 			if u.err != err.Error() { // once per failure, not every second
 				w.Log.Warn("unit CPU not read", "unit", name, "err", err)
@@ -72,28 +73,30 @@ func (w *Writer) readCPU(now time.Time) {
 			u.err = err.Error()
 		default:
 			if u.present && (got.ino != u.cur.ino || got.usec < u.cur.usec) {
-				u.end()
+				u.end(now)
 			}
-			u.cur, u.present, u.err = got, true, ""
+			u.cur, u.goodAt, u.present, u.err = got, now, true, ""
 		}
 	}
 }
 
-func (u *unitCPU) end() {
+func (u *unitCPU) end(now time.Time) {
 	if u.present {
 		u.gone++
 		u.goneUsec += u.cur.usec
+		u.unreadMS += uint64(max(now.Sub(u.goodAt).Milliseconds(), 0))
 	}
 	u.present, u.err = false, ""
 }
 
-// cpuFields is the reading a started, stats or stopping record carries: awake_ms since the collector started,
-// CLOCK_BOOTTIME (boot_ns, which a suspend does not stop), the CPUs and each unit's counters.
-func (w *Writer) cpuFields(now time.Time) map[string]any {
+// cpuFields is the reading a started, stats or stopping record carries: CLOCK_MONOTONIC (mono_ns, which a suspend
+// stops) and CLOCK_BOOTTIME (boot_ns, which it does not), the CPUs and each unit's counters. The collector's own
+// cgroup absent means the root is wrong, so every unit's absence would be a zero nobody measured (R6).
+func (w *Writer) cpuFields() map[string]any {
 	units := make(map[string]any, len(CPUUnits))
 	for _, name := range CPUUnits {
 		u := w.cpu[name]
-		f := map[string]any{"gone": u.gone, "gone_usec": u.goneUsec}
+		f := map[string]any{"gone": u.gone, "gone_usec": u.goneUsec, "gone_unread_ms": u.unreadMS}
 		if u.present {
 			f["ino"], f["usec"] = u.cur.ino, u.cur.usec
 		} else {
@@ -104,13 +107,28 @@ func (w *Writer) cpuFields(now time.Time) map[string]any {
 		}
 		units[name] = f
 	}
-	out := map[string]any{"awake_ms": now.Sub(w.cpuStart).Milliseconds(), "ncpu": runtime.NumCPU(), "units": units}
-	if boot, err := w.Boottime(); err == nil {
-		out["boot_ns"] = boot
-	} else {
-		out["boot_err"] = err.Error()
+	out := map[string]any{"ncpu": runtime.NumCPU(), "units": units}
+	for name, clock := range map[string]func() (uint64, error){"mono": w.Monotonic, "boot": w.Boottime} {
+		if ns, err := clock(); err == nil {
+			out[name+"_ns"] = ns
+		} else {
+			out[name+"_err"] = err.Error()
+		}
+	}
+	if own := w.cpu["balistid-collector.service"]; !own.present && own.err == "" {
+		out["err"] = "the collector's own cgroup is absent: wrong root or slice"
 	}
 	return out
+}
+
+// Monotonic is CLOCK_MONOTONIC in ns, which a suspend stops: its difference between two records of one boot is the
+// time the host was awake between them, across collector restarts.
+func Monotonic() (uint64, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, fmt.Errorf("collector: CLOCK_MONOTONIC: %w", err)
+	}
+	return uint64(ts.Nano()), nil //nolint:gosec // never negative
 }
 
 // readCgroup reads the cgroup at dir through one directory fd, so the inode and the counter are of the same
