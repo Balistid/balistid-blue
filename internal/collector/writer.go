@@ -408,7 +408,7 @@ func (w *Writer) step(ctx context.Context) {
 	w.connections(w.Now()) // after the appends, which can open the store and send its probe
 	w.canary(now)
 	w.losses(false)
-	w.readCPU(now)
+	w.readCPU(w.Now()) // after the appends and the flush, which a stall can hold up
 	if now.Sub(w.lastStats) >= statsEvery {
 		w.stats(now)
 	}

@@ -29,12 +29,13 @@ its cgroup. The range reads cgroups through `systemctl show`, which the collecto
 3. A oneshot of the collector's uid computes the binding results over the sealed shards after the days, installed
    as its own component so the recorder is not reinstalled within them (ADR 0068 point 2). Its ADR fixes the method
    within these rules:
-   - A day is a UTC day; CPU between two records across midnight splits by their `mono_ns`. `cpu_cores_typical`
-     divides a day's CPU by its awake time, the `mono_ns` between its records of each boot.
+   - A day is a UTC day; CPU and awake time between two records across midnight split by their `mono_ns`.
+     `cpu_cores_typical` divides a day's CPU by its awake time, the `mono_ns` between its records of each boot.
    - A unit counts from 0 when first seen absent or new in a boot; from the last record of the same inode, also of
      an earlier collector run; otherwise the day is UNKNOWN.
    - What went unread counts at `ncpu` cores: `gone_unread_ms` for ended invocations, and for a collector that
-     ended without stopping the time from its last record to the next started, unless that record finds the inode.
+     ended without stopping the time from its last record to the next started, unless that record finds the inode;
+     a unit whose read was failing in that last record is UNKNOWN then, as its last good read has no time.
    - A day counts with at least 4 h awake; the 7 days are the first 7 such days from the first started record of
      the installed version. `healthy_ok` samples every 30 s of awake time; a gap in the records is UNKNOWN.
    - Any UNKNOWN fails the day as a MISS does (R6).
