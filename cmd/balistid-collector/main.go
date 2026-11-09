@@ -39,6 +39,8 @@ const (
 	// own file of the last audit report it stored, in its StateDirectory (ADR 0038, points 2 and 3).
 	auditdState = "/run/audit/auditd.state"
 	auditSeen   = "/var/lib/balistid/collector/audit-seen"
+	// cgroupRoot holds the cgroup of every system service; no floor-0 unit sets Slice=.
+	cgroupRoot = "/sys/fs/cgroup/system.slice"
 )
 
 func main() { os.Exit(run()) }
@@ -84,7 +86,7 @@ func run() int {
 		Started:    map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": *ruleVersion},
 		Audit:      audit,
 		LogCommits: *logCommits, QueueBytes: *queueBytes, Cosign: keys, Retention: retention,
-		StatusPath: status.ReportPath,
+		StatusPath: status.ReportPath, CgroupRoot: cgroupRoot,
 	})
 	if err != nil {
 		log.Error("collector stopped", "err", err)
