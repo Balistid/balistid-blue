@@ -81,6 +81,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started, Audit: cfg.Audit,
 		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger, Cosign: cfg.Cosign, Retention: cfg.Retention,
 		StatusPath: cfg.StatusPath, Boottime: status.Boottime, CgroupRoot: cfg.CgroupRoot,
+		Monotonic: Monotonic,
 	}
 
 	var wg sync.WaitGroup

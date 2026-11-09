@@ -2,8 +2,8 @@ package collector
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"os"
@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 func TestUsageUsec(t *testing.T) {
@@ -31,7 +29,7 @@ func TestUsageUsec(t *testing.T) {
 }
 
 // Every balistid service deploy/ installs but the runner's counts in cpu_cores, so a new one is listed or
-// this fails.
+// this fails, and each stays in system.slice.
 func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 	units, err := filepath.Glob("../../deploy/*/balistid-*.service")
 	if err != nil || len(units) == 0 {
@@ -41,6 +39,10 @@ func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 		name := filepath.Base(u)
 		if !strings.HasPrefix(name, "balistid-runner") && !slices.Contains(CPUUnits, name) {
 			t.Errorf("%s is not in CPUUnits", name)
+		}
+		b, err := os.ReadFile(u) //nolint:gosec // a glob of the repository's deploy/
+		if err != nil || strings.Contains(string(b), "\nSlice=") {
+			t.Errorf("%s: %v, or it leaves system.slice, where the collector reads it", name, err)
 		}
 	}
 	if !slices.Contains(CPUUnits, "auditd.service") {
@@ -82,6 +84,8 @@ func cpuRig(t *testing.T) (*rig, cgroups) {
 	cg := cgroups{t: t, root: t.TempDir()}
 	r.w.CgroupRoot = cg.root
 	r.w.Boottime = func() (uint64, error) { return 7e9, nil }
+	r.w.Monotonic = func() (uint64, error) { return uint64(r.clock().UnixNano()), nil }
+	cg.set("balistid-collector.service", "usage_usec 1")
 	return r, cg
 }
 
@@ -116,8 +120,8 @@ func statsAfter(t *testing.T, r *rig, d time.Duration) map[string]any {
 	return last(t, r, "stats")
 }
 
-// started holds each unit's counters at the start, stats every minute with awake_ms and the boot clock, and a
-// unit not installed is absent, never zero.
+// started holds each unit's counters at the start, stats every minute with both clocks, and a unit not installed
+// is absent, never zero.
 func TestCPUStartedAndStats(t *testing.T) {
 	r, cg := cpuRig(t)
 	cg.set("auditd.service", "usage_usec 500\nuser_usec 400")
@@ -135,8 +139,22 @@ func TestCPUStartedAndStats(t *testing.T) {
 		t.Fatalf("a missing unit: %v", u)
 	}
 	c := stats["cpu"].(map[string]any)
-	if c["awake_ms"] != float64(statsEvery.Milliseconds()) || c["boot_ns"] != 7e9 || c["ncpu"].(float64) < 1 {
+	if c["mono_ns"] != float64(time.Unix(0, noon).Add(statsEvery).UnixNano()) || c["boot_ns"] != 7e9 ||
+		c["ncpu"].(float64) < 1 || c["err"] != nil {
 		t.Fatalf("clocks: %v", c)
+	}
+}
+
+// Without the collector's own cgroup the root is wrong, so the record says so instead of a zero for every unit.
+func TestCPUOwnCgroupAbsentIsAnError(t *testing.T) {
+	r, cg := cpuRig(t)
+	if err := os.RemoveAll(filepath.Join(cg.root, "balistid-collector.service")); err != nil {
+		t.Fatal(err)
+	}
+	r.start(nil)
+	r.settle()
+	if c := last(t, r, "started")["cpu"].(map[string]any); !strings.Contains(fmt.Sprint(c["err"]), "own cgroup") {
+		t.Fatalf("%v", c)
 	}
 }
 
@@ -165,10 +183,27 @@ func TestCPUInvocationEnds(t *testing.T) {
 			r.step(cpuEvery)
 			tc.next(cg)
 			u := unitOf(t, statsAfter(t, r, statsEvery), "auditd.service")
-			if u["gone"] != 1.0 || u["gone_usec"] != 800.0 || u["usec"] != tc.usec {
+			if u["gone"] != 1.0 || u["gone_usec"] != 800.0 || u["usec"] != tc.usec ||
+				u["gone_unread_ms"] != float64(statsEvery.Milliseconds()) {
 				t.Fatalf("%v", u)
 			}
 		})
+	}
+}
+
+// Every invocation that ends adds its last read and its unread time, across restarts.
+func TestCPUInvocationsAddUp(t *testing.T) {
+	r, cg := cpuRig(t)
+	cg.set("auditd.service", "usage_usec 500")
+	r.start(nil)
+	r.settle()
+	cg.replace("auditd.service", "usage_usec 40")
+	r.step(cpuEvery)
+	cg.replace("auditd.service", "usage_usec 70")
+	r.step(2 * cpuEvery)
+	u := unitOf(t, statsAfter(t, r, statsEvery), "auditd.service")
+	if u["gone"] != 2.0 || u["gone_usec"] != 540.0 || u["usec"] != 70.0 || u["gone_unread_ms"] != 3000.0 {
+		t.Fatalf("%v", u)
 	}
 }
 
@@ -231,23 +266,27 @@ func TestCPUStoppingReadsAgain(t *testing.T) {
 }
 
 // The largest cpu field, every unit at its largest counters and failing with the longest reason a read gives,
-// fits a stats record in what the store takes.
-func TestCPUStatsRecordFits(t *testing.T) {
-	r, _ := cpuRig(t)
-	r.w.Boottime = func() (uint64, error) { return 0, errors.New("clock_gettime: " + strings.Repeat("x", 40)) }
-	r.w.cpu = map[string]*unitCPU{}
+// fits a stats record in what the store takes, and a started record with every unit at its largest counter.
+func TestCPURecordsFit(t *testing.T) {
+	r, cg := cpuRig(t)
 	for _, name := range CPUUnits {
-		r.w.cpu[name] = &unitCPU{cur: cgroupUsage{math.MaxUint64, math.MaxUint64}, present: true,
-			err: "cpu.stat: read cpu.stat: " + strings.Repeat("x", 64), gone: math.MaxUint64, goneUsec: math.MaxUint64}
+		cg.set(name, "usage_usec 18446744073709551615")
 	}
-	r.w.cpuStart = time.Unix(0, 0)
-	f := map[string]any{"kind": "stats", "records": uint64(math.MaxUint64), "bytes": uint64(math.MaxUint64),
-		"truncated": uint64(math.MaxUint64), "malformed": uint64(math.MaxUint64), "lost": uint64(math.MaxUint64),
-		"lost_health": uint64(math.MaxUint64), "queue_high_water": math.MaxInt, "max_lag_ms": int64(math.MaxInt64),
-		"cpu": r.w.cpuFields(time.Unix(math.MaxInt32, 0)), "schema_version": healthSchema,
-		"at": int64(math.MaxInt64), "note_seq": uint64(math.MaxUint64)}
-	b, err := json.Marshal(f)
-	if err != nil || len(b) > store.MaxHealthBytes {
-		t.Fatalf("%d bytes, %v", len(b), err)
+	r.start(nil)
+	r.settle()
+	if len(r.st.kinds("started")) != 1 {
+		t.Fatal("started not stored")
+	}
+	long := func() (uint64, error) { return 0, errors.New("collector: CLOCK_BOOTTIME: " + strings.Repeat("x", 40)) }
+	w := newRig(t).w
+	w.CgroupRoot, w.Boottime, w.Monotonic, w.cpu = cg.root, long, long, map[string]*unitCPU{}
+	for _, name := range CPUUnits {
+		w.cpu[name] = &unitCPU{cur: cgroupUsage{math.MaxUint64, math.MaxUint64}, present: true,
+			err: "cpu.stat: read cpu.stat: " + strings.Repeat("x", 64), gone: math.MaxUint64, goneUsec: math.MaxUint64,
+			unreadMS: math.MaxUint64}
+	}
+	w.stats(time.Unix(0, noon))
+	if len(w.notes) != 1 || w.lostNotes != 0 {
+		t.Fatalf("%d stats noted, %d too large", len(w.notes), w.lostNotes)
 	}
 }

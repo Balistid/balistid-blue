@@ -206,8 +206,9 @@ type Writer struct {
 	StatusPath string
 	Boottime   func() (uint64, error)
 	// CgroupRoot holds the units' cgroups (/sys/fs/cgroup/system.slice), whose CPU goes with started, stats and
-	// stopping (#201); "" reads none.
+	// stopping (#201); "" reads none. Monotonic is the awake clock those records carry (collector.Monotonic).
 	CgroupRoot string
+	Monotonic  func() (uint64, error)
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -320,12 +321,12 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 		started["audit"] = w.Audit.started()
 	}
 	if w.CgroupRoot != "" {
-		w.cpu, w.cpuStart = make(map[string]*unitCPU, len(CPUUnits)), now
+		w.cpu = make(map[string]*unitCPU, len(CPUUnits))
 		for _, name := range CPUUnits {
 			w.cpu[name] = &unitCPU{}
 		}
 		w.readCPU(now)
-		started["cpu"] = w.cpuFields(now)
+		started["cpu"] = w.cpuFields()
 	}
 	w.note(started)
 	w.startOpen(ctx)
@@ -708,7 +709,7 @@ func (w *Writer) stats(now time.Time) {
 		"malformed": c.Malformed, "lost": w.lost, "lost_health": w.lostNotes, "queue_high_water": w.Queue.HighWater(),
 		"max_lag_ms": w.maxLag.Milliseconds()}
 	if w.CgroupRoot != "" {
-		f["cpu"] = w.cpuFields(now)
+		f["cpu"] = w.cpuFields()
 	}
 	w.note(f)
 	w.maxLag = 0
@@ -875,7 +876,7 @@ func (w *Writer) shutdown(ctx context.Context) error {
 		now := w.Now()
 		w.cpuAt = time.Time{} // read again, however recent the last read, so the record holds the run's final counts
 		w.readCPU(now)
-		stopping["cpu"] = w.cpuFields(now)
+		stopping["cpu"] = w.cpuFields()
 	}
 	w.note(stopping)
 	// The store takes a bounded number of health records and this is the last hand-over: loss records go
