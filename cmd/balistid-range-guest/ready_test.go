@@ -85,17 +85,6 @@ func TestProductUnits(t *testing.T) {
 	}
 }
 
-func TestUsageUsec(t *testing.T) {
-	if n, err := usageUsec("usage_usec 1234\nuser_usec 1000\nsystem_usec 234"); err != nil || n != 1234 {
-		t.Errorf("%d, %v", n, err)
-	}
-	for _, s := range []string{"user_usec 1", "usage_usec x", "error: open cpu.stat"} {
-		if _, err := usageUsec(s); err == nil {
-			t.Errorf("%q parsed", s)
-		}
-	}
-}
-
 // CPU counts only between samples of one invocation that both read; anything else says why.
 func TestUsedAndUnitsState(t *testing.T) {
 	a := unitSample{usec: 100, invocation: "i1", memPeak: "4096"}

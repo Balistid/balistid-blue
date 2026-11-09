@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Balistid/balistid-blue/internal/collector"
 	"github.com/Balistid/balistid-blue/internal/rangeguest"
 	"github.com/Balistid/balistid-blue/internal/rangejob"
 	"github.com/Balistid/balistid-blue/internal/rangevm"
@@ -43,25 +44,11 @@ func sampleUnit(ctx context.Context, unit string) unitSample {
 	if !strings.HasPrefix(cg, "/") || inv == "" {
 		return unitSample{err: fmt.Errorf("%s has no cgroup or invocation", unit)}
 	}
-	usec, err := usageUsec(readTrim("/sys/fs/cgroup" + cg + "/cpu.stat"))
+	usec, err := collector.UsageUsec(readTrim("/sys/fs/cgroup" + cg + "/cpu.stat"))
 	if err != nil {
 		return unitSample{err: fmt.Errorf("%s: %w", unit, err)}
 	}
 	return unitSample{cgroup: cg, usec: usec, memPeak: readTrim("/sys/fs/cgroup" + cg + "/memory.peak"), invocation: inv}
-}
-
-// usageUsec is usage_usec of a cgroup's cpu.stat.
-func usageUsec(stat string) (uint64, error) {
-	for _, line := range strings.Split(stat, "\n") {
-		if v, ok := strings.CutPrefix(line, "usage_usec "); ok {
-			n, err := strconv.ParseUint(v, 10, 64)
-			if err != nil {
-				return 0, fmt.Errorf("usage_usec %q", v)
-			}
-			return n, nil
-		}
-	}
-	return 0, errors.New("no usage_usec in cpu.stat")
 }
 
 // used is the CPU µs between two samples of one invocation, or why there is none.

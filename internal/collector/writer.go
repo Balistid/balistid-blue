@@ -205,6 +205,9 @@ type Writer struct {
 	// clock (status.Boottime).
 	StatusPath string
 	Boottime   func() (uint64, error)
+	// CgroupRoot holds the units' cgroups (/sys/fs/cgroup/system.slice), whose CPU goes with started, stats and
+	// stopping (#201); "" reads none.
+	CgroupRoot string
 
 	st          Store
 	down        string // why the store is not open; "" while it is
@@ -238,6 +241,7 @@ type Writer struct {
 	loggedCommit  uint64 // the Committed last journaled
 	ledgerState
 	statusState
+	cpuState
 }
 
 // statusState is the writer's report for balistid status (ADR 0048).
@@ -314,6 +318,14 @@ func (w *Writer) Run(ctx context.Context, tick <-chan time.Time, stop <-chan str
 		w.Audit.begin(now, w.Log)
 		w.audit(now)
 		started["audit"] = w.Audit.started()
+	}
+	if w.CgroupRoot != "" {
+		w.cpu, w.cpuStart = make(map[string]*unitCPU, len(CPUUnits)), now
+		for _, name := range CPUUnits {
+			w.cpu[name] = &unitCPU{}
+		}
+		w.readCPU(now)
+		started["cpu"] = w.cpuFields(now)
 	}
 	w.note(started)
 	w.startOpen(ctx)
@@ -395,6 +407,7 @@ func (w *Writer) step(ctx context.Context) {
 	w.connections(w.Now()) // after the appends, which can open the store and send its probe
 	w.canary(now)
 	w.losses(false)
+	w.readCPU(now)
 	if now.Sub(w.lastStats) >= statsEvery {
 		w.stats(now)
 	}
@@ -691,9 +704,13 @@ func (w *Writer) addPending(stage Stage, l Loss) {
 func (w *Writer) stats(now time.Time) {
 	w.lastStats = now
 	c := w.Reader.Counts()
-	w.note(map[string]any{"kind": "stats", "records": c.Records, "bytes": c.Bytes, "truncated": c.Truncated,
+	f := map[string]any{"kind": "stats", "records": c.Records, "bytes": c.Bytes, "truncated": c.Truncated,
 		"malformed": c.Malformed, "lost": w.lost, "lost_health": w.lostNotes, "queue_high_water": w.Queue.HighWater(),
-		"max_lag_ms": w.maxLag.Milliseconds()})
+		"max_lag_ms": w.maxLag.Milliseconds()}
+	if w.CgroupRoot != "" {
+		f["cpu"] = w.cpuFields(now)
+	}
+	w.note(f)
 	w.maxLag = 0
 	w.refusals()
 }
@@ -853,7 +870,14 @@ func (w *Writer) shutdown(ctx context.Context) error {
 	}
 	w.losses(true)
 	w.summaries(true)
-	w.note(map[string]any{"kind": "stopping"})
+	stopping := map[string]any{"kind": "stopping"}
+	if w.CgroupRoot != "" {
+		now := w.Now()
+		w.cpuAt = time.Time{} // read again, however recent the last read, so the record holds the run's final counts
+		w.readCPU(now)
+		stopping["cpu"] = w.cpuFields(now)
+	}
+	w.note(stopping)
 	// The store takes a bounded number of health records and this is the last hand-over: loss records go
 	// first, then summaries, so a backlog gives way in the journal rather than a loss. Each keeps its note_seq.
 	rank := func(n note) int {

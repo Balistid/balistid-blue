@@ -52,6 +52,8 @@ type Config struct {
 	Retention time.Duration
 	// StatusPath is where the health goes for balistid status (Writer.StatusPath, ADR 0048).
 	StatusPath string
+	// CgroupRoot is where the floor-0 units' cgroups are (Writer.CgroupRoot, #201).
+	CgroupRoot string
 }
 
 // Run collects until ctx is done: the acceptor and reader start before the store opens, READY=1 goes
@@ -78,7 +80,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Queue: q, Losses: loss, Refusals: refused, Reader: reader, Links: &Links{}, Canary: canary,
 		Open: cfg.OpenStore, Now: time.Now, Notify: cfg.Notify, Log: cfg.Log, Started: cfg.Started, Audit: cfg.Audit,
 		LogCommits: cfg.LogCommits, Ledger: cfg.Ledger, Cosign: cfg.Cosign, Retention: cfg.Retention,
-		StatusPath: cfg.StatusPath, Boottime: status.Boottime,
+		StatusPath: cfg.StatusPath, Boottime: status.Boottime, CgroupRoot: cfg.CgroupRoot,
 	}
 
 	var wg sync.WaitGroup
