@@ -72,7 +72,7 @@ func (w *Writer) readCPU(now time.Time) {
 			}
 			u.err = err.Error()
 		default:
-			if u.present && (got.ino != u.cur.ino || got.usec < u.cur.usec) {
+			if got.ino != u.cur.ino || got.usec < u.cur.usec { // end() leaves an absent unit as it is
 				u.end(now)
 			}
 			u.cur, u.goodAt, u.present, u.err = got, now, true, ""
