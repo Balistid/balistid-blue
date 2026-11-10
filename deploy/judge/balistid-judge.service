@@ -1,0 +1,50 @@
+# Judges the host's recording days from the collector's sealed store (ADR 0074). Started by hand, no timer and
+# no [Install]: it runs as the collector's uid with no network, the store read-only and its results in its own
+# state directory. Not in CPUUnits: it is no cost of recording.
+[Unit]
+Description=Balistid Blue judge: the recording days from the sealed store
+
+[Service]
+Type=oneshot
+User=balistid-collector
+Group=balistid-collector
+ExecStart=/usr/local/lib/balistid/balistid-judge
+# Results are world-readable whole files; the store itself stays the collector's 0700 directory.
+StateDirectory=balistid/judge
+StateDirectoryMode=0755
+ReadOnlyPaths=/var/lib/balistid/collector
+UMask=0022
+# A shard of up to 512 MiB is copied into the unit's tmpfs scratch, and the judge's heap beside it. No swap.
+MemoryMax=1536M
+MemorySwapMax=0
+NoExecPaths=/ /var/lib/balistid/judge /tmp -/dev/shm
+ExecPaths=/usr/local/lib/balistid/balistid-judge
+InaccessiblePaths=/var/log/audit
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+RemoveIPC=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@keyring memfd_create execveat process_vm_readv process_vm_writev
+SystemCallErrorNumber=EPERM

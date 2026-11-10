@@ -101,3 +101,20 @@ func TestRecorderInstallsWhatReleasePyWrites(t *testing.T) {
 		t.Fatalf("%q, %v", got, err)
 	}
 }
+
+func TestJudgeInstallsWhatReleasePyWrites(t *testing.T) {
+	h, s := newRunnerHost(t)
+	h.bundle = judgeComponent.bundle()
+	publishFromReleasePy(t, h, judgeComponent, map[string]string{
+		"balistid-judge.service": "deploy/judge/balistid-judge.service"}, nil)
+	if err := h.installJudge(t, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(s.cmds, wantJudgeCmds) {
+		t.Fatalf("ran %q", s.cmds)
+	}
+	got, err := os.ReadFile(filepath.Join(h.cfg.Root, "etc/systemd/system/balistid-judge.service"))
+	if err != nil || string(got) != "balistid-judge.service from release.py\n" {
+		t.Fatalf("%q, %v", got, err)
+	}
+}

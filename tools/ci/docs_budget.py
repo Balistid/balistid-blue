@@ -82,6 +82,8 @@ LAYOUT: tuple[str, ...] = (
     "deploy/runner/balistid-runner-tick.timer",
     # Gone since ADR 0058; --range checks older trees with this list, so the entry leaves after that merge.
     "deploy/runner/install",
+    # The judge, started by hand as the collector's uid, by exact name (ADR 0074).
+    "deploy/judge/balistid-judge.service",
     # The maintainer's public signing key, the first install's trust anchor (ADR 0053, 0058).
     "deploy/install/allowed_signers",
     # Collector, by exact name (ADR 0016, 0017).

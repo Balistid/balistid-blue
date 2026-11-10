@@ -55,6 +55,7 @@ COMPONENTS = {
         "laurel-config.toml": "deploy/laurel/config.toml",
         "sysctl.conf": "deploy/sysctl/balistid.conf",
     }),
+    "judge": (("balistid-judge",), {"balistid-judge.service": "deploy/judge/balistid-judge.service"}),
 }
 FIRST = "recorder"  # the component the bootstrap installs (ADR 0068, point 1)
 

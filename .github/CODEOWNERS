@@ -52,4 +52,5 @@
 /cmd/balistid-range/ @Jvc0n
 /cmd/balistid-range-guest/ @Jvc0n
 /cmd/balistid-install/ @Jvc0n
+/cmd/balistid-judge/ @Jvc0n
 /internal/install/ @Jvc0n

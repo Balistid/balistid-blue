@@ -96,8 +96,8 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/auditstat/` | The kernel's audit status over netlink, strictly decoded, and the fixed report auditstat writes for the collector (ADR 0038) |
 | `cmd/balistid-install/`, `internal/install/`, `deploy/install/` | `balistid-install`: installs a component only from a MANIFEST the maintainer's FIDO2 key signed, each file checked; compare the key's `SHA256:tbzX99QWbavyFXa2EQ3Ka5kchy7MJh+MPpjEirTZjlI` before the first install (ADR 0053, 0058) |
 | `deploy/audit/` | Audit rules; the range image and `balistid-install`'s recorder install them (ADR 0004, 0068) |
-| `deploy/auditd/`, `deploy/laurel/` | auditd configuration, the Laurel plugin entry and Laurel's configuration |
-| `deploy/sysctl/` | Kernel settings (io_uring disabled) |
+| `deploy/auditd/`, `deploy/laurel/`, `deploy/sysctl/` | auditd configuration, the Laurel plugin entry, Laurel's configuration and the kernel settings (io_uring disabled) |
+| `cmd/balistid-judge/`, `deploy/judge/` | The judge: a oneshot as the collector's uid that will judge the recording days from the sealed store, not built yet (ADR 0074) |
 | `deploy/collector/` | Collector's socket and service units, its user and directories (ADR 0016, 0017) |
 | `deploy/ledger/` | Ledger's service unit, its user and log directory (ADR 0027) |
 | `deploy/auditstat/` | auditstat's service unit, its user and its report's group (ADR 0038) |

@@ -72,7 +72,7 @@ RELEASE_JOB = """
           git archive HEAD | tar -x -C "$b"
           # balistid-pi runs on the maintainer's arm64 Pi, installed by the hash printed below (ADR 0031).
           for target in balistid:amd64 balistid-auditstat:amd64 balistid-collector:amd64 balistid-ledger:amd64 \\
-            balistid-runner:amd64 balistid-install:amd64 balistid-pi:arm64; do
+            balistid-runner:amd64 balistid-judge:amd64 balistid-install:amd64 balistid-pi:arm64; do
             cmd="${target%:*}" arch="${target#*:}"
             (cd "$a" && GOARCH="$arch" go build -trimpath -buildvcs=false -ldflags "$flags" -o "$cmd" "./cmd/$cmd")
             (cd "$b" && umask 077 && HOME="$RUNNER_TEMP/home-b" TMPDIR="$RUNNER_TEMP/tmp-b" \\
@@ -81,12 +81,12 @@ RELEASE_JOB = """
           done
           # No built binary runs in this job: one run here could change what is bundled before it is
           # hashed. test_release.py checks the -X path names the real variable (it is ignored silently).
-          for cmd in balistid balistid-auditstat balistid-collector balistid-ledger balistid-runner balistid-install \\
-            balistid-pi; do
+          for cmd in balistid balistid-auditstat balistid-collector balistid-ledger balistid-runner balistid-judge \\
+            balistid-install balistid-pi; do
             python3 tools/ci/go_gate.py same "$a/$cmd" "$b/$cmd"
             sha256sum "$a/$cmd"
           done
-          for c in recorder runner; do
+          for c in recorder runner judge; do
             python3 tools/ci/release.py manifest --component "$c" --bin "$a" --tree "$a" \\
               --signers "$a/deploy/install/allowed_signers" --commit "$GITHUB_SHA" --out "$RUNNER_TEMP/files-$c"
             mkdir "$RUNNER_TEMP/$c"
@@ -95,10 +95,10 @@ RELEASE_JOB = """
           done
       # The maintainer signs a MANIFEST only if it equals the one this step prints on a push to main (ADR 0058,
       # point 1). A pull request runs its own workflow and can print anything, so the main workflow prints nothing there.
-      - name: MANIFESTs of the recorder and the range runner, and the first-install command
+      - name: MANIFESTs of the recorder, the range runner and the judge, and the first-install command
         if: github.event_name == 'push'
         run: |
-          for c in recorder runner; do
+          for c in recorder runner judge; do
             echo "MANIFEST of the $c at $GITHUB_SHA:"
             cat "$RUNNER_TEMP/$c/MANIFEST"
           done
@@ -122,6 +122,16 @@ RELEASE_JOB = """
           path: |
             ${{ runner.temp }}/runner/balistid-runner-bundle.tar
             ${{ runner.temp }}/runner/MANIFEST
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the judge's bundle and its MANIFEST
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: balistid-judge-bundle
+          path: |
+            ${{ runner.temp }}/judge/balistid-judge-bundle.tar
+            ${{ runner.temp }}/judge/MANIFEST
           if-no-files-found: error
           retention-days: 30
 """
@@ -221,7 +231,7 @@ class ManifestTest(unittest.TestCase):
         image = {src: (dst, mode) for src, dst, mode in re.findall(r'^\t\{"([^"]+)", "([^"]+)", (0o[0-7]+)\},$', session, re.M)}
         programs = dict(re.findall(r'^\t\{"[^"]+", "\.", "\./cmd/([a-z-]+)", "([a-z/._-]+)"\},$', session, re.M))
         self.assertIn("balistid-collector", programs)
-        for component, src in (("runner", "runner.go"), ("recorder", "recorder.go")):
+        for component, src in (("runner", "runner.go"), ("recorder", "recorder.go"), ("judge", "judge.go")):
             code = go_code((REPO / "internal/install" / src).read_text())
             table = code[code.index(f"var {component}Table = []target{{"):]
             table = table[:table.index("\n}\n")]
@@ -244,7 +254,7 @@ class ManifestTest(unittest.TestCase):
                     with self.subTest(component=component, name=name):
                         self.assertEqual((dest, mode), (programs[name], "0o755"))
                     checked += 1
-            self.assertEqual(checked, {"runner": 0, "recorder": 9}[component])
+            self.assertEqual(checked, {"runner": 0, "recorder": 9, "judge": 0}[component])
         self.assertIn('return "balistid-" + c.name + "-bundle.tar"',
                       go_code((REPO / "internal/install/component.go").read_text()))
         self.assertEqual(release.BUNDLE, "balistid-recorder-bundle.tar")

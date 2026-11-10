@@ -31,7 +31,8 @@ type component struct {
 }
 
 // components are the ones balistid-install installs, by the name a MANIFEST gives.
-var components = map[string]component{runnerComponent.name: runnerComponent, recorderComponent.name: recorderComponent}
+var components = map[string]component{runnerComponent.name: runnerComponent, recorderComponent.name: recorderComponent,
+	judgeComponent.name: judgeComponent}
 
 // bundle is the file name of the component's signed bundle.
 func (c component) bundle() string { return "balistid-" + c.name + "-bundle.tar" }

@@ -164,8 +164,9 @@ func TestCPUStatsKeepsItsCounts(t *testing.T) {
 	}
 }
 
-// Every balistid service deploy/ installs but the runner's counts in cpu_cores, so a new one is listed or
-// this fails, and each stays in system.slice.
+// Every balistid service deploy/ installs but the runner's and the judge's counts in cpu_cores, so a new one is
+// listed or this fails, and each stays in system.slice. The judge's oneshot judges the days afterwards and is no
+// cost of recording (ADR 0074, point 1).
 func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 	units, err := filepath.Glob("../../deploy/*/balistid-*.service")
 	if err != nil || len(units) == 0 {
@@ -173,7 +174,7 @@ func TestCPUUnitsAreEveryFloor0Service(t *testing.T) {
 	}
 	for _, u := range units {
 		name := filepath.Base(u)
-		if !strings.HasPrefix(name, "balistid-runner") && !slices.Contains(CPUUnits, name) {
+		if !strings.HasPrefix(name, "balistid-runner") && name != "balistid-judge.service" && !slices.Contains(CPUUnits, name) {
 			t.Errorf("%s is not in CPUUnits", name)
 		}
 		b, err := os.ReadFile(u) //nolint:gosec // a glob of the repository's deploy/
