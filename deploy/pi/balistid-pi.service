@@ -28,7 +28,7 @@ StateDirectoryMode=0750
 UMask=0077
 MemoryMax=128M
 MemorySwapMax=0
-NoExecPaths=/ /var/lib/balistid-pi /tmp -/dev/shm
+NoExecPaths=/ /var/lib/balistid-pi /tmp /var/tmp -/dev/shm
 ExecPaths=/usr/local/lib/balistid/balistid-pi
 # ntfy is on the internet, so no address allowlist here: the Pi's firewall comes with the Pi (L12, T16).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

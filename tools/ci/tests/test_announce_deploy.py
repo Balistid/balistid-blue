@@ -27,7 +27,7 @@ SANDBOX = {k: v for k, v in LEDGER_SERVICE.items() if k not in {
     "RuntimeDirectory", "RuntimeDirectoryMode", "UMask", "MemoryMax", "TimeoutStopSec", "NoExecPaths",
     "RemoveIPC", "SupplementaryGroups"}}
 # The relay's group alone: as the ledger's uid they own the collector's socket and need not its link group.
-SANDBOX |= {"UMask": "0077", "MemoryMax": "64M", "NoExecPaths": "/ /tmp -/dev/shm", "SupplementaryGroups": "balistid-relay"}
+SANDBOX |= {"UMask": "0077", "MemoryMax": "64M", "NoExecPaths": "/ /tmp /var/tmp -/dev/shm", "SupplementaryGroups": "balistid-relay"}
 
 UNITS = {
     "balistid-announce.service": (

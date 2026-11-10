@@ -52,7 +52,7 @@ WATCHER = {
     "StateDirectory": "balistid-pi",
     "StateDirectoryMode": "0750",
     "MemoryMax": "128M",
-    "NoExecPaths": "/ /var/lib/balistid-pi /tmp -/dev/shm",
+    "NoExecPaths": "/ /var/lib/balistid-pi /tmp /var/tmp -/dev/shm",
     "ExecPaths": BINARY,
     "RemoveIPC": "yes",
 }
@@ -67,7 +67,7 @@ FAILED = {
     "ExecStart": f"{BINARY} -alert-failed -ntfy ${{BALISTID_PI_NTFY}}",
     "TimeoutStartSec": "30s",
     "MemoryMax": "64M",
-    "NoExecPaths": "/ /tmp -/dev/shm",
+    "NoExecPaths": "/ /tmp /var/tmp -/dev/shm",
     "ExecPaths": BINARY,
 }
 SYSUSERS = [("u", "balistid-pi", "-", "Balistid Blue Pi watcher")]
