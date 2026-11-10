@@ -26,9 +26,9 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
 - #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
   #284 (b1f253e, ADR 0074): the started record names the kernel; `balistid-install judge`, its method still a stub.
-## Next step (9.5 as ADR 0075 defines it)
-1. Version A: fuzz on #284's b1f253e, `/security-audit` of the installer's root layer, then on the host the boot
-   entry's audit options, the signed bundle, the bootstrap and a reboot (maintainer). The 7 days start there.
+## Next step
+1. 9.5 (ADR 0075), version A: fuzz on b1f253e, `/security-audit` of the installer's root layer, then on the host
+   the boot entry's audit options, the signed bundle, the bootstrap and a reboot (maintainer). The 7 days start there.
 2. In the days: the judge's method with each day's bytes (agent), `balistid-install judge` (maintainer); checks on
    day 1 and 3; the witness built (#203, #204), not installed. Nothing installs that changes the recorder.
 3. After the days, version B: `balistid.slice`, the witness and its five deliveries, the runner, the suite on
