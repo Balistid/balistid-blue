@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-10 by claude/opus-5.5 (ADR 0074: kernel in started and the judge component before install)
+Updated: 2026-11-10 by claude/opus-5.5 (#284 merged; ADR 0075 says when 9.5 has passed)
 
 ## Where we are
 
@@ -25,15 +25,16 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #270 (59c8bd7, ADR 0068): `balistid-install recorder`; the maintainer's FIDO2 key in `deploy/install/allowed_signers`,
   its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
 - #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
-## Next step
-1. The host, once ADR 0074's pull request (the started record's `kernel`, the `judge` component) is merged and from
-   its bundle: Laurel, the boot entry's audit options, other rules out of `rules.d`, the bootstrap, a reboot.
-2. The 7 days (ADR 0064) count from that install; during them `balistid-judge`'s method (ADR 0074 points 2-8),
-   installed with `balistid-install judge` without touching the recorder.
-3. 9.5 besides: #203, #199, #200, #252; #244 when Laurel releases
-   laurel#313 (v0.8.2 is the latest on 2026-11-09). After install #243, #245-#248; then ADR 0055 and 0067.
+  #284 (b1f253e, ADR 0074): the started record names the kernel; `balistid-install judge`, its method still a stub.
+## Next step (9.5 as ADR 0075 defines it)
+1. Version A: fuzz on #284's b1f253e, `/security-audit` of the installer's root layer, then on the host the boot
+   entry's audit options, the signed bundle, the bootstrap and a reboot (maintainer). The 7 days start there.
+2. In the days: the judge's method with each day's bytes (agent), `balistid-install judge` (maintainer); checks on
+   day 1 and 3; the witness built (#203, #204), not installed. Nothing installs that changes the recorder.
+3. After the days, version B: `balistid.slice`, the witness and its five deliveries, the runner, the suite on
+   4 vCPUs (#200), `cpu_cores`, #202's caps, the fill test (#213), then the ADR 0056 checkpoint. Open, not
+   blocking: `dead_site_alarm_s` and `push_refused_alarm_s`, which need the dead-man (ADR 0072 point 4).
 ## Open decisions (maintainer)
 - #202: the default caps under 10 GiB, proposed from the 7 days' growth (ADR 0068 point 6 keeps it the maintainer's).
 - #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed (ADR 0068 refuses them).
-- #194, #142, #148, #123, #170, #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on 4 vCPU, a killed
-  collector's INVALID trial: as before (git log of this file).
+- #194, #142, #148, #123, #170, #125, #128, T10, refusal_summary_s, ready_s, a killed collector's trial: git log.
