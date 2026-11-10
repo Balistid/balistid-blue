@@ -40,7 +40,7 @@ max = 0
 unit = "records reported lost by the kernel, the auditd dispatcher or the collector (ADR 0016)"
 rows = ["T4", "T25"]
 adr = "0004"
-method = "Seven days of normal use on the reference host."
+method = "Seven days of normal use on the reference host, judged at the collector's uid from its sealed store as the ledger counts loss, truncated sensor records included (ADR 0074)."
 
 [[metric]]
 id = "reconnects_per_day"
@@ -48,7 +48,7 @@ max = 0
 unit = "Laurel-to-collector reconnects outside restarts and shutdowns; a manual SIGHUP to Laurel counts as one (ADR 0017)"
 rows = ["T25"]
 adr = "0004"
-method = "Seven days of normal use; each reconnect is an event because the records it lost cannot be counted."
+method = "Seven days of normal use; each reconnect is an event because the records it lost cannot be counted. Judged at the collector's uid from its sealed store, the connection records' reconnect cause (ADR 0074)."
 
 # --- Throughput, durability, input limits (ADR 0005, 0007) ---
 
