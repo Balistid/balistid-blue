@@ -83,7 +83,7 @@ func run() int {
 	err = collector.Run(ctx, collector.Config{
 		Listener: ln, LaurelUID: uidOf("_laurel", log), CanaryDir: *canaryDir, Ledger: ledger,
 		OpenStore: openStore(*storeDir, *headroomBytes), Notify: unixsock.Notify, Log: log,
-		Started:    map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": *ruleVersion},
+		Started:    started(boot, *ruleVersion),
 		Audit:      audit,
 		LogCommits: *logCommits, QueueBytes: *queueBytes, Cosign: keys, Retention: retention,
 		StatusPath: status.ReportPath, CgroupRoot: cgroupRoot,
@@ -116,8 +116,18 @@ func openStore(dir string, reserve int64) func(context.Context) (collector.Store
 	}
 }
 
+// started is the started record's info; the judge reads the kernel there and takes "" as UNKNOWN (ADR 0074).
+func started(boot, rules string) map[string]string {
+	return map[string]string{"version": buildinfo.String(), "boot_id": boot, "rule_version": rules,
+		"kernel": procLine(os.ReadFile("/proc/sys/kernel/osrelease"))}
+}
+
 func bootID() string {
-	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	return procLine(os.ReadFile("/proc/sys/kernel/random/boot_id"))
+}
+
+// procLine is a one-line proc file's content without its newline, "" when it could not be read.
+func procLine(b []byte, err error) string {
 	if err != nil {
 		return ""
 	}
