@@ -44,7 +44,7 @@ SERVICE = {
     "UMask": "0077",
     "MemoryMax": "48M",
     "MemorySwapMax": "0",
-    "NoExecPaths": "/ /var/lib/balistid /tmp -/dev/shm",
+    "NoExecPaths": "/ /var/lib/balistid /tmp /var/tmp -/dev/shm",
     "ExecPaths": BINARY,
     "IPAddressDeny": "any",
     "IPAddressAllow": "10.207.57.2/32",
