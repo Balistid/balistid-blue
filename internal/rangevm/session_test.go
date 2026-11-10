@@ -1461,7 +1461,8 @@ func TestBuildBuildsTheCollector(t *testing.T) {
 
 // Every service the image installs is either scored for systemd_exposure or the range's own, never both and
 // never neither, so a unit added to the image is placed before an exposure trial turns INVALID; and every
-// service of deploy/ but the range runner's, which runs on the host outside floor 0 (ADR 0023), is in the
+// service of deploy/ but the range runner's, which runs on the host outside floor 0 (ADR 0023), and the judge's, which
+// judges the days afterwards and is no sensor (ADR 0074), is in the
 // image and scored, so none escapes the trial by never being installed in it.
 func TestImageServicesAreScoredOrUnscored(t *testing.T) {
 	image, sources := map[string]bool{}, map[string]bool{}
@@ -1478,7 +1479,7 @@ func TestImageServicesAreScoredOrUnscored(t *testing.T) {
 	}
 	for _, path := range deployed {
 		src := strings.TrimPrefix(path, "../../")
-		if strings.HasPrefix(src, "deploy/runner/") {
+		if strings.HasPrefix(src, "deploy/runner/") || src == "deploy/judge/balistid-judge.service" {
 			continue
 		}
 		scored := ExposureUnits()[filepath.Base(src)] != AuditstatUnits()[filepath.Base(src)]

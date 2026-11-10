@@ -1,5 +1,5 @@
 // Command balistid-install installs a Balistid Blue component only from a release whose MANIFEST the maintainer
-// signed (ADR 0053, 0058, 0068). `verify` is the unprivileged dry run; `recorder` and `runner` install as root.
+// signed (ADR 0053, 0058, 0068). `verify` is the unprivileged dry run; `recorder`, `judge` and `runner` install as root.
 package main
 
 import (
@@ -12,8 +12,9 @@ import (
 
 func main() { os.Exit(run(context.Background(), os.Args[1:], os.Geteuid())) }
 
-const usage = "usage: balistid-install verify recorder|runner <dir> [<fingerprint>] | " +
-	"balistid-install recorder <dir> [<fingerprint>] | balistid-install runner <dir> <maintainer> [<fingerprint>]"
+const usage = "usage: balistid-install verify recorder|judge|runner <dir> [<fingerprint>] | " +
+	"balistid-install recorder <dir> [<fingerprint>] | balistid-install judge <dir> [<fingerprint>] | " +
+	"balistid-install runner <dir> <maintainer> [<fingerprint>]"
 
 // run is the exit status: 0 verified or installed, 1 refused or stopped, 2 a usage error.
 func run(ctx context.Context, args []string, euid int) int {
@@ -44,6 +45,16 @@ func run(ctx context.Context, args []string, euid int) int {
 			return 1 // Recorder logged the reason
 		}
 		fmt.Println("installed and enabled, nothing started. Reboot to load and lock the rules, then run balistid status.")
+		return 0
+	case len(args) >= 2 && len(args) <= 3 && args[0] == "judge":
+		if euid != 0 {
+			fmt.Fprintln(os.Stderr, "balistid-install: judge installs as root only")
+			return 1
+		}
+		if install.Judge(ctx, cfg, args[1], optional(args, 2)) != nil {
+			return 1 // Judge logged the reason
+		}
+		fmt.Println("installed, nothing enabled or started. To judge: systemctl start balistid-judge; results are in /var/lib/balistid/judge.")
 		return 0
 	case len(args) >= 3 && len(args) <= 4 && args[0] == "runner":
 		if euid != 0 {

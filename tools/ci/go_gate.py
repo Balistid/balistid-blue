@@ -55,7 +55,7 @@ def same_problems(a: bytes, b: bytes) -> list[str]:
 # image inputs of session.go (imageFiles, range/, packaging/); change together with ci.yml.
 OWNED_ROOTS = ("cmd/balistid-range", "cmd/balistid-range-guest", "cmd/balistid-runner", "cmd/balistid",
                "cmd/balistid-collector", "cmd/balistid-ledger", "cmd/balistid-relay", "cmd/balistid-pi",
-               "cmd/balistid-auditstat", "cmd/balistid-install")
+               "cmd/balistid-auditstat", "cmd/balistid-install", "cmd/balistid-judge")
 OWNED_PATHS = ("range", "deploy", "packaging")
 # Every module a gated binary compiles, at its exact version and not replaced, with the licence its file
 # states and that file's SHA-256 (R14, ENGINEERING.md 7): a bump or a relicence moves this table in the same
