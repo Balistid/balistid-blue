@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-09 by claude/opus-5.5 (ADR 0071 for #275, ADR 0072 for #204; #270 and #283 merged)
+Updated: 2026-11-10 by claude/opus-5.5 (ADR 0074: kernel in started and the judge component before install)
 
 ## Where we are
 
@@ -26,9 +26,10 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
   its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
 - #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
 ## Next step
-1. The host: Laurel, the boot entry's audit options, other rules out of `rules.d`, the bootstrap, a reboot (ADR 0068).
-2. The 7 days (ADR 0064) count from the first install with #283; during them the judge `balistid days` (ADR 0073
-   point 3), a oneshot over the sealed shards.
+1. The host, once ADR 0074's pull request (the started record's `kernel`, the `judge` component) is merged and from
+   its bundle: Laurel, the boot entry's audit options, other rules out of `rules.d`, the bootstrap, a reboot.
+2. The 7 days (ADR 0064) count from that install; during them `balistid-judge`'s method (ADR 0074 points 2-8),
+   installed with `balistid-install judge` without touching the recorder.
 3. 9.5 besides: #203, #199, #200, #252; #244 when Laurel releases
    laurel#313 (v0.8.2 is the latest on 2026-11-09). After install #243, #245-#248; then ADR 0055 and 0067.
 ## Open decisions (maintainer)
