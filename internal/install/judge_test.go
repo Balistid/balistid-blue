@@ -3,6 +3,7 @@ package install
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -140,24 +141,28 @@ func TestJudgeTableSharesOnlyTheInstallerAndTheKey(t *testing.T) {
 	}
 }
 
+// refusedJudge fails the test unless the run refused for want, left the root as it was, ran no command and logged
+// exactly one refusal.
+func (h *fakeHost) refusedJudge(t *testing.T, s *fakeSystem, label, want string) {
+	t.Helper()
+	before := snapshot(t, h.cfg.Root)
+	err := h.installJudge(t, s, "")
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("%s: %v, not a refusal for %q", label, err, want)
+	}
+	unchanged(t, label, h.cfg.Root, before)
+	if len(s.cmds) != 0 || len(s.logs) != 1 ||
+		!strings.HasPrefix(s.logs[0], "balistid-install schema_version=1 outcome=refused component=judge") {
+		t.Errorf("%s: ran %q, logged %q", label, s.cmds, s.logs)
+	}
+}
+
 // A refusal changes nothing and runs no command: the unit running, a bundle of another component, a file set that
 // is not the judge's.
 func TestJudgeRefusesWhatItDoesNotOwn(t *testing.T) {
 	h, s := newRunnerHost(t)
 	files := publishJudge(t, h)
-	refuse := func(label, want string) {
-		t.Helper()
-		before := snapshot(t, h.cfg.Root)
-		err := h.installJudge(t, s, "")
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("%s: %v, not a refusal for %q", label, err, want)
-		}
-		unchanged(t, label, h.cfg.Root, before)
-		if len(s.cmds) != 0 || len(s.logs) != 1 ||
-			!strings.HasPrefix(s.logs[0], "balistid-install schema_version=1 outcome=refused component=judge") {
-			t.Errorf("%s: ran %q, logged %q", label, s.cmds, s.logs)
-		}
-	}
+	refuse := func(label, want string) { t.Helper(); h.refusedJudge(t, s, label, want) }
 	s.units["balistid-judge.service"] = map[string]string{"ActiveState": "active"}
 	refuse("the unit runs", "not stopped")
 	delete(s.units, "balistid-judge.service")
@@ -183,4 +188,75 @@ func TestJudgeRefusesWhatItDoesNotOwn(t *testing.T) {
 	h.release(t) // the runner's bundle only
 	must(t, os.Remove(filepath.Join(h.dir, h.bundle)))
 	refuse("no judge bundle", judgeComponent.bundle()+": missing")
+}
+
+// The signature refusals ADR 0053 names, through the judge's whole run.
+func TestJudgeRefusesABundleWhoseSignatureDoesNotVerify(t *testing.T) {
+	h, s := newRunnerHost(t)
+	files := publishJudge(t, h)
+	m := manifestFor("judge", files)
+	other := newKey(t)
+	for label, c := range map[string]struct{ manifest, sig []byte }{
+		"unsigned":        {m, nil},
+		"altered":         {[]byte(strings.Replace(string(m), "component judge", "component judgf", 1)), h.key.sign(t, m, Namespace)},
+		"other namespace": {m, h.key.sign(t, m, "file")},
+		"other signer":    {m, other.sign(t, m, Namespace)},
+	} {
+		_ = os.Remove(filepath.Join(h.dir, sigName))
+		h.publish(t, files, c.manifest, c.sig)
+		want := "the signature does not verify"
+		if c.sig == nil {
+			want = sigName + ": missing"
+		}
+		h.refusedJudge(t, s, label, want)
+	}
+}
+
+// Every path on the way to a destination is root's and not writable by others, and a destination is a regular
+// file or absent: a refusal before the first write.
+func TestJudgeRefusesARedirectedOrWritablePath(t *testing.T) {
+	for label, c := range map[string]struct {
+		spoil func(h *fakeHost)
+		want  string
+	}{
+		"etc/systemd/system a link": {func(h *fakeHost) { h.relink(t, "etc/systemd/system") }, "/etc/systemd/system: not a directory"},
+		"usr/local/lib a link":      {func(h *fakeHost) { h.relink(t, "usr/local/lib") }, "/usr/local/lib: not a directory"},
+		"usr writable by group":     {func(h *fakeHost) { h.chmod(t, "usr", 0o775) }, "/usr: writable by group or other"},
+		"lib/balistid writable":     {func(h *fakeHost) { h.mkdir(t, "usr/local/lib/balistid", 0o777) }, "/usr/local/lib/balistid: mode"},
+		"state 0700":                {func(h *fakeHost) { h.mkdir(t, "var/lib/balistid", 0o700) }, "/var/lib/balistid: mode"},
+		"the unit a link": {func(h *fakeHost) { h.symlink(t, "/dev/null", "etc/systemd/system/balistid-judge.service") },
+			"not a regular file"},
+		"the binary a directory": {func(h *fakeHost) {
+			h.mkdir(t, "usr/local/lib/balistid", 0o755)
+			h.mkdir(t, "usr/local/lib/balistid/balistid-judge", 0o755)
+		},
+			"not a regular file"},
+	} {
+		h, s := newRunnerHost(t)
+		publishJudge(t, h)
+		c.spoil(h)
+		h.refusedJudge(t, s, label, c.want)
+		h.chmod(t, "usr/local/lib", 0o755) // lets the temp directory's cleanup read it
+	}
+}
+
+// A unit seen differently after the reload stops the run there, logged with its step, and the installer does not
+// replace itself.
+func TestJudgeStopsOnAUnitSeenOnlyAfterTheReload(t *testing.T) {
+	for _, c := range [][2]string{{"DropInPaths", unitDir + "balistid-judge.service.d/old.conf"},
+		{"FragmentPath", "/run/systemd/system/balistid-judge.service"}} {
+		h, s := newRunnerHost(t)
+		publishJudge(t, h)
+		s.after = map[string]map[string]string{"balistid-judge.service": {c[0]: c[1]}}
+		if err := h.installJudge(t, s, ""); err == nil || !strings.Contains(err.Error(), "step check after the reload") {
+			t.Fatalf("%s: %v", c[0], err)
+		}
+		if !slices.Equal(s.cmds, wantJudgeCmds) || len(s.logs) != 1 ||
+			!strings.HasPrefix(s.logs[0], "balistid-install schema_version=1 outcome=stopped component=judge") {
+			t.Fatalf("%s: ran %q, logged %q", c[0], s.cmds, s.logs)
+		}
+		if _, err := os.Lstat(filepath.Join(h.cfg.Root, "usr/local/lib/balistid/balistid-install")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("%s: the installer replaced itself: %v", c[0], err)
+		}
+	}
 }

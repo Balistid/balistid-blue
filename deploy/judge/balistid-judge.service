@@ -14,18 +14,26 @@ StateDirectory=balistid/judge
 StateDirectoryMode=0755
 ReadOnlyPaths=/var/lib/balistid/collector
 UMask=0022
-# A shard of up to 512 MiB is copied into the unit's tmpfs scratch, and the judge's heap beside it. No swap.
+# A shard of up to 512 MiB is copied into the unit's own tmpfs /tmp, and the judge's heap beside it. No swap.
 MemoryMax=1536M
 MemorySwapMax=0
-NoExecPaths=/ /var/lib/balistid/judge /tmp -/dev/shm
+# Beside the recorder, not over it: the oneshot has no start timeout by default, and a full read takes a while.
+TimeoutStartSec=2h
+Nice=19
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+NoExecPaths=/ /var/lib/balistid/judge /tmp /var/tmp -/dev/shm
 ExecPaths=/usr/local/lib/balistid/balistid-judge
 InaccessiblePaths=/var/log/audit
 PrivateNetwork=yes
-RestrictAddressFamilies=AF_UNIX
+# It runs as the collector's uid: its own PID namespace keeps /proc/<pid>/root and kill away from the collector.
+PrivatePIDs=yes
+RestrictAddressFamilies=none
 DevicePolicy=closed
 ProtectSystem=strict
 ProtectHome=yes
-PrivateTmp=yes
+# A new tmpfs, so a shard copy never lands on the store's device.
+PrivateTmp=disconnected
 PrivateDevices=yes
 PrivateIPC=yes
 RemoveIPC=yes

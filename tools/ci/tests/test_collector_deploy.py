@@ -251,6 +251,8 @@ class CollectorDeployTest(unittest.TestCase):
         rules = audit_rules()
         confined = set()
         for unit in sorted((REPO / "deploy").glob("*/*.service")):
+            if unit.name == "balistid-judge.service":
+                continue  # reads the store as the collector's uid: its program must stay recorded (ADR 0074)
             service = parse_unit(unit.read_text()).get("Service", {})
             for line in service.get("ExecStart", []):
                 argv = shlex.split(line)
@@ -262,7 +264,8 @@ class CollectorDeployTest(unittest.TestCase):
         self.assertTrue(never and all(never))
         left_out = {m.group(1) for m in never}
         self.assertLessEqual(left_out, confined)
-        self.assertFalse(left_out & {BINARY, "/usr/lib/systemd/systemd-journald"})
+        self.assertFalse(left_out & {BINARY, "/usr/lib/systemd/systemd-journald",
+                                     "/usr/local/lib/balistid/balistid-judge"})
         first_tree = min(i for i, l in enumerate(rules) if l.startswith("-a always,") and "dir=" in l)
         self.assertTrue(all(rules.index(m.group(0)) < first_tree for m in never))
         self.assertTrue(all(rules.index(m.group(0)) > rules.index(l) for m in never for l in rules
