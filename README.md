@@ -108,7 +108,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `deploy/runner/` | Range runner's build and tick units, timer, users and directories; `balistid-install` installs them (ADR 0011, 0058) |
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
-| `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go), the runner's release manifest, and their tests |
+| `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go), the runner's release manifest, root probes on CI's systemd (`probe_*.py`), and their tests |
 | `githooks/` | Local hooks; CI is the authority, hooks give earlier feedback |
 | `.github/` | CI workflow, code owners, issue and pull request templates |
 

@@ -1,0 +1,36 @@
+name: probe
+
+# Probes that need root and a real systemd run here, on a fresh runner, never on the maintainer's machine (T18):
+# a tools/ci/probe_*.py runs as root. Pull requests that touch the units or the no-exec rule run probe_noexec.py.
+# ubuntu-26.04 ships systemd 259; the probe refuses anything older than 258.
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "tools/ci/probe_*.py"
+      - "tools/ci/tests/test_units_noexec.py"
+      - ".github/workflows/probe.yml"
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: "A tools/ci/probe_*.py file name"
+        required: true
+        default: probe_noexec.py
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the probe as root
+        env:
+          PROBE: ${{ inputs.probe || 'probe_noexec.py' }}
+        run: |
+          [[ "$PROBE" =~ ^probe_[a-z0-9_]+\.py$ ]] || { echo "::error::not a tools/ci/probe_*.py file name: $PROBE"; exit 1; }
+          sudo python3 -I "tools/ci/$PROBE"
