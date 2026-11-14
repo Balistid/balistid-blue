@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-10 by claude/opus-5.5 (#284 merged; ADR 0075 says when 9.5 has passed)
+Updated: 2026-11-14 by claude/opus-5.5 (#286, #289 merged; #285: no-exec on every writable mount, root probe in CI)
 
 ## Where we are
 
@@ -16,9 +16,9 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- ADR 0071 (#275): the range trusts the guest image it builds; a replay is one case of a guest that lies, which only
-  host-observed facts would stop (an assumption for T30). ADR 0072 (#204): no alarm gates the recorder's 7 days;
-  in local mode the host-to-phone leg is shown with five alerts at the `witness` install; dead-man metrics wait.
+- #285 (this pull request): every writable mount of a unit is in its NoExecPaths by its own path (/var/tmp,
+  auditstat's runtime and relay's state directory were executable); `probe.yml` proves it as root on systemd 259.
+  #289 (beca0f3): Go 1.27.4 for GO-2026-6859. #286 (f494207): ADR 0075. ADR 0071, 0072: as before (git log).
 - #281 (3f72c75, ADR 0070, #279): starting, not 8, in the collector's first 15 s before auditstat's first report;
   `loss-control-none` PASS on KVM (ADR 0070). #277 (61bd5db, #274) and #280 (bdc0cb5, #278): the range proves the
   ledger's bundles against its signed root and refuses a cap check bundle of another count.
@@ -27,8 +27,8 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 - #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
   #284 (b1f253e, ADR 0074): the started record names the kernel; `balistid-install judge`, its method still a stub.
 ## Next step
-1. 9.5 (ADR 0075), version A: fuzz on b1f253e, `/security-audit` of the installer's root layer, then on the host
-   the boot entry's audit options, the signed bundle, the bootstrap and a reboot (maintainer). The 7 days start there.
+1. 9.5 (ADR 0075), version A from #285's merge commit: fuzz on it, `/security-audit` of the installer's root layer,
+   then on the host the boot entry's audit options, the signed bundle, the bootstrap, a reboot (maintainer): day 1.
 2. In the days: the judge's method with each day's bytes (agent), `balistid-install judge` (maintainer); checks on
    day 1 and 3; the witness built (#203, #204), not installed. Nothing installs that changes the recorder.
 3. After the days, version B: `balistid.slice`, the witness and its five deliveries, the runner, the suite on
