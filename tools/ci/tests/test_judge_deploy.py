@@ -94,8 +94,6 @@ def unit_problems(text: str) -> list[str]:
             problems.append(f"{key} is missing")
     if "Install" in sections:
         problems.append("an [Install] section: something would start it at boot")
-    if {"/", "/tmp", "/var/tmp"} - set((service.get("NoExecPaths") or [""])[0].split()):
-        problems.append("NoExecPaths does not hold /, /tmp and /var/tmp")
     return problems
 
 

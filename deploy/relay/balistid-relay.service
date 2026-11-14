@@ -23,7 +23,7 @@ StateDirectoryMode=0750
 UMask=0077
 MemoryMax=48M
 MemorySwapMax=0
-NoExecPaths=/ /var/lib/balistid /tmp /var/tmp -/dev/shm
+NoExecPaths=/ /var/lib/balistid/relay /tmp /var/tmp -/dev/shm
 ExecPaths=/usr/local/lib/balistid/balistid-relay
 # The Pi's tunnel address only, never the host's own: a local uid connecting from it could serve itself the
 # bundles (the firewall drops that too).

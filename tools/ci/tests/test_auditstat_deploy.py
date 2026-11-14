@@ -43,7 +43,7 @@ SERVICE = {
     "MemoryMax": "32M",
     "MemorySwapMax": "0",
     "TasksMax": "16",
-    "NoExecPaths": "/ /tmp /var/tmp -/dev/shm",
+    "NoExecPaths": "/ /run/balistid-auditstat /tmp /var/tmp -/dev/shm",
     "ExecPaths": BINARY,
     "InaccessiblePaths": "/var/log/audit",
     "IPAddressDeny": "any",
