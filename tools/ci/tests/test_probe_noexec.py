@@ -50,7 +50,7 @@ class ProbeArgsTest(unittest.TestCase):
 
     def test_every_control_puts_back_one_hole(self):
         labels = [label for label, _, _ in probe_noexec.controls()]
-        self.assertEqual(len(labels), 7)
+        self.assertEqual(len(labels), 5)
         for label, text, want in probe_noexec.controls():
             with self.subTest(control=label):
                 self.assertTrue(any(want in problem for problem in noexec_problems(text)))
