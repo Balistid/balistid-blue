@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import probe_noexec  # noqa: E402
-from test_units_noexec import units  # noqa: E402
+from test_units_noexec import noexec_problems, units  # noqa: E402
 
 
 def props(args: list[str]) -> list[str]:
@@ -24,9 +24,12 @@ class ProbeArgsTest(unittest.TestCase):
         self.assertIn("NoExecPaths=/ /var/lib/balistid/relay /tmp /var/tmp -/dev/shm", p)
         self.assertIn("StateDirectory=balistid/relay", p)
         self.assertIn("PrivateTmp=disconnected", p)
-        self.assertFalse([x for x in p if x.split("=")[0] in ("User", "ExecStart", "IPAddressAllow")])
+        self.assertIn("User=balistid-relay", p)
+        self.assertIn("SupplementaryGroups=balistid-ledger", p)
+        self.assertIn("ExecPaths=-/usr/local/lib/balistid/balistid-relay", p)
+        self.assertFalse([x for x in p if x.split("=")[0] in ("ExecStart", "IPAddressAllow", "MemoryMax")])
         self.assertEqual(dirs, ["/dev/shm", "/tmp", "/var/lib/balistid/relay", "/var/tmp"])
-        self.assertEqual(args[-len(dirs) - 4:-len(dirs)], ["/bin/sh", "-c", probe_noexec.SCRIPT, "sh"])
+        self.assertEqual(args[-len(dirs) - 4:-len(dirs)], ["/usr/bin/python3", "-I", "-c", probe_noexec.INSIDE])
 
     def test_values_keep_their_order_so_a_reset_survives(self):
         line = "NoExecPaths=/ /var/lib/balistid/relay /tmp /var/tmp -/dev/shm"
@@ -39,6 +42,18 @@ class ProbeArgsTest(unittest.TestCase):
         p = props(probe_noexec.run_args(units()["balistid-ledger.service"])[0])
         self.assertIn("DefaultDependencies=no", p)
         self.assertIn("RuntimeDirectory=balistid-ledger", p)
+        self.assertNotIn("/var/tmp", probe_noexec.run_args(units()["balistid-ledger.service"])[1])
+
+    def test_the_judge_reads_the_store_read_only(self):
+        p = props(probe_noexec.run_args(units()["balistid-judge.service"])[0])
+        self.assertIn("ReadOnlyPaths=/var/lib/balistid/collector", p)
+
+    def test_every_control_puts_back_one_hole(self):
+        labels = [label for label, _, _ in probe_noexec.controls()]
+        self.assertEqual(len(labels), 7)
+        for label, text, want in probe_noexec.controls():
+            with self.subTest(control=label):
+                self.assertTrue(any(want in problem for problem in noexec_problems(text)))
 
     def test_every_probed_unit_builds(self):
         for name, text in units().items():
@@ -46,6 +61,7 @@ class ProbeArgsTest(unittest.TestCase):
                 with self.subTest(unit=name):
                     args, dirs = probe_noexec.run_args(text)
                     self.assertIn("/tmp", dirs)
+                    self.assertTrue([x for x in props(args) if x.startswith("User=")])
                     self.assertTrue([x for x in props(args) if x.startswith("NoExecPaths=")])
 
 

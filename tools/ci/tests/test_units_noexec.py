@@ -69,13 +69,29 @@ def writable_mounts(service: dict[str, list[str]]) -> set[str]:
     return mounts
 
 
+def read_only_mounts(service: dict[str, list[str]]) -> set[str]:
+    """Read-only here, but another unit of the same uid may write them (the judge reads the collector's store)."""
+    mounts = {path(w) for w in words(service, "ReadOnlyPaths")}
+    return mounts | {path(w.split(":")[1] if ":" in w else w) for w in words(service, "BindReadOnlyPaths")}
+
+
+def under(p: str, top: str) -> bool:
+    return p == top or p.startswith(top.rstrip("/") + "/")
+
+
 def noexec_problems(text: str) -> list[str]:
     sections = parse_unit(text)
     service = sections.get("Service", {})
     tmp = ({"/", "/tmp"} | ({"/var/tmp"} if private_var_tmp(sections) else set())) if private_tmp(sections) else set()
-    want = tmp | writable_mounts(service)
+    writable = writable_mounts(service)
+    # PrivateDevices binds the host's /dev/shm into the unit's own /dev (namespace.c), so / does not cover it.
+    shm = {"/dev/shm"} if last(service, "PrivateDevices") not in OFF else set()
+    want = tmp | shm | writable | read_only_mounts(service)
     listed = {path(w) for w in words(service, "NoExecPaths")}
-    return [f"NoExecPaths lacks {p}" for p in sorted(want - listed)]
+    problems = [f"NoExecPaths lacks {p}" for p in sorted(want - listed)]
+    execs = {path(w) for w in words(service, "ExecPaths")}
+    return problems + [f"ExecPaths {e} is in the writable {m}" for e in sorted(execs) for m in sorted(writable | tmp - {"/"})
+                       if under(e, m)]
 
 
 def units() -> dict[str, str]:
@@ -109,12 +125,13 @@ class UnitsNoExecTest(unittest.TestCase):
             (line.replace(" /var/tmp", ""), "NoExecPaths lacks /var/tmp"),
             (line.replace(" /tmp /var/tmp", " /var/tmp"), "NoExecPaths lacks /tmp"),
             (line.replace("=/ ", "="), "NoExecPaths lacks /"),
+            (line.replace(" -/dev/shm", ""), "NoExecPaths lacks /dev/shm"),
             (line.replace("/var/lib/balistid/relay", "/var/lib/balistid"), "NoExecPaths lacks /var/lib/balistid/relay"),
         ):
             with self.subTest(new=new):
                 self.assertEqual(noexec_problems(relay.replace(line, new)), [problem])
         reset = noexec_problems(relay.replace(line, line + "\nNoExecPaths="))
-        self.assertEqual(reset, [f"NoExecPaths lacks {p}" for p in ("/", "/tmp", "/var/lib/balistid/relay", "/var/tmp")])
+        self.assertEqual(reset, [f"NoExecPaths lacks {p}" for p in ("/", "/dev/shm", "/tmp", "/var/lib/balistid/relay", "/var/tmp")])
         for mode in ("yes", "true"):
             text = relay.replace(line, line.replace(" /var/tmp", "")).replace("PrivateTmp=disconnected", f"PrivateTmp={mode}")
             self.assertEqual(noexec_problems(text), ["NoExecPaths lacks /var/tmp"])
@@ -137,9 +154,20 @@ class UnitsNoExecTest(unittest.TestCase):
             ("ReadWritePaths=-/srv/e/", "/srv/e"),
             ("BindPaths=/srv/f:/srv/g", "/srv/g"),
             ("TemporaryFileSystem=/srv/h:mode=0700", "/srv/h"),
+            ("ReadOnlyPaths=-/var/lib/balistid/collector", "/var/lib/balistid/collector"),
+            ("BindReadOnlyPaths=/srv/i:/srv/j", "/srv/j"),
         ):
             with self.subTest(added=added):
                 self.assertEqual(noexec_problems(auditstat.replace(line, f"{line}\n{added}")), [f"NoExecPaths lacks {mount}"])
+
+    def test_an_exec_path_inside_a_writable_mount_fails(self):
+        relay = units()["balistid-relay.service"]
+        line = "ExecPaths=/usr/local/lib/balistid/balistid-relay"
+        self.assertIn(line, relay)
+        for extra, problem in (("/var/lib/balistid/relay/bin", "ExecPaths /var/lib/balistid/relay/bin is in the writable /var/lib/balistid/relay"),
+                               ("/tmp", "ExecPaths /tmp is in the writable /tmp")):
+            with self.subTest(extra=extra):
+                self.assertEqual(noexec_problems(relay.replace(line, f"{line} {extra}")), [problem])
 
     def test_an_early_boot_unit_that_waits_for_var_needs_var_tmp(self):
         ledger = units()["balistid-ledger.service"]

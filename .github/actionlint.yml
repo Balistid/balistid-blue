@@ -1,0 +1,4 @@
+# Runner labels the pinned actionlint does not know yet; ubuntu-26.04 is GA since 2026-09-17 (probe.yml).
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
