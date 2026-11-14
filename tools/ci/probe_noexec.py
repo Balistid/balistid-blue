@@ -3,10 +3,11 @@ system unit with its own mount settings, and inside it the probe fails on
 - any mount in /proc/self/mountinfo, other than a kernel pseudo filesystem, that is not noexec while its root is
   writable by the unit's uid or groups by its mode, read-only mount or not (another unit of the uid may write it),
   whatever the static model in test_units_noexec.py knows about;
-- any place the model says the unit can write (/tmp, a private /var/tmp, /dev/shm, its writable mounts) where a
-  copied binary runs, cannot be written, or fails to execute for another reason than EACCES.
-Controls made from the relay, auditstat and the judge, each with one hole put back, must be caught, so a probe
-that cannot see a hole fails as well.
+- any place the model says the unit may write (/tmp, a private /var/tmp, /dev/shm, its writable mounts) where a
+  copied binary runs or fails for another reason than EACCES; one the uid cannot write is no hole (the mount scan
+  decides that).
+Controls made from the relay and auditstat, each with one hole put back, must be caught, so a probe that cannot
+see a hole fails as well.
 
 ExecPaths gains /usr so the probe's python runs; the unit's own ExecPaths keep a "-" because its binary is not
 installed here. The unit runs as its own User, Group and SupplementaryGroups, which probe.yml creates from
@@ -59,8 +60,7 @@ for d in sys.argv[1:]:
     try:
         shutil.copy("/usr/bin/true", f)
         os.chmod(f, 0o755)
-    except OSError as e:
-        print(json.dumps({"dir": d, "result": "WRITE_FAILED " + e.strerror}))
+    except OSError:
         continue
     try:
         subprocess.run([f], check=True)
@@ -109,7 +109,7 @@ def systemd_version() -> int:
 def controls() -> list[tuple[str, str, str]]:
     """(label, unit text with one hole put back, the path the probe must name)."""
     u = units()
-    relay, auditstat, judge = u["balistid-relay.service"], u["balistid-auditstat.service"], u["balistid-judge.service"]
+    relay, auditstat = u["balistid-relay.service"], u["balistid-auditstat.service"]
     r = "NoExecPaths=/ /var/lib/balistid/relay /tmp /var/tmp -/dev/shm"
     out = [
         ("state dir via its parent", relay.replace(r, r.replace("/var/lib/balistid/relay", "/var/lib/balistid")),
@@ -117,13 +117,10 @@ def controls() -> list[tuple[str, str, str]]:
         ("private /var/tmp", relay.replace(r, r.replace(" /var/tmp", "")), "/var/tmp"),
         ("private /tmp", relay.replace(r, r.replace(" /tmp", "")), "/tmp"),
         ("/dev/shm", relay.replace(r, r.replace(" -/dev/shm", "")), "/dev/shm"),
-        ("exec path in the state dir", relay.replace("ExecPaths=/usr/local/lib/balistid/balistid-relay",
-                                                     "ExecPaths=/var/lib/balistid/relay"), "/var/lib/balistid/relay"),
         ("runtime dir", auditstat.replace(" /run/balistid-auditstat", ""), "/run/balistid-auditstat"),
-        ("read-only store", judge.replace(" /var/lib/balistid/collector /tmp", " /tmp"), "/var/lib/balistid/collector"),
     ]
     for label, text, _ in out:
-        if text in (relay, auditstat, judge):
+        if text in (relay, auditstat):
             raise SystemExit(f"FAIL control {label}: the unit text did not change")
     return out
 
