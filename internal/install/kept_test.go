@@ -109,23 +109,29 @@ func TestAKeptReleaseNotInItsFormRefuses(t *testing.T) {
 	}
 }
 
-// A stop before the installer is written keeps the old number, so the same release installs again.
-func TestAStoppedInstallKeepsTheOldRelease(t *testing.T) {
+// The number is kept before the release's first file: after a stop, an older release is refused over the files
+// already written, and the stopped release installs again.
+func TestAStoppedInstallKeepsItsNumber(t *testing.T) {
 	h, s := newRunnerHost(t)
 	files := judgeFiles(h.key.signers)
-	m := publishRelease(t, h, judgeComponent, files, 900)
+	publishRelease(t, h, judgeComponent, files, 900)
 	if err := h.installJudge(t, s, ""); err != nil {
 		t.Fatal(err)
 	}
-	publishRelease(t, h, judgeComponent, files, 901)
+	newer := judgeFiles(h.key.signers)
+	newer["balistid-judge"] = []byte("judge 901\n")
+	m := publishRelease(t, h, judgeComponent, newer, 901)
 	s.failCmd = "systemctl"
 	if err := h.installJudge(t, s, ""); err == nil {
 		t.Fatal("the install did not stop")
 	}
-	if got := readFile(t, h, "etc/balistid/judge.release"); string(got) != keptText(900, m) {
+	s.failCmd = ""
+	if got := readFile(t, h, "etc/balistid/judge.release"); string(got) != keptText(901, m) {
 		t.Fatalf("kept %q after a stop", got)
 	}
-	s.failCmd = ""
+	publishRelease(t, h, judgeComponent, files, 900)
+	h.refusedJudge(t, s, "older after a stop", "release 900 is older than the judge's installed release 901")
+	publishRelease(t, h, judgeComponent, newer, 901)
 	if err := h.installJudge(t, s, ""); err != nil {
 		t.Fatalf("the stopped release again: %v", err)
 	}

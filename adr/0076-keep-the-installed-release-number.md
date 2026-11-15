@@ -18,9 +18,9 @@ installing an older release also brings back an older installer.
 
 1. MANIFEST v2 is v1 with a fourth header line `release <n>` after the commit, n from 1 to ten digits: the number of
    first-parent commits of `main` up to the release's commit. `release.py manifest --release <n>` writes it.
-2. `balistid-install` reads v1 and v2. After writing itself, the last step of every install, it writes
-   `/etc/balistid/<component>.release` (`release <n>`, `manifest <sha256 of the MANIFEST>`, root's, 0644). A stop
-   before that leaves the old number, so the same release installs again.
+2. `balistid-install` reads v1 and v2. Right after creating its directories, before the release's first file, it
+   writes `/etc/balistid/<component>.release` (`release <n>`, `manifest <sha256 of the MANIFEST>`, root's, 0644).
+   After a stop anywhere later, older releases are refused over the files already written; the same one runs again.
 3. Before its first write, and in the dry run, it refuses a release whose number is lower than any component's kept
    number; a v1 MANIFEST counts as 0. The same number installs again only for the same component from the
    identical MANIFEST. A kept file that is not root's plain 0644 file in that form refuses (R6). No switch allows a

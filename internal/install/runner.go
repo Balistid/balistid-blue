@@ -305,7 +305,7 @@ func tmpfilesDirs(name string, conf []byte, dirs []wantDir) ([]wantDir, error) {
 // and units; it checks the units again after the reload and writes itself last. Each error names its step.
 func apply(ctx context.Context, cfg Config, host *os.Root, r Release, maintainer string, muid int, absent map[string]bool) error {
 	c := runnerComponent
-	if err := c.createDirs(host, absent); err != nil {
+	if err := c.begin(host, r, absent); err != nil {
 		return err
 	}
 	if err := c.writeFiles(host, r, absent, false); err != nil {

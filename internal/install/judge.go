@@ -61,7 +61,7 @@ func judge(ctx context.Context, cfg Config, dir, fingerprint string, d *Decision
 		return err
 	}
 	*writing = true
-	if err := c.createDirs(host, absent); err != nil {
+	if err := c.begin(host, r, absent); err != nil {
 		return err
 	}
 	if err := c.writeFiles(host, r, absent, false); err != nil {

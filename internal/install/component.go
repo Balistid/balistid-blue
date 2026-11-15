@@ -126,25 +126,19 @@ func (c component) writeFiles(host *os.Root, r Release, absent map[string]bool, 
 	return nil
 }
 
-// writeInstaller writes the installer, the table's last file, and then keeps a v2 release's number: a stop before
-// that leaves the old number, so the same release installs again.
+// writeInstaller writes the installer, the table's last file.
 func (c component) writeInstaller(host *os.Root, r Release) error {
 	last := c.table[len(c.table)-1]
 	if err := wholefile.WriteIn(host, last.dest, r.Files[last.name], last.mode); err != nil {
 		return fmt.Errorf("step write /%s: %w", last.dest, err)
 	}
-	if r.Manifest.Release == 0 {
-		return nil
-	}
-	kept := fmt.Sprintf("release %d\nmanifest %x\n", r.Manifest.Release, r.ManifestSHA256)
-	if err := wholefile.WriteIn(host, c.releaseFile(), []byte(kept), 0o644); err != nil {
-		return fmt.Errorf("step write /%s: %w", c.releaseFile(), err)
-	}
 	return nil
 }
 
-// createDirs creates the component's absent directories, root:root 0755.
-func (c component) createDirs(host *os.Root, absent map[string]bool) error {
+// begin is the first write of every install: the component's absent directories, root:root 0755, then a v2
+// release's number kept before any file of it lands, so a stop anywhere after refuses every older release while
+// the same one installs again.
+func (c component) begin(host *os.Root, r Release, absent map[string]bool) error {
 	for _, dir := range c.created {
 		if !absent[dir] {
 			continue
@@ -152,6 +146,13 @@ func (c component) createDirs(host *os.Root, absent map[string]bool) error {
 		if err := errors.Join(host.Mkdir(dir, 0o755), host.Chmod(dir, 0o755)); err != nil {
 			return fmt.Errorf("step create /%s: %w", dir, err)
 		}
+	}
+	if r.Manifest.Release == 0 {
+		return nil
+	}
+	kept := fmt.Sprintf("release %d\nmanifest %x\n", r.Manifest.Release, r.ManifestSHA256)
+	if err := wholefile.WriteIn(host, c.releaseFile(), []byte(kept), 0o644); err != nil {
+		return fmt.Errorf("step write /%s: %w", c.releaseFile(), err)
 	}
 	return nil
 }
