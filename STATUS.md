@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-14 by claude/opus-5.5 (#286, #289 merged; #285: no-exec on every writable mount, root probe in CI)
+Updated: 2026-11-15 by claude/opus-5.5 (version A measured on the host; release-number guard, ADR 0076)
 
 ## Where we are
 
@@ -16,25 +16,24 @@ next to the ADRs, the runner's results and open pull requests, and warns where t
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
 | Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
 ## Done in the last sessions
-- #285 (this pull request): every writable mount of a unit is in its NoExecPaths by its own path (/var/tmp,
-  auditstat's runtime and relay's state directory were executable); `probe.yml` proves it as root on systemd 259.
-  #289 (beca0f3): Go 1.27.4 for GO-2026-6859. #286 (f494207): ADR 0075. ADR 0071, 0072: as before (git log).
-- #281 (3f72c75, ADR 0070, #279): starting, not 8, in the collector's first 15 s before auditstat's first report;
-  `loss-control-none` PASS on KVM (ADR 0070). #277 (61bd5db, #274) and #280 (bdc0cb5, #278): the range proves the
-  ledger's bundles against its signed root and refuses a cap check bundle of another count.
-- #270 (59c8bd7, ADR 0068): `balistid-install recorder`; the maintainer's FIDO2 key in `deploy/install/allowed_signers`,
-  its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
-- #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
-  #284 (b1f253e, ADR 0074): the started record names the kernel; `balistid-install judge`, its method still a stub.
+- Version A (dfc833a) installed on the maintainer's host on 2026-11-14, as a measurement only: the store grows
+  about 0.34 MB/s (about 28 GiB/day, 1932 B per record on disk: 1465 B data, 359 B unused SQLite page space, 64 B
+  hashes), so `capacity_margin` (at most 1.67 GiB/day under the 150 GiB cap) fails and the cap fills on day 5;
+  floor-0 CPU about 13 % of a core against `cpu_cores_typical` 0.05. The 7 days (ADR 0075) have not started.
+- ADR 0076 (this pull request): `balistid-install` keeps the installed release number and refuses an older signed
+  release; MANIFEST v2 carries the number, CI writes it from the store-format pull request on.
+- #286, #289, #290: as before (git log of this file).
 ## Next step
-1. 9.5 (ADR 0075), version A from #285's merge commit: fuzz on it, `/security-audit` of the installer's root layer,
-   then on the host the boot entry's audit options, the signed bundle, the bootstrap, a reboot (maintainer): day 1.
-2. In the days: the judge's method with each day's bytes (agent), `balistid-install judge` (maintainer); checks on
-   day 1 and 3; the witness built (#203, #204), not installed. Nothing installs that changes the recorder.
-3. After the days, version B: `balistid.slice`, the witness and its five deliveries, the runner, the suite on
-   4 vCPUs (#200), `cpu_cores`, #202's caps, the fill test (#213), then the ADR 0056 checkpoint. Open, not
-   blocking: `dead_site_alarm_s` and `push_refused_alarm_s`, which need the dead-man (ADR 0072 point 4).
+1. A 24 h sample of version A's steady state (records/s, bytes, CPU per unit), then the measurement recorder stops.
+   If auditd and Laurel alone exceed 0.05 of a core, the rules are decided before the store format, in one version.
+2. Store format v2: one deflate block per commit, the dictionary from the shard's first blocks, the leaf recomputed
+   on read, a per-block sum; v1 shards stay readable (simulated on a real shard: about 100 B per record). CI then
+   computes the release number from the history and writes MANIFEST v2.
+3. Install this release, then the v2 one, one reboot; day 1 must project under 1.67 GiB/day; then the 7 days.
+4. 9.5 after the days as ADR 0075 says: #274, #275, #203, #204, #199, #200, #202, #244, #252; after install #243,
+   #245-#248; then ADR 0055's two passes and ADR 0067's red team.
 ## Open decisions (maintainer)
-- #202: the default caps under 10 GiB, proposed from the 7 days' growth (ADR 0068 point 6 keeps it the maintainer's).
-- #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed (ADR 0068 refuses them).
-- #194, #142, #148, #123, #170, #125, #128, T10, refusal_summary_s, ready_s, a killed collector's trial: git log.
+- #202 now, before the store format: `disk_default_gib` 10 cannot hold 30 days of retention at the measured rate;
+  a shorter retention after cosigning, fewer events, or a stronger compressor.
+- #275, #244, #240, #194, #142, #148, #123, #170, #125, #128, store on btrfs (T10), refusal_summary_s and ready_s on
+  4 vCPU, a killed collector's INVALID trial: as before (git log of this file).
