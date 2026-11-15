@@ -28,7 +28,7 @@ func keptText(n uint64, manifest []byte) string {
 	return fmt.Sprintf("release %d\nmanifest %x\n", n, sha256.Sum256(manifest))
 }
 
-// A v2 release is kept after the installer is written; an older one, a v1 one and the same number from another
+// A v2 release is kept before its first file; an older one, a v1 one and the same number from another
 // MANIFEST are refused, by the dry run too; the same release again and a newer one install.
 func TestAnInstalledReleaseRefusesAnOlderOne(t *testing.T) {
 	h, s := newRunnerHost(t)
