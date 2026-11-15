@@ -5,9 +5,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
+	"path"
+	"regexp"
 	"slices"
+	"strconv"
 
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
@@ -55,7 +59,57 @@ func (c component) released(ctx context.Context, cfg Config, host *os.Root, dir,
 	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(maps.Keys(r.Files))) {
 		return Release{}, fmt.Errorf("the manifest's files are not the %s's", c.name)
 	}
+	if err := c.notOlder(cfg, host, r); err != nil {
+		return Release{}, err
+	}
 	return r, nil
+}
+
+// keptLine is the release file: the release last installed and the sha256 of its MANIFEST (ADR 0076).
+var keptLine = regexp.MustCompile(`^release ([1-9][0-9]{0,9})\nmanifest ([0-9a-f]{64})\n$`)
+
+// releaseFile is where the installer keeps the release of the component it installed last.
+func (c component) releaseFile() string { return path.Join(signersDir, c.name+".release") }
+
+// notOlder refuses a release older than any kept one, since every component writes the shared installer: a lower
+// number, a v1 MANIFEST (release 0), or the component's own kept number from another MANIFEST. With none kept (a
+// first install, or only v1 releases installed) it accepts.
+func (c component) notOlder(cfg Config, host *os.Root, r Release) error {
+	got := r.Manifest.Release
+	for _, other := range slices.Sorted(maps.Keys(components)) {
+		kept, sum, err := components[other].kept(cfg, host)
+		switch {
+		case err != nil:
+			return err
+		case sum == "":
+		case got < kept:
+			return fmt.Errorf("release %d is older than the %s's installed release %d", got, other, kept)
+		case other == c.name && got == kept && sum != hex.EncodeToString(r.ManifestSHA256[:]):
+			return fmt.Errorf("release %d is installed from another MANIFEST", kept)
+		}
+	}
+	return nil
+}
+
+// kept is the component's kept release and its MANIFEST's sha256, or an empty sum when none is kept.
+func (c component) kept(cfg Config, host *os.Root) (uint64, string, error) {
+	name := c.releaseFile()
+	if _, err := host.Lstat(name); errors.Is(err, fs.ErrNotExist) {
+		return 0, "", nil
+	}
+	b, err := rootFile(cfg, host, name, 0o644, 128)
+	if err != nil {
+		return 0, "", err
+	}
+	m := keptLine.FindSubmatch(b)
+	if m == nil {
+		return 0, "", fmt.Errorf("/%s: not a release and a manifest sha256", name)
+	}
+	n, err := strconv.ParseUint(string(m[1]), 10, 64)
+	if err != nil {
+		return 0, "", fmt.Errorf("/%s: %w", name, err)
+	}
+	return n, string(m[2]), nil
 }
 
 // writeFiles writes the files of the table but the installer that are late or not, skipping an installed
@@ -72,11 +126,19 @@ func (c component) writeFiles(host *os.Root, r Release, absent map[string]bool, 
 	return nil
 }
 
-// writeInstaller writes the installer, the table's last file.
+// writeInstaller writes the installer, the table's last file, and then keeps a v2 release's number: a stop before
+// that leaves the old number, so the same release installs again.
 func (c component) writeInstaller(host *os.Root, r Release) error {
 	last := c.table[len(c.table)-1]
 	if err := wholefile.WriteIn(host, last.dest, r.Files[last.name], last.mode); err != nil {
 		return fmt.Errorf("step write /%s: %w", last.dest, err)
+	}
+	if r.Manifest.Release == 0 {
+		return nil
+	}
+	kept := fmt.Sprintf("release %d\nmanifest %x\n", r.Manifest.Release, r.ManifestSHA256)
+	if err := wholefile.WriteIn(host, c.releaseFile(), []byte(kept), 0o644); err != nil {
+		return fmt.Errorf("step write /%s: %w", c.releaseFile(), err)
 	}
 	return nil
 }

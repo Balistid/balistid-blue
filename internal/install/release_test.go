@@ -5,13 +5,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
 // publishFromReleasePy writes stand-ins for c's binaries and deploy files where tools/ci/release.py reads them,
 // lets it write the MANIFEST and the bundle into the release directory and signs the MANIFEST with the installed key.
-// sources are the repository paths release.py takes c's deploy files from, by table name.
-func publishFromReleasePy(t *testing.T, h *fakeHost, c component, sources map[string]string, real map[string][]byte) {
+// sources are the repository paths release.py takes c's deploy files from, by table name; extra goes to its manifest.
+func publishFromReleasePy(t *testing.T, h *fakeHost, c component, sources map[string]string, real map[string][]byte,
+	extra ...string) {
 	t.Helper()
 	in := t.TempDir()
 	bin, tree := filepath.Join(in, "bin"), filepath.Join(in, "tree")
@@ -39,8 +41,8 @@ func publishFromReleasePy(t *testing.T, h *fakeHost, c component, sources map[st
 			t.Fatalf("release.py %v: %v: %s", args, err, out)
 		}
 	}
-	release("manifest", "--component", c.name, "--bin", bin, "--tree", tree, "--signers", filepath.Join(in, signersName),
-		"--commit", testCommit, "--out", files)
+	release(append([]string{"manifest", "--component", c.name, "--bin", bin, "--tree", tree,
+		"--signers", filepath.Join(in, signersName), "--commit", testCommit, "--out", files}, extra...)...)
 	_ = os.Remove(filepath.Join(h.dir, c.bundle()))
 	release("bundle", "--dir", files, "--out", filepath.Join(h.dir, c.bundle()))
 	m, err := os.ReadFile(filepath.Join(files, manifestName)) //nolint:gosec // test temp dir
@@ -116,5 +118,19 @@ func TestJudgeInstallsWhatReleasePyWrites(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(h.cfg.Root, "etc/systemd/system/balistid-judge.service"))
 	if err != nil || string(got) != "balistid-judge.service from release.py\n" {
 		t.Fatalf("%q, %v", got, err)
+	}
+}
+
+// A v2 MANIFEST release.py writes installs, and the installer keeps its number.
+func TestJudgeKeepsTheReleaseOfAV2ReleasePyWrites(t *testing.T) {
+	h, s := newRunnerHost(t)
+	h.bundle = judgeComponent.bundle()
+	publishFromReleasePy(t, h, judgeComponent, map[string]string{
+		"balistid-judge.service": "deploy/judge/balistid-judge.service"}, nil, "--release", "895")
+	if err := h.installJudge(t, s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFile(t, h, "etc/balistid/judge.release"); !strings.HasPrefix(string(got), "release 895\nmanifest ") {
+		t.Fatalf("kept %q", got)
 	}
 }

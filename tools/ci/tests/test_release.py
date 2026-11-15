@@ -195,6 +195,17 @@ class ManifestTest(unittest.TestCase):
                            ("allowed_signers", 0o644)):
             self.assertEqual((self.out / name).stat().st_mode & 0o777, mode, name)
 
+    def test_manifest_with_a_release_is_v2_with_the_number_after_the_commit(self):
+        release.manifest(*self.inputs, COMMIT, self.out, 895)
+        lines = (self.out / "MANIFEST").read_text().splitlines()
+        self.assertEqual(lines[:4], ["balistid-manifest 2", "component runner", f"commit {COMMIT}", "release 895"])
+        self.assertEqual([line.split("  ")[1] for line in lines[4:]], sorted(release.files("runner")))
+
+    def test_a_release_out_of_range_fails(self):
+        for n in (0, -1, 10**10):
+            with self.subTest(n=n), self.assertRaises(ValueError):
+                release.manifest(*self.inputs, COMMIT, self.tmp / f"out-{n}", n)
+
     def test_symlinked_or_missing_input_fails(self):
         deploy = self.inputs[2] / "deploy" / "runner"
         (deploy / "tmpfiles.conf").unlink()

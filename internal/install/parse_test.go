@@ -17,7 +17,11 @@ const testCommit = "0123456789abcdef0123456789abcdef01234567"
 // manifestText formats m as release.py writes MANIFEST v1.
 func manifestText(m Manifest) []byte {
 	var b strings.Builder
-	b.WriteString("balistid-manifest 1\ncomponent " + m.Component + "\ncommit " + m.Commit + "\n")
+	if m.Release == 0 {
+		b.WriteString("balistid-manifest 1\ncomponent " + m.Component + "\ncommit " + m.Commit + "\n")
+	} else {
+		fmt.Fprintf(&b, "balistid-manifest 2\ncomponent %s\ncommit %s\nrelease %d\n", m.Component, m.Commit, m.Release)
+	}
 	for _, f := range m.Files {
 		b.WriteString(hex.EncodeToString(f.SHA256[:]) + "  " + f.Name + "\n")
 	}
@@ -39,12 +43,44 @@ func TestParseManifestReadsV1(t *testing.T) {
 	}
 }
 
+func TestParseManifestReadsV2(t *testing.T) {
+	want := Manifest{Component: "recorder", Commit: testCommit, Release: 895, Files: []File{{Name: "a.conf"}}}
+	got, err := ParseManifest(manifestText(want))
+	if err != nil || got.Release != 895 || got.Component != "recorder" || len(got.Files) != 1 {
+		t.Fatalf("%+v, %v", got, err)
+	}
+}
+
+func TestParseManifestRefusesAReleaseNotInV2Form(t *testing.T) {
+	sum := strings.Repeat("ab", 32)
+	good := "balistid-manifest 2\ncomponent runner\ncommit " + testCommit + "\nrelease 895\n" + sum + "  a.conf\n"
+	if _, err := ParseManifest([]byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	for name, text := range map[string]string{
+		"no release":       strings.Replace(good, "release 895\n", "", 1),
+		"release 0":        strings.Replace(good, "release 895", "release 0", 1),
+		"a leading zero":   strings.Replace(good, "release 895", "release 0895", 1),
+		"eleven digits":    strings.Replace(good, "release 895", "release 12345678901", 1),
+		"a sign":           strings.Replace(good, "release 895", "release +895", 1),
+		"a release in v1":  strings.Replace(good, "manifest 2", "manifest 1", 1),
+		"release twice":    strings.Replace(good, "release 895\n", "release 895\nrelease 896\n", 1),
+		"release first":    strings.Replace(good, "component runner\ncommit "+testCommit+"\nrelease 895", "release 895\ncomponent runner\ncommit "+testCommit, 1),
+		"no file":          "balistid-manifest 2\ncomponent runner\ncommit " + testCommit + "\nrelease 895\n",
+		"a trailing space": strings.Replace(good, "release 895", "release 895 ", 1),
+	} {
+		if m, err := ParseManifest([]byte(text)); err == nil {
+			t.Errorf("%s: read %+v", name, m)
+		}
+	}
+}
+
 // Anything but the exact form, another version included, is refused whole.
 func TestParseManifestRefusesAnythingElse(t *testing.T) {
 	sum := strings.Repeat("ab", 32)
 	good := "balistid-manifest 1\ncomponent runner\ncommit " + testCommit + "\n" + sum + "  a.conf\n" + sum + "  b.conf\n"
 	for name, text := range map[string]string{
-		"version 2":        strings.Replace(good, "manifest 1", "manifest 2", 1),
+		"version 3":        strings.Replace(good, "manifest 1", "manifest 3", 1),
 		"no version":       strings.Replace(good, "balistid-manifest 1\n", "", 1),
 		"no component":     strings.Replace(good, "component runner\n", "", 1),
 		"upper component":  strings.Replace(good, "runner", "Runner", 1),
@@ -76,6 +112,7 @@ func TestParseManifestRefusesAnythingElse(t *testing.T) {
 // Whatever ParseManifest accepts prints back as the same bytes: one reading only.
 func FuzzParseManifest(f *testing.F) {
 	f.Add(manifestText(Manifest{Component: "runner", Commit: testCommit, Files: []File{{Name: "a"}, {Name: "b.conf"}}}))
+	f.Add(manifestText(Manifest{Component: "judge", Commit: testCommit, Release: 7, Files: []File{{Name: "a"}}}))
 	f.Fuzz(func(t *testing.T, b []byte) {
 		m, err := ParseManifest(b)
 		if err == nil && !bytes.Equal(manifestText(m), b) {

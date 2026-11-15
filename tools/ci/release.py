@@ -2,8 +2,9 @@
 """The files root installs for each component and their MANIFEST (ADR 0011, point 1; ADR 0058, 0068).
 
 manifest:  copy a component's binaries, the installer, its deploy files and the maintainer's allowed_signers into a
-           new directory and write MANIFEST v1: its header, then the sha256sum line of each file, sorted. The
-           maintainer signs it; balistid-install checks the signature and every file against it.
+           new directory and write MANIFEST v1: its header, then the sha256sum line of each file, sorted; given
+           --release, v2, whose header adds that number for the installer to keep (ADR 0076). The maintainer
+           signs it; balistid-install checks the signature and every file against it.
 bundle:    one deterministic tar of that directory. CI uploads it with the MANIFEST and prints the MANIFEST only
            on a push to main; the maintainer downloads both.
 build:     the manifest directory from a commit of a local repository, built with the flags of CI's
@@ -122,10 +123,13 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def manifest(component: str, bindir: Path, tree: Path, signers: Path, commit: str, out: Path) -> str:
+def manifest(component: str, bindir: Path, tree: Path, signers: Path, commit: str, out: Path,
+             release: int | None = None) -> str:
     """Copies the component's binaries from bindir, its deploy files from the checked-out tree and signers into out."""
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"commit {commit!r} is not 40 hex digits")
+    if release is not None and not 0 < release < 10**10:
+        raise ValueError(f"release {release} is not 1 to 10 digits")
     binaries, deploy = COMPONENTS[component]
     out.mkdir(mode=0o700)
     sources = {name: bindir / name for name in (*binaries, INSTALLER)} | {SIGNERS: signers}
@@ -137,6 +141,8 @@ def manifest(component: str, bindir: Path, tree: Path, signers: Path, commit: st
         shutil.copyfile(src, out / name, follow_symlinks=False)
         (out / name).chmod(0o755 if name in executable(component) else 0o644)
     text = f"balistid-manifest 1\ncomponent {component}\ncommit {commit}\n"
+    if release is not None:
+        text = f"balistid-manifest 2\ncomponent {component}\ncommit {commit}\nrelease {release}\n"
     text += "".join(f"{sha256(out / name)}  {name}\n" for name in files(component))
     (out / "MANIFEST").write_text(text)
     return hashlib.sha256(text.encode()).hexdigest()
@@ -173,7 +179,7 @@ def fingerprint(signers: Path) -> str:
     return "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
 
 
-def build(repo: Path, commit: str, component: str, out: Path) -> None:
+def build(repo: Path, commit: str, component: str, out: Path, release: int | None = None) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"commit {commit!r} is not 40 hex digits")
     with tempfile.TemporaryDirectory() as tmp:
@@ -200,7 +206,7 @@ def build(repo: Path, commit: str, component: str, out: Path) -> None:
         for cmd in (*COMPONENTS[component][0], INSTALLER):
             subprocess.run(["go", *GO_BUILD, VERSION_FLAG + commit, "-o", str(bindir / cmd), f"./cmd/{cmd}"],
                            cwd=src, env=env, check=True)
-        manifest(component, bindir, src, src / "deploy" / "install" / SIGNERS, commit, out)
+        manifest(component, bindir, src, src / "deploy" / "install" / SIGNERS, commit, out, release)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     for flag in ("--bin", "--tree", "--signers", "--out"):
         m.add_argument(flag, type=Path, required=True)
     m.add_argument("--commit", required=True)
+    m.add_argument("--release", type=int)
     t = sub.add_parser("bundle")
     t.add_argument("--dir", type=Path, required=True)
     t.add_argument("--out", type=Path, required=True)
@@ -218,6 +225,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--repo", type=Path, required=True)
     b.add_argument("--commit", required=True)
     b.add_argument("--component", choices=sorted(COMPONENTS), required=True)
+    b.add_argument("--release", type=int)
     b.add_argument("--out", type=Path, required=True, help="a new directory; gets files/ and the bundle")
     sub.add_parser("bootstrap").add_argument("--signers", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -232,13 +240,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"/usr/bin/env -i PATH={ROOT_PATH} /usr/bin/sh -p -c '{BOOTSTRAP}' - {fp}")
             return 0
         if args.cmd == "manifest":
-            manifest(args.component, args.bin, args.tree, args.signers, args.commit, args.out)
+            manifest(args.component, args.bin, args.tree, args.signers, args.commit, args.out, args.release)
             return 0
         if args.cmd == "bundle":
             bundle(args.dir, args.out)
             return 0
         args.out.mkdir(mode=0o700)
-        build(args.repo, args.commit, args.component, args.out / "files")
+        build(args.repo, args.commit, args.component, args.out / "files", args.release)
         bundle(args.out / "files", args.out / bundle_name(args.component))
     except (OSError, ValueError, subprocess.CalledProcessError) as err:
         print(f"release: {err}", file=sys.stderr)

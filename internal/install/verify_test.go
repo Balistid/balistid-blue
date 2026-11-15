@@ -95,7 +95,8 @@ func TestCheckRefusesFilesTheManifestDoesNotMatch(t *testing.T) {
 	extra["extra.conf"] = []byte("x")
 	missing := runnerFiles(h.key.signers)
 	delete(missing, "tmpfiles.conf")
-	v2 := bytes.Replace(manifestOf(files), []byte("manifest 1"), []byte("manifest 2"), 1)
+	v3 := bytes.Replace(manifestOf(files), []byte("manifest 1"), []byte("manifest 3"), 1)
+	noRelease := bytes.Replace(manifestOf(files), []byte("manifest 1"), []byte("manifest 2"), 1)
 	for label, c := range map[string]struct {
 		files    map[string][]byte
 		manifest []byte
@@ -104,7 +105,8 @@ func TestCheckRefusesFilesTheManifestDoesNotMatch(t *testing.T) {
 		"sha256 mismatch":      {changed, m, "balistid-runner does not match its sha256"},
 		"a file not listed":    {extra, m, "files are not the manifest's"},
 		"a listed file absent": {missing, m, "files are not the manifest's"},
-		"version 2":            {files, v2, "not version 1"},
+		"version 3":            {files, v3, "not version 1 or 2"},
+		"v2 without a release": {files, noRelease, "header line 4 must give the release"},
 	} {
 		h.publish(t, c.files, c.manifest, sign(c.manifest))
 		h.refuses(t, label, "", c.why)
