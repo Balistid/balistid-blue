@@ -4,8 +4,8 @@
 - Date: 2026-11-16
 - Decided-by: jvc0n (2026-11-16, in session)
 - Agent: claude/opus-5.5
-- Amends ADR 0064 point 1, ADR 0074 and ADR 0075 (it stops 9.5 and the host days), ADR 0056 points 2-4 and ADR
-  0040 point 5 (their gates wait on 9.5), and ADR 0067 for floor 0.
+- Amends ADR 0064 point 1, ADR 0074 and ADR 0075 (it stops 9.5 and the host days), ADR 0056 points 2-4, ADR 0040
+  points 1, 2 and 5 and ADR 0065 (the product line and its gates), and ADR 0067 for floor 0.
 
 ## Context
 
@@ -27,14 +27,15 @@ floor 0, and no detection exists yet.
    2026-11-30, except a security fix the maintainer installs.
 2. The code of the collector, store, ledger, relay and Pi watcher stays on `main`, frozen: no new scope, and fixes
    only where the range or the host still runs it. The collector stays in the range image as its instrument.
-3. `acceptance/0.toml` stays as written, and none of its metrics is measured while the recorder is frozen. These 21
+3. `acceptance/0.toml` stays as written, and none of its metrics is measured while the recorder is frozen. These 23
    need the ledger, the relay, the witness or the Pi, or a collector or store behaviour no sensor needs (caps,
-   retention, crash loss, reconnects, refusals), and bind again only if point 5 brings the recorder back:
+   retention, crash loss, reconnects, refusals, alarms), and bind again only if point 5 brings the recorder back:
    `reconnects_per_day`, `crash_loss_ms`, `truncation_alarm_per_hour`, `raw_retention_days`, `raw_cap_gib`,
-   `capacity_margin`, `headroom_gib`, `shard_max_gib`, `derived_cap_gib`, `host_log_cap_gib`, `refusal_summary_s`,
-   `anchor_interval_s`, `cosign_gap_s`, `silence_alarm_s`, `announced_quiet_max_h`, `verify_freshness_s`,
-   `verify_s`, `log_retention_days`, `pi_store_cap_gib`, `dead_site_alarm_s`, `push_refused_alarm_s`.
-   For the other 22 a later ADR with its own acceptance file decides, after the pilot, which bind a sensor.
+   `capacity_margin`, `disk_default_gib`, `headroom_gib`, `shard_max_gib`, `derived_cap_gib`, `host_log_cap_gib`,
+   `refusal_summary_s`, `anchor_interval_s`, `cosign_gap_s`, `loss_alarm_s`, `silence_alarm_s`,
+   `announced_quiet_max_h`, `verify_freshness_s`, `verify_s`, `log_retention_days`, `pi_store_cap_gib`,
+   `dead_site_alarm_s`, `push_refused_alarm_s`.
+   For the other 20 a later ADR with its own acceptance file decides, after the pilot, which bind a sensor.
 4. Floor 1 starts as measurement. The host computes a detection verdict (ADR 0009 point 7: CAUGHT, MISSED, QUIET,
    NOISY, INVALID) from the records of the runner's agent jobs (ADR 0011), with rules as data and the detection
    judge's code locked. ADR 0077 decides that judge. The range code does not change for it.

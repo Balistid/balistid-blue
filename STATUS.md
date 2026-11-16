@@ -5,7 +5,7 @@ Updated: 2026-11-16 by claude/opus-5.5 (ADR 0076: the recorder freezes unmet, fl
 ## Where we are
 
 Floor 0 (recorder) is frozen unmet (ADR 0076): version A runs on the maintainer's host since 2026-11-14 and
-stays as it is until the floor-1 pilot is valid, not before 2026-11-30; no metric of `acceptance/0.toml` has passed
+stays as it is, but for a security fix, until the floor-1 pilot is valid and 2026-11-30; no metric of `acceptance/0.toml` has passed
 there. Floor 1 starts as measurement: a detection judge on the host will give verdicts over the records of the
 runner's agent jobs. `python3 tools/ci/status.py` shows this file next to the ADRs, the runner's results and open
 pull requests, and warns where they disagree. Its parts:
@@ -20,7 +20,7 @@ pull requests, and warns where they disagree. Its parts:
 
 ## Done in the last sessions
 - ADR 0076 (this pull request): the recorder freezes unmet; 9.5 and the host days (ADR 0064, 0074, 0075) stop;
-  21 metrics wait with the recorder; floor 1 starts as measurement. #291 (release-number guard) closed unmerged.
+  23 metrics wait with the recorder; floor 1 starts as measurement. #291 (release-number guard) closed unmerged.
 - #285 (`main` at dfc833a): every writable mount of a unit is no-exec, proven as root on systemd 259. #289: Go 1.27.4.
 - #283, #284 (ADR 0073, 0074), #281 (ADR 0070), #277, #280, #270 (ADR 0068): as before (git log).
 
