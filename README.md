@@ -18,7 +18,7 @@ explained.
 ## What makes it different
 
 1. **Provable history.** An event record whose tampering is detectable, anchored off the host on an optional Pi witness;
-   frozen until an agent on the host has root (ADR 0076).
+   frozen until an agent on the host gets root (ADR 0076 point 5).
 2. **Detections are proven, response waits for them.** Every detection ships with an attack scenario that must
    trigger it and a legitimate one that must not, run in an isolated VM range; a response acts only on those.
 3. **Actors, not just events.** Package transactions (pacman/AUR), AI coding agents, AI server
