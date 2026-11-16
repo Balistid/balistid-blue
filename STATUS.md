@@ -1,40 +1,37 @@
 # Status
 
-Updated: 2026-11-14 by claude/opus-5.5 (#286, #289 merged; #285: no-exec on every writable mount, root probe in CI)
+Updated: 2026-11-16 by claude/opus-5.5 (ADR 0076: the recorder freezes unmet, floor 1 starts as measurement)
 
 ## Where we are
 
-Floor 0 (recorder) is done when `acceptance/0.toml` is met. `python3 tools/ci/status.py` shows this file
-next to the ADRs, the runner's results and open pull requests, and warns where they disagree. Its parts:
+Floor 0 (recorder) is frozen unmet (ADR 0076): version A runs on the maintainer's host since 2026-11-14 and
+stays as it is until the floor-1 pilot is valid, not before 2026-11-30; no metric of `acceptance/0.toml` has passed
+there. Floor 1 starts as measurement: a judge on the host gives detection verdicts over the records of the
+runner's agent jobs. `python3 tools/ci/status.py` shows this file next to the ADRs, the runner's results and open
+pull requests, and warns where they disagree. Its parts:
 | Part | Does | State |
 |---|---|---|
-| Sensor (ADR 0004) | auditd + Laurel record kernel events | configured |
-| Range, runner (0009-0011, 0018-0021, 0028) | VM where agents test the recorder; the runner runs the acceptance suite itself | installed at 2c09799; CI job `range-kvm` self-tests every pull request on GitHub's KVM (#146, required in the ruleset); on `main` (#131, #132): the collector in the image, the guest reads its sealed shards, trials decide metrics (ADR 0022) |
-| Raw record, shard (0005) | record encoding and leaf; sealed SQLite file | on `main`, code-owned (#127) |
-| Store (0005, 0013, 0029) | cap, reserve, loss records, seal index, retirement | on `main`, code-owned; `Committed` (#128); index v2 and retirement by cosign time and the host clock on `main` (#147, L7) |
-| Collector (0007, 0016, 0017) | takes Laurel's records over a socket, never blocks Laurel | on `main` with units, code-owned; A7 closed (#125); range-only `-log-commits` and `-headroom` (#128) |
-| Ledger, relay, Pi witness (0006, 0026, 0027, 0030, 0031) | signed log, cosigned off the host | ledger core on `main` (#142, ff8398c): ADR 0027, `internal/anchor`, `internal/link`, collector stream, `balistid-ledger`, deploy, range fact `ledger_anchored` (KVM PASS at bf95659); relay (`internal/relay`, `balistid-relay`, deploy) with a pinned litewitness in the range on `main` (#144, 2e2f7de): `ledger_cosigned`, `fork_refused` (KVM PASS at 4fd6db0); announce, final, rollover, old-log retention on `main` (#148, b4d9ca3); the Pi's watcher `balistid-pi` and the relay's bundle server (ADR 0031) on `main` (#150, 3a6d88b), range fact `pi_verified`; L10 on `main` (#153, 6854cdf; ADR 0032): `balistid-net`, the relay-only nftables table and the WireGuard tunnel, facts `pi_reach`, `ledger_net` |
-| Normalizer, CLI (0005, 0007, 0048) | OCSF view, `balistid status` | normalizer not started; `balistid status` and its report on `main` (#194) |
+| Sensor (ADR 0004) | auditd + Laurel record kernel events | configured; on the host in version A |
+| Range, runner (0009-0011, 0018-0021, 0028) | VM where agents run jobs; the runner exports each job's records | installed at 2c09799 (no collector in its image); `range-kvm` self-tests every pull request on GitHub's KVM; agent job `p0-smoke-1` ran 2026-11-16 |
+| Detection judge (0009 point 7, 0076) | verdicts from a job's records, rules as data | not started; ADR 0077 decides it |
+| Collector, store, shard (0005, 0007, 0013, 0016, 0017, 0029) | Laurel's records into sealed SQLite shards under a cap | on `main`, code-owned; frozen (ADR 0076), the collector kept in the range image |
+| Ledger, relay, Pi witness (0006, 0026, 0027, 0030-0032) | signed log, cosigned off the host | on `main`; frozen until an agent on the host has root (ADR 0076) |
+| Installer, CLI (0048, 0053, 0058, 0068) | signed install of a component; `balistid status` | on `main`; recorder installed on the host 2026-11-14 |
+
 ## Done in the last sessions
-- #285 (this pull request): every writable mount of a unit is in its NoExecPaths by its own path (/var/tmp,
-  auditstat's runtime and relay's state directory were executable); `probe.yml` proves it as root on systemd 259.
-  #289 (beca0f3): Go 1.27.4 for GO-2026-6859. #286 (f494207): ADR 0075. ADR 0071, 0072: as before (git log).
-- #281 (3f72c75, ADR 0070, #279): starting, not 8, in the collector's first 15 s before auditstat's first report;
-  `loss-control-none` PASS on KVM (ADR 0070). #277 (61bd5db, #274) and #280 (bdc0cb5, #278): the range proves the
-  ledger's bundles against its signed root and refuses a cap check bundle of another count.
-- #270 (59c8bd7, ADR 0068): `balistid-install recorder`; the maintainer's FIDO2 key in `deploy/install/allowed_signers`,
-  its fingerprint in the README map, README.md owned. #273, #272, #207, #245, #250, #242: as before (git log).
-- #283 (c4350ff, ADR 0073, #201): the collector records its units' CPU in the store, so the days can be judged.
-  #284 (b1f253e, ADR 0074): the started record names the kernel; `balistid-install judge`, its method still a stub.
+- ADR 0076 (this pull request): the recorder freezes unmet; 9.5 and the host days (ADR 0064, 0074, 0075) stop;
+  21 metrics leave with the recorder; floor 1 starts as measurement. #291 (release-number guard) closed unmerged.
+- #285 (`main` at dfc833a): every writable mount of a unit is no-exec, proven as root on systemd 259. #289: Go 1.27.4.
+- #283, #284 (ADR 0073, 0074), #281 (ADR 0070), #277, #280, #270 (ADR 0068): as before (git log).
+
 ## Next step
-1. 9.5 (ADR 0075), version A from #285's merge commit: fuzz on it, `/security-audit` of the installer's root layer,
-   then on the host the boot entry's audit options, the signed bundle, the bootstrap, a reboot (maintainer): day 1.
-2. In the days: the judge's method with each day's bytes (agent), `balistid-install judge` (maintainer); checks on
-   day 1 and 3; the witness built (#203, #204), not installed. Nothing installs that changes the recorder.
-3. After the days, version B: `balistid.slice`, the witness and its five deliveries, the runner, the suite on
-   4 vCPUs (#200), `cpu_cores`, #202's caps, the fill test (#213), then the ADR 0056 checkpoint. Open, not
-   blocking: `dead_site_alarm_s` and `push_refused_alarm_s`, which need the dead-man (ADR 0072 point 4).
+1. ADR 0077 (the host computes a detection verdict from a job's records; rules are data; the judge locks) with
+   `acceptance/1.toml` and `lab/` in the layout and README map, before the judge's code (R3).
+2. The judge without privilege: `internal/detect`, `cmd/balistid-lab` (`job`, `import`, `table`), tested on a real
+   job's records; then a neutral development pair through it and the judge into CODEOWNERS and the mutation gate.
+3. One test pair from Codex (technique and legitimate twin, two variants each), rules from several models written
+   blind and merged first, four runner jobs, then the pilot report on 2026-11-20 with what it measures and not.
+
 ## Open decisions (maintainer)
-- #202: the default caps under 10 GiB, proposed from the 7 days' growth (ADR 0068 point 6 keeps it the maintainer's).
-- #240: other files in the host's `/etc/audit/rules.d` read `rules-differ` once installed (ADR 0068 refuses them).
-- #194, #142, #148, #123, #170, #125, #128, T10, refusal_summary_s, ready_s, a killed collector's trial: git log.
+- Approve ADR 0076 and its README lines (owned paths).
+- #202 (default caps) and #240 (other rules files) wait with the frozen recorder (ADR 0076).

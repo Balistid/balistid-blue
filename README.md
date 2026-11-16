@@ -6,7 +6,7 @@ Balistid Blue is a light, local-first security control plane for Linux hosts on 
 own: it runs maintained open-source security tools under one command layer, explains each verdict to the person
 who acts on it, and keeps a history in which a witness off the host, an optional level, refuses rewrites.
 
-Status: pre-alpha. The floor-0 recorder runs end to end in a VM range; a first real host is next (ADR 0064, `STATUS.md`).
+Status: pre-alpha. The floor-0 recorder runs on one host and freezes unmet; floor 1 starts as measurement (ADR 0076, `STATUS.md`).
 
 ## Why
 
@@ -17,8 +17,8 @@ explained.
 
 ## What makes it different
 
-1. **Provable history.** The core is an event record whose tampering is detectable, with checkpoints
-   anchored off the host (for example on a Raspberry Pi witness).
+1. **Provable history.** An event record whose tampering is detectable, anchored off the host on a Pi witness;
+   frozen until an agent on the host has root (ADR 0076).
 2. **Detections are proven, response waits for them.** Every detection ships with an attack scenario that must
    trigger it and a legitimate one that must not, run in an isolated VM range; a response acts only on those.
 3. **Actors, not just events.** Package transactions (pacman/AUR), AI coding agents, AI server
@@ -32,7 +32,7 @@ Each floor must be useful on its own, even if the next one never ships.
 
 | Floor | Name | Value on its own |
 |---|---|---|
-| 0 | Recorder | Trustworthy, tamper-evident timeline of what happened on the host |
+| 0 | Recorder | Trustworthy, tamper-evident timeline of what happened on the host (frozen unmet, ADR 0076) |
 | 1 | Detection | An alert on the phone when something is wrong, each detection proven by an attack it must catch and normal work it must not |
 | 2 | Response | Contain what a detection measured right found (a process, the network, a file), explained and reversible |
 | 3 | AI agent actor | AI coding agents as first-class actors: their normal work told apart from abuse |
