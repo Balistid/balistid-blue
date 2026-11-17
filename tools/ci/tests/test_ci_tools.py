@@ -264,7 +264,8 @@ class DocsBudgetTest(unittest.TestCase):
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
         for name in ("lab/windows/20261116T163124Z-ba1549c1-x/job-laurel.txt", f"{window}/job-out.txt",
                      "lab/pairs/dev-1.toml", "lab/job-laurel.txt", f"{window}/x/job-laurel.txt",
-                     "tools/ci/job-laurel.txt", "lab/rules/dev-1/x/opus-1.json"):
+                     "tools/ci/job-laurel.txt", "lab/rules/dev-1/x/opus-1.json", "cmd/job-laurel.txt/main.go",
+                     "lab/windows/job-laurel.txt/result.json", "cmd/LICENSE/main.go", "internal/CODEOWNERS/x.go"):
             with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
                 self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
 
@@ -882,22 +883,26 @@ class GitleaksWindowTest(unittest.TestCase):
     gitleaks = RescanDetectionTest.gitleaks
 
     def leaks(self, files: dict[str, str]) -> int:
+        """Commit files and scan the history as the secrets job does (gitleaks git, repository paths)."""
         with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
             for name, text in files.items():
-                (Path(tmp) / name).parent.mkdir(parents=True, exist_ok=True)
-                (Path(tmp) / name).write_text(text)
-            return subprocess.run([self.gitleaks(), "dir", "--no-banner", "--config", str(REPO_ROOT / ".gitleaks.toml"),
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_text(text)
+                git(repo, "add", name)
+            git(repo, "commit", "-q", "--no-verify", "-m", "x")
+            return subprocess.run([self.gitleaks(), "git", "--no-banner", "--config", str(REPO_ROOT / ".gitleaks.toml"),
                                    tmp], capture_output=True).returncode
 
     def test_content_key_of_a_window_passes(self):
         key = secrets.token_hex(32)
         result = f'{{\n  "content_key": "{key}",\n  "program_sha256": "{secrets.token_hex(32)}"\n}}\n'
         self.assertEqual(self.leaks({"lab/windows/20261116t163124z-ba1549c1-x/result.json": result}), 0)
-        for name, text in (("tools/ci/x.json", result),
+        base62 = random_github_token()[4:] + random_github_token()[4:32]
+        for name, text in (("tools/ci/x.json", result), ("vendor/x/lab/windows/a-1/result.json", result),
                            ("lab/windows/20261116t163124z-ba1549c1-x/result.json",
                             result.replace('"content_key"', '"api_key"')),
-                           ("lab/windows/20261116t163124z-ba1549c1-x/result.json",
-                            result.replace(key, random_github_token()))):
+                           ("lab/windows/20261116t163124z-ba1549c1-x/result.json", result.replace(key, base62))):
             with self.subTest(name=name, text=text[:30]):
                 self.assertNotEqual(self.leaks({name: text}), 0)
 
