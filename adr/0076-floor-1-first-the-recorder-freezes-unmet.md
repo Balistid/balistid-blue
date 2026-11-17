@@ -57,4 +57,4 @@ floor 0, and no detection exists yet.
 - STATUS names the floor-1 pilot as the next step; the README says the recorder is frozen and why.
 - `THREAT_MODEL.md` rows stay as they are: no control or proof changes, and each status stays as tested.
 - Floor 1 has no acceptance file yet: ADR 0077 brings `acceptance/1.toml` before the judge's first code (R3).
-- Revert: a pull request removing this file and restoring the STATUS and README lines.
+- Revert: a pull request removing this file and restoring the STATUS, README and THREAT_MODEL lines.
