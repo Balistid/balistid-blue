@@ -58,7 +58,6 @@ LAYOUT: tuple[str, ...] = (
     "lab/pairs/*.json",
     "lab/rules/*/*.json",
     "lab/windows/*/result.json",
-    "lab/windows/*/job-laurel.txt",
     "lab/results/*.json",
     "lab/agent-errors.jsonl",
     # Go and deployment layout (ADR 0003).
@@ -156,7 +155,6 @@ EXACT_SEGMENTS = {
     "LICENSE", "README.md", "SECURITY.md", "THREAT_MODEL.md", "ENGINEERING.md", "CLAUDE.md",
     "AGENTS.md", "STATUS.md", ".gitignore", ".editorconfig", ".gitattributes", ".gitleaks.toml",
     ".github", "CODEOWNERS", "ISSUE_TEMPLATE", "PKGBUILD", ".golangci.yml",
-    "job-laurel.txt",  # the runner's name for a job's Laurel window, kept with its bytes (ADR 0077)
 }
 # The only exact names a directory may take; a file's exact name is never a directory's (ADR 0077).
 EXACT_DIRS = {".github", "ISSUE_TEMPLATE"}

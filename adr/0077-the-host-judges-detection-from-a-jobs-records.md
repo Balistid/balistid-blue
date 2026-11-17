@@ -42,7 +42,7 @@ agent at the maintainer's uid can write (T33); the runner's results are not, and
    the runner prunes oldest first, while the anchor is kept every later result is. Before signing a results tag the
    maintainer runs `verify` (`GOENV=off GOFLAGS= GOWORK=off`) from a clean checkout of the tagged commit: it fails
    unless the anchor is kept in `results/agent` and the results after it are exactly `lab/windows`, files and bytes.
-   The pilot ends 23 jobs after the anchor; a new anchor needs an ADR. A window lands only with a decoded secret scan.
+   The pilot ends 23 jobs after the anchor, a new one needs an ADR; `job-laurel.txt` waits for a decoded secret scan.
 7. The lock: `internal/detect` and `cmd/balistid-lab` join the mutation gate in their first pull request; after gate
    B1, CODEOWNERS and `go_gate.py`'s owned roots, proven by a trial pull request that cannot pass unapproved.
 8. Not closed, said in every report: a window made outside the runner (the image boots under any KVM) can inform a

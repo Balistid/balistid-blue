@@ -258,11 +258,13 @@ class DocsBudgetTest(unittest.TestCase):
     def test_lab_data_paths(self):
         window = "lab/windows/20261116t163124z-ba1549c1-dev-1-tech-a"
         files = {"lab/pairs/dev-1.json": "{}\n", "lab/rules/dev-1/opus-1.json": "{}\n",
-                 f"{window}/result.json": "{}\n", f"{window}/job-laurel.txt": "x\n",
+                 f"{window}/result.json": "{}\n",
                  "lab/results/2026-11-20.json": "{}\n", "lab/agent-errors.jsonl": "{}\n"}
         with self._repo_with(files) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
-        for name in ("lab/windows/20261116T163124Z-ba1549c1-x/job-laurel.txt", f"{window}/job-out.txt",
+        # job-laurel.txt is admitted only with the decoded secret scan of the windows (ADR 0077 point 6).
+        for name in (f"{window}/job-laurel.txt", "lab/windows/20261116T163124Z-ba1549c1-x/result.json",
+                     f"{window}/job-out.txt",
                      "lab/pairs/dev-1.toml", "lab/job-laurel.txt", f"{window}/x/job-laurel.txt",
                      "tools/ci/job-laurel.txt", "lab/rules/dev-1/x/opus-1.json", "cmd/job-laurel.txt/main.go",
                      "lab/windows/job-laurel.txt/result.json", "cmd/LICENSE/main.go", "internal/CODEOWNERS/x.go"):
