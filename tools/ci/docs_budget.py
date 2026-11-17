@@ -158,6 +158,8 @@ EXACT_SEGMENTS = {
     ".github", "CODEOWNERS", "ISSUE_TEMPLATE", "PKGBUILD", ".golangci.yml",
     "job-laurel.txt",  # the runner's name for a job's Laurel window, kept with its bytes (ADR 0077)
 }
+# The only exact names a directory may take; a file's exact name is never a directory's (ADR 0077).
+EXACT_DIRS = {".github", "ISSUE_TEMPLATE"}
 DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FILE_RE = re.compile(
     r"^[a-z0-9][a-z0-9_-]*(?:\.(?:md|py|yml|toml|go|mod|sum|json|jsonl|rules|conf|service|socket|timer))?$"
@@ -254,7 +256,7 @@ def content_violation(path: str, data: bytes) -> str | None:
 def grammar_violation(path: str) -> str | None:
     *dirs, name = path.split("/")
     for seg in dirs:
-        if seg not in EXACT_SEGMENTS and not DIR_RE.match(seg):
+        if seg not in EXACT_DIRS and not DIR_RE.match(seg):
             return f"directory name {seg!r} breaks the name grammar"
     if name not in EXACT_SEGMENTS and not FILE_RE.match(name):
         return f"file name {name!r} breaks the name grammar"

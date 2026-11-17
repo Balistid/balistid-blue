@@ -11,50 +11,50 @@
 
 Floor 1 starts as measurement (ADR 0076): a rule must catch a technique and stay quiet on its legitimate twin. The
 runner's agent jobs (ADR 0011) export the Laurel records a job caused, its window, and give RAN only with the canary
-seen and the window whole, as reported by a guest the agent's code ran in (T30). Rules, pairs and windows are files an
-agent at the maintainer's uid can write (T33): a verdict rests on checks of their content and on the runner's originals.
+seen and the window whole, as a guest the agent's code ran in reports it (T30). Rules, pairs and windows are files an
+agent at the maintainer's uid can write (T33); the runner's results are not, but it keeps only the newest 24.
 
 ## Decision
 
-1. Data lives in `lab/` as JSON: `pairs/<pair>.json` (a technique and its twin, two variants each, as four runs with
-   their programs as text; the brief for rule authors; a reference rule; the ATT&CK id; the author),
-   `rules/<pair>/<author>-<n>.json` (the rule and its origin: model, sample, call parameters, the brief's sha256),
-   `windows/<result id in lower case>/` (`result.json` and `job-laurel.txt` with the runner's bytes unchanged),
-   `results/<date>.json` and `agent-errors.jsonl`. The known image commits (2c09799 today) are a constant in code.
-2. A job's name binds it to content: `<pair>-<run>-<16 hex of sha256 over the pair file and its rule files>`. The
-   judge recomputes it and uses no clock and no git, so a rule or pair changed after its run makes the window INVALID.
-   Not closed: a run under another name to see a window first; `verify` lists such runs of a pair's program.
+1. Data lives in `lab/` as JSON: `pairs/<pair>.json` (technique and twin, two variants each: four runs with programs
+   as text, the authors' brief, a reference rule, the ATT&CK id, the author), `rules/<pair>/<author>-<n>.json` (rule,
+   model, sample, call parameters, the brief's sha256), `windows/<result id in lower case>/` (`result.json`,
+   `job-laurel.txt` as the runner wrote them), `results/<date>.json`, `agent-errors.jsonl`. Known image commits
+   (2c09799 today) are a constant in code; test fixtures are a decoded real window as `.jsonl` testdata.
+2. A job's name binds content: `<pair>-<run>-<32 hex>`, the hex a sha256 over each of the pair's and its rules' files,
+   path and bytes length-prefixed, in sorted path order, as the runner's content key. The judge recomputes it, with no
+   clock and no git: a pair or rule changed or renamed after its run makes the window INVALID.
 3. A window is valid only if: `result.json` is schema 1, label agent, kind exec, one run, RAN, `job_result` success,
    exit 0, a known image, the name of point 2, `program_sha256` the run's program, the directory its id in lower case;
-   the unescaped window is `laurel_bytes` long, under 6 MiB, and escapes back to the same file; every line is a JSON
-   object with no duplicate key of differing value; it holds the exec of `/run/balistid-job/program` under the job's
-   uid and the canary's exec under root; one window per run, the runs' programs distinct. Every other case is
-   INVALID with a reason from a closed list, and INVALID never counts as MISSED or QUIET (R6).
+   the unescaped window is `laurel_bytes` long, at most 6 MiB, and escapes back to the same file; every line is a JSON
+   object, no duplicate key of differing value; it holds an event of the job's uid whose `EXECVE.ARGV` is
+   `/bin/sh /run/balistid-job/program`, and the canary's exec under root; one window per run, programs distinct.
 4. A rule is data: `all` or `any` over leaves `{field, op, value}`, op `eq`, `contains` or `has`; a field is a path in
-   an event, a path step on a list means some element, keys match exactly. A leaf is judged on one event, and only
-   events whose `SYSCALL.UID` is `balistid-job`. A rule that does not decode is INVALID, never QUIET. Regex waits for
-   a reference rule that needs it. The controls are built in: empty `any` and empty `all`.
-5. Verdicts as ADR 0009 point 7: a technique run CAUGHT or MISSED, a twin run NOISY or QUIET. A pair counts only if
-   its reference rule gives CAUGHT and QUIET on all four runs; otherwise it is reported as excluded with its reason.
-   Every rule also runs on every other pair's windows, and those matches are reported apart.
+   an event, a step on a list means some element, keys match exactly. A leaf is judged on one event, and only on
+   events whose `SYSCALL.UID` is `balistid-job`; events without `SYSCALL` are outside. Pairs, rules and results decode
+   strictly: exact-case keys, an unknown, duplicate or missing key or an unknown op fails. Regex waits for a reference
+   rule that needs it. The controls are built in: empty `any` and empty `all`.
+5. Every failed check of points 2 to 4 is INVALID with a reason from a closed list, each reason with a fixture that
+   breaks only it; INVALID never counts as MISSED or QUIET (R6). Verdicts as ADR 0009 point 7: a technique run CAUGHT
+   or MISSED, a twin run NOISY or QUIET. A pair counts only if its reference rule gives CAUGHT and QUIET on all four
+   runs, else it is reported excluded with its reason. Each rule also runs on every other pair's windows, apart.
 6. `balistid-lab` (no privilege, no network, standard library, about 500 lines): `job` writes a job directory,
-   `import` copies a runner result into `lab/windows`; `table` and `verify` write nothing. `verify` compares each
-   window with the runner's original byte for byte (missing is unverified), lists the runner's results of a pair's
-   program that `lab/` lacks, and runs as the maintainer before a results tag is signed.
+   `import` copies a result into `lab/windows`, `table` and `verify` write nothing. Before signing a results tag the
+   maintainer runs `verify --since <the pairs' merge on GitHub>`: each window equals the runner's original byte for
+   byte, every kept result since then of a pair's program is in `lab/`, and the oldest kept result is older than
+   `--since`, else a pruned run may hide a window and it fails. So the pilot stays under 24 jobs from that merge.
 7. The lock: `internal/detect` and `cmd/balistid-lab` join the mutation gate in their first pull request; after gate
    B1, CODEOWNERS and `go_gate.py`'s owned roots, proven by a trial pull request that cannot pass unapproved.
-8. Every report states: it measures whether a rule tells a technique from its twin and stays quiet on the pilot's
-   other windows; not false alarms in daily use, not a model's general skill; agent jobs are advisory (ADR 0011);
-   the window is guarded only against rotation and its cap.
+8. Not closed, said in every report: a run of other content to see a window before its rule; records lost during a
+   run (2c09799 reports none); events without `SYSCALL`. It measures whether a rule tells a technique from its twin
+   and stays quiet on the pilot's other windows, not daily false alarms nor general skill; jobs are advisory (0011).
 
 ## Alternatives considered
 
-- Order by git commit time: agent-set locally and undefined in a shallow clone; the name binds the content instead.
-- Pairs in TOML: no TOML module in `go.mod`, and a hand parser is one more fuzz target.
-- Reuse `internal/rangevm`'s judge: owned range code this week's plan keeps unchanged; the verdicts differ.
+- Order by git commit time: agent-set locally, undefined in a shallow clone. TOML pairs, or Go's default JSON
+  decoding: no TOML module, and the defaults ignore unknown keys and case.
 
 ## Consequences
 
-- `acceptance/1.toml` holds the instrument's bar; T38 to T40 are designed rows; the threat model's cap is 120 lines.
-- The secret scan lets through only a window's `content_key`, a sha256 it reads as a key. Revert: a pull request
-  removing this file, `acceptance/1.toml`, the rows, the layout lines and that allowlist entry.
+- `acceptance/1.toml` is the bar; T38 to T40 are designed rows, under a cap of 120 lines; the secret scan lets
+  through only a window's `content_key`, a sha256. Revert: one pull request removing all of it.

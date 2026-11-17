@@ -21,15 +21,15 @@ max = 0
 unit = "valid windows where the built-in empty `all` rule gives other than CAUGHT (technique) or NOISY (twin)"
 rows = ["T40"]
 adr = "0077"
-method = "As control_empty; a window with no event of the job's uid cannot pass it, so a vacuous window shows here."
+method = "As control_empty. Neither control sees records lost during a run (ADR 0077 point 8)."
 
 [[metric]]
 id = "invalid_never_counted"
 max = 0
-unit = "INVALID reasons of ADR 0077 point 3 without a fixture that yields exactly that reason, and fixtures that yield MISSED or QUIET instead"
+unit = "INVALID reasons of ADR 0077 points 2 to 4 without a fixture that yields exactly that reason, and fixtures that yield MISSED or QUIET instead"
 rows = ["T30", "T38", "T39", "T40"]
 adr = "0077"
-method = "A test walks the closed list of reasons in internal/detect: each has a fixture built from the real window of p0-smoke-1 with one condition broken; a reason added without a fixture fails the test."
+method = "A test walks the closed list of reasons in internal/detect: the base fixture is the real window of p0-smoke-1 under a fixture pair's name and program, valid as it stands, and each fixture breaks one condition of it, its result or its pair or rule; a reason added without a fixture fails the test."
 
 [[metric]]
 id = "fault_tests_kill"
@@ -58,7 +58,7 @@ method = "A test runs each subcommand in a temporary tree and lists every file c
 [[metric]]
 id = "windows_match_originals"
 max = 0
-unit = "windows in lab/ that differ from the runner's original result or have none, at the pilot's report"
+unit = "windows in lab/ that differ from or lack the runner's original, kept results of a pair's program missing from lab/, and a kept history that does not reach back to the pairs' merge, at the pilot's report"
 rows = ["T38"]
 adr = "0077"
-method = "The maintainer runs balistid-lab verify against the host's runner results (and the backup of them) before signing the results tag; a missing original counts."
+method = "The maintainer runs balistid-lab verify --since <the pairs' merge on GitHub> against the host's runner results before signing the results tag; any finding fails it."
