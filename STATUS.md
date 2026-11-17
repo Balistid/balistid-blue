@@ -28,7 +28,7 @@ pull requests, and warns where they disagree. Its parts:
 
 ## Next step
 1. The detection judge as ADR 0077 says: `internal/detect`, `cmd/balistid-lab` (`job`, `import`, `table`, `verify`)
-   in the mutation gate from their first pull request, with the README map rows and the real window of p0-smoke-1.
+   in the mutation gate from their first pull request, with the README map rows; fixtures from p0-smoke-1's window.
 2. Gate B1: a neutral development pair (two runs) through it, the control rows as expected, then the judge into
    CODEOWNERS and `go_gate.py`'s owned roots, proven by a trial pull request that cannot pass unapproved.
 3. One test pair from Codex (technique and legitimate twin, two variants each), rules from several models written
