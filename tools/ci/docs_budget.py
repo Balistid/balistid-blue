@@ -25,7 +25,7 @@ from pathlib import Path
 DOCS: tuple[tuple[str, int], ...] = (
     ("README.md", 120),
     ("SECURITY.md", 60),
-    ("THREAT_MODEL.md", 110),  # ADR 0014, 0049
+    ("THREAT_MODEL.md", 120),  # ADR 0014, 0049, 0077
     ("ENGINEERING.md", 160),
     ("CLAUDE.md", 80),
     ("AGENTS.md", 60),
@@ -54,6 +54,13 @@ LAYOUT: tuple[str, ...] = (
     "tools/ci/tests/*.py",
     "tools/ci/mutation-blacklist",  # equivalent mutants the mutation gate skips (ADR 0066)
     "acceptance/[0-9].toml",
+    # The detection judge's data, bytes from the runner kept as they are (ADR 0077).
+    "lab/pairs/*.json",
+    "lab/rules/*/*.json",
+    "lab/windows/*/result.json",
+    "lab/windows/*/job-laurel.txt",
+    "lab/results/*.json",
+    "lab/agent-errors.jsonl",
     # Go and deployment layout (ADR 0003).
     "go.mod",
     "go.sum",
@@ -149,6 +156,7 @@ EXACT_SEGMENTS = {
     "LICENSE", "README.md", "SECURITY.md", "THREAT_MODEL.md", "ENGINEERING.md", "CLAUDE.md",
     "AGENTS.md", "STATUS.md", ".gitignore", ".editorconfig", ".gitattributes", ".gitleaks.toml",
     ".github", "CODEOWNERS", "ISSUE_TEMPLATE", "PKGBUILD", ".golangci.yml",
+    "job-laurel.txt",  # the runner's name for a job's Laurel window, kept with its bytes (ADR 0077)
 }
 DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FILE_RE = re.compile(

@@ -1,0 +1,64 @@
+# Acceptance numbers for floor 1 (detection), first the bar of its instrument: the judge of ADR 0077. Written
+# before code (R3); only the maintainer changes a number, through an ADR. A missed metric blocks the pilot's
+# report. Each metric names its threat rows (THREAT_MODEL.md), its ADR and how it is measured; a measurement that
+# cannot run is a miss.
+
+[meta]
+floor = 1
+status = "proposed"          # approved with the pull request that adds this file
+
+[[metric]]
+id = "control_empty"
+max = 0
+unit = "valid windows where the built-in empty `any` rule gives other than MISSED (technique) or QUIET (twin)"
+rows = ["T40"]
+adr = "0077"
+method = "balistid-lab table over lab/ and a test over every fixture window; an INVALID window is not counted here."
+
+[[metric]]
+id = "control_all"
+max = 0
+unit = "valid windows where the built-in empty `all` rule gives other than CAUGHT (technique) or NOISY (twin)"
+rows = ["T40"]
+adr = "0077"
+method = "As control_empty; a window with no event of the job's uid cannot pass it, so a vacuous window shows here."
+
+[[metric]]
+id = "invalid_never_counted"
+max = 0
+unit = "INVALID reasons of ADR 0077 point 3 without a fixture that yields exactly that reason, and fixtures that yield MISSED or QUIET instead"
+rows = ["T30", "T38", "T39", "T40"]
+adr = "0077"
+method = "A test walks the closed list of reasons in internal/detect: each has a fixture built from the real window of p0-smoke-1 with one condition broken; a reason added without a fixture fails the test."
+
+[[metric]]
+id = "fault_tests_kill"
+max = 0
+unit = "mutants that survive a test in internal/detect and cmd/balistid-lab"
+rows = ["T38", "T39", "T40"]
+adr = "0066"
+method = "The mutation gate (ADR 0066) on every changed line of both packages from their first pull request; equivalent mutants only through tools/ci/mutation-blacklist, each with its reason."
+
+[[metric]]
+id = "table_reproducible"
+max = 0
+unit = "bytes that differ between two runs of balistid-lab table lab/, and between the repository and a fresh clone"
+rows = ["T33"]
+adr = "0077"
+method = "CI runs table twice in the checkout and once in a fresh clone at the same commit and compares the output with cmp."
+
+[[metric]]
+id = "judge_writes"
+max = 0
+unit = "files written outside each subcommand's place: table and verify none, import only under lab/windows, job only its target directory"
+rows = ["T37"]
+adr = "0077"
+method = "A test runs each subcommand in a temporary tree and lists every file created or changed against that place."
+
+[[metric]]
+id = "windows_match_originals"
+max = 0
+unit = "windows in lab/ that differ from the runner's original result or have none, at the pilot's report"
+rows = ["T38"]
+adr = "0077"
+method = "The maintainer runs balistid-lab verify against the host's runner results (and the backup of them) before signing the results tag; a missing original counts."
