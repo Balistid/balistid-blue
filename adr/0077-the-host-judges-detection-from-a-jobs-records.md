@@ -32,7 +32,7 @@ agent at the maintainer's uid can write (T33); the runner's results are not, and
 4. A rule is data: `all` or `any` over leaves `{field, op, value}`, op `eq`, `contains` or `has` (no `value`); a
    field is a path in an event, a step on a list means some element. A leaf is judged on one event, only on events
    whose `SYSCALL.UID` is `balistid-job`. Pairs, rules and results decode strictly: exact-case keys, each object's
-   closed set of required and optional keys (the runner's `omitempty` keys optional), an unknown op fails.
+   closed set of required and optional keys (the runner's `omitempty` keys optional, `job_exit` required for RAN).
 5. Each failed check of points 2 to 4 is INVALID with a reason from a closed list, each with a fixture breaking only
    it; INVALID never counts as MISSED or QUIET (R6). A pair counts only if its reference rule gives CAUGHT and QUIET
    on all four runs, else it is reported excluded with its reason; each rule also runs, apart, on other pairs' windows.
@@ -40,19 +40,19 @@ agent at the maintainer's uid can write (T33); the runner's results are not, and
    `import` copies a result into `lab/windows`; `table` and `verify` take no time or name and write nothing. The
    anchor is a code constant, the runner's result `20261116T163124Z-ba1549c1-p0-smoke-1`, made before any pair. As
    the runner prunes oldest first, while the anchor is kept every later result is. Before signing a results tag the
-   maintainer runs `verify` from a clean checkout of the tagged commit: it fails unless the anchor is kept and the
-   results after it are exactly `lab/windows`, byte for byte. The pilot ends 23 jobs after the anchor.
+   maintainer runs `verify` (`GOENV=off GOFLAGS= GOWORK=off`) from a clean checkout of the tagged commit: it fails
+   unless the anchor is kept in `results/agent` and the results after it are exactly `lab/windows`, files and bytes.
+   The pilot ends 23 jobs after the anchor; a new anchor needs an ADR. A window lands only with a decoded secret scan.
 7. The lock: `internal/detect` and `cmd/balistid-lab` join the mutation gate in their first pull request; after gate
    B1, CODEOWNERS and `go_gate.py`'s owned roots, proven by a trial pull request that cannot pass unapproved.
-8. Not closed, said in every report: a window made outside the runner (the image boots under any KVM, as in CI) can
-   inform a rule, so the authors' blindness is procedure, not proof; records lost during a run (2c09799 reports none);
-   host root; a shell running what an agent prepared. It measures if a rule tells a technique from its twin and stays
-   quiet on the pilot's other windows, not daily false alarms nor general skill; agent jobs are advisory (ADR 0011).
+8. Not closed, said in every report: a window made outside the runner (the image boots under any KVM) can inform a
+   rule, so blindness is procedure, not proof; loss during a run (2c09799 reports none); host root, its clock too; a
+   shell running what an agent prepared; an extra run excluding a pair. It measures if a rule tells a technique from
+   its twin and stays quiet on other windows, not daily false alarms nor general skill; jobs are advisory (ADR 0011).
 
 ## Alternatives considered
 
-- Bound `verify` by a time or merge the caller gives: the agent moves it (two review rounds); a root read of the
-  runner's ledger only shows exact reruns, which the anchor shows. TOML pairs, or Go's default JSON: no module; laxness.
+- A time or merge given to `verify`: the agent moves it; a root read of the ledger shows only what the anchor shows.
 
 ## Consequences
 
