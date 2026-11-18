@@ -14,14 +14,17 @@ import (
 	"github.com/Balistid/balistid-blue/internal/detect"
 )
 
-func main() {
-	if (len(os.Args) == 3 && os.Args[1] == "verify") || (len(os.Args) == 4 && os.Args[1] == "import") {
-		if err := detect.RunnerOwned(detect.ResultsDir); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, "balistid-lab:", printable(err.Error())) // the exit status carries it
-			os.Exit(1)
+func main() { os.Exit(entry(os.Args[1:], detect.ResultsDir, os.Stdout, os.Stderr)) }
+
+// entry is main: verify and import first check that results is the runner's, not a copy an agent made (R13).
+func entry(args []string, results string, stdout, stderr io.Writer) int {
+	if (len(args) == 2 && args[0] == "verify") || (len(args) == 3 && args[0] == "import") {
+		if err := detect.RunnerOwned(results); err != nil {
+			_, _ = fmt.Fprintln(stderr, "balistid-lab:", printable(err.Error())) // the exit status carries it
+			return 1
 		}
 	}
-	os.Exit(run(os.Args[1:], detect.ResultsDir, os.Stdout, os.Stderr))
+	return run(args, results, stdout, stderr)
 }
 
 const usage = `usage:

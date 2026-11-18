@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import io
@@ -258,6 +259,14 @@ class DocsBudgetTest(unittest.TestCase):
         for name in ("NOTES", "docs/PLAN.org", "docs/plan.mdx", "docs/plan.html", "src/x.py"):
             with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
                 self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_a_mutation_directive_fails(self):
+        for directive in ("// mutator-disable-func", "// mutator-disable-next-line", "//mutator-disable-regexp x"):
+            with self.subTest(directive=directive):
+                with self._repo_with({"internal/detect/x.go": f"package detect\n\n{directive}\nfunc f() {{}}\n"}) as tmp:
+                    self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+        with self._repo_with({"internal/detect/x.go": "package detect\n\nfunc f() {}\n"}) as tmp:
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
 
     def test_lab_data_paths(self):
         window = "lab/windows/20261116t163124z-ba1549c1-dev-1-tech-a"
@@ -1020,6 +1029,22 @@ class WindowRescanTest(unittest.TestCase):
                 repo = self.history({f"{WINDOW}/{leaf}": clean + printable(self.api_key_record())},
                                     {f"{WINDOW}/{leaf}": clean})
                 self.assertNotEqual(self.rescan(repo), 0)
+
+    def test_a_go_sum_line_passes_only_in_go_sum(self):
+        for _ in range(20):  # a random hash can miss the rule's entropy; take one the rule reads as a key
+            line = ("github.com/example/token v1.1.0 h1:" + base64.b64encode(secrets.token_bytes(32)).decode()).encode() + b"\n"
+            if self.rescan(self.history({f"{WINDOW}/serial.txt": printable(line)})) != 0:
+                break
+        else:
+            raise AssertionError("generic-api-key read none of 20 go.sum lines as a key")
+        self.assertEqual(self.rescan(self.history({"go.sum": line})), 0)
+
+    def test_one_blob_as_a_result_and_as_text_is_checked_as_each(self):
+        """A blob that decodes as a result.json still has the text escape checked where it is a .txt file."""
+        blob = json.dumps({"reason": "ok"}).encode() + b"\n"  # a JSON string's quotes are no escape the runner writes
+        repo = self.history({f"{WINDOW}/result.json": blob}, {f"{WINDOW}/result.json": blob, f"{WINDOW}/serial.txt": blob})
+        with self.assertRaises(SystemExit):
+            self.rescan(repo)
 
     def test_key_after_a_file_type_signature_is_found(self):
         for magic in (b"\x7fELF\x02\x01\x01\x00", b"PK\x03\x04", b"\x1f\x8b\x08", b"%PDF-1.4\n",

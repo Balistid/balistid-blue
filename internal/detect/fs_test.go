@@ -294,3 +294,40 @@ func TestWhatOnlyARaceOrTheDiskFails(t *testing.T) {
 		t.Fatalf("staging left behind: %v", list)
 	}
 }
+
+// TestOpenRootsThatNoLongerRead: a directory made unreadable after it was opened fails its listing and its sync
+// with that cause, and a staging directory or a file that cannot be looked at fails publish and size.
+func TestOpenRootsThatNoLongerRead(t *testing.T) {
+	dir := t.TempDir()
+	put(t, dir, "f", []byte("x"))
+	root := rootOf(t, dir)
+	locked(t, dir, 0o000)
+	if _, err := listDir(root); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("list: %v", err)
+	}
+	if err := syncDirOf(root); !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("sync: %v", err)
+	}
+	pub := t.TempDir()
+	proot := rootOf(t, pub)
+	origStat, origLstat := statOpened, lstatIn
+	t.Cleanup(func() { statOpened, lstatIn = origStat, origLstat })
+	gone := errors.New("gone")
+	statOpened = func(*os.Root) (os.FileInfo, error) { return nil, gone }
+	if err := publish(proot, "out", map[string][]byte{"a": nil}, 0o750, 0o640); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
+		t.Fatalf("a staging directory that cannot be opened: %v", err)
+	}
+	if list, _ := os.ReadDir(pub); len(list) != 0 {
+		t.Fatalf("staging left behind: %v", list)
+	}
+	statOpened = origStat
+	lstatIn = func(*os.Root, string) (os.FileInfo, error) { return nil, gone }
+	if n, err := treeBytes(rootOf(t, t.TempDir()), 0); err != nil || n != 0 {
+		t.Fatalf("an empty tree: %d %v", n, err)
+	}
+	full := t.TempDir()
+	put(t, full, "f", []byte("x"))
+	if n, err := treeBytes(rootOf(t, full), 0); !errors.Is(err, gone) || n != 0 {
+		t.Fatalf("a file that cannot be looked at: %d %v", n, err)
+	}
+}

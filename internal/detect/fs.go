@@ -32,7 +32,7 @@ func openDir(root *os.Root, name string) (*os.Root, error) {
 	if !before.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", name)
 	}
-	sub, err := root.OpenRoot(name)
+	sub, err := root.OpenRoot(name + "/.") // "/." makes the open itself require a directory: a FIFO fails, not blocks
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
@@ -139,13 +139,14 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	return syncDir(dir)
 }
 
-// statOpened, rename and syncDir are the calls only a racing writer or a failing disk makes fail; tests replace
-// them to stand for those.
+// statOpened, rename, syncDir, syncFile and lstatIn are the calls only a racing writer or a failing disk makes
+// fail; tests replace them to stand for those.
 var (
 	statOpened = func(sub *os.Root) (os.FileInfo, error) { return sub.Stat(".") }
 	rename     = func(dir *os.Root, from, to string) error { return dir.Rename(from, to) }
 	syncDir    = syncDirOf
 	syncFile   = func(f *os.File) error { return errors.Join(f.Sync(), f.Close()) }
+	lstatIn    = func(dir *os.Root, name string) (os.FileInfo, error) { return dir.Lstat(name) }
 )
 
 // syncDirOf makes a rename in dir durable (ENGINEERING.md 7).
@@ -171,7 +172,7 @@ func treeBytes(dir *os.Root, depth int) (int64, error) {
 	for _, e := range list {
 		switch {
 		case e.Type().IsRegular():
-			fi, err := dir.Lstat(e.Name())
+			fi, err := lstatIn(dir, e.Name())
 			if err != nil {
 				return 0, fmt.Errorf("size: %w", err)
 			}

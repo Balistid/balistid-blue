@@ -95,9 +95,9 @@ func (lab *Lab) Table() TableOutput {
 	var all []Window
 	for _, w := range lab.Windows {
 		out.Windows = append(out.Windows, WindowRow{Window: w.Dir, Pair: w.Pair, Run: w.Run, Valid: w.Valid(), Reason: w.Reason})
-		// lab.Windows is in id order, so the first seen is the first made; a window whose name names no pair has
-		// no hash, which no pair's content has either, and no rules read first[""].
-		if _, seen := first[w.Pair]; !seen && w.Hash == lab.pairs[w.Pair].hash {
+		// lab.Windows is in id order, so the first seen is the first made; only a window the runner placed after the
+		// anchor counts; a window whose name names no pair has no hash, which no pair's content has either.
+		if _, seen := first[w.Pair]; !seen && w.placed && w.Hash == lab.pairs[w.Pair].hash {
 			first[w.Pair] = w.Dir // the first window of the pair's current content
 		}
 		if !w.Valid() {

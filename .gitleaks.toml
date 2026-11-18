@@ -15,10 +15,12 @@ secretGroup = 1
 description = "Generic placeholders and CI runner paths"
 regexes = ['''^(?:runner|user|example)$''']
 
-# The secrets job rescans go.sum as n.txt, where generic-api-key reads "token v1.1.0 h1:<hash>" of a
-# module path as a key. Only a whole go.sum line with a dotted module path is let through, for that rule.
+# The secrets job rescans go.sum as n.gosum.txt, where generic-api-key reads "token v1.1.0 h1:<hash>" of a
+# module path as a key. Only a whole go.sum line with a dotted module path, only in such a copy, is let through.
 [[allowlists]]
 targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(?:^|/)[0-9]+\.gosum\.txt$''']
 regexTarget = "line"
 regexes = ['''(?m)^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[\w.~+-]+)* v[0-9][\w.+-]*(?:/go\.mod)? h1:[A-Za-z0-9+/]{43}=$''']
 
