@@ -119,6 +119,16 @@ jobs:
         run: |
           go build ./...
           go test ./...
+      - name: The judge's table is the same twice and from a fresh tree (ADR 0077)
+        run: |
+          go build -o "$RUNNER_TEMP/balistid-lab" ./cmd/balistid-lab
+          "$RUNNER_TEMP/balistid-lab" table lab > "$RUNNER_TEMP/table-1.json"
+          "$RUNNER_TEMP/balistid-lab" table lab > "$RUNNER_TEMP/table-2.json"
+          mkdir "$RUNNER_TEMP/fresh"
+          git archive HEAD lab | tar -x -C "$RUNNER_TEMP/fresh"
+          (cd "$RUNNER_TEMP/fresh" && "$RUNNER_TEMP/balistid-lab" table lab) > "$RUNNER_TEMP/table-3.json"
+          cmp "$RUNNER_TEMP/table-1.json" "$RUNNER_TEMP/table-2.json"
+          cmp "$RUNNER_TEMP/table-1.json" "$RUNNER_TEMP/table-3.json"
 
   mutation:
     # A mutant on a changed line of a security-decision package that a test runs but no test kills fails the
