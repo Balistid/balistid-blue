@@ -20,11 +20,11 @@ pull requests, and warns where they disagree. Its parts:
 
 ## Done in the last sessions
 - This pull request: the judge (25 closed INVALID reasons, rules on one event, table, verify, import, job),
-  ADR 0079 and `lab/`'s gates; two rounds of Opus critic and Codex security; both packages at no escaped mutant.
-- #294 (ADR 0078): the anchor is the newest result once the inbox is emptied, fixtures come from
-  hard-exec-1's window, a rule is judged on one event; the runner's re-run is issue #295.
-- #293 (ADR 0077): what makes a window valid, rules as data, the job's name bound to the pair's and rules' content,
-  `verify` against the runner's originals; `acceptance/1.toml` (7 metrics); T38-T40; `lab/` paths. Older: git log.
+  ADR 0079, `lab/`'s gates; 3 rounds each of Opus critic and Codex security, a reply round, no escaped mutant but
+  3 equivalents. Residual: another content's window vetoes its pair on its claimed hash (narrowing fails open, T39);
+  a name made between publish's check and rename is replaced (os.Root has no RENAME_NOREPLACE); parallel imports.
+- #294 (ADR 0078): the anchor, fixtures from hard-exec-1, a rule on one event; runner re-run is issue #295.
+- #293 (ADR 0077): window validity, rules as data, job names bound to content, `verify`; older: git log.
 
 ## Next step
 1. With the first `lab/` (B1): CI's `table` twice and in a fresh clone (table_reproducible); the window layout, its
