@@ -304,16 +304,20 @@ func Verify(labDir, resultsDir string) ([]string, string, error) {
 			findings = append(findings, "windows/"+d+" matches no runner result after the anchor")
 		}
 	}
-	if again, err := entries(results, true); err != nil || !slices.Equal(ids, again) {
+	if again, err := relist(results); err != nil || !slices.Equal(ids, again) {
 		findings = append(findings, "the runner's results changed while verify read them")
 	}
 	if windows != nil {
-		if again, err := entries(windows, true); err != nil || !slices.Equal(have, again) {
+		if again, err := relist(windows); err != nil || !slices.Equal(have, again) {
 			findings = append(findings, "lab/windows changed while verify read it")
 		}
 	}
 	return findings, hex.EncodeToString(digest.Sum(nil)), nil
 }
+
+// relist lists a directory of windows again after verify compared it; a test replaces it to stand for a writer
+// racing verify, which no test can time.
+var relist = func(dir *os.Root) ([]string, error) { return entries(dir, true) }
 
 func compareWindow(results, windows *os.Root, id string, rb, lb *budget, digest interface{ Write([]byte) (int, error) }) []string {
 	orig, err := readAll(results, id, rb)
