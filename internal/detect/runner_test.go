@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -129,6 +130,12 @@ func TestEscapeRoundTrip(t *testing.T) {
 			t.Errorf("unescape(%q) ok %v, want %v", c.file, ok, c.ok)
 		}
 	}
+	if got := string(escape([]byte("\x1f \x80\xff"))); got != `\x1f \x80\xff` {
+		t.Fatalf("escape bounds: %s", got)
+	}
+	if raw, ok := unescape([]byte(`\xff\x80`)); !ok || string(raw) != "\xff\x80" {
+		t.Fatalf("unescape high bytes: %q %v", raw, ok)
+	}
 	if got := string(escape([]byte("a\"\\\n\x7f\x00 ~"))); got != `a\x22\x5c\x0a\x7f\x00 ~` {
 		t.Fatalf("escape: %s", got)
 	}
@@ -152,13 +159,14 @@ func FuzzUnescape(f *testing.F) {
 	})
 }
 
+// TestResultsOfAnotherShape: each refusal is errNotResult or the decoder's own error and names its cause, so a
+// check that silently passes on to a later one is seen.
 func TestResultsOfAnotherShape(t *testing.T) {
 	good := resultFor(fixtureStamp+"x", "x", "prog.sh", 60, []byte(baseProgram), 1)
 	if _, err := decodeResult(good); err != nil {
 		t.Fatalf("base: %v", err)
 	}
 	for _, c := range []struct{ name, old, repl string }{
-		{"a limit as a string", `"run_timeout_s": 600`, `"run_timeout_s": "600"`},
 		{"a limit missing", `"run_timeout_s": 600,`, ``},
 		{"a limit added", `"run_timeout_s": 600,`, `"run_timeout_s": 600, "x": 1,`},
 		{"trials as a string", `"timeout_s": 60,`, `"timeout_s": 60, "trials": "1",`},
@@ -188,6 +196,83 @@ func TestResultsOfAnotherShape(t *testing.T) {
 				t.Fatal("decoded")
 			}
 		})
+	}
+}
+
+// TestEachRefusalNamesItsCause: a check that let its case through to a later check would fail with another cause.
+func TestEachRefusalNamesItsCause(t *testing.T) {
+	good := resultFor(fixtureStamp+"x", "x", "prog.sh", 60, []byte(baseProgram), 1)
+	for _, c := range []struct {
+		name, old, repl, why string
+		notResult            bool
+	}{
+		{"a top key added", `"label": "agent",`, `"label": "agent", "x": 1,`, `key "x" not allowed`, true},
+		{"a top key missing", `"label": "agent",`, ``, `key "label" missing`, true},
+		{"a top key of another type", `"verdict": "RAN",
+  "reason"`, `"verdict": 1,
+  "reason"`, `key "verdict" has another type`, true},
+		{"a top key repeated, same value", `"label": "agent",`, `"label": "agent", "label": "agent",`, "repeated key", false},
+		{"not JSON", `"label": "agent",`, `"label": "agent"`, "not one valid JSON value", false},
+		{"a limit added", `"run_timeout_s": 600,`, `"run_timeout_s": 600, "x": 1,`, `key "x" not allowed`, true},
+		{"a job key added", `"kind": "exec",`, `"kind": "exec", "x": 1,`, `key "x" not allowed`, true},
+		{"a job name of another grammar", `"name": "x"`, `"name": "X"`, "job name", true},
+		{"the id not ending in the job's name", `"id": "` + fixtureStamp + `x"`, `"id": "` + fixtureStamp + `y"`, "id does not end", true},
+		{"a run key added", `"out_bytes": 30,`, `"out_bytes": 30, "x": 1,`, `key "x" not allowed`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bad := bytes.Replace(good, []byte(c.old), []byte(c.repl), 1)
+			if bytes.Equal(bad, good) {
+				t.Fatalf("%q not found", c.old)
+			}
+			_, err := decodeResult(bad)
+			if err == nil || !strings.Contains(err.Error(), c.why) || errors.Is(err, errNotResult) != c.notResult {
+				t.Fatalf("err %v, want %q (not a result: %v)", err, c.why, c.notResult)
+			}
+		})
+	}
+	// A name the grammar refuses with an id that does end in it: only the name check refuses it.
+	odd := resultFor(fixtureStamp+"X", "X", "prog.sh", 60, []byte(baseProgram), 1)
+	if _, err := decodeResult(odd); err == nil || !strings.Contains(err.Error(), "job name") {
+		t.Fatalf("a job name of another grammar: %v", err)
+	}
+}
+
+// TestEveryOptionalKeyDecodes: the runner writes each optional key on some result; each must decode.
+func TestEveryOptionalKeyDecodes(t *testing.T) {
+	good := resultFor(fixtureStamp+"x", "x", "prog.sh", 60, []byte(baseProgram), 1)
+	for _, c := range []struct{ name, old, repl string }{
+		{"trials and trial", `"kind": "exec",`, `"kind": "exec", "trials": 2, "trial": "a",`},
+		{"a run's label, truncation and measures", `"out_bytes": 30,`,
+			`"out_bytes": 30, "label": "a", "out_truncated": true, "measures": {"a": 0, "b": 1},`},
+		{"out_truncated false", `"out_bytes": 30,`, `"out_bytes": 30, "out_truncated": false,`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := decodeResult(bytes.Replace(good, []byte(c.old), []byte(c.repl), 1)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// TestAnExecJobNeedsItsThreeKeys: a job is exec only with its program, timeout and program hash all present.
+func TestAnExecJobNeedsItsThreeKeys(t *testing.T) {
+	good := resultFor(fixtureStamp+"x", "x", "prog.sh", 60, []byte(baseProgram), 1)
+	for _, key := range []string{`"program": "prog.sh",`, `"timeout_s": 60,`, `"program_sha256": "` + sha([]byte(baseProgram)) + `",`} {
+		bad := bytes.Replace(good, []byte(key), nil, 1)
+		if bytes.Equal(bad, good) {
+			t.Fatalf("%q not found", key)
+		}
+		r, err := decodeResult(bad)
+		if err != nil || r.HasExec || !r.HasJob {
+			t.Fatalf("without %s: %v exec %v job %v", key, err, r.HasExec, r.HasJob)
+		}
+	}
+}
+
+// TestTheCaps pins ADR 0077 point 3 and ADR 0079 point 8.
+func TestTheCaps(t *testing.T) {
+	if LaurelCap != 6291456 || LabCap != 16777216 {
+		t.Fatalf("LaurelCap %d LabCap %d", LaurelCap, LabCap)
 	}
 }
 
