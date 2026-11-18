@@ -19,8 +19,8 @@ pull requests, and warns where they disagree. Its parts:
 | Installer, CLI (0048, 0053, 0058, 0068) | signed install of a component; `balistid status` | on `main`; recorder installed on the host 2026-11-14 |
 
 ## Done in the last sessions
-- This pull request: the judge (25 closed INVALID reasons, rules on one event, table, verify, import, job) and
-  ADR 0079; both packages in the mutation gate; Opus critic and Codex security on its first version.
+- This pull request: the judge (25 closed INVALID reasons, rules on one event, table, verify, import, job),
+  ADR 0079 and `lab/`'s gates; two rounds of Opus critic and Codex security; both packages at no escaped mutant.
 - #294 (ADR 0078): the anchor is the newest result once the inbox is emptied, fixtures come from
   hard-exec-1's window, a rule is judged on one event; the runner's re-run is issue #295.
 - #293 (ADR 0077): what makes a window valid, rules as data, the job's name bound to the pair's and rules' content,
@@ -29,7 +29,7 @@ pull requests, and warns where they disagree. Its parts:
 ## Next step
 1. With the first `lab/` (B1): CI's `table` twice and in a fresh clone (table_reproducible); the window layout, its
    decoded secret scan and the 16 MiB cap of `lab/` land in this pull request.
-2. Gate B1: a neutral development pair, each of its four runs once (a rerun needs a changed program), the control
+2. Gate B1: a neutral development pair (it reads files the image surely has), each of its four runs once, the control
    rows as expected, then the judge and `internal/wholefile` into CODEOWNERS and `go_gate.py`'s owned roots, proven
    by a trial pull request that cannot pass unapproved.
 3. One test pair from Codex, rules from several models written blind and merged first, four runner jobs, then the
