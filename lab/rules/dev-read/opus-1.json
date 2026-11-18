@@ -1,0 +1,1 @@
+{"rule":{"any":[{"field":["EXECVE","ARGV"],"op":"contains","value":"os-release"}]},"model":"claude/opus-5.5","sample":1,"params":{},"brief_sha256":"129e50e607371d7ac587b2bb490f8a42536aef7b2b880143c832ddd593c0b06b"}
