@@ -331,3 +331,28 @@ func TestOpenRootsThatNoLongerRead(t *testing.T) {
 		t.Fatalf("a file that cannot be looked at: %d %v", n, err)
 	}
 }
+
+// TestAStagingModeThatCannotBeSetAndAFileThatDoesNotSync: either fails publish with its cause, and the file sync
+// reports a close that fails.
+func TestAStagingModeThatCannotBeSetAndAFileThatDoesNotSync(t *testing.T) {
+	pub := t.TempDir()
+	orig := chmodIn
+	t.Cleanup(func() { chmodIn = orig })
+	gone := errors.New("gone")
+	chmodIn = func(*os.Root, string, os.FileMode) error { return gone }
+	if err := publish(rootOf(t, pub), "out", map[string][]byte{"a": nil}, 0o750, 0o640); !errors.Is(err, gone) || !strings.Contains(err.Error(), "staging: ") {
+		t.Fatalf("%v", err)
+	}
+	if list, _ := os.ReadDir(pub); len(list) != 0 {
+		t.Fatalf("staging left behind: %v", list)
+	}
+	put(t, pub, "f", []byte("x"))
+	file, err := os.Open(filepath.Join(pub, "f"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	if err := syncFile(file); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("a closed file synced: %v", err)
+	}
+}
