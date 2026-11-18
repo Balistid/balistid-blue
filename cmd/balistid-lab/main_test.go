@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,8 @@ import (
 )
 
 func TestUsageIsExit2(t *testing.T) {
-	for _, args := range [][]string{nil, {"table"}, {"verify", "a", "b"}, {"nope", "x"}} {
+	for _, args := range [][]string{nil, {"table"}, {"verify", "a", "b"}, {"nope", "x"}, {"job", "a"},
+		{"job", "a", "b", "c"}, {"import", "a"}, {"import", "a", "b", "c", "d"}, {"table", "a", "b", "c", "d"}} {
 		var out, errb bytes.Buffer
 		if code := run(args, t.TempDir(), &out, &errb); code != 2 || !strings.Contains(errb.String(), "usage") {
 			t.Errorf("%v: exit %d, stderr %q", args, code, errb.String())
@@ -81,3 +83,76 @@ func TestWriteFailureIsExit1(t *testing.T) {
 type failing struct{}
 
 func (failing) Write([]byte) (int, error) { return 0, errors.New("closed") }
+
+// testPair is a pair the judge decodes, its runs short programs.
+const testPair = `{"attack":"T0000","author":"test","brief":"a test pair",` +
+	`"reference":{"any":[{"field":["EXECVE","ARGV"],"op":"eq","value":"uname"}]},"runs":{` +
+	`"tech-a":{"program":"a.sh","timeout_s":60,"text":"#!/bin/sh\nuname -r\n"},` +
+	`"tech-b":{"program":"b.sh","timeout_s":60,"text":"#!/bin/sh\nuname -a\n"},` +
+	`"twin-a":{"program":"c.sh","timeout_s":60,"text":"#!/bin/sh\nid -u\n"},` +
+	`"twin-b":{"program":"d.sh","timeout_s":60,"text":"#!/bin/sh\nid -g\n"}}}` + "\n"
+
+func TestJobWritesTheRunNamed(t *testing.T) {
+	lab, target := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(lab, "pairs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lab, "pairs", "p.json"), []byte(testPair), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"job", lab, "p", "tech-b", target}, t.TempDir(), &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	name := strings.Fields(out.String())[0]
+	if !strings.HasPrefix(name, "p-tech-b-") {
+		t.Fatalf("job %q", out.String())
+	}
+	got, err := os.ReadFile(filepath.Join(target, name, "b.sh")) //nolint:gosec // the test's own temp dir
+	if err != nil || string(got) != "#!/bin/sh\nuname -a\n" {
+		t.Fatalf("program %q %v", got, err)
+	}
+	errb.Reset()
+	if code := run([]string{"job", lab, "nopair", "tech-a", target}, t.TempDir(), &out, &errb); code != 1 ||
+		!strings.Contains(errb.String(), `balistid-lab: job: no pair "nopair"`) {
+		t.Fatalf("a missing pair: exit %d, %q", code, errb.String())
+	}
+}
+
+func TestEachFailureNamesItsSubcommand(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, c := range []struct {
+		args    []string
+		results string
+		want    string
+	}{
+		{[]string{"table", missing}, t.TempDir(), "balistid-lab: table: lab: "},
+		{[]string{"verify", t.TempDir()}, missing, "balistid-lab: verify: results: "},
+		{[]string{"import", t.TempDir(), "not-an-id"}, t.TempDir(), "balistid-lab: import: not-an-id is not a result after the anchor"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(c.args, c.results, &out, &errb); code != 1 || !strings.Contains(errb.String(), c.want) || out.Len() != 0 {
+			t.Errorf("%v: exit %d, stderr %q, stdout %q", c.args, code, errb.String(), out.String())
+		}
+	}
+}
+
+func TestImportCopiesTheResultNamed(t *testing.T) {
+	id := "20261118T130000Z-00000000-x"
+	lab, results := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(results, id), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(results, id, "result.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"import", lab, id}, results, &out, &errb); code != 0 ||
+		out.String() != fmt.Sprintf("imported %s; lab/ holds 3 bytes of %d\n", id, detect.LabCap) {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errb.String())
+	}
+	got, err := os.ReadFile(filepath.Join(lab, "windows", strings.ToLower(id), "result.json")) //nolint:gosec // the test's own temp dir
+	if err != nil || string(got) != "{}\n" {
+		t.Fatalf("imported %q %v", got, err)
+	}
+}

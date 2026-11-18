@@ -33,23 +33,23 @@ const usage = `usage:
 // run is main with its inputs passed in; results is the runner's results directory, fixed in main. It returns
 // 0 on success, 1 on a failure or a finding, 2 on a usage error; a write to stdout that fails is a failure.
 func run(args []string, results string, stdout, stderr io.Writer) int {
-	out, code, err := dispatch(args, results)
+	out, err := dispatch(args, results)
 	var f findings
 	switch {
 	case errors.As(err, &f):
-		lines := make([]string, 0, len(f)+1)
+		lines := make([]string, 0, len(f))
 		for _, l := range f {
 			lines = append(lines, printable(l))
 		}
 		lines = append(lines, fmt.Sprintf("balistid-lab: verify failed, %d findings", len(f)))
 		_, _ = io.WriteString(stderr, strings.Join(lines, "\n")+"\n") // the exit status carries it
-		return code
+		return 1
 	case errors.Is(err, errUsage):
 		_, _ = io.WriteString(stderr, usage+"\n") // the exit status carries it
-		return code
+		return 2
 	case err != nil:
-		_, _ = io.WriteString(stderr, "balistid-lab: "+printable(err.Error())+"\n") // the exit status carries it
-		return code
+		_, _ = io.WriteString(stderr, "balistid-lab: "+args[0]+": "+printable(err.Error())+"\n") // the exit status carries it
+		return 1
 	}
 	if _, err := io.WriteString(stdout, out); err != nil {
 		_, _ = fmt.Fprintln(stderr, "balistid-lab: write:", printable(err.Error()))
@@ -77,45 +77,33 @@ type findings []string
 
 func (f findings) Error() string { return strings.Join(f, "; ") }
 
-// dispatch runs one subcommand: its output, and the exit status with the error when it fails.
-func dispatch(args []string, results string) (string, int, error) {
-	cmd, rest := "", []string(nil)
-	if len(args) > 0 {
-		cmd, rest = args[0], args[1:]
-	}
+// dispatch runs one subcommand: its output, or why it failed (errUsage for a usage error).
+func dispatch(args []string, results string) (string, error) {
 	switch {
-	case cmd == "job" && len(rest) == 4:
-		lab, pair, runName, target := rest[0], rest[1], rest[2], rest[3]
-		out, err := detect.Job(lab, pair, runName, target)
+	case len(args) == 5 && args[0] == "job":
+		out, err := detect.Job(args[1], args[2], args[3], args[4])
+		return out + "\n", err //nolint:wrapcheck // run names the subcommand
+	case len(args) == 3 && args[0] == "import":
+		n, err := detect.Import(args[1], results, args[2])
+		return fmt.Sprintf("imported %s; lab/ holds %d bytes of %d\n", args[2], n, detect.LabCap), err
+	case len(args) == 2 && args[0] == "table":
+		lab, err := detect.Load(args[1])
 		if err != nil {
-			return "", 1, fmt.Errorf("job: %w", err)
+			return "", err //nolint:wrapcheck // run names the subcommand
 		}
-		return out + "\n", 0, nil
-	case cmd == "import" && len(rest) == 2:
-		lab, id := rest[0], rest[1]
-		n, err := detect.Import(lab, results, id)
-		if err != nil {
-			return "", 1, fmt.Errorf("import: %w", err)
-		}
-		return fmt.Sprintf("imported %s; lab/ holds %d bytes of %d\n", id, n, detect.LabCap), 0, nil
-	case cmd == "table" && len(rest) == 1:
-		lab, err := detect.Load(rest[0])
-		if err != nil {
-			return "", 1, fmt.Errorf("table: %w", err)
-		}
-		return string(lab.Table().Encode()), 0, nil
-	case cmd == "verify" && len(rest) == 1:
-		found, digest, err := detect.Verify(rest[0], results)
-		if err != nil {
-			return "", 1, fmt.Errorf("verify: %w", err)
-		}
-		if len(found) > 0 {
-			return "", 1, findings(found)
+		return string(lab.Table().Encode()), nil
+	case len(args) == 2 && args[0] == "verify":
+		found, digest, err := detect.Verify(args[1], results)
+		switch {
+		case err != nil:
+			return "", err //nolint:wrapcheck // run names the subcommand
+		case len(found) > 0:
+			return "", findings(found)
 		}
 		return fmt.Sprintf("verify (%s): every runner result after the anchor is in lab/windows, byte for byte; "+
-			"sha256 %s\n", detect.Version, digest), 0, nil
+			"sha256 %s\n", detect.Version, digest), nil
 	}
-	return "", 2, errUsage
+	return "", errUsage
 }
 
 var errUsage = errors.New("usage")
