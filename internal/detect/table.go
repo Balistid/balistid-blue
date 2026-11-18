@@ -89,13 +89,15 @@ type CrossRow struct {
 // Table judges lab: windows, pairs, controls, each rule on its pair and on the others.
 func (lab *Lab) Table() TableOutput {
 	out := TableOutput{Judge: Version, NotMeasured: NotMeasured, Windows: []WindowRow{}, Pairs: []PairRow{},
-		Controls: []ControlRow{}, Rules: []RuleRow{}, Cross: []CrossRow{}}
+		Rules: []RuleRow{}, Cross: []CrossRow{}} // controls always has its two rows
 	valid := map[string]map[string]Window{} // pair -> run -> the run's one valid window
 	first := map[string]string{}            // pair -> its first window of any content, by id
 	var all []Window
 	for _, w := range lab.Windows {
 		out.Windows = append(out.Windows, WindowRow{Window: w.Dir, Pair: w.Pair, Run: w.Run, Valid: w.Valid(), Reason: w.Reason})
-		if f, seen := first[w.Pair]; w.Pair != "" && w.Hash == lab.pairs[w.Pair].hash && (!seen || w.Dir < f) {
+		// lab.Windows is in id order, so the first seen is the first made; a window whose name names no pair has
+		// no hash, which no pair's content has either, and no rules read first[""].
+		if _, seen := first[w.Pair]; !seen && w.Hash == lab.pairs[w.Pair].hash {
 			first[w.Pair] = w.Dir // the first window of the pair's current content
 		}
 		if !w.Valid() {
