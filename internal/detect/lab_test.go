@@ -267,8 +267,13 @@ func TestLoadRefusesWhatIsNotLab(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			lab := t.TempDir()
 			c.setup(t, lab)
-			if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), c.why) {
+			_, err := Load(lab)
+			if err == nil || !strings.Contains(err.Error(), c.why) {
 				t.Fatalf("err %v, want %q", err, c.why)
+			}
+			plain := []string{"has no pair", "is not a pair's file", "is not a runner's file name", "lab: over"}
+			if !slices.ContainsFunc(plain, func(p string) bool { return strings.Contains(c.why, p) }) && errors.Unwrap(err) == nil {
+				t.Fatalf("%v does not keep its cause", err)
 			}
 		})
 	}
@@ -442,11 +447,11 @@ func TestEachJobRefusalNamesItsCause(t *testing.T) {
 		} else {
 			dir = filepath.Join(dir, "none")
 		}
-		if _, err := Job(dir, fixturePair, "tech-a", t.TempDir()); err == nil || !strings.Contains(err.Error(), why) {
-			t.Errorf("lab %q: %v, want %q", path, err, why)
+		if _, err := Job(dir, fixturePair, "tech-a", t.TempDir()); err == nil || !strings.Contains(err.Error(), why) || errors.Unwrap(err) == nil {
+			t.Errorf("lab %q: %v, want %q wrapped", path, err, why)
 		}
 	}
-	if _, err := Job(lab, fixturePair, "tech-a", filepath.Join(t.TempDir(), "none")); err == nil || !strings.Contains(err.Error(), "target: ") {
+	if _, err := Job(lab, fixturePair, "tech-a", filepath.Join(t.TempDir(), "none")); !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "target: ") {
 		t.Fatalf("a missing target: %v", err)
 	}
 	// Another pair sorted first whose rules do not read, and rules without a pair: neither stops this pair's job.
@@ -480,6 +485,21 @@ func TestEachImportRefusalNamesItsCause(t *testing.T) {
 	deep := t.TempDir()
 	put(t, deep, "windows/w/sub/x", nil)
 	missing := filepath.Join(t.TempDir(), "none")
+	other := "20261118T130000Z-00000000-other"
+	put(t, res, other+"/"+ResultFile, []byte("{}"))
+	full := t.TempDir() // lab/ at its cap less one byte, holding other already
+	put(t, full, "windows/"+strings.ToLower(other)+"/"+ResultFile, []byte("{}"))
+	put(t, full, "pairs/pad.json", make([]byte, LabCap-3))
+	holding := t.TempDir()
+	put(t, holding, "windows/"+strings.ToLower(other)+"/"+ResultFile, []byte("{}"))
+	windowsFile := t.TempDir()
+	put(t, windowsFile, "windows", nil)
+	hard, weird := "20261118T130000Z-00000000-hard", "20261118T130000Z-00000000-weird"
+	put(t, res, hard+"/"+ResultFile, []byte("{}"))
+	if err := os.Link(filepath.Join(res, hard, ResultFile), filepath.Join(t.TempDir(), "l")); err != nil {
+		t.Fatal(err)
+	}
+	put(t, res, weird+"/Weird", nil)
 	for _, c := range []struct {
 		name, lab, results, id, why string
 	}{
@@ -491,11 +511,19 @@ func TestEachImportRefusalNamesItsCause(t *testing.T) {
 		{"no lab", missing, res, id, "lab: "},
 		{"a link in lab/", linked, res, id, "neither a regular file"},
 		{"a directory too deep in lab/", deep, res, id, "within depth"},
+		{"a result that would pass the cap", full, res, id, "lab/ would hold"},
+		{"a result already imported", holding, res, other, "already exists"},
+		{"windows/ a file", windowsFile, res, id, "windows is not a directory"},
+		{"a result's file that does not read", t.TempDir(), res, hard, "result " + hard + ": "},
+		{"a result's file of another name", t.TempDir(), res, weird, "is not a runner's file name"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n, err := Import(c.lab, c.results, c.id)
 			if err == nil || n != 0 || !strings.Contains(err.Error(), c.why) {
 				t.Fatalf("%d %v, want %q", n, err, c.why)
+			}
+			if strings.HasSuffix(c.why, ": ") && errors.Unwrap(err) == nil {
+				t.Fatalf("%v does not keep its cause", err)
 			}
 		})
 	}
@@ -562,5 +590,35 @@ func TestEachVerifyFailureNamesItsCause(t *testing.T) {
 	good := results(t, map[string]map[string][]byte{id: {ResultFile: []byte("{}")}}, true)
 	if findings, _, err := Verify(lab, good); err != nil || !findingWith(findings, "windows/"+strings.ToLower(id)+": ") {
 		t.Fatalf("a window that does not read: %v %v", findings, err)
+	}
+}
+
+// TestTheCapsAreTheADRs pins the per-file caps (R5, ADR 0079 point 8).
+func TestTheCapsAreTheADRs(t *testing.T) {
+	if resultCap != 65536 || pairCap != 5242880 || ruleCap != 65536 || textCap != LabCap {
+		t.Fatalf("caps %d %d %d %d", resultCap, pairCap, ruleCap, textCap)
+	}
+}
+
+// TestARuleThatCannotBeReadIsBroken: a hard-linked rule makes the pair's rules broken, the next rule still read.
+func TestARuleThatCannotBeReadIsBroken(t *testing.T) {
+	f := baseFixture(t)
+	f.rules["rules/fix/a.json"] = fixtureRule
+	lab := f.write(t)
+	if err := os.Link(filepath.Join(lab, "rules", "fix", "a.json"), filepath.Join(t.TempDir(), "l")); err != nil {
+		t.Fatal(err)
+	}
+	l := load(t, lab)
+	if e := l.pairs[fixturePair].ruleErr; e == nil || !strings.Contains(e.Error(), "rules/fix/a.json: ") {
+		t.Fatalf("ruleErr %v", e)
+	}
+	if len(l.rules[fixturePair]) != 1 || l.rules[fixturePair][0].Path != fixtureRuleFile {
+		t.Fatalf("rules read %+v", l.rules[fixturePair])
+	}
+}
+
+func TestRunnerOwnedKeepsItsCause(t *testing.T) {
+	if err := RunnerOwned(filepath.Join(t.TempDir(), "none")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%v", err)
 	}
 }
