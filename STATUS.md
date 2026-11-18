@@ -20,7 +20,7 @@ pull requests, and warns where they disagree. Its parts:
 
 ## Done in the last sessions
 - ADR 0078 (this pull request): the anchor is the newest result once the inbox was emptied, fixtures come from
-  hard-exec-1's window, a rule is judged on one event, the runner's re-run is an open defect.
+  hard-exec-1's window, a rule is judged on one event; the runner's re-run is issue #295.
 - #293 (ADR 0077): what makes a window valid, rules as data, the job's name bound to the pair's and rules' content,
   `verify` against the runner's originals; `acceptance/1.toml` (7 metrics); T38-T40; `lab/` paths.
 - #292 (307e6cc, ADR 0076): the recorder freezes unmet; 23 metrics wait with it; #291 closed unmerged.
