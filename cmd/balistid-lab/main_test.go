@@ -35,7 +35,7 @@ func TestVerifyFailsWithoutTheAnchor(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q", code, errb.String())
 	}
 	results := t.TempDir()
-	if err := os.Mkdir(filepath.Join(results, detect.Anchor), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(results, detect.Anchor), 0o750); err != nil {
 		t.Fatal(err)
 	}
 	out.Reset()

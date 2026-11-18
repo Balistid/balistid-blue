@@ -62,7 +62,7 @@ func snapshot(t *testing.T, dir string) map[string]string {
 		}
 		data := ""
 		if d.Type().IsRegular() {
-			b, err := os.ReadFile(p)
+			b, err := os.ReadFile(p) //nolint:gosec // the test's own temp dir
 			if err != nil {
 				return err
 			}
@@ -77,59 +77,60 @@ func snapshot(t *testing.T, dir string) map[string]string {
 	return files
 }
 
+func sameTree(t *testing.T, before, after map[string]string, allowed func(string) bool) {
+	t.Helper()
+	for p, v := range after {
+		if before[p] != v && !allowed(p) {
+			t.Errorf("%s created or changed", p)
+		}
+	}
+	for p := range before {
+		if _, ok := after[p]; !ok && !allowed(p) {
+			t.Errorf("%s removed", p)
+		}
+	}
+}
+
 // TestTableAndVerifyWriteNothing is acceptance judge_writes for the two read-only subcommands.
 func TestTableAndVerifyWriteNothing(t *testing.T) {
-	f := fourWindows(t)
+	f := fourWindows(t, baseFixture(t))
 	lab := f.write(t)
 	res := results(t, map[string]map[string][]byte{idOf(t, f): f.window}, true)
 	before, beforeRes := snapshot(t, lab), snapshot(t, res)
 	load(t, lab).Table().Encode()
-	if _, err := Verify(lab, res); err != nil {
+	if _, _, err := Verify(lab, res); err != nil {
 		t.Fatal(err)
 	}
-	after, afterRes := snapshot(t, lab), snapshot(t, res)
-	for _, pair := range [][2]map[string]string{{before, after}, {beforeRes, afterRes}} {
-		if len(pair[0]) != len(pair[1]) {
-			t.Fatal("a file was created")
-		}
-		for p, v := range pair[0] {
-			if pair[1][p] != v {
-				t.Fatalf("%s changed", p)
-			}
-		}
-	}
+	none := func(string) bool { return false }
+	sameTree(t, before, snapshot(t, lab), none)
+	sameTree(t, beforeRes, snapshot(t, res), none)
 }
 
 // TestImportAndJobWriteOnlyTheirPlace is acceptance judge_writes for the two writing subcommands.
 func TestImportAndJobWriteOnlyTheirPlace(t *testing.T) {
 	f := baseFixture(t)
-	lab := f.write(t)
 	id := idOf(t, f)
+	lab := f.write(t)
 	res := results(t, map[string]map[string][]byte{id: f.window}, true)
 	if err := os.RemoveAll(filepath.Join(lab, "windows")); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, lab)
+	before, beforeRes := snapshot(t, lab), snapshot(t, res)
 	if _, err := Import(lab, res, id); err != nil {
 		t.Fatal(err)
 	}
-	for p := range snapshot(t, lab) {
-		if _, old := before[p]; !old && !strings.HasPrefix(p, filepath.Join(lab, "windows")) {
-			t.Fatalf("import wrote %s outside lab/windows", p)
-		}
-	}
+	windows := filepath.Join(lab, "windows")
+	sameTree(t, before, snapshot(t, lab), func(p string) bool { return p == lab || p == windows || strings.HasPrefix(p, windows+"/") })
+	sameTree(t, beforeRes, snapshot(t, res), func(string) bool { return false })
 	target := t.TempDir()
 	labBefore := snapshot(t, lab)
-	name, err := Job(lab, fixturePair, "tech-b", target)
+	out, err := Job(lab, fixturePair, "tech-b", target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for p := range snapshot(t, target) {
-		if p != target && !strings.HasPrefix(p, filepath.Join(target, strings.Fields(name)[0])) {
-			t.Fatalf("job wrote %s outside its directory", p)
-		}
-	}
-	if len(snapshot(t, lab)) != len(labBefore) {
-		t.Fatal("job wrote into lab/")
-	}
+	job := filepath.Join(target, strings.Fields(out)[0])
+	sameTree(t, map[string]string{}, snapshot(t, target), func(p string) bool {
+		return p == target || p == job || strings.HasPrefix(p, job+"/")
+	})
+	sameTree(t, labBefore, snapshot(t, lab), func(string) bool { return false })
 }
