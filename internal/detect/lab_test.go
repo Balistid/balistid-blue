@@ -208,6 +208,15 @@ func TestLoadRefusesWhatIsNotLab(t *testing.T) {
 		{"a pair file not .json", func(t *testing.T, lab string) { put(t, lab, "pairs/x.txt", []byte("{}")) }},
 		{"a file in windows/", func(t *testing.T, lab string) { put(t, lab, "windows/x", []byte("{}")) }},
 		{"a window file of another name", func(t *testing.T, lab string) { put(t, lab, "windows/d/Weird", []byte("{}")) }},
+		{"a window file a link", func(t *testing.T, lab string) {
+			put(t, lab, "pairs/x.json", []byte("{}"))
+			if err := os.MkdirAll(filepath.Join(lab, "windows", "d"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../../pairs/x.json", filepath.Join(lab, "windows", "d", LaurelFile)); err != nil {
+				t.Fatal(err)
+			}
+		}},
 		{"pairs/ a link", func(t *testing.T, lab string) {
 			if err := os.Symlink("/", filepath.Join(lab, "pairs")); err != nil {
 				t.Fatal(err)

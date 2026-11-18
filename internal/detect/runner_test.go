@@ -209,7 +209,6 @@ type fixture struct {
 	window map[string][]byte // the window's files
 	dir    string            // the window's directory name
 	extra  map[string]map[string][]byte
-	links  map[string]string // path under lab/ -> symlink target
 }
 
 func ruleJSON(rule, brief string) string {
@@ -249,7 +248,6 @@ func baseFixture(t *testing.T) *fixture {
 		pair:  pairJSON(reference, programsFor()),
 		rules: map[string]string{fixtureRuleFile: fixtureRule},
 		extra: map[string]map[string][]byte{},
-		links: map[string]string{},
 	}
 	f.window = f.windowFor(t, "tech-a", baseRecords(t))
 	return f
@@ -302,16 +300,6 @@ func (f *fixture) write(t *testing.T) string {
 	for dir, files := range f.extra {
 		for name, data := range files {
 			put(t, lab, "windows/"+dir+"/"+name, data)
-		}
-	}
-	for link, target := range f.links {
-		p := filepath.Join(lab, link)
-		_ = os.RemoveAll(p)
-		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Symlink(target, p); err != nil {
-			t.Fatal(err)
 		}
 	}
 	return lab
