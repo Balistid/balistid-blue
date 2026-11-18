@@ -79,7 +79,7 @@ type RuleRow struct {
 	Verdicts map[string]Verdict `json:"verdicts,omitempty"`
 }
 
-// CrossRow is a rule's verdict on another pair's valid window made after its own pair's first: QUIET or NOISY.
+// CrossRow is a rule's verdict on another pair's valid window made after its current content's first: QUIET or NOISY.
 type CrossRow struct {
 	Rule    string  `json:"rule"`
 	Window  string  `json:"window"`
@@ -95,8 +95,8 @@ func (lab *Lab) Table() TableOutput {
 	var all []Window
 	for _, w := range lab.Windows {
 		out.Windows = append(out.Windows, WindowRow{Window: w.Dir, Pair: w.Pair, Run: w.Run, Valid: w.Valid(), Reason: w.Reason})
-		if f, seen := first[w.Pair]; w.Pair != "" && (!seen || w.Dir < f) {
-			first[w.Pair] = w.Dir
+		if f, seen := first[w.Pair]; w.Pair != "" && w.Hash == lab.pairs[w.Pair].hash && (!seen || w.Dir < f) {
+			first[w.Pair] = w.Dir // the first window of the pair's current content
 		}
 		if !w.Valid() {
 			continue
@@ -133,8 +133,8 @@ func (lab *Lab) Table() TableOutput {
 	return out
 }
 
-// cross scores a rule on every valid window of another pair made after its own pair's first window, so the
-// rule was bound before those windows existed (ADR 0079 point 9); a pair without windows gives none.
+// cross scores a rule on every valid window of another pair made after the first window of its own pair's
+// current content, so the rule was bound before those windows existed (ADR 0079 point 8); none without one.
 func cross(rf RuleFile, pair, since string, all []Window) []CrossRow {
 	var rows []CrossRow
 	if since == "" {

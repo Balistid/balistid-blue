@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -444,9 +445,18 @@ func Job(labDir, pair, run, target string) (string, error) {
 }
 
 func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
-	if inbox, err := os.Lstat(inboxDir); err == nil {
-		if t, err := os.Stat(target); err == nil && os.SameFile(inbox, t) {
-			return "", errors.New("target is the runner's inbox; build outside it and rename the job in")
+	if inbox, err := os.Stat(inboxDir); err == nil {
+		abs, err := filepath.Abs(target)
+		if err != nil {
+			return "", fmt.Errorf("target: %w", err)
+		}
+		for dir := abs; ; dir = filepath.Dir(dir) {
+			if d, err := os.Stat(dir); err == nil && os.SameFile(inbox, d) {
+				return "", errors.New("target is in the runner's inbox; build outside it and rename the job in")
+			}
+			if dir == filepath.Dir(dir) {
+				break
+			}
 		}
 	}
 	root, err := os.OpenRoot(labDir)

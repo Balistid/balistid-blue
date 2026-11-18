@@ -39,8 +39,8 @@ differ on each and hide a false verdict. Laurel repeats `pid` with the same valu
    (commit, sha256 and job uid), and its id ends in its job's name.
 7. The base fixture of ADR 0078 point 3 takes an id after the anchor; its records, request and program are real.
 8. A pair counts only if no window in `lab/` ran other content of it (T39: a rule changed after a run). A rule is
-   scored on another pair's valid window only if that window came after its own pair's first, so the rule was bound
-   before it existed; this holds whether either pair counts.
+   scored on another pair's valid window only if it came after the first window of the rule's current content, so
+   the rule was bound before it existed, whether either pair counts.
 9. Reads are bounded (R5): `lab/` holds at most 16 MiB, read or written, and 4096 names a directory; a file over its
    own cap makes its window, pair or rule INVALID with its reason. Directories are opened one name at a time and
    never through a link. `verify` and `import` read the runner's results only as a directory the caller neither owns
@@ -56,5 +56,5 @@ differ on each and hide a false verdict. Laurel repeats `pid` with the same valu
 ## Consequences
 
 - Each point has a fixture breaking only it. Not closed: a result added while `verify` reads is seen only by its
-  second listing; host root and its clock (ADR 0077 point 8). The layout cap and the scan of every window file land
-  in their own `ci:` pull request, before any window. Revert: with the code it describes.
+  second listing; a decoy pair running a near-copy of another's program to fit that one's rules; host root and its
+  clock (ADR 0077 point 8). The layout cap and the scan of every window file land in their own `ci:` pull request.
