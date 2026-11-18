@@ -318,6 +318,7 @@ func TestOnlyAPlacedWindowStartsCrossRows(t *testing.T) {
 	for _, c := range []struct{ name, id, dir string }{
 		{"in another directory", "20261118T110000Z-0123abcd-", "20261118t110000z-0123abcd-x-"},
 		{"before the anchor", "20261116T110000Z-0123abcd-", "20261116t110000z-0123abcd-"},
+		{"of another id grammar", "20261118T110000Z-0123ABCD-", "20261118t110000z-0123abcd-"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := fourWindows(t, baseFixture(t))

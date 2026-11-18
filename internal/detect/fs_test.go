@@ -276,7 +276,7 @@ func TestWhatOnlyARaceOrTheDiskFails(t *testing.T) {
 	}
 	rename = origRename
 	syncDir = func(*os.Root) error { return gone }
-	if err := publish(root, "out2", map[string][]byte{"a": nil}, 0o750, 0o640); !errors.Is(err, gone) {
+	if err := publish(root, "out2", map[string][]byte{"a": nil}, 0o750, 0o640); !errors.Is(err, gone) || !strings.Contains(err.Error(), "out2 is published but not durable") {
 		t.Fatalf("a sync that fails: %v", err)
 	}
 	syncDir = origSync
