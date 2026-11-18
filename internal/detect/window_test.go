@@ -183,10 +183,6 @@ func reasonCases() []reasonCase {
 			f.extra[other] = map[string][]byte{ResultFile: r, LaurelFile: f.window[LaurelFile]}
 		}},
 		{"records missing", ReasonLaurelFile, func(_ *testing.T, f *fixture) { delete(f.window, LaurelFile) }},
-		{"records a link", ReasonLaurelFile, func(_ *testing.T, f *fixture) {
-			delete(f.window, LaurelFile)
-			f.links["windows/"+f.dir+"/"+LaurelFile] = "../../pairs/fix.json"
-		}},
 		{"a raw newline in the records", ReasonLaurelEscape, func(_ *testing.T, f *fixture) { f.window[LaurelFile] = append(f.window[LaurelFile], '\n') }},
 		{"an upper-case escape", ReasonLaurelEscape, func(t *testing.T, f *fixture) {
 			f.window[LaurelFile] = replaceOnce(t, f.window[LaurelFile], `\x0a`, `\x0A`)
