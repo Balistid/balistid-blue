@@ -133,7 +133,11 @@ func crossRows(t *testing.T, oldRun bool) {
 		put(t, lab, "windows/"+strings.ToLower(old)+"/"+ResultFile, resultFor(old, name, "x.sh", 60, []byte("#!/bin/sh\n"), 1))
 	}
 	out := load(t, lab).Table()
-	if len(out.Pairs) != 2 || !out.Pairs[1].Counted || out.Pairs[0].Counted == oldRun {
+	counted := map[string]bool{}
+	for _, p := range out.Pairs {
+		counted[p.Pair] = p.Counted
+	}
+	if len(out.Pairs) != 2 || !counted["fix"] || counted["fiy"] == oldRun {
 		t.Fatalf("pairs: %+v", out.Pairs)
 	}
 	byRule := map[string][]CrossRow{}
