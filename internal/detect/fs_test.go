@@ -283,6 +283,13 @@ func TestWhatOnlyARaceOrTheDiskFails(t *testing.T) {
 	if err := syncDirOf(root); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
+	origFile := syncFile
+	t.Cleanup(func() { syncFile = origFile })
+	syncFile = func(f *os.File) error { _ = f.Close(); return gone }
+	if err := syncDirOf(root); !errors.Is(err, gone) {
+		t.Fatalf("a directory fsync that fails: %v", err)
+	}
+	syncFile = origFile
 	if list, _ := os.ReadDir(dir); len(list) != 2 {
 		t.Fatalf("staging left behind: %v", list)
 	}

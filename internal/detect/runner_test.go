@@ -263,8 +263,8 @@ func TestAnExecJobNeedsItsThreeKeys(t *testing.T) {
 			t.Fatalf("%q not found", key)
 		}
 		r, err := decodeResult(bad)
-		if err != nil || r.HasExec || !r.HasJob {
-			t.Fatalf("without %s: %v exec %v job %v", key, err, r.HasExec, r.HasJob)
+		if err != nil || r.HasExec || r.Name != "x" {
+			t.Fatalf("without %s: %v exec %v job %q", key, err, r.HasExec, r.Name)
 		}
 	}
 }
@@ -281,7 +281,7 @@ func FuzzDecodeResult(f *testing.F) {
 	f.Add([]byte(`{}`))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r, err := decodeResult(data)
-		if err == nil && r.HasJob && !strings.HasSuffix(r.ID, "-"+r.Name) {
+		if err == nil && r.Name != "" && !strings.HasSuffix(r.ID, "-"+r.Name) {
 			t.Fatal("a result whose id does not end in its job's name decoded")
 		}
 	})

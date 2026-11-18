@@ -198,6 +198,16 @@ func TestJob(t *testing.T) {
 	if _, err := jobIn(lab, fixturePair, "tech-b", filepath.Join(inbox, "x"), inbox); err == nil {
 		t.Fatal("job wrote into a directory inside the runner's inbox")
 	}
+	link := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(filepath.Join(inbox, "x"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobIn(lab, fixturePair, "tech-b", link, inbox); err == nil {
+		t.Fatal("job wrote through a link into the runner's inbox")
+	}
+	if list, _ := os.ReadDir(filepath.Join(inbox, "x")); len(list) != 0 {
+		t.Fatalf("job left %v in the inbox", list)
+	}
 	if _, err := jobIn(lab, fixturePair, "tech-b", t.TempDir(), inbox); err != nil {
 		t.Fatalf("a target outside the inbox: %v", err)
 	}
@@ -691,7 +701,37 @@ func TestATargetSwappedWhileOpenedIsRefused(t *testing.T) {
 	if err := outsideInbox(target, opened, t.TempDir()); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
 		t.Fatalf("%v", err)
 	}
-	if err := outsideInbox(filepath.Join(target, "none"), opened, t.TempDir()); err == nil {
-		t.Fatal("a target that is gone")
+	if err := outsideInbox(filepath.Join(target, "none"), opened, t.TempDir()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("a target that is gone: %v", err)
+	}
+}
+
+// TestVerifyFailsWhileAJobRuns: the runner writes a placeholder result before a run and replaces it after, so a
+// placeholder, copied or not, is a finding.
+func TestVerifyFailsWhileAJobRuns(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	placeholder := bytes.Replace(f.window[ResultFile], []byte(`"verdict": "RAN",
+      "reason": "the job ran; its output and Laurel records are the agent's to judge"`), []byte(`"verdict": "INVALID",
+      "reason": "`+placeholderReason+`"`), 1)
+	if bytes.Equal(placeholder, f.window[ResultFile]) {
+		t.Fatal("no run to replace")
+	}
+	files := map[string][]byte{ResultFile: placeholder}
+	f.window = files
+	lab := f.write(t)
+	findings, _, err := Verify(lab, results(t, map[string]map[string][]byte{id: files}, true))
+	if err != nil || len(findings) != 1 || !findingWith(findings, "result "+id+" is the runner's placeholder") {
+		t.Fatalf("%v %v", findings, err)
+	}
+	for _, other := range [][]byte{
+		bytes.Replace(placeholder, []byte(`"verdict": "INVALID"`), []byte(`"verdict": "RAN"`), 1),
+		bytes.Replace(placeholder, []byte(placeholderReason), []byte("the runner stopped"), 1),
+		[]byte("not json"),
+		[]byte(`{"runs":[{"verdict":"INVALID","reason":"` + placeholderReason + `"},{"verdict":"RAN","reason":"x"}]}`),
+	} {
+		if unfinished(map[string][]byte{ResultFile: other}) {
+			t.Errorf("%.60s... read as a placeholder", other)
+		}
 	}
 }

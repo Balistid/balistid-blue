@@ -44,9 +44,9 @@ differ on each and hide a false verdict. Laurel repeats `pid` with the same valu
 9. Reads are bounded (R5): `lab/` holds at most 16 MiB, read or written, and 4096 names a directory; a file over its
    own cap makes its window, pair or rule INVALID with its reason. Directories are opened one name at a time and
    never through a link. `verify` and `import` read the runner's results only as a directory the caller neither owns
-   nor can write (R13); `verify` lists them before and after and prints a sha256 of what it compared and the rules'
-   version. `import` and `job` publish a directory whole; `job` refuses the runner's inbox, which spends quota on a
-   half-written job. `table` writes nothing; how `lab/results/` binds to it is decided with the report.
+   nor can write (R13); `verify` lists them before and after, fails on a result still the runner's placeholder and
+   prints a sha256 of what it compared and the rules' version. `import` and `job` publish a directory whole; `job`
+   refuses the runner's inbox, links resolved. `table` writes nothing; how `lab/results/` binds waits for the report.
 
 ## Alternatives considered
 
