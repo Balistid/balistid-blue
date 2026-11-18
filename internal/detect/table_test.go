@@ -311,3 +311,36 @@ func TestABrokenPairOrRuleSaysSo(t *testing.T) {
 		t.Fatalf("a broken rule: %+v", p)
 	}
 }
+
+// TestOnlyAPlacedWindowStartsCrossRows: a window of the current content whose directory is not its result's id,
+// or whose result comes before the anchor, does not start the rule's cross rows.
+func TestOnlyAPlacedWindowStartsCrossRows(t *testing.T) {
+	for _, c := range []struct{ name, id, dir string }{
+		{"in another directory", "20261118T110000Z-0123abcd-", "20261118t110000z-0123abcd-x-"},
+		{"before the anchor", "20261116T110000Z-0123abcd-", "20261116t110000z-0123abcd-"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := fourWindows(t, baseFixture(t))
+			lab := f.write(t)
+			gPair := pairJSON(reference, map[string]string{
+				"tech-a": baseProgram + "# g\n", "tech-b": "#!/bin/sh\nuname -m\n", "twin-a": "#!/bin/sh\nid -n\n", "twin-b": "#!/bin/sh\nid -G\n",
+			})
+			put(t, lab, "pairs/fiy.json", []byte(gPair))
+			put(t, lab, "rules/fiy/opus-1.json", []byte(fixtureRule))
+			p, err := decodePair("fiy", []byte(gPair))
+			if err != nil {
+				t.Fatal(err)
+			}
+			name := jobName("fiy", "tech-a", contentHash(map[string][]byte{"pairs/fiy.json": []byte(gPair), "rules/fiy/opus-1.json": []byte(fixtureRule)}))
+			r := p.Runs["tech-a"]
+			raw := baseRecords(t)
+			put(t, lab, "windows/"+c.dir+name+"/"+ResultFile, resultFor(c.id+name, name, r.Program, r.TimeoutS, r.Text, len(raw)))
+			put(t, lab, "windows/"+c.dir+name+"/"+LaurelFile, escape(raw))
+			for _, row := range load(t, lab).Table().Cross {
+				if row.Rule == "rules/fiy/opus-1.json" {
+					t.Fatalf("an unplaced window started fiy's cross rows: %+v", row)
+				}
+			}
+		})
+	}
+}

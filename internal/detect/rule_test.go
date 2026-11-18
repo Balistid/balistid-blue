@@ -117,7 +117,9 @@ func TestLeavesOnSyntheticEvents(t *testing.T) {
 		{`{"a":-0}`, `{"any":[{"field":["a"],"op":"eq","value":0}]}`, true},
 		{`{"a":1.0}`, `{"any":[{"field":["a"],"op":"eq","value":1}]}`, false},
 		{`{"a":[1,2]}`, `{"any":[{"field":["a"],"op":"eq","value":2}]}`, true},
-		{`{"a":[[2]]}`, `{"any":[{"field":["a"],"op":"eq","value":2}]}`, true},
+		{`{"a":[[2]]}`, `{"any":[{"field":["a"],"op":"eq","value":2}]}`, false}, // a nested list is no element 2
+		{`{"a":[["xyz"]]}`, `{"any":[{"field":["a"],"op":"contains","value":"y"}]}`, false},
+		{`{"a":[{"b":[2]}]}`, `{"any":[{"field":["a","b"],"op":"eq","value":2}]}`, true},
 		{`{"a":[{"b":"x"},{"c":"y"}]}`, `{"all":[{"field":["a","b"],"op":"eq","value":"x"},{"field":["a","c"],"op":"eq","value":"y"}]}`, true},
 		{`{"a":"xyz"}`, `{"any":[{"field":["a"],"op":"contains","value":"y"}]}`, true},
 		{`{"a":"xyz"}`, `{"any":[{"field":["a"],"op":"contains","value":"q"}]}`, false},

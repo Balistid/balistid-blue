@@ -55,6 +55,9 @@ type Window struct {
 	Pair, Run, Hash string // set once the job name parses
 	Reason          Reason // empty when valid
 	events          []object
+	// placed: its result's id has the result grammar, names this window's directory and comes after the anchor,
+	// so it is the runner's result of this pilot whatever else is wrong with it
+	placed bool
 }
 
 // Valid reports whether the window passed every check.
@@ -87,6 +90,7 @@ func checkWindow(in windowInput) Window {
 	if pair, run, hash, ok := splitJobName(r.Name); ok {
 		w.Pair, w.Run, w.Hash = pair, run, hash
 	}
+	w.placed = resultID.MatchString(r.ID) && in.dir == strings.ToLower(r.ID) && r.ID > Anchor
 	w.Reason, w.events = check(in, r) // events only when valid
 	return w
 }

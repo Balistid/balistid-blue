@@ -170,6 +170,9 @@ WINDOW_FILE = re.compile(
 # Every blob under lab/ is printable ASCII and LF, as gitleaks git skips a binary blob; together they hold at most
 # LAB_BYTES (ADR 0079 point 9).
 LAB_CONTENT = re.compile(rb"[\x20-\x7e\n]*")
+# go-mutesting v2.10.40 skips the mutants a comment marks (internal/annotation): reviewed exceptions go to
+# tools/ci/mutation-blacklist by checksum instead.
+MUTATION_DIRECTIVE = re.compile(rb"mutator-disable")
 LAB_BYTES = 16 << 20
 
 # Path patterns that the default config of the pinned gitleaks (v8.30.1, config/gitleaks.toml)
@@ -392,6 +395,9 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
         # a file with a content grammar (range/witness/go.mod) is checked by it, tabs included
         if path.startswith(ROOT_INSTALLED) and path not in CONTENT_GRAMMAR and (number := unreadable_line(blob(repo, sha), path)):
             violations.append(f"{path}: line {number} is not printable ASCII of at most {line_cap(path)} bytes")
+            continue
+        if path.endswith(".go") and MUTATION_DIRECTIVE.search(blob(repo, sha)):
+            violations.append(f"{path}: a go-mutesting directive would let the source skip its own mutants (ADR 0066)")
             continue
         if path.startswith("lab/"):
             data = blob(repo, sha)

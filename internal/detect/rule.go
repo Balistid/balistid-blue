@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -137,12 +138,7 @@ func (l Leaf) holds(ev object) bool {
 func reach(v any, path []string, whole bool, test func(any) bool) bool {
 	if len(path) == 0 {
 		if list, ok := v.([]any); ok && !whole {
-			for _, el := range list {
-				if reach(el, nil, whole, test) {
-					return true
-				}
-			}
-			return false
+			return slices.ContainsFunc(list, test) // each element, a nested list as it is
 		}
 		return test(v)
 	}

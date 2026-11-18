@@ -160,3 +160,30 @@ func TestImportCopiesTheResultNamed(t *testing.T) {
 		t.Fatalf("imported %q %v", got, err)
 	}
 }
+
+// TestVerifyAndImportReadOnlyTheRunnersResults: the caller's own directory is refused before either reads it.
+func TestVerifyAndImportReadOnlyTheRunnersResults(t *testing.T) {
+	own := t.TempDir()
+	for _, args := range [][]string{{"verify", t.TempDir()}, {"import", t.TempDir(), "20261118T130000Z-00000000-x"}} {
+		var out, errb bytes.Buffer
+		if code := entry(args, own, &out, &errb); code != 1 || !strings.Contains(errb.String(), "is the caller's, not the runner's") {
+			t.Errorf("%v on the caller's directory: exit %d, %q", args, code, errb.String())
+		}
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root owns /usr")
+	}
+	var out, errb bytes.Buffer // root's /usr passes the check; verify then reads it and fails on what it holds
+	if code := entry([]string{"verify", t.TempDir()}, "/usr", &out, &errb); code != 1 ||
+		strings.Contains(errb.String(), "not the runner's") || !strings.Contains(errb.String(), "balistid-lab: verify: results: ") {
+		t.Fatalf("verify past the check: exit %d, %q", code, errb.String())
+	}
+	errb.Reset()
+	if code := entry([]string{"table", t.TempDir()}, own, &out, &errb); code != 0 {
+		t.Fatalf("table needs no runner: exit %d, %q", code, errb.String())
+	}
+	errb.Reset()
+	if code := entry([]string{"verify", "a", "b"}, own, &out, &errb); code != 2 {
+		t.Fatalf("a usage error before the check: exit %d, %q", code, errb.String())
+	}
+}

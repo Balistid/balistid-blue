@@ -383,15 +383,21 @@ func TestEachFileAtItsCap(t *testing.T) {
 	}
 }
 
-// TestARecordsFileThatCannotBeReadIsMissing: a hard link to the records is not read, so the window has none.
-func TestARecordsFileThatCannotBeReadIsMissing(t *testing.T) {
-	f := baseFixture(t)
-	lab := f.write(t)
-	if err := os.Link(filepath.Join(lab, "windows", f.dir, LaurelFile), filepath.Join(t.TempDir(), "l")); err != nil {
-		t.Fatal(err)
-	}
-	if w := load(t, lab).Windows[0]; w.Reason != ReasonLaurelFile {
-		t.Fatalf("%+v", w)
+// TestAWindowFileThatCannotBeReadFailsTheRead: a hard link is a link, which fails the whole read (ADR 0079
+// point 9), whichever of the window's files it is.
+func TestAWindowFileThatCannotBeReadFailsTheRead(t *testing.T) {
+	for _, name := range []string{LaurelFile, ResultFile, "serial.txt"} {
+		t.Run(name, func(t *testing.T) {
+			f := baseFixture(t)
+			f.window["serial.txt"] = []byte("x")
+			lab := f.write(t)
+			if err := os.Link(filepath.Join(lab, "windows", f.dir, name), filepath.Join(t.TempDir(), "l")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), "lab: windows/"+f.dir+": "+name+": must have exactly one link") {
+				t.Fatalf("%v", err)
+			}
+		})
 	}
 }
 
@@ -474,7 +480,7 @@ func TestEachJobRefusalNamesItsCause(t *testing.T) {
 		t.Fatalf("a job beside other pairs: %v", err)
 	}
 	name := strings.Fields(out)[0]
-	for path, want := range map[string]os.FileMode{name: 0o750 | os.ModeDir, name + "/job.json": 0o640, name + "/prog.sh": 0o640} {
+	for path, want := range map[string]os.FileMode{name: 0o755 | os.ModeDir, name + "/job.json": 0o644, name + "/prog.sh": 0o644} {
 		if fi, err := os.Stat(filepath.Join(target, path)); err != nil || fi.Mode() != want {
 			t.Errorf("%s: %v %v, want %v", path, fi.Mode(), err, want)
 		}
@@ -698,10 +704,14 @@ func TestATargetSwappedWhileOpenedIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := outsideInbox(target, opened, t.TempDir()); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
+	inbox, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outsideInbox(target, opened, inbox); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
 		t.Fatalf("%v", err)
 	}
-	if err := outsideInbox(filepath.Join(target, "none"), opened, t.TempDir()); !errors.Is(err, fs.ErrNotExist) {
+	if err := outsideInbox(filepath.Join(target, "none"), opened, inbox); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("a target that is gone: %v", err)
 	}
 }
@@ -733,5 +743,50 @@ func TestVerifyFailsWhileAJobRuns(t *testing.T) {
 		if unfinished(map[string][]byte{ResultFile: other}) {
 			t.Errorf("%.60s... read as a placeholder", other)
 		}
+	}
+}
+
+// TestAnInboxThatCannotBeStatedFailsTheJob: only a missing inbox means there is none.
+func TestAnInboxThatCannotBeStatedFailsTheJob(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	lab := baseFixture(t).write(t)
+	parent := t.TempDir()
+	locked(t, parent, 0o600)
+	if _, err := jobIn(lab, fixturePair, "tech-a", t.TempDir(), filepath.Join(parent, "inbox")); !errors.Is(err, fs.ErrPermission) || !strings.Contains(err.Error(), "inbox: ") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestAJobTargetThatCannotBeStatedOrPlaced: a target whose stat fails, or a working directory that is gone,
+// fails the job with that cause.
+func TestAJobTargetThatCannotBeStatedOrPlaced(t *testing.T) {
+	lab := baseFixture(t).write(t)
+	orig := statOpened
+	t.Cleanup(func() { statOpened = orig })
+	gone := errors.New("gone")
+	target := t.TempDir()
+	statOpened = func(r *os.Root) (os.FileInfo, error) {
+		if r.Name() == target {
+			return nil, gone
+		}
+		return orig(r)
+	}
+	if _, err := jobIn(lab, fixturePair, "tech-a", target, t.TempDir()); !errors.Is(err, gone) || !strings.Contains(err.Error(), "target: ") {
+		t.Fatalf("a target that cannot be stated: %v", err)
+	}
+	statOpened = orig
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	if err := os.Remove(cwd); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outsideInbox("relative", opened, nil); err == nil || !strings.Contains(err.Error(), "target: getwd") {
+		t.Fatalf("a relative target with no working directory: %v", err)
 	}
 }

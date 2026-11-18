@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -94,8 +95,8 @@ func optionalDir(root *os.Root, name string) (*os.Root, error) {
 	return d, nil
 }
 
-// readWindow reads every file of a window; a file it cannot read is left out, which its closed reason names as
-// missing (ADR 0079 point 2).
+// readWindow reads every file of a window; a file over its own cap is left out, which its closed reason names as
+// missing (ADR 0079 point 9), and any other that does not read fails the whole read.
 func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 	in := windowInput{dir: d, files: map[string][]byte{}}
 	w, err := openDir(windows, d)
@@ -116,12 +117,15 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 			limit = resultCap
 		}
 		data, err := b.read(w, n, limit)
-		if errors.Is(err, errOverBudget) {
+		switch {
+		case errors.Is(err, errOverBudget):
 			return windowInput{}, fmt.Errorf("lab: over %d bytes", LabCap)
+		case errors.Is(err, errOverCap):
+			continue // left out: the window's reason names it missing
+		case err != nil:
+			return windowInput{}, fmt.Errorf("lab: windows/%s: %w", d, err) // a link or a file that changed
 		}
-		if err == nil {
-			in.files[n] = data
-		}
+		in.files[n] = data
 	}
 	return in, nil
 }
@@ -493,15 +497,24 @@ func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer out.Close() //nolint:errcheck // every write is synced by WriteIn
-	opened, err := out.Stat(".")
+	opened, err := statOpened(out)
 	if err != nil {
 		return "", fmt.Errorf("target: %w", err)
 	}
-	if err := outsideInbox(target, opened, inboxDir); err != nil {
+	inbox, err := os.Stat(inboxDir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		inbox = nil // no inbox on this machine, nothing to refuse
+	case err != nil:
+		return "", fmt.Errorf("inbox: %w", err)
+	}
+	if err := outsideInbox(target, opened, inbox); err != nil {
 		return "", err
 	}
 	request := execRequest(r.Program, r.TimeoutS)
-	if err := publish(out, name, map[string][]byte{"job.json": request, r.Program: r.Text}, 0o750, 0o640); err != nil {
+	// Readable by others: a rename into the inbox keeps the caller's group, the runner reads as its own, and the
+	// inbox (2750) lets no other user reach the job.
+	if err := publish(out, name, map[string][]byte{"job.json": request, r.Program: r.Text}, 0o755, 0o644); err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(r.Text)
@@ -510,7 +523,7 @@ func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
 
 // outsideInbox refuses a target in the runner's inbox, at any depth: the opened directory must be the one the path
 // names, and neither it nor any directory above it, its links resolved, the inbox.
-func outsideInbox(target string, opened os.FileInfo, inboxDir string) error {
+func outsideInbox(target string, opened, inbox os.FileInfo) error {
 	abs, err := filepath.Abs(target)
 	if err != nil {
 		return fmt.Errorf("target: %w", err)
@@ -522,7 +535,7 @@ func outsideInbox(target string, opened os.FileInfo, inboxDir string) error {
 	if named, err := os.Stat(resolved); err != nil || !os.SameFile(named, opened) {
 		return errors.New("target changed while it was opened")
 	}
-	inbox, _ := os.Stat(inboxDir) // no inbox on this machine: nil, which os.SameFile matches to nothing
+	// inbox is nil when this machine has none, which os.SameFile matches to nothing
 	for dir := resolved; ; dir = filepath.Dir(dir) {
 		if d, err := os.Stat(dir); err == nil && os.SameFile(inbox, d) {
 			return errors.New("target is in the runner's inbox; build outside it and rename the job in")

@@ -95,8 +95,9 @@ def extract(repo: Path, rev_range: str, out: Path) -> list[tuple[str, str, Path]
                 continue
             if skipped(path):
                 data = docs_budget.blob(repo, sha)
-            elif (window_text(path) or window_result(path)) and sha not in decoded:
-                decoded.add(sha)  # the same blob decodes the same in every commit that holds it
+            elif (window_text(path) or window_result(path)) and (sha, window_result(path)) not in decoded:
+                # the same blob decodes the same in every commit that holds it as the same kind of file
+                decoded.add((sha, window_result(path)))
                 decode = result_text if window_result(path) else unescape
                 try:
                     data = SNIFF_PAD + decode(docs_budget.blob(repo, sha))
@@ -104,7 +105,8 @@ def extract(repo: Path, rev_range: str, out: Path) -> list[tuple[str, str, Path]
                     raise SystemExit(f"rescan: {commit[:12]} {path}: {err}") from err
             else:
                 continue
-            target = out / f"{len(written)}.txt"
+            # a go.sum copy is named so, the one file the go.sum allowlist of .gitleaks.toml applies to
+            target = out / (f"{len(written)}.gosum.txt" if path.endswith("go.sum") else f"{len(written)}.txt")
             target.write_bytes(data)
             written.append((commit, path, target))
     return written
