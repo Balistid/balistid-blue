@@ -154,6 +154,9 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@${MUTESTING_VERSION}"
       - name: Mutants on changed security-decision code must die
         run: |
+          # A mutant that lifts a size cap can allocate without bound; the limit fails it as a mutant run,
+          # not the runner (two runs on 0626c90 and 311142d were cancelled at 15 minutes without one).
+          ulimit -v 6000000
           "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --no-diffs \
             --output-statuses=enx --logger-github --blacklist=tools/ci/mutation-blacklist \
             --baseline="$RUNNER_TEMP/no-baseline.json" \
