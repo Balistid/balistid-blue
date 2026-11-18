@@ -4,54 +4,57 @@
 - Date: 2026-11-18
 - Decided-by: jvc0n (2026-11-18, in session)
 - Agent: claude/opus-5.5
-- Amends ADR 0077 points 1-4 and 6 (what they left open), ADR 0078 point 3, and the layout's cap for `lab/`.
+- Amends ADR 0077 points 1-6 (what they left open), ADR 0078 point 3, and the layout's cap for `lab/`.
 
 ## Context
 
-Before code, a design review of ADR 0077 and 0078 against the runner at 2c09799 and the window of hard-exec-1 found
-readings the two leave open: which files a window holds, what a rule's leaf compares, when an event is the job's,
-how the job's name binds content, and how big `lab/` may grow. Two implementations of the judge could disagree on
-each, and each could hide a false verdict. Laurel repeats `pid` with the same value inside `SPAWNED_BY` (7 of the 10
-records of hard-exec-1), so refusing every repeated key would refuse every window.
+Reviews of ADR 0077 and 0078 against the runner at 2c09799 and hard-exec-1's window, and of the code, found
+readings both leave open (window files, leaves, proof the job ran, binding, counting, read bounds); two judges could
+differ on each and hide a false verdict. Laurel repeats `pid` with the same value in `SPAWNED_BY` (7 of 10 records).
 
 ## Decision
 
-1. The judge re-implements the runner's contract (escape, content key, result fields, names) and imports no runner
-   package: the judge is locked after B1 and the runner has another owner. Tests pin that contract to real bytes:
-   hard-exec-1's escaped records and result (ADR 0078 point 3) and its content key.
-2. A window holds every file the runner wrote for that result, under the same names, and `verify` compares the
-   whole set and each file's bytes. A result with no `job-laurel.txt` (a run, a trial, a failed job) is imported
-   all the same and is INVALID for detection.
-3. Decoding: `job-laurel.txt` is the runner's escape of the records (bytes 0x20-0x7e but `\` and `"` as they are,
-   every other byte `\x` and two lower-case hex digits); it is valid only if escaping its decoding gives the file
-   back. Each line decodes as one JSON object of valid UTF-8; a key repeated in one object with a different value
-   is INVALID, with the same value it is kept once. Pairs, rules and results decode with exact keys and their closed
-   sets; an integer is a JSON number without fraction or exponent. Pairs and rules are printable ASCII and LF only.
-4. A leaf's `field` is a list of object keys from the event's top. A step that meets a list goes into each element,
-   and a leaf holds if some element holds. `eq` compares a string with a string and an integer with an integer, so
-   `"59"` is not `59`; `contains` takes strings only; `has` holds if the path reaches a value that is not null and
-   not an empty list. A path that does not reach a value makes the leaf false. A rule with an unknown op, `has` with
-   a value, `eq` or `contains` without one, or both `all` and `any`, is INVALID.
-5. An event is the job's when its `SYSCALL.UID` is `balistid-job`. A window whose program exec has the job's numeric
-   `uid` under another name, or the name under another number, is INVALID, and so is one whose canary (root's
-   `/usr/bin/true balistid-canary-<32 hex>`) does not come after the program's exec: before it, Laurel may not
-   have written the job's records.
-6. The job's name binds `lab/pairs/<pair>.json` and every `lab/rules/<pair>/*.json`: paths relative to `lab/`, in
-   byte order, each path and its bytes prefixed by a big-endian 64-bit length, sha256, the first 32 hex digits. A
-   pair's runs are `tech-a`, `tech-b`, `twin-a` and `twin-b`. A known image is its commit and its image sha256 both.
-7. The base fixture of ADR 0078 point 3 takes a result id after the anchor, as no real result before it can be valid;
-   its records, request and program are hard-exec-1's, so its content key and program sha256 are the real ones.
-8. `lab/` holds at most 16 MiB in any commit (R5): 23 windows of the largest size would not fit, so `import` prints
-   the size and the session stops before the cap. `table` writes nothing; how `lab/results/` binds to its output is
-   decided with the report.
+1. The judge re-implements the runner's contract (escape, content key, result shape and types, names) and imports
+   no runner package, as it is locked after B1 and the runner has another owner; tests pin the contract to
+   hard-exec-1's real bytes. It reads through `internal/wholefile`, which joins its lock.
+2. A window holds every file the runner wrote for the result, under its name; `verify` compares the sets both ways
+   and each file's bytes, and a missing window is a finding even against an empty result. A result with no
+   `job-laurel.txt` (a run, a trial, a failed job) is imported all the same and is INVALID.
+3. `job-laurel.txt` is the runner's escape (0x20-0x7e but `\` and `"` as they are, other bytes `\x` and two
+   lower-case hex digits) and valid only if escaping its decoding gives it back. Each line is one JSON object of
+   valid UTF-8; a key repeated with another value is INVALID, with the same value kept once. Pairs, rules and
+   results decode with exact keys, closed sets and the runner's types; an integer of these has no fraction,
+   exponent or `-0`. Pairs and rules are printable ASCII and LF; a rule's `brief_sha256` is its pair's brief's.
+4. A leaf's `field` is a list of keys; a step that meets a list goes into each element, and a leaf holds if some
+   value reached holds. At the path's end, `has` holds on a value that is not null and not an empty list (a list
+   is the value); `eq` and `contains` test each element of a final list. `eq` compares strings as strings and
+   integers by value, so `"59"` is not `59` and `-0` in a record is `0`; `contains` takes strings only.
+5. An event is the job's when `SYSCALL.UID` is `balistid-job`, and its `SYSCALL.uid` must then be the uid the image
+   gives that user (970 in 2c09799), as on every other event. The program's exec and the canary's
+   (`/usr/bin/true balistid-canary-<32 hex>` as root, its `exe` `/usr/bin/true`) are each an `execve` (59) with
+   `success` yes and exit 0, the canary after the program: before it, Laurel may not have written the job's records.
+6. The name binds `lab/pairs/<pair>.json` and every `lab/rules/<pair>/*`: paths relative to `lab/` in byte order,
+   each path and its bytes prefixed by a big-endian 64-bit length, sha256, the first 32 hex digits. The runs are
+   `tech-a`, `tech-b`, `twin-a`, `twin-b`. A result is judged only from a known runner commit and a known image
+   (commit, sha256 and job uid), and its id ends in its job's name.
+7. The base fixture of ADR 0078 point 3 takes an id after the anchor; its records, request and program are real.
+8. A pair counts only if no window in `lab/` ran other content of it (T39: a rule changed after a run). A rule is
+   scored on another pair's valid window only if that window came after its own pair's first, so the rule was bound
+   before it existed; this holds whether either pair counts.
+9. Reads are bounded (R5): `lab/` holds at most 16 MiB, read or written, and 4096 names a directory; a file over its
+   own cap makes its window, pair or rule INVALID with its reason. Directories are opened one name at a time and
+   never through a link. `verify` and `import` read the runner's results only as a directory the caller neither owns
+   nor can write (R13); `verify` lists them before and after and prints a sha256 of what it compared and the rules'
+   version. `import` and `job` publish a directory whole; `job` refuses the runner's inbox, which spends quota on a
+   half-written job. `table` writes nothing; how `lab/results/` binds to it is decided with the report.
 
 ## Alternatives considered
 
-- Import `rangerun` to read results: no drift today, but the locked judge would follow code another owner changes.
-- Refuse every repeated key: no window of Laurel 0.8.2 would be valid (noted for upstream).
+- Import `rangerun` (the locked judge would follow another owner's code); refuse every repeated key (no window of
+  Laurel 0.8.2 would be valid).
 
 ## Consequences
 
-- `internal/detect` and `cmd/balistid-lab` follow this; each point has a fixture that breaks only it.
-- The layout gate's 16 MiB cap and the decoded scan of `job-laurel.txt` land in their own `ci:` pull request.
-- Revert: with the code it describes.
+- Each point has a fixture breaking only it. Not closed: a result added while `verify` reads is seen only by its
+  second listing; host root and its clock (ADR 0077 point 8). The layout cap and the scan of every window file land
+  in their own `ci:` pull request, before any window. Revert: with the code it describes.

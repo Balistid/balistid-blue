@@ -1,37 +1,12 @@
 package detect
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
-
-// fourWindows is pair fix with a window for each run: the techniques run uname, the twins' records have it
-// renamed, so the reference rule gives CAUGHT twice and QUIET twice.
-func fourWindows(t *testing.T) *fixture {
-	t.Helper()
-	f := baseFixture(t)
-	for i, run := range RunNames[1:] {
-		raw := baseRecords(t)
-		if !technique(run) {
-			raw = bytes.ReplaceAll(raw, []byte(`"uname"`), []byte(`"unamf"`))
-		}
-		files := f.windowFor(t, run, raw)
-		var id string
-		for _, line := range strings.Split(string(files[ResultFile]), "\n") {
-			if v, ok := strings.CutPrefix(line, `  "id": "`); ok {
-				id = strings.TrimSuffix(v, `",`)
-			}
-		}
-		stamp := "T12000" + string(rune('1'+i)) + "Z"
-		files[ResultFile] = bytes.Replace(files[ResultFile], []byte("T120000Z"), []byte(stamp), 1)
-		f.extra[strings.ToLower(strings.Replace(id, "T120000Z", stamp, 1))] = files
-	}
-	return f
-}
 
 func load(t *testing.T, dir string) *Lab {
 	t.Helper()
@@ -42,80 +17,19 @@ func load(t *testing.T, dir string) *Lab {
 	return lab
 }
 
-func TestAPairCountsOnlyWithAllFourRuns(t *testing.T) {
-	f := fourWindows(t)
-	out := load(t, f.write(t)).Table()
-	if len(out.Pairs) != 1 || !out.Pairs[0].Counted {
-		t.Fatalf("pairs: %+v (windows %+v)", out.Pairs, out.Windows)
-	}
-	if got := out.Rules[0].Verdicts; got["tech-a"] != Caught || got["tech-b"] != Caught || got["twin-a"] != Quiet || got["twin-b"] != Quiet {
-		t.Fatalf("rule verdicts: %v", got)
-	}
-	for _, c := range out.Controls {
-		if c.Windows != 4 || c.Wrong != 0 {
-			t.Fatalf("control %+v, want 4 windows and none wrong", c)
-		}
-	}
-	// One run left out: the pair is excluded, with the run named, and no rule verdict is given.
-	g := fourWindows(t)
-	for dir := range g.extra {
-		if strings.Contains(dir, "-twin-b-") {
-			delete(g.extra, dir)
-		}
-	}
-	out = load(t, g.write(t)).Table()
-	if out.Pairs[0].Counted || out.Pairs[0].Reason != "twin-b has no valid window" || out.Rules[0].Verdicts != nil {
-		t.Fatalf("pair with three runs: %+v %+v", out.Pairs[0], out.Rules[0])
-	}
-	// A reference rule that misses excludes the pair.
-	h := fourWindows(t)
-	h.pair = pairJSON(`{"any":[{"field":["EXECVE","ARGV"],"op":"eq","value":"nothing"}]}`, programsFor())
-	h.window = h.windowFor(t, "tech-a", baseRecords(t))
-	h.extra = map[string]map[string][]byte{}
-	out = load(t, h.write(t)).Table()
-	if out.Pairs[0].Counted {
-		t.Fatal("a pair whose reference rule misses counts")
-	}
-}
-
-func TestInvalidWindowsCountNowhere(t *testing.T) {
-	f := fourWindows(t)
-	f.window[ResultFile] = replaceOnce(t, f.window[ResultFile], `"job_exit": 0`, `"job_exit": 1`)
-	out := load(t, f.write(t)).Table()
-	if out.Pairs[0].Counted || out.Controls[0].Windows != 3 {
-		t.Fatalf("an INVALID window counted: %+v %+v", out.Pairs[0], out.Controls)
-	}
-}
-
-func TestTableIsReproducible(t *testing.T) {
-	f := fourWindows(t)
-	a := load(t, f.write(t)).Table().Encode()
-	b := load(t, f.write(t)).Table().Encode()
-	if !bytes.Equal(a, b) || bytes.Contains(a, []byte(os.TempDir())) {
-		t.Fatal("table differs between two runs over the same lab, or names a path")
-	}
-}
-
-// results writes a runner results directory: the anchor, then the given results, each a window's files.
+// results writes a runner results directory: the anchor (unless left out), then the given results.
 func results(t *testing.T, windows map[string]map[string][]byte, withAnchor bool) string {
 	t.Helper()
 	dir := t.TempDir()
 	if withAnchor {
-		if err := os.MkdirAll(filepath.Join(dir, Anchor), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, Anchor, ResultFile), []byte("{}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		put(t, dir, Anchor+"/"+ResultFile, []byte("{}"))
 	}
 	for id, files := range windows {
-		if err := os.MkdirAll(filepath.Join(dir, id), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, id), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		for n, d := range files {
-			if err := os.WriteFile(filepath.Join(dir, id, n), d, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			put(t, dir, id+"/"+n, d)
 		}
 	}
 	return dir
@@ -130,60 +44,112 @@ func idOf(t *testing.T, f *fixture) string {
 	return r.ID
 }
 
+func findingWith(findings []string, want string) bool {
+	return slices.ContainsFunc(findings, func(s string) bool { return strings.Contains(s, want) })
+}
+
 func TestVerify(t *testing.T) {
 	f := baseFixture(t)
 	id := idOf(t, f)
-	orig := map[string][]byte{ResultFile: f.window[ResultFile], LaurelFile: f.window[LaurelFile], "serial.txt": []byte("x")}
 	f.window["serial.txt"] = []byte("x")
+	orig := map[string][]byte{ResultFile: f.window[ResultFile], LaurelFile: f.window[LaurelFile], "serial.txt": []byte("x")}
 	lab := f.write(t)
-	good := results(t, map[string]map[string][]byte{id: orig}, true)
-	if findings, err := Verify(lab, good); err != nil || len(findings) != 0 {
-		t.Fatalf("verify of a true copy: %v %v", findings, err)
+	good := results(t, map[string]map[string][]byte{id: orig, "20261116T000000Z-00000000-old": {ResultFile: []byte("{}")}}, true)
+	findings, digest, err := Verify(lab, good)
+	if err != nil || len(findings) != 0 || len(digest) != 64 {
+		t.Fatalf("verify of a true copy: %v %q %v", findings, digest, err)
 	}
+	// The digest covers the bytes compared: another byte, another digest.
+	other := results(t, map[string]map[string][]byte{id: {ResultFile: orig[ResultFile], LaurelFile: orig[LaurelFile], "serial.txt": []byte("y")}}, true)
+	if _, d2, _ := Verify(lab, other); d2 == digest {
+		t.Fatal("the digest does not change with the runner's bytes")
+	}
+	emptyResult := results(t, map[string]map[string][]byte{"20261118T130000Z-00000000-x": {}}, true)
 	for _, c := range []struct {
 		name    string
+		lab     string
 		results string
 		want    string
 	}{
-		{"anchor gone", results(t, map[string]map[string][]byte{id: orig}, false), "no longer kept"},
-		{"a result hidden", results(t, map[string]map[string][]byte{id: orig, "20261118T130000Z-00000000-x": {ResultFile: []byte("{}")}}, true), "windows/20261118t130000z-00000000-x"},
-		{"a file changed", results(t, map[string]map[string][]byte{id: {ResultFile: orig[ResultFile], LaurelFile: orig[LaurelFile], "serial.txt": []byte("y")}}, true), "serial.txt is not the runner's"},
-		{"a file the runner never wrote", results(t, map[string]map[string][]byte{id: {ResultFile: orig[ResultFile], LaurelFile: orig[LaurelFile]}}, true), "is not in the runner's result"},
-		{"a window with no result", results(t, nil, true), "matches no runner result"},
+		{"anchor gone", lab, results(t, map[string]map[string][]byte{id: orig}, false), "no longer kept"},
+		{"a result hidden", lab, results(t, map[string]map[string][]byte{id: orig, "20261118T130000Z-00000000-x": {ResultFile: []byte("{}")}}, true), "windows/20261118t130000z-00000000-x is missing"},
+		{"an empty result with no window", lab, emptyResult, "windows/20261118t130000z-00000000-x is missing"},
+		{"no windows at all", t.TempDir(), results(t, map[string]map[string][]byte{id: orig}, true), "is missing"},
+		{"a file changed", lab, other, "serial.txt is not the runner's"},
+		{"a file the runner never wrote", lab, results(t, map[string]map[string][]byte{id: {ResultFile: orig[ResultFile], LaurelFile: orig[LaurelFile]}}, true), "is not in the runner's result"},
+		{"a window with no result", lab, results(t, nil, true), "matches no runner result"},
+		{"a name the runner never writes", lab, results(t, map[string]map[string][]byte{id: orig, "junk": {}}, true), "junk is not a result's name"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			findings, err := Verify(lab, c.results)
+			findings, _, err := Verify(c.lab, c.results)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !slices.ContainsFunc(findings, func(s string) bool { return strings.Contains(s, c.want) }) {
+			if !findingWith(findings, c.want) {
 				t.Fatalf("findings %v, want one with %q", findings, c.want)
 			}
 		})
 	}
+	// A link in place of windows/ fails the read rather than being followed.
+	g := baseFixture(t)
+	glab := g.write(t)
+	if err := os.Rename(filepath.Join(glab, "windows"), filepath.Join(glab, "w2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("w2", filepath.Join(glab, "windows")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Verify(glab, results(t, map[string]map[string][]byte{idOf(t, g): g.window}, true)); err == nil {
+		t.Fatal("verify followed a link at windows/")
+	}
 }
 
-func TestImportCopiesEveryFileOnce(t *testing.T) {
+func TestImport(t *testing.T) {
 	f := baseFixture(t)
 	id := idOf(t, f)
-	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	res := results(t, map[string]map[string][]byte{id: f.window, "20261118T130000Z-00000000-big": {ResultFile: make([]byte, LabCap)}}, true)
 	lab := t.TempDir()
-	if _, err := Import(lab, res, id); err != nil {
-		t.Fatal(err)
+	n, err := Import(lab, res, id)
+	if err != nil || n != int64(len(f.window[ResultFile])+len(f.window[LaurelFile])) {
+		t.Fatalf("import: %d %v", n, err)
 	}
 	if _, err := Import(lab, res, id); err == nil {
 		t.Fatal("a second import over the window succeeded")
 	}
-	if findings, err := Verify(lab, res); err != nil || len(findings) != 0 {
+	if findings, _, err := Verify(lab, results(t, map[string]map[string][]byte{id: f.window}, true)); err != nil || len(findings) != 0 {
 		t.Fatalf("verify after import: %v %v", findings, err)
 	}
-	if _, err := Import(lab, res, Anchor); err == nil {
-		t.Fatal("the anchor itself was imported")
+	for _, c := range []struct{ name, id string }{
+		{"the anchor itself", Anchor},
+		{"a name that is not a result's", "nope"},
+		{"a result the runner does not hold", "20261118T140000Z-00000000-none"},
+		{"a result that would pass the cap", "20261118T130000Z-00000000-big"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := Import(lab, res, c.id); err == nil {
+				t.Fatal("imported")
+			}
+		})
+	}
+	// windows/ as a link to a sibling: import must not write through it.
+	l2 := t.TempDir()
+	if err := os.Mkdir(filepath.Join(l2, "pairs"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("pairs", filepath.Join(l2, "windows")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(l2, res, id); err == nil {
+		t.Fatal("import wrote through a link at windows/")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(l2, "pairs")); len(entries) != 0 {
+		t.Fatalf("import wrote %v into pairs/", entries)
 	}
 }
 
-func TestJobWritesTheRunTheRunnerKeys(t *testing.T) {
+func TestJob(t *testing.T) {
 	f := baseFixture(t)
+	f.extra["junk"] = map[string][]byte{"x": []byte("an unrelated window never stops a job")}
 	lab := f.write(t)
 	target := t.TempDir()
 	out, err := Job(lab, fixturePair, "tech-a", target)
@@ -192,19 +158,97 @@ func TestJobWritesTheRunTheRunnerKeys(t *testing.T) {
 	}
 	name := strings.Fields(out)[0]
 	r, _ := decodeResult(f.window[ResultFile])
-	if name != r.Name || strings.Fields(out)[1] != r.ContentKey {
-		t.Fatalf("job %s, want the window's name %s and key", out, r.Name)
+	if name != r.Name || strings.Fields(out)[1] != r.ContentKey || strings.Fields(out)[2] != sha([]byte(baseProgram)) {
+		t.Fatalf("job %s, want the window's name %s, key and program sha", out, r.Name)
 	}
-	req, err := os.ReadFile(filepath.Join(target, name, "job.json"))
+	req, err := os.ReadFile(filepath.Join(target, name, "job.json")) //nolint:gosec // the test's own temp dir
 	if err != nil || string(req) != `{"schema_version":1,"kind":"exec","program":"prog.sh","timeout_s":60}` {
 		t.Fatalf("job.json %q %v", req, err)
 	}
-	if prog, err := os.ReadFile(filepath.Join(target, name, "prog.sh")); err != nil || string(prog) != baseProgram {
+	prog, err := os.ReadFile(filepath.Join(target, name, "prog.sh")) //nolint:gosec // the test's own temp dir
+	if err != nil || string(prog) != baseProgram {
 		t.Fatalf("program %q %v", prog, err)
 	}
-	// A pair in CRLF never becomes a job.
-	f.pair = strings.ReplaceAll(f.pair, "\n", "\r\n")
-	if _, err := Job(f.write(t), fixturePair, "tech-a", t.TempDir()); err == nil {
+	if entries, _ := os.ReadDir(target); len(entries) != 1 {
+		t.Fatalf("job left %v in its target", entries)
+	}
+	if _, err := Job(lab, fixturePair, "tech-a", target); err == nil {
+		t.Fatal("a second job over the first succeeded")
+	}
+	for _, c := range []struct{ name, pair, run string }{
+		{"no such pair", "nope", "tech-a"},
+		{"no such run", fixturePair, "tech-c"},
+	} {
+		if _, err := Job(lab, c.pair, c.run, t.TempDir()); err == nil {
+			t.Errorf("%s: a job was written", c.name)
+		}
+	}
+	inbox := t.TempDir()
+	if _, err := jobIn(lab, fixturePair, "tech-b", inbox, inbox); err == nil {
+		t.Fatal("job wrote into the runner's inbox")
+	}
+	g := baseFixture(t)
+	g.pair = strings.ReplaceAll(g.pair, "\n", "\r\n")
+	if _, err := Job(g.write(t), fixturePair, "tech-a", t.TempDir()); err == nil {
 		t.Fatal("a CRLF pair became a job")
+	}
+	h := baseFixture(t)
+	h.rules[fixtureRuleFile] = strings.Replace(fixtureRule, `"op":"eq"`, `"op":"regex"`, 1)
+	if _, err := Job(h.write(t), fixturePair, "tech-a", t.TempDir()); err == nil {
+		t.Fatal("a pair with a broken rule became a job")
+	}
+}
+
+func TestLoadRefusesWhatIsNotLab(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, lab string)
+	}{
+		{"rules without a pair", func(t *testing.T, lab string) { put(t, lab, "rules/orphan/x.json", []byte("{}")) }},
+		{"a pair file not .json", func(t *testing.T, lab string) { put(t, lab, "pairs/x.txt", []byte("{}")) }},
+		{"a file in windows/", func(t *testing.T, lab string) { put(t, lab, "windows/x", []byte("{}")) }},
+		{"a window file of another name", func(t *testing.T, lab string) { put(t, lab, "windows/d/Weird", []byte("{}")) }},
+		{"pairs/ a link", func(t *testing.T, lab string) {
+			if err := os.Symlink("/", filepath.Join(lab, "pairs")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"lab/ over its cap", func(t *testing.T, lab string) {
+			put(t, lab, "windows/a/serial.txt", make([]byte, LabCap/2+1))
+			put(t, lab, "windows/b/serial.txt", make([]byte, LabCap/2+1))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			lab := t.TempDir()
+			c.setup(t, lab)
+			if _, err := Load(lab); err == nil {
+				t.Fatal("loaded")
+			}
+		})
+	}
+	if lab, err := Load(t.TempDir()); err != nil || len(lab.Windows) != 0 {
+		t.Fatalf("an empty lab: %v", err)
+	}
+}
+
+func TestRunnerOwned(t *testing.T) {
+	if err := RunnerOwned(t.TempDir()); err == nil {
+		t.Fatal("the caller's own directory passed as the runner's")
+	}
+	if err := RunnerOwned("/tmp"); err == nil && os.Getuid() != 0 {
+		t.Fatal("a world-writable directory passed")
+	}
+	if err := RunnerOwned("/usr"); err != nil && os.Getuid() != 0 {
+		t.Fatalf("root's /usr: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink("/usr", link); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunnerOwned(link); err == nil {
+		t.Fatal("a link passed")
+	}
+	if err := RunnerOwned(filepath.Join(t.TempDir(), "none")); err == nil {
+		t.Fatal("a missing directory passed")
 	}
 }

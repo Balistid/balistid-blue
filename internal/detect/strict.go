@@ -10,13 +10,19 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"unicode/utf8"
 )
 
 // object is a decoded JSON object; arrays decode to []any, numbers to json.Number.
 type object = map[string]any
 
-var integerLiteral = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
+// integerLiteral is an integer as the judge's own data and the runner's results spell it: no fraction, no
+// exponent, no "-0". eventInteger is any integer a record may spell, "-0" included; JSON forbids leading zeros.
+var (
+	integerLiteral = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
+	eventInteger   = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
+)
 
 // errRepeated marks a key repeated in one object (with another value, where same values are allowed).
 var errRepeated = errors.New("repeated key")
@@ -68,8 +74,10 @@ func walk(dec *json.Decoder, tok json.Token, sameDup bool) (any, error) {
 				}
 				o[key] = v
 			}
-			_, err := dec.Token() // '}'
-			return o, err
+			if _, err := dec.Token(); err != nil { // '}'
+				return nil, fmt.Errorf("decode: %w", err)
+			}
+			return o, nil
 		case '[':
 			list := []any{}
 			for dec.More() {
@@ -83,8 +91,10 @@ func walk(dec *json.Decoder, tok json.Token, sameDup bool) (any, error) {
 				}
 				list = append(list, v)
 			}
-			_, err := dec.Token() // ']'
-			return list, err
+			if _, err := dec.Token(); err != nil { // ']'
+				return nil, fmt.Errorf("decode: %w", err)
+			}
+			return list, nil
 		}
 		return nil, errors.New("unexpected delimiter")
 	default:
@@ -162,13 +172,26 @@ func str(o object, key string) (string, bool) {
 	return s, ok
 }
 
-// integer returns o[key] if it is a JSON number without fraction or exponent that fits an int64.
-func integer(o object, key string) (int64, bool) {
-	n, ok := o[key].(json.Number)
+// integer returns o[key] if it is an integer spelled as integerLiteral that fits an int64.
+func integer(o object, key string) (int64, bool) { return asInt(o[key]) }
+
+// asInt returns v if it is an integer spelled as integerLiteral that fits an int64.
+func asInt(v any) (int64, bool) {
+	n, ok := v.(json.Number)
 	if !ok || !integerLiteral.MatchString(string(n)) {
 		return 0, false
 	}
-	i, err := n.Int64()
+	i, err := strconv.ParseInt(string(n), 10, 64)
+	return i, err == nil
+}
+
+// eventInt returns v if it is an integer of a record, in any spelling JSON allows, that fits an int64.
+func eventInt(v any) (int64, bool) {
+	n, ok := v.(json.Number)
+	if !ok || !eventInteger.MatchString(string(n)) {
+		return 0, false
+	}
+	i, err := strconv.ParseInt(string(n), 10, 64)
 	return i, err == nil
 }
 

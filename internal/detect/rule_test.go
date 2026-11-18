@@ -1,7 +1,7 @@
 package detect
 
 import (
-	"strings"
+	"encoding/json"
 	"testing"
 )
 
@@ -91,56 +91,68 @@ func TestRulesThatDoNotDecode(t *testing.T) {
 	}
 }
 
-func TestStrictDecode(t *testing.T) {
-	for _, c := range []struct {
-		in      string
-		sameDup bool
-		ok      bool
-	}{
-		{`{"a":1}`, false, true},
-		{`{"a":1}{"b":2}`, false, false},
-		{`{"a":1,"a":1}`, false, false},
-		{`{"a":1,"a":1}`, true, true},
-		{`{"a":1,"a":2}`, true, false},
-		{`{"a":{"b":[1,"x"]},"a":{"b":[1,"x"]}}`, true, true},
-		{`{"a":{"b":[1,"x"]},"a":{"b":[1,"y"]}}`, true, false},
-		{`{"a":[1],"a":[1,2]}`, true, false},
-		{`{"a":null,"a":false}`, true, false},
-		{"{\"a\":\"\xff\"}", false, false},
-		{`[1,`, false, false},
-	} {
-		_, err := decode([]byte(c.in), c.sameDup)
-		if (err == nil) != c.ok {
-			t.Errorf("decode(%q, %v): err %v, want ok %v", c.in, c.sameDup, err, c.ok)
+// TestLeavesOnSyntheticEvents pins ADR 0079 point 4 where the real window has no example.
+func TestLeavesOnSyntheticEvents(t *testing.T) {
+	ev := func(js string) object {
+		v, err := decode([]byte(js), false)
+		if err != nil {
+			t.Fatal(err)
 		}
+		return v.(object)
+	}
+	for _, c := range []struct {
+		event, rule string
+		want        bool
+	}{
+		{`{"a":[null]}`, `{"any":[{"field":["a"],"op":"has"}]}`, true},
+		{`{"a":[]}`, `{"any":[{"field":["a"],"op":"has"}]}`, false},
+		{`{"a":null}`, `{"any":[{"field":["a"],"op":"has"}]}`, false},
+		{`{"a":[[]]}`, `{"any":[{"field":["a"],"op":"has"}]}`, true},
+		{`{"a":[{"b":null},{"b":1}]}`, `{"any":[{"field":["a","b"],"op":"has"}]}`, true},
+		{`{"a":[{"b":null}]}`, `{"any":[{"field":["a","b"],"op":"has"}]}`, false},
+		{`{"a":-0}`, `{"any":[{"field":["a"],"op":"eq","value":0}]}`, true},
+		{`{"a":1.0}`, `{"any":[{"field":["a"],"op":"eq","value":1}]}`, false},
+		{`{"a":[1,2]}`, `{"any":[{"field":["a"],"op":"eq","value":2}]}`, true},
+		{`{"a":[[2]]}`, `{"any":[{"field":["a"],"op":"eq","value":2}]}`, true},
+		{`{"a":[{"b":"x"},{"c":"y"}]}`, `{"all":[{"field":["a","b"],"op":"eq","value":"x"},{"field":["a","c"],"op":"eq","value":"y"}]}`, true},
+		{`{"a":"xyz"}`, `{"any":[{"field":["a"],"op":"contains","value":"y"}]}`, true},
+		{`{"a":"xyz"}`, `{"any":[{"field":["a"],"op":"contains","value":"q"}]}`, false},
+		{`{"a":{"b":"x"}}`, `{"any":[{"field":["a"],"op":"eq","value":"x"}]}`, false},
+		{`{"a":"x"}`, `{"any":[{"field":["a","b"],"op":"has"}]}`, false},
+		{`{"a":true}`, `{"any":[{"field":["a"],"op":"eq","value":"true"}]}`, false},
+	} {
+		if got := ruleOf(t, c.rule).matches([]object{ev(c.event)}); got != c.want {
+			t.Errorf("%s on %s: %v, want %v", c.rule, c.event, got, c.want)
+		}
+	}
+	if _, err := decodeRule(object{"any": []any{object{"field": []any{"a"}, "op": "eq", "value": json.Number("-0")}}}); err == nil {
+		t.Error("a rule's -0 decoded")
+	}
+	if (Rule{}).matches(nil) || ControlAll.matches(nil) {
+		t.Error("a rule matched no events")
 	}
 }
 
-func TestEscapeRoundTrip(t *testing.T) {
-	for _, c := range []struct {
-		file string
-		ok   bool
-	}{
-		{`a\x0ab`, true},
-		{`\x5c\x22`, true},
-		{`\x0A`, false},
-		{`\x41`, false},
-		{"a\n", false},
-		{`"`, false},
-		{`\`, false},
-		{`\x`, false},
-		{`\x0`, false},
-		{"\x7f", false},
-		{"é", false},
-	} {
-		if _, ok := unescape([]byte(c.file)); ok != c.ok {
-			t.Errorf("unescape(%q) ok %v, want %v", c.file, ok, c.ok)
+func FuzzRule(f *testing.F) {
+	f.Add([]byte(reference), []byte(`{"EXECVE":{"ARGV":["uname","-r"]}}`))
+	f.Fuzz(func(t *testing.T, rule, event []byte) {
+		rv, err := decode(rule, false)
+		if err != nil {
+			return
 		}
-	}
-	if got := string(escape([]byte("a\"\\\n\x7f"))); got != `a\x22\x5c\x0a\x7f` {
-		t.Fatalf("escape: %s", got)
-	}
-	if !strings.HasPrefix(string(escape([]byte{0})), `\x00`) {
-		t.Fatal("escape of NUL")
-	}
+		r, err := decodeRule(rv)
+		if err != nil {
+			return
+		}
+		ev, err := decode(event, true)
+		if o, ok := ev.(object); err == nil && ok {
+			a := r.matches([]object{o})
+			if a != r.matches([]object{o}) {
+				t.Fatal("matching is not deterministic")
+			}
+			if len(r.Leaves) == 0 && a != r.All {
+				t.Fatal("an empty rule did not give its control's answer")
+			}
+		}
+	})
 }

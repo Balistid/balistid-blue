@@ -38,6 +38,7 @@ func verdict(r Rule, w Window) Verdict {
 
 // TableOutput is `balistid-lab table`'s document: fixed order, no time, no absolute path.
 type TableOutput struct {
+	Judge       string       `json:"judge"`
 	NotMeasured string       `json:"not_measured"`
 	Windows     []WindowRow  `json:"windows"`
 	Pairs       []PairRow    `json:"pairs"`
@@ -78,7 +79,7 @@ type RuleRow struct {
 	Verdicts map[string]Verdict `json:"verdicts,omitempty"`
 }
 
-// CrossRow is a rule's verdict on another counted pair's window: QUIET or NOISY only.
+// CrossRow is a rule's verdict on another pair's valid window made after its own pair's first: QUIET or NOISY.
 type CrossRow struct {
 	Rule    string  `json:"rule"`
 	Window  string  `json:"window"`
@@ -87,18 +88,23 @@ type CrossRow struct {
 
 // Table judges lab: windows, pairs, controls, each rule on its pair and on the others.
 func (lab *Lab) Table() TableOutput {
-	out := TableOutput{NotMeasured: NotMeasured, Windows: []WindowRow{}, Pairs: []PairRow{}, Rules: []RuleRow{}, Cross: []CrossRow{}}
+	out := TableOutput{Judge: Version, NotMeasured: NotMeasured, Windows: []WindowRow{}, Pairs: []PairRow{},
+		Controls: []ControlRow{}, Rules: []RuleRow{}, Cross: []CrossRow{}}
 	valid := map[string]map[string]Window{} // pair -> run -> the run's one valid window
+	first := map[string]string{}            // pair -> its first window of any content, by id
 	var all []Window
 	for _, w := range lab.Windows {
 		out.Windows = append(out.Windows, WindowRow{Window: w.Dir, Pair: w.Pair, Run: w.Run, Valid: w.Valid(), Reason: w.Reason})
+		if f, seen := first[w.Pair]; w.Pair != "" && (!seen || w.Dir < f) {
+			first[w.Pair] = w.Dir
+		}
 		if !w.Valid() {
 			continue
 		}
 		if valid[w.Pair] == nil {
 			valid[w.Pair] = map[string]Window{}
 		}
-		valid[w.Pair][w.Run] = w // one per run: a second window of a run has its program (ReasonProgramRepeated) or another hash (ReasonName)
+		valid[w.Pair][w.Run] = w // one per run: another has the same program (ReasonProgramRepeated) or hash (ReasonName)
 		all = append(all, w)
 	}
 	counted := map[string]bool{}
@@ -108,22 +114,7 @@ func (lab *Lab) Table() TableOutput {
 		counted[name] = row.Counted
 		out.Pairs = append(out.Pairs, row)
 	}
-	for _, c := range []struct {
-		name string
-		rule Rule
-		want func(Window) Verdict
-	}{
-		{"empty any", ControlEmpty, func(w Window) Verdict { return map[bool]Verdict{true: Missed, false: Quiet}[technique(w.Run)] }},
-		{"empty all", ControlAll, func(w Window) Verdict { return map[bool]Verdict{true: Caught, false: Noisy}[technique(w.Run)] }},
-	} {
-		row := ControlRow{Control: c.name, Windows: len(all)}
-		for _, w := range all {
-			if verdict(c.rule, w) != c.want(w) {
-				row.Wrong++
-			}
-		}
-		out.Controls = append(out.Controls, row)
-	}
+	out.Controls = controls(all)
 	for _, pair := range sortedKeys(lab.rules) {
 		for _, rf := range lab.rules[pair] {
 			row := RuleRow{Rule: rf.Path, Pair: pair, Counted: counted[pair]}
@@ -132,24 +123,60 @@ func (lab *Lab) Table() TableOutput {
 				for _, run := range RunNames {
 					row.Verdicts[run] = verdict(rf.Rule, valid[pair][run])
 				}
-				for _, other := range sortedKeys(valid) {
-					if other == pair || !counted[other] {
-						continue
-					}
-					for _, run := range RunNames {
-						w := valid[other][run]
-						v := Quiet
-						if rf.Rule.matches(w.events) {
-							v = Noisy
-						}
-						out.Cross = append(out.Cross, CrossRow{Rule: rf.Path, Window: w.Dir, Verdict: v})
-					}
-				}
 			}
 			out.Rules = append(out.Rules, row)
+			if e := lab.pairs[pair]; e.pairErr == nil && e.ruleErr == nil {
+				out.Cross = append(out.Cross, cross(rf, pair, first[pair], all)...)
+			}
 		}
 	}
 	return out
+}
+
+// cross scores a rule on every valid window of another pair made after its own pair's first window, so the
+// rule was bound before those windows existed (ADR 0079 point 9); a pair without windows gives none.
+func cross(rf RuleFile, pair, since string, all []Window) []CrossRow {
+	var rows []CrossRow
+	if since == "" {
+		return rows
+	}
+	for _, w := range all {
+		if w.Pair == pair || w.Dir <= since {
+			continue
+		}
+		v := Quiet
+		if rf.Rule.matches(w.events) {
+			v = Noisy
+		}
+		rows = append(rows, CrossRow{Rule: rf.Path, Window: w.Dir, Verdict: v})
+	}
+	return rows
+}
+
+// controls runs the built-in rules over every valid window: how many it saw and how many went wrong.
+func controls(all []Window) []ControlRow {
+	var rows []ControlRow
+	for _, c := range []struct {
+		name            string
+		rule            Rule
+		technique, twin Verdict
+	}{
+		{"empty any", ControlEmpty, Missed, Quiet},
+		{"empty all", ControlAll, Caught, Noisy},
+	} {
+		row := ControlRow{Control: c.name, Windows: len(all)}
+		for _, w := range all {
+			want := c.twin
+			if technique(w.Run) {
+				want = c.technique
+			}
+			if verdict(c.rule, w) != want {
+				row.Wrong++
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 // counts reports whether a pair counts (ADR 0077 point 5) and, if not, why; windows gets each run's window.
@@ -166,6 +193,11 @@ func (lab *Lab) counts(name string, runs map[string]Window, windows map[string]s
 		return false, "the pair does not decode"
 	case entry.ruleErr != nil:
 		return false, "a rule does not decode"
+	}
+	for _, w := range lab.Windows {
+		if w.Pair == name && w.Hash != entry.hash {
+			return false, "window " + w.Dir + " ran other content of the pair"
+		}
 	}
 	for _, run := range RunNames {
 		w, ok := runs[run]

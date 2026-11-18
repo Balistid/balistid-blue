@@ -90,7 +90,7 @@ func decodeLeaf(v any) (Leaf, error) {
 		case string:
 			leaf.Value = x
 		case json.Number:
-			if leaf.Op != OpEq || !integerLiteral.MatchString(string(x)) {
+			if _, isInt := asInt(x); leaf.Op != OpEq || !isInt {
 				return Leaf{}, errors.New("a number is an integer, for eq only")
 			}
 			leaf.Value = x
@@ -131,48 +131,55 @@ func (r Rule) holds(ev object) bool {
 }
 
 func (l Leaf) holds(ev object) bool {
-	return reach(ev, l.Field, func(v any) bool { return l.test(v) })
+	return reach(ev, l.Field, l.Op == OpHas, l.test)
 }
 
-// reach follows path from v; a step that meets a list goes into each element; it reports whether test holds
-// for some value the whole path reaches (ADR 0079 point 4).
-func reach(v any, path []string, test func(any) bool) bool {
-	if list, ok := v.([]any); ok {
-		for _, el := range list {
-			if reach(el, path, test) {
+// reach follows path from v: a step that meets a list goes into each element. At the path's end a list is
+// tested whole when whole is set (has), else each of its elements; it reports whether test holds for some
+// value the path reaches (ADR 0079 point 4).
+func reach(v any, path []string, whole bool, test func(any) bool) bool {
+	if len(path) == 0 {
+		if list, ok := v.([]any); ok && !whole {
+			for _, el := range list {
+				if reach(el, nil, whole, test) {
+					return true
+				}
+			}
+			return false
+		}
+		return test(v)
+	}
+	switch x := v.(type) {
+	case []any:
+		for _, el := range x {
+			if reach(el, path, whole, test) {
 				return true
 			}
 		}
 		return false
+	case object:
+		next, ok := x[path[0]]
+		return ok && reach(next, path[1:], whole, test)
 	}
-	if len(path) == 0 {
-		return test(v)
-	}
-	o, ok := v.(object)
-	if !ok {
-		return false
-	}
-	next, ok := o[path[0]]
-	if !ok {
-		return false
-	}
-	return reach(next, path[1:], test)
+	return false
 }
 
-// test is the leaf's op on one value the path reached; reach never hands it a list, and an empty list reaches
-// nothing, so `has` holds on a value that is not null.
+// test is the leaf's op on one value the path reached. `has` holds on a value that is not null and not an
+// empty list; `eq` compares strings as strings and integers by value; `contains` takes strings only.
 func (l Leaf) test(v any) bool {
 	switch l.Op {
 	case OpHas:
-		return v != nil
+		list, isList := v.([]any)
+		return v != nil && (!isList || len(list) > 0)
 	case OpEq:
 		switch want := l.Value.(type) {
 		case string:
 			got, ok := v.(string)
 			return ok && got == want
 		case json.Number:
-			got, ok := v.(json.Number)
-			return ok && integerLiteral.MatchString(string(got)) && got == want
+			w, _ := asInt(want)
+			got, ok := eventInt(v)
+			return ok && got == w
 		}
 	case OpContains:
 		want, _ := l.Value.(string)

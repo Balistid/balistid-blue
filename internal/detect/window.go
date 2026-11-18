@@ -21,7 +21,7 @@ const (
 	ReasonRuns            Reason = "result does not hold exactly one run"
 	ReasonNotRan          Reason = "result or its run is not RAN"
 	ReasonJobFailed       Reason = "the program did not succeed with exit 0"
-	ReasonImage           Reason = "image is not a known one"
+	ReasonImage           Reason = "runner or image is not a known one"
 	ReasonDirectory       Reason = "directory is not the result id in lower case"
 	ReasonBeforeAnchor    Reason = "result is not after the anchor"
 	ReasonPair            Reason = "the job's pair does not decode"
@@ -30,15 +30,15 @@ const (
 	ReasonContentKey      Reason = "content key is not the run's request and program"
 	ReasonProgram         Reason = "program sha256 is not the run's"
 	ReasonProgramRepeated Reason = "another window in lab/ holds the same program"
-	ReasonLaurelFile      Reason = "job-laurel.txt is missing"
+	ReasonLaurelFile      Reason = "job-laurel.txt is missing or not a plain file"
 	ReasonLaurelEscape    Reason = "job-laurel.txt does not escape back to itself"
 	ReasonLaurelCap       Reason = "records are over 6 MiB"
 	ReasonLaurelBytes     Reason = "records are not laurel_bytes long"
 	ReasonLaurelLine      Reason = "a record line is not one JSON object"
 	ReasonDuplicateKey    Reason = "a record repeats a key with another value"
-	ReasonNoProgramExec   Reason = "no exec of the program under the job's user"
+	ReasonNoProgramExec   Reason = "no successful exec of the program under the job's user and uid"
 	ReasonJobUID          Reason = "the job's user and its uid disagree"
-	ReasonNoCanary        Reason = "no canary exec under root after the program"
+	ReasonNoCanary        Reason = "no successful canary exec under root after the program"
 )
 
 // Reasons is the closed list; a test checks each has exactly one fixture.
@@ -51,10 +51,10 @@ var Reasons = []Reason{
 
 // Window is one directory of lab/windows as the judge reads it.
 type Window struct {
-	Dir       string
-	Pair, Run string // set once the job name parses
-	Reason    Reason // empty when valid
-	events    []object
+	Dir             string
+	Pair, Run, Hash string // set once the job name parses
+	Reason          Reason // empty when valid
+	events          []object
 }
 
 // Valid reports whether the window passed every check.
@@ -63,7 +63,8 @@ func (w Window) Valid() bool { return w.Reason == "" }
 // windowInput is what checkWindow needs from lab/.
 type windowInput struct {
 	dir      string
-	files    map[string][]byte // the window's files by name; a missing one is absent
+	files    map[string][]byte // the window's files it could read, by name
+	readErr  map[string]error  // the files it could not
 	pairs    map[string]pairEntry
 	programs map[string]int // windows in lab/ per program sha256
 }
@@ -84,8 +85,8 @@ func checkWindow(in windowInput) Window {
 		w.Reason = ReasonResultDecode
 		return w
 	}
-	if pair, run, _, ok := splitJobName(r.Name); ok {
-		w.Pair, w.Run = pair, run
+	if pair, run, hash, ok := splitJobName(r.Name); ok {
+		w.Pair, w.Run, w.Hash = pair, run, hash
 	}
 	w.Reason, w.events = check(in, r)
 	if w.Reason != "" {
@@ -95,12 +96,13 @@ func checkWindow(in windowInput) Window {
 }
 
 func check(in windowInput, r result) (Reason, []object) {
+	img, known := images[r.ImageCommit]
 	switch {
 	case r.Schema != 1:
 		return ReasonSchema, nil
 	case r.Label != "agent":
 		return ReasonLabel, nil
-	case !r.HasJob || r.Kind != "exec" || !r.HasProgramFields:
+	case !r.HasJob || r.Kind != "exec" || !r.HasExec:
 		return ReasonKind, nil
 	case r.Runs != 1:
 		return ReasonRuns, nil
@@ -108,7 +110,7 @@ func check(in windowInput, r result) (Reason, []object) {
 		return ReasonNotRan, nil
 	case r.JobResult != "success" || !r.HasExit || r.JobExit != 0:
 		return ReasonJobFailed, nil
-	case images[r.ImageCommit] == "" || images[r.ImageCommit] != r.ImageSHA:
+	case !known || img.sha256 != r.ImageSHA || !runners[r.RunnerCommit]:
 		return ReasonImage, nil
 	case !resultID.MatchString(r.ID) || in.dir != strings.ToLower(r.ID):
 		return ReasonDirectory, nil
@@ -116,9 +118,9 @@ func check(in windowInput, r result) (Reason, []object) {
 		return ReasonBeforeAnchor, nil
 	}
 	pairName, runName, hash, ok := splitJobName(r.Name)
-	entry, known := in.pairs[pairName]
+	entry, isPair := in.pairs[pairName]
 	switch {
-	case !ok || !known:
+	case !ok || !isPair:
 		return ReasonName, nil
 	case entry.pairErr != nil:
 		return ReasonPair, nil
@@ -138,11 +140,17 @@ func check(in windowInput, r result) (Reason, []object) {
 	case in.programs[r.ProgramSHA] != 1:
 		return ReasonProgramRepeated, nil
 	}
-	return checkRecords(in.files, r)
+	return checkRecords(in, r, img.jobUID)
 }
 
-func checkRecords(files map[string][]byte, r result) (Reason, []object) {
-	file, present := files[LaurelFile]
+func checkRecords(in windowInput, r result, jobUID string) (Reason, []object) {
+	if err := in.readErr[LaurelFile]; err != nil {
+		if errors.Is(err, errOverCap) {
+			return ReasonLaurelCap, nil
+		}
+		return ReasonLaurelFile, nil
+	}
+	file, present := in.files[LaurelFile]
 	if !present {
 		return ReasonLaurelFile, nil
 	}
@@ -152,7 +160,7 @@ func checkRecords(files map[string][]byte, r result) (Reason, []object) {
 		return ReasonLaurelEscape, nil
 	case len(raw) > LaurelCap:
 		return ReasonLaurelCap, nil
-	case !r.HasLaurelBytes || int64(len(raw)) != r.LaurelBytes:
+	case int64(len(raw)) != r.LaurelBytes:
 		return ReasonLaurelBytes, nil
 	case len(raw) == 0 || raw[len(raw)-1] != '\n':
 		return ReasonLaurelLine, nil
@@ -169,26 +177,27 @@ func checkRecords(files map[string][]byte, r result) (Reason, []object) {
 		}
 		events = append(events, ev)
 	}
-	return checkExecs(events)
+	return checkExecs(events, jobUID)
 }
 
-// checkExecs finds the program's exec under the job's user, checks the user's name and uid agree on every
-// event (ADR 0079 point 5), and a canary exec under root after the program; it returns the job's events.
-func checkExecs(events []object) (Reason, []object) {
-	program, uid := -1, ""
+// checkExecs finds the program's successful exec under the job's user and the image's uid for it, checks the
+// user's name and uid agree on every event (ADR 0079 point 5), and a successful canary exec under root after
+// the program; it returns the job's events.
+func checkExecs(events []object, jobUID string) (Reason, []object) {
+	program := -1
 	for i, ev := range events {
-		if user(ev) == JobUser && argvIs(ev, "/bin/sh", JobProgram) {
-			program, uid = i, numericUID(ev)
+		if user(ev) == JobUser && numericUID(ev) == jobUID && execOK(ev) && argvIs(ev, "/bin/sh", JobProgram) {
+			program = i
 			break
 		}
 	}
-	if program < 0 || uid == "" {
+	if program < 0 {
 		return ReasonNoProgramExec, nil
 	}
 	var job []object
 	for _, ev := range events {
 		name, number := user(ev), numericUID(ev)
-		if (name == JobUser) != (number == uid) && (name != "" || number != "") {
+		if (name == JobUser) != (number == jobUID) {
 			return ReasonJobUID, nil
 		}
 		if name == JobUser {
@@ -196,7 +205,7 @@ func checkExecs(events []object) (Reason, []object) {
 		}
 	}
 	for _, ev := range events[program+1:] {
-		if user(ev) == "root" && numericUID(ev) == "0" && canary(ev) {
+		if user(ev) == "root" && numericUID(ev) == "0" && execOK(ev) && canary(ev) {
 			return "", job
 		}
 	}
@@ -206,6 +215,16 @@ func checkExecs(events []object) (Reason, []object) {
 func syscallOf(ev object) object {
 	sc, _ := ev["SYSCALL"].(object)
 	return sc
+}
+
+// execOK reports whether ev's syscall is an execve that succeeded with exit 0, as Laurel writes it on x86_64.
+func execOK(ev object) bool {
+	sc := syscallOf(ev)
+	nr, _ := integer(sc, "syscall")
+	exit, hasExit := integer(sc, "exit")
+	name, _ := str(sc, "SYSCALL")
+	success, _ := str(sc, "success")
+	return nr == 59 && name == "execve" && success == "yes" && hasExit && exit == 0
 }
 
 // user is SYSCALL.UID, Laurel's name for the uid, or "".
@@ -242,12 +261,13 @@ func argvIs(ev object, want ...string) bool {
 	return true
 }
 
-// canary reports whether ev execs the guest's canary: /usr/bin/true with its random argument.
+// canary reports whether ev execs the guest's canary: /usr/bin/true, as its executable too, with its argument.
 func canary(ev object) bool {
 	got := argv(ev)
 	if len(got) != 2 {
 		return false
 	}
 	arg, _ := got[1].(string)
-	return argvIs(ev, "/usr/bin/true", arg) && canaryArg.MatchString(arg)
+	exe, _ := str(syscallOf(ev), "exe")
+	return exe == "/usr/bin/true" && argvIs(ev, "/usr/bin/true", arg) && canaryArg.MatchString(arg)
 }
