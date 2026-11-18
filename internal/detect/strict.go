@@ -40,7 +40,7 @@ func decode(data []byte, sameDup bool) (any, error) {
 
 // nextToken is the decoder's next token; json.Valid held, so it has one.
 func nextToken(dec *json.Decoder) json.Token {
-	t, _ := dec.Token() //nolint:errcheck // json.Valid held: no token can fail
+	t, _ := dec.Token() // json.Valid held: no token can fail
 	return t
 }
 

@@ -2,14 +2,13 @@ package detect
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"slices"
-	"syscall"
+	"strings"
 
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
@@ -47,7 +46,24 @@ func openDir(root *os.Root, name string) (*os.Root, error) {
 
 // entries lists dir's names, sorted, every one a directory (dirs) or a regular file; anything else fails.
 func entries(dir *os.Root, dirs bool) ([]string, error) {
-	f, err := dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	list, err := listDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list))
+	for _, e := range list {
+		if (dirs && !e.IsDir()) || (!dirs && !e.Type().IsRegular()) {
+			return nil, fmt.Errorf("%s is not a %s", e.Name(), map[bool]string{true: "directory", false: "regular file"}[dirs])
+		}
+		names = append(names, e.Name())
+	}
+	slices.Sort(names)
+	return names, nil
+}
+
+// listDir lists dir's entries, at most maxEntries of them, or fails.
+func listDir(dir *os.Root) ([]os.DirEntry, error) {
+	f, err := dir.Open(".")
 	if err != nil {
 		return nil, fmt.Errorf("list: %w", err)
 	}
@@ -59,15 +75,7 @@ func entries(dir *os.Root, dirs bool) ([]string, error) {
 	if len(list) > maxEntries {
 		return nil, fmt.Errorf("list: over %d entries", maxEntries)
 	}
-	names := make([]string, 0, len(list))
-	for _, e := range list {
-		if (dirs && !e.IsDir()) || (!dirs && !e.Type().IsRegular()) {
-			return nil, fmt.Errorf("%s is not a %s", e.Name(), map[bool]string{true: "directory", false: "regular file"}[dirs])
-		}
-		names = append(names, e.Name())
-	}
-	slices.Sort(names)
-	return names, nil
+	return list, nil
 }
 
 // budget counts the bytes the judge reads from one tree against a cap (R5).
@@ -100,24 +108,12 @@ func (b *budget) read(dir *os.Root, name string, limit int64) ([]byte, error) {
 }
 
 // stagingName is a fresh name for a directory built before it is renamed into place.
-func stagingName() (string, error) {
-	var rnd [8]byte
-	if _, err := rand.Read(rnd[:]); err != nil {
-		return "", fmt.Errorf("staging: %w", err)
-	}
-	return ".staging-" + hex.EncodeToString(rnd[:]), nil
-}
+func stagingName() string { return ".staging-" + strings.ToLower(rand.Text()) }
 
 // publish writes files into a staging directory under dir and renames it to name, so a reader sees all of
-// them or none; it refuses an existing name and removes its staging on failure.
+// them or none; it refuses an existing name, checked just before the rename, and removes its staging on failure.
 func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMode os.FileMode) error {
-	if _, err := dir.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("%s already exists", name)
-	}
-	staging, err := stagingName()
-	if err != nil {
-		return err
-	}
+	staging := stagingName()
 	if err := dir.Mkdir(staging, dirMode); err != nil {
 		return fmt.Errorf("staging: %w", err)
 	}
@@ -145,7 +141,7 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 
 // syncDir makes a rename in dir durable (ENGINEERING.md 7).
 func syncDir(dir *os.Root) error {
-	f, err := dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY, 0)
+	f, err := dir.Open(".")
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
@@ -162,17 +158,9 @@ func syncDir(dir *os.Root) error {
 // treeBytes is the bytes of every regular file under dir, depth levels of directories deep at most, each
 // listed under maxEntries and never through a link (R5).
 func treeBytes(dir *os.Root, depth int) (int64, error) {
-	f, err := dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	list, err := listDir(dir)
 	if err != nil {
 		return 0, fmt.Errorf("size: %w", err)
-	}
-	list, err := f.ReadDir(maxEntries + 1)
-	_ = f.Close()
-	if err != nil && !errors.Is(err, io.EOF) {
-		return 0, fmt.Errorf("size: %w", err)
-	}
-	if len(list) > maxEntries {
-		return 0, fmt.Errorf("size: over %d entries", maxEntries)
 	}
 	var total int64
 	for _, e := range list {
