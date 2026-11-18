@@ -70,7 +70,7 @@ func Load(dir string) (*Lab, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r, err := decodeResult(in.files[ResultFile]); err == nil && r.HasExec {
+		if r, _ := decodeResult(in.files[ResultFile]); r.HasExec { // one that does not decode is the zero result
 			programs[r.ProgramSHA]++
 		}
 		inputs = append(inputs, in)
@@ -100,16 +100,16 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 	in := windowInput{dir: d, files: map[string][]byte{}}
 	w, err := openDir(windows, d)
 	if err != nil {
-		return in, fmt.Errorf("lab: windows/%w", err)
+		return windowInput{}, fmt.Errorf("lab: windows/%w", err)
 	}
 	defer w.Close() //nolint:errcheck // read-only
 	names, err := entries(w, false)
 	if err != nil {
-		return in, fmt.Errorf("lab: windows/%s: %w", d, err)
+		return windowInput{}, fmt.Errorf("lab: windows/%s: %w", d, err)
 	}
 	for _, n := range names {
 		if n != ResultFile && !textName.MatchString(n) {
-			return in, fmt.Errorf("lab: windows/%s/%s is not a runner's file name", d, n)
+			return windowInput{}, fmt.Errorf("lab: windows/%s/%s is not a runner's file name", d, n)
 		}
 		limit := int64(textCap)
 		if n == ResultFile {
@@ -117,7 +117,7 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 		}
 		data, err := b.read(w, n, limit)
 		if errors.Is(err, errOverBudget) {
-			return in, fmt.Errorf("lab: over %d bytes", LabCap)
+			return windowInput{}, fmt.Errorf("lab: over %d bytes", LabCap)
 		}
 		if err == nil {
 			in.files[n] = data
@@ -282,14 +282,16 @@ func Verify(labDir, resultsDir string) ([]string, string, error) {
 	want := map[string]bool{}
 	anchor := false
 	digest := sha256.New()
-	rb, lb := &budget{left: 4 * LabCap}, &budget{left: LabCap}
+	// results after the anchor must all be in lab/, so more than lab/ can hold is a finding, not more reading
+	rb, lb := &budget{left: LabCap}, &budget{left: LabCap}
 	for _, id := range ids {
 		switch {
 		case !resultID.MatchString(id):
 			findings = append(findings, id+" is not a result's name")
+		case id < Anchor: // not the pilot's (ADR 0078 point 1)
 		case id == Anchor:
 			anchor = true
-		case id > Anchor:
+		default:
 			want[strings.ToLower(id)] = true
 			findings = append(findings, compareWindow(results, windows, id, rb, lb, digest)...)
 		}
@@ -490,10 +492,7 @@ func outsideInbox(target string, opened os.FileInfo, inboxDir string) error {
 	if named, err := os.Stat(abs); err != nil || !os.SameFile(named, opened) {
 		return errors.New("target changed while it was opened")
 	}
-	inbox, err := os.Stat(inboxDir)
-	if err != nil {
-		return nil //nolint:nilerr // no inbox on this machine, nothing to refuse
-	}
+	inbox, _ := os.Stat(inboxDir) // no inbox on this machine: nil, which os.SameFile matches to nothing
 	for dir := abs; ; dir = filepath.Dir(dir) {
 		if d, err := os.Stat(dir); err == nil && os.SameFile(inbox, d) {
 			return errors.New("target is in the runner's inbox; build outside it and rename the job in")
