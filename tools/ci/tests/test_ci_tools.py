@@ -12,6 +12,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -233,7 +234,7 @@ def map_readme(paths) -> str:
 
 
 class DocsBudgetTest(unittest.TestCase):
-    def _repo_with(self, files: dict[str, str]) -> tempfile.TemporaryDirectory:
+    def _repo_with(self, files: dict[str, str | bytes]) -> tempfile.TemporaryDirectory:
         tmp = tempfile.TemporaryDirectory()
         repo = new_repo(tmp.name)
         files = dict(files)
@@ -241,7 +242,10 @@ class DocsBudgetTest(unittest.TestCase):
         for name, content in files.items():
             path = repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content)
             git(repo, "add", name)
         return tmp
 
@@ -258,18 +262,63 @@ class DocsBudgetTest(unittest.TestCase):
     def test_lab_data_paths(self):
         window = "lab/windows/20261116t163124z-ba1549c1-dev-1-tech-a"
         files = {"lab/pairs/dev-1.json": "{}\n", "lab/rules/dev-1/opus-1.json": "{}\n",
-                 f"{window}/result.json": "{}\n",
+                 f"{window}/result.json": "{}\n", f"{window}/job-laurel.txt": "x", f"{window}/job-out.txt": "x",
+                 f"{window}/serial.txt": "x", f"{window}/serial-1.txt": "x", f"{window}/serial-12.txt": "x",
                  "lab/results/2026-11-20.json": "{}\n", "lab/agent-errors.jsonl": "{}\n"}
         with self._repo_with(files) as tmp:
             self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
-        # job-laurel.txt is admitted only with the decoded secret scan of the windows (ADR 0077 point 6).
-        for name in (f"{window}/job-laurel.txt", "lab/windows/20261116T163124Z-ba1549c1-x/result.json",
-                     f"{window}/job-out.txt",
-                     "lab/pairs/dev-1.toml", "lab/job-laurel.txt", f"{window}/x/job-laurel.txt",
+        for name in ("lab/windows/20261116T163124Z-ba1549c1-x/result.json", "lab/windows/a-1/result.json",
+                     "lab/windows/20261116t163124z-ba1549c1/result.json",
+                     "lab/windows/20261116t163124z-ba1549c-x/job-out.txt",
+                     "lab/windows/20261116t163124z-ba1549c1-" + "a" * 65 + "/serial.txt",
+                     "lab/windows/20261116t163124z-ba1549c1--x/serial.txt",
+                     f"{window}/serial-0.txt", f"{window}/serial-01.txt", f"{window}/serial-.txt",
+                     f"{window}/other.txt", f"{window}/result.txt", f"{window}/job-laurel.json",
+                     "lab/pairs/dev-1.toml", "lab/job-laurel.txt", "lab/serial.txt", f"{window}/x/job-laurel.txt",
                      "tools/ci/job-laurel.txt", "lab/rules/dev-1/x/opus-1.json", "cmd/job-laurel.txt/main.go",
-                     "lab/windows/job-laurel.txt/result.json", "cmd/LICENSE/main.go", "internal/CODEOWNERS/x.go"):
+                     "lab/windows/job-laurel.txt/result.json", f"{window}/serial.txt/result.json",
+                     "lab/rules/serial.txt/opus-1.json", "lab/pairs/serial.txt", "lab/results/job-out.txt",
+                     "cmd/LICENSE/main.go", "internal/CODEOWNERS/x.go"):
             with self.subTest(name=name), self._repo_with({name: "x\n"}) as tmp:
                 self.assertEqual(docs_budget.main(["--repo", tmp]), 1)
+
+    def test_lab_blobs_are_printable_ascii_and_lf(self):
+        window = "lab/windows/20261116t163124z-ba1549c1-dev-1-tech-a"
+        self.assert_budget({f"{window}/job-out.txt": bytes(range(0x20, 0x7f)) + b"\n\n"}, 0)
+        for content in (b"x\x00y", b"\x7fELF\x02\x01\x01\x00", b"\x89PNG\r\n\x1a\n", b"\x1f\x8b\x08\x00",
+                        "café\n".encode(), b"x\xffy", b"x\ry", b"x\ty", b"x\x1b[2Jy"):
+            for name in (f"{window}/job-out.txt", f"{window}/result.json", "lab/pairs/dev-1.json",
+                         "lab/agent-errors.jsonl"):
+                with self.subTest(name=name, content=content):
+                    self.assert_budget({name: content}, 1)
+
+    def test_binary_lab_blob_in_an_intermediate_commit_fails_the_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            (repo / "README.md").write_text(map_readme(["lab/pairs/dev-1.json"]))
+            (repo / "lab/pairs").mkdir(parents=True)
+            (repo / "lab/pairs/dev-1.json").write_text("{}\n")
+            git(repo, "add", ".")
+            git(repo, "commit", "-q", "--no-verify", "-m", "base")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            for content in (b"{}\x00\n", b"{}\n"):
+                (repo / "lab/pairs/dev-1.json").write_bytes(content)
+                git(repo, "commit", "-q", "--no-verify", "-am", "x")
+            self.assertEqual(docs_budget.main(["--repo", tmp]), 0)
+            self.assertEqual(docs_budget.main(["--repo", tmp, "--range", f"{base}..HEAD"]), 1)
+
+    # ADR 0079 point 9: every blob under lab/ together, not one file.
+    def test_lab_holds_at_most_16_mib(self):
+        half = 8 << 20
+        for extra, expected in ((0, 0), (1, 1)):
+            with self.subTest(extra=extra):
+                self.assert_budget({"lab/rules/dev-1/opus-1.json": b"x" * half,
+                                    "lab/pairs/dev-1.json": b"x" * (half - 1 + extra) + b"\n",
+                                    "tools/ci/big.py": "#" + "x" * half + "\n"}, expected)
+
+    def assert_budget(self, files: dict[str, str | bytes], expected: int) -> None:
+        with self._repo_with(files) as tmp:
+            self.assertEqual(docs_budget.main(["--repo", tmp]), expected)
 
     def test_star_does_not_cross_directories(self):
         with self._repo_with({"tools/ci/deep/x.py": "c\n"}) as tmp:
@@ -893,8 +942,14 @@ class GitleaksWindowTest(unittest.TestCase):
                 (repo / name).write_text(text)
                 git(repo, "add", name)
             git(repo, "commit", "-q", "--no-verify", "-m", "x")
-            return subprocess.run([self.gitleaks(), "git", "--no-banner", "--config", str(REPO_ROOT / ".gitleaks.toml"),
-                                   tmp], capture_output=True).returncode
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return rescan_skipped.history(self.gitleaks(), REPO_ROOT / ".gitleaks.toml", repo)
+
+    def test_content_key_path_is_the_layouts_window_id(self):
+        config = tomllib.loads((REPO_ROOT / ".gitleaks.toml").read_text())
+        paths = [p for a in config["allowlists"] if any("content_key" in r for r in a.get("regexes", []))
+                 for p in a.get("paths", [])]
+        self.assertEqual(paths, [rf"^lab/windows/{docs_budget.WINDOW_ID}/result\.json$"])
 
     def test_content_key_of_a_window_passes(self):
         key = secrets.token_hex(32)
@@ -902,11 +957,121 @@ class GitleaksWindowTest(unittest.TestCase):
         self.assertEqual(self.leaks({"lab/windows/20261116t163124z-ba1549c1-x/result.json": result}), 0)
         base62 = random_github_token()[4:] + random_github_token()[4:32]
         for name, text in (("tools/ci/x.json", result), ("vendor/x/lab/windows/a-1/result.json", result),
+                           ("lab/windows/a-1/result.json", result),
+                           ("lab/windows/20261116t163124z-ba1549c1-x/job-out.txt", result),
+                           ("lab/windows/20261116t163124z-ba1549c1-x/sub/result.json", result),
                            ("lab/windows/20261116t163124z-ba1549c1-x/result.json",
                             result.replace('"content_key"', '"api_key"')),
                            ("lab/windows/20261116t163124z-ba1549c1-x/result.json", result.replace(key, base62))):
             with self.subTest(name=name, text=text[:30]):
                 self.assertNotEqual(self.leaks({name: text}), 0)
+
+
+def printable(data: bytes) -> bytes:
+    """The runner's escape, rangevm.Printable at 2c09799, byte by byte."""
+    return b"".join(bytes([c]) if 0x20 <= c <= 0x7e and c not in b'\\"' else b"\\x%02x" % c for c in data)
+
+
+WINDOW = "lab/windows/20261117t164346z-4e1197c7-hard-exec-1"
+
+
+class WindowRescanTest(unittest.TestCase):
+    """Every window text file in every commit is decoded and scanned with the repository rules (ADR 0079 point 3)."""
+
+    gitleaks = RescanDetectionTest.gitleaks
+
+    def api_key_record(self) -> bytes:
+        """A Laurel-shaped line with a key generic-api-key finds as it stands; escaped, it finds none. A random key
+        can hold one of the rule's stopwords, so the first of a few that the plain scan finds is taken."""
+        for _ in range(20):
+            key = "".join(secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+                          for _ in range(32))
+            record = b'{"ID":"1794933833.971:186","EXECVE":{"api_key":"' + key.encode() + b'"}}\n'
+            if subprocess.run([self.gitleaks(), "stdin", "--no-banner", "--config", str(REPO_ROOT / ".gitleaks.toml")],
+                              input=record, capture_output=True, timeout=60).returncode == 1:
+                return record
+        raise AssertionError("gitleaks found none of 20 random keys in a plain record")
+
+    def history(self, *trees: dict[str, bytes]) -> Path:
+        """One commit per tree, each tree replacing the window's files."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = new_repo(tmp.name)
+        for tree in trees:
+            git(repo, "rm", "-rq", "--ignore-unmatch", "lab")
+            for name, data in tree.items():
+                (repo / name).parent.mkdir(parents=True, exist_ok=True)
+                (repo / name).write_bytes(data)
+                git(repo, "add", name)
+            git(repo, "commit", "-q", "--no-verify", "--allow-empty", "-m", "x")
+        return repo
+
+    def rescan(self, repo: Path) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return rescan_skipped.main(["--repo", str(repo), "--range", "HEAD", "--gitleaks", self.gitleaks(),
+                                        "--config", str(REPO_ROOT / ".gitleaks.toml")])
+
+    def test_key_in_an_escaped_record_is_found_in_every_window_text_file(self):
+        clean = printable(b'{"ID":"1794933833.971:186","SYSCALL":{"comm":"systemd-run","key":"balistid-exec"}}\n')
+        for leaf in ("job-laurel.txt", "job-out.txt", "serial.txt", "serial-2.txt"):
+            with self.subTest(leaf=leaf):
+                self.assertEqual(self.rescan(self.history({f"{WINDOW}/{leaf}": clean})), 0)
+                repo = self.history({f"{WINDOW}/{leaf}": clean + printable(self.api_key_record())},
+                                    {f"{WINDOW}/{leaf}": clean})
+                self.assertNotEqual(self.rescan(repo), 0)
+
+    def test_key_after_a_file_type_signature_is_found(self):
+        for magic in (b"\x7fELF\x02\x01\x01\x00", b"PK\x03\x04", b"\x1f\x8b\x08", b"%PDF-1.4\n",
+                      b"a" * 257 + b"ustar\x0000", b"SQLite format 3\x00"):
+            with self.subTest(magic=magic[-8:]):
+                repo = self.history({f"{WINDOW}/job-out.txt": printable(magic + b"\n" + self.api_key_record())})
+                self.assertNotEqual(self.rescan(repo), 0)
+
+    def test_what_the_escape_cannot_have_written_fails(self):
+        good = printable(b'"a\\b\n\x00\xff')
+        self.assertEqual(rescan_skipped.unescape(good), b'"a\\b\n\x00\xff')
+        for data in (b'"', b"\\", b"a\\", b"\\x4", b"\\x4g", b"\\X22", b"\\x2A", b"\\x41", b"\\x5C", b"a\nb",
+                     b"a\tb", b"\x80", "é".encode()):
+            with self.subTest(data=data):
+                with self.assertRaises(ValueError):
+                    rescan_skipped.unescape(data)
+                repo = self.history({f"{WINDOW}/serial-1.txt": data}, {f"{WINDOW}/serial-1.txt": good})
+                with self.assertRaises(SystemExit):
+                    self.rescan(repo)
+
+    def test_result_json_and_other_paths_are_not_decoded(self):
+        self.assertTrue(rescan_skipped.window_text(f"{WINDOW}/serial-3.txt"))
+        for path in (f"{WINDOW}/result.json", "lab/serial.txt", "tools/ci/job-out.txt", f"{WINDOW}/x/job-out.txt"):
+            with self.subTest(path=path):
+                self.assertFalse(rescan_skipped.window_text(path))
+
+
+class HistoryScanTest(unittest.TestCase):
+    """The git-mode scan of the whole history fails closed (ci.yml, secrets job)."""
+
+    gitleaks = RescanDetectionTest.gitleaks
+
+    def test_exit_code_error_line_or_no_commits_fail(self):
+        ok = "\x1b[90m10:17AM\x1b[0m \x1b[32mINF\x1b[0m \x1b[1m3 commits scanned.\x1b[0m\n"
+        self.assertEqual(rescan_skipped.history_problems(0, ok), [])
+        err = "\x1b[90m10:17AM\x1b[0m \x1b[31mERR\x1b[0m \x1b[1mfailed to scan\x1b[0m\n"
+        for code, log in ((1, ok), (0, ok + err), (0, ok.replace("3 commits", "0 commits")), (0, ""),
+                          (0, ok + ok), (0, ok.replace("3 commits", "3 commit"))):
+            with self.subTest(code=code, log=log):
+                self.assertTrue(rescan_skipped.history_problems(code, log))
+
+    def test_git_that_fails_fails_the_scan(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
+            repo = new_repo(tmp)
+            commit(repo, GOOD_MSG)
+            fake = Path(bindir) / "git"
+            fake.write_text("#!/bin/sh\nexit 128\n")
+            fake.chmod(0o755)
+            env = {**os.environ, "PATH": bindir + os.pathsep + os.environ["PATH"]}
+            config = REPO_ROOT / ".gitleaks.toml"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rescan_skipped.history(self.gitleaks(), config, repo), 0)
+                self.assertEqual(rescan_skipped.history(self.gitleaks(), config, repo, env=env), 1)
 
 
 if __name__ == "__main__":

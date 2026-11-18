@@ -23,10 +23,11 @@ regexTarget = "line"
 regexes = ['''(?m)^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[\w.~+-]+)* v[0-9][\w.+-]*(?:/go\.mod)? h1:[A-Za-z0-9+/]{43}=$''']
 
 # A runner result names its job's content by sha256 (ADR 0011), which generic-api-key reads as a key. Only that
-# exact match, only in a window's result.json under lab/ (ADR 0077), is let through, for that rule.
+# exact match, only in a window's result.json under lab/ (ADR 0077), is let through, for that rule. The id is the
+# layout gate's (docs_budget.WINDOW_ID); a test compares the two.
 [[allowlists]]
 targetRules = ["generic-api-key"]
 condition = "AND"
-paths = ['''^lab/windows/[a-z0-9-]+/result\.json$''']
+paths = ['''^lab/windows/[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}-[a-z0-9][a-z0-9-]{0,63}/result\.json$''']
 regexTarget = "match"
 regexes = ['''^content_key": "[0-9a-f]{64}"$''']
