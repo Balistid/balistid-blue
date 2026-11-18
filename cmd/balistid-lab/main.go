@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,7 +15,7 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && (os.Args[1] == "verify" || os.Args[1] == "import") {
+	if (len(os.Args) == 3 && os.Args[1] == "verify") || (len(os.Args) == 4 && os.Args[1] == "import") {
 		if err := detect.RunnerOwned(detect.ResultsDir); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "balistid-lab:", printable(err.Error())) // the exit status carries it
 			os.Exit(1)
@@ -33,8 +34,21 @@ const usage = `usage:
 // 0 on success, 1 on a failure or a finding, 2 on a usage error; a write to stdout that fails is a failure.
 func run(args []string, results string, stdout, stderr io.Writer) int {
 	out, code, err := dispatch(args, results)
-	if err != nil {
-		_, _ = io.WriteString(stderr, printable("balistid-lab: "+err.Error())+"\n") // the exit status carries it
+	var f findings
+	switch {
+	case errors.As(err, &f):
+		lines := make([]string, 0, len(f)+1)
+		for _, l := range f {
+			lines = append(lines, printable(l))
+		}
+		lines = append(lines, fmt.Sprintf("balistid-lab: verify failed, %d findings", len(f)))
+		_, _ = io.WriteString(stderr, strings.Join(lines, "\n")+"\n") // the exit status carries it
+		return code
+	case errors.Is(err, errUsage):
+		_, _ = io.WriteString(stderr, usage+"\n") // the exit status carries it
+		return code
+	case err != nil:
+		_, _ = io.WriteString(stderr, "balistid-lab: "+printable(err.Error())+"\n") // the exit status carries it
 		return code
 	}
 	if _, err := io.WriteString(stdout, out); err != nil {
@@ -44,23 +58,24 @@ func run(args []string, results string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// printable escapes every byte of s outside printable ASCII, line by line, so a name in lab/ cannot drive the
-// terminal.
+// printable escapes every byte of s outside printable ASCII, LF too, so a name in lab/ can neither drive the
+// terminal nor forge a line.
 func printable(s string) string {
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		var b bytes.Buffer
-		for _, c := range []byte(l) {
-			if c >= 0x20 && c <= 0x7e {
-				b.WriteByte(c)
-				continue
-			}
-			fmt.Fprintf(&b, `\x%02x`, c)
+	var b bytes.Buffer
+	for _, c := range []byte(s) {
+		if c >= 0x20 && c <= 0x7e {
+			b.WriteByte(c)
+			continue
 		}
-		lines[i] = b.String()
+		fmt.Fprintf(&b, `\x%02x`, c)
 	}
-	return strings.Join(lines, "\n")
+	return b.String()
 }
+
+// findings are verify's, one per line when printed; a usage text is the only other multi-line message.
+type findings []string
+
+func (f findings) Error() string { return strings.Join(f, "; ") }
 
 // dispatch runs one subcommand: its output, and the exit status with the error when it fails.
 func dispatch(args []string, results string) (string, int, error) {
@@ -90,15 +105,17 @@ func dispatch(args []string, results string) (string, int, error) {
 		}
 		return string(lab.Table().Encode()), 0, nil
 	case cmd == "verify" && len(rest) == 1:
-		findings, digest, err := detect.Verify(rest[0], results)
+		found, digest, err := detect.Verify(rest[0], results)
 		if err != nil {
 			return "", 1, fmt.Errorf("verify: %w", err)
 		}
-		if len(findings) > 0 {
-			return "", 1, fmt.Errorf("verify failed, %d findings:\n%s", len(findings), strings.Join(findings, "\n"))
+		if len(found) > 0 {
+			return "", 1, findings(found)
 		}
 		return fmt.Sprintf("verify (%s): every runner result after the anchor is in lab/windows, byte for byte; "+
 			"sha256 %s\n", detect.Version, digest), 0, nil
 	}
-	return "", 2, fmt.Errorf("%s", usage)
+	return "", 2, errUsage
 }
+
+var errUsage = errors.New("usage")
