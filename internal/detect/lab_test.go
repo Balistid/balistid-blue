@@ -824,8 +824,9 @@ func TestAResultThatChangesWhileReadIsRefused(t *testing.T) {
 	if findings, _, err := Verify(f.write(t), res); err != nil || !findingWith(findings, id+" changed while it was read") {
 		t.Fatalf("verify: %v %v", findings, err)
 	}
-	relistFiles = func(*os.Root) ([]string, error) { return nil, errors.New("gone") }
-	if _, err := Import(t.TempDir(), res, id); err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+	gone := errors.New("gone")
+	relistFiles = func(*os.Root) ([]string, error) { return nil, gone }
+	if _, err := Import(t.TempDir(), res, id); !errors.Is(err, gone) || !strings.Contains(err.Error(), id+": list again: ") {
 		t.Fatalf("a relist that fails: %v", err)
 	}
 }
@@ -872,5 +873,28 @@ func TestAResultHoldingADirectoryIsRefusedAsSuch(t *testing.T) {
 	}
 	if _, err := Import(t.TempDir(), res, id); err == nil || !strings.Contains(err.Error(), "sub is not a regular file") {
 		t.Fatalf("%v", err)
+	}
+}
+
+// TestImportSyncsLabEvenWhenWindowsExists: a retry after a failed sync syncs lab/ again.
+func TestImportSyncsLabEvenWhenWindowsExists(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	lab := t.TempDir()
+	if err := os.Mkdir(filepath.Join(lab, "windows"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	orig := syncDir
+	t.Cleanup(func() { syncDir = orig })
+	synced := 0
+	syncDir = func(r *os.Root) error {
+		if r.Name() == lab {
+			synced++
+		}
+		return orig(r)
+	}
+	if _, err := Import(lab, res, id); err != nil || synced == 0 {
+		t.Fatalf("lab synced %d times: %v", synced, err)
 	}
 }
