@@ -266,3 +266,48 @@ func TestABrokenPairOrRuleHasNoCrossRows(t *testing.T) {
 		})
 	}
 }
+
+// TestCrossRowsStartAtThePairsFirstWindow: another pair's window made between this pair's first and last windows
+// is scored; the first of the current content, not the last, starts the rule's cross rows.
+func TestCrossRowsStartAtThePairsFirstWindow(t *testing.T) {
+	f := fourWindows(t, baseFixture(t))
+	lab := f.write(t)
+	gPair := pairJSON(reference, map[string]string{
+		"tech-a": baseProgram + "# g\n", "tech-b": "#!/bin/sh\nuname -m\n", "twin-a": "#!/bin/sh\nid -n\n", "twin-b": "#!/bin/sh\nid -G\n",
+	})
+	put(t, lab, "pairs/fiy.json", []byte(gPair))
+	p, err := decodePair("fiy", []byte(gPair))
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := jobName("fiy", "tech-a", contentHash(map[string][]byte{"pairs/fiy.json": []byte(gPair)}))
+	id := "20261118T120002Z-0123abcd-" + name // between fix's first (12:00:00) and last (12:00:03)
+	r := p.Runs["tech-a"]
+	raw := baseRecords(t)
+	put(t, lab, "windows/"+strings.ToLower(id)+"/"+ResultFile, resultFor(id, name, r.Program, r.TimeoutS, r.Text, len(raw)))
+	put(t, lab, "windows/"+strings.ToLower(id)+"/"+LaurelFile, escape(raw))
+	out := load(t, lab).Table()
+	var rows []CrossRow
+	for _, c := range out.Cross {
+		if c.Rule == fixtureRuleFile {
+			rows = append(rows, c)
+		}
+	}
+	if len(rows) != 1 || rows[0].Window != strings.ToLower(id) || rows[0].Verdict != Noisy {
+		t.Fatalf("fix's cross rows %+v (windows %+v)", rows, out.Windows)
+	}
+}
+
+// TestABrokenPairOrRuleSaysSo: the pair's row names what does not decode.
+func TestABrokenPairOrRuleSaysSo(t *testing.T) {
+	f := fourWindows(t, baseFixture(t))
+	f.pair = strings.Replace(f.pair, `"attack":"T0000"`, `"attack":1`, 1)
+	if p := load(t, f.write(t)).Table().Pairs[0]; p.Counted || p.Reason != "the pair does not decode" {
+		t.Fatalf("a broken pair: %+v", p)
+	}
+	g := fourWindows(t, baseFixture(t))
+	g.rules["rules/fix/b.json"] = strings.Replace(fixtureRule, `"op":"eq"`, `"op":"regex"`, 1)
+	if p := load(t, g.write(t)).Table().Pairs[0]; p.Counted || p.Reason != "a rule does not decode" {
+		t.Fatalf("a broken rule: %+v", p)
+	}
+}
