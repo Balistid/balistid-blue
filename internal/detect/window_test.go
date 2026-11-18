@@ -190,9 +190,6 @@ func reasonCases() []reasonCase {
 		{"records over the cap", ReasonLaurelCap, func(t *testing.T, f *fixture) {
 			f.records(t, append(bytes.Repeat([]byte(" "), LaurelCap), baseRecords(t)...), false)
 		}},
-		{"a records file over its read cap", ReasonLaurelCap, func(_ *testing.T, f *fixture) {
-			f.window[LaurelFile] = bytes.Repeat([]byte("a"), textCap+1)
-		}},
 		{"laurel_bytes one more", ReasonLaurelBytes, func(t *testing.T, f *fixture) {
 			f.window[ResultFile] = replaceOnce(t, f.window[ResultFile], `"laurel_bytes": 11334`, `"laurel_bytes": 11335`)
 		}},

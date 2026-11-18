@@ -144,12 +144,8 @@ func check(in windowInput, r result) (Reason, []object) {
 }
 
 func checkRecords(in windowInput, r result, jobUID string) (Reason, []object) {
-	if err := in.readErr[LaurelFile]; err != nil {
-		if errors.Is(err, errOverCap) {
-			return ReasonLaurelCap, nil
-		}
-		return ReasonLaurelFile, nil
-	}
+	// A records file over its read cap passes lab/'s too, which fails the whole read; any other read error and
+	// a missing file are the same reason.
 	file, present := in.files[LaurelFile]
 	if !present {
 		return ReasonLaurelFile, nil

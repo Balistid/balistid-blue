@@ -270,3 +270,19 @@ func TestRunnerOwned(t *testing.T) {
 		t.Fatal("a missing directory passed")
 	}
 }
+
+// TestTheDigestCoversTheComparedSet: an empty window and no window give different digests.
+func TestTheDigestCoversTheComparedSet(t *testing.T) {
+	id := "20261118T130000Z-00000000-x"
+	none := results(t, nil, true)
+	empty := results(t, map[string]map[string][]byte{id: {}}, true)
+	lab := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(lab, "windows", strings.ToLower(id)), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	f1, d1, err1 := Verify(t.TempDir(), none)
+	f2, d2, err2 := Verify(lab, empty)
+	if err1 != nil || err2 != nil || len(f1) != 0 || len(f2) != 0 || d1 == d2 {
+		t.Fatalf("no window %v %s, an empty one %v %s", f1, d1, f2, d2)
+	}
+}

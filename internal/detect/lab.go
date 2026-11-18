@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -150,7 +149,7 @@ func (lab *Lab) loadPairs(pairs, rules *os.Root, b *budget, only string) error {
 			return fmt.Errorf("lab: rules: %w", err)
 		}
 		for _, d := range dirs {
-			if !slices.Contains(names, d) {
+			if only == "" && !slices.Contains(names, d) {
 				return fmt.Errorf("lab: rules/%s has no pair", d)
 			}
 		}
@@ -307,6 +306,11 @@ func Verify(labDir, resultsDir string) ([]string, string, error) {
 	if again, err := entries(results, true); err != nil || !slices.Equal(ids, again) {
 		findings = append(findings, "the runner's results changed while verify read them")
 	}
+	if windows != nil {
+		if again, err := entries(windows, true); err != nil || !slices.Equal(have, again) {
+			findings = append(findings, "lab/windows changed while verify read it")
+		}
+	}
 	return findings, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
@@ -316,6 +320,7 @@ func compareWindow(results, windows *os.Root, id string, rb, lb *budget, digest 
 		return []string{fmt.Sprintf("result %s: %v", id, err)}
 	}
 	dir := strings.ToLower(id)
+	_, _ = digest.Write(fmt.Appendf(nil, "window %d:%s\n", len(dir), dir)) // the compared set, empty windows too
 	if windows == nil {
 		return []string{"windows/" + dir + " is missing"}
 	}
@@ -415,27 +420,8 @@ func Import(labDir, resultsDir, id string) (int64, error) {
 	return size, nil
 }
 
-// labSize is the bytes of every regular file under lab/, links not followed.
-func labSize(lab *os.Root) (int64, error) {
-	var total int64
-	err := fs.WalkDir(lab.FS(), ".", func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Type().IsRegular() {
-			info, err := d.Info()
-			if err != nil {
-				return fmt.Errorf("lab: %w", err)
-			}
-			total += info.Size()
-		}
-		return nil
-	})
-	if err != nil {
-		return 0, fmt.Errorf("lab: %w", err)
-	}
-	return total, nil
-}
+// labSize is the bytes of every regular file under lab/: pairs, rules/<pair>, windows/<id>, results (R5).
+func labSize(lab *os.Root) (int64, error) { return treeBytes(lab, 2) }
 
 // Job writes the job directory of a pair's run under target, `<job name>/job.json` and the program, all or
 // nothing. It reads only that pair and its rules, refuses one that does not decode, so a broken one never spends
@@ -445,20 +431,6 @@ func Job(labDir, pair, run, target string) (string, error) {
 }
 
 func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
-	if inbox, err := os.Stat(inboxDir); err == nil {
-		abs, err := filepath.Abs(target)
-		if err != nil {
-			return "", fmt.Errorf("target: %w", err)
-		}
-		for dir := abs; ; dir = filepath.Dir(dir) {
-			if d, err := os.Stat(dir); err == nil && os.SameFile(inbox, d) {
-				return "", errors.New("target is in the runner's inbox; build outside it and rename the job in")
-			}
-			if dir == filepath.Dir(dir) {
-				break
-			}
-		}
-	}
 	root, err := os.OpenRoot(labDir)
 	if err != nil {
 		return "", fmt.Errorf("lab: %w", err)
@@ -494,10 +466,41 @@ func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
 		return "", fmt.Errorf("target: %w", err)
 	}
 	defer out.Close() //nolint:errcheck // every write is synced by WriteIn
+	opened, err := out.Stat(".")
+	if err != nil {
+		return "", fmt.Errorf("target: %w", err)
+	}
+	if err := outsideInbox(target, opened, inboxDir); err != nil {
+		return "", err
+	}
 	request := execRequest(r.Program, r.TimeoutS)
 	if err := publish(out, name, map[string][]byte{"job.json": request, r.Program: r.Text}, 0o750, 0o640); err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(r.Text)
 	return name + " " + contentKey(request, r.Text) + " " + hex.EncodeToString(sum[:]), nil
+}
+
+// outsideInbox refuses a target in the runner's inbox, at any depth: the opened directory must be the one the path
+// names, and neither it nor any directory above it the inbox.
+func outsideInbox(target string, opened os.FileInfo, inboxDir string) error {
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("target: %w", err)
+	}
+	if named, err := os.Stat(abs); err != nil || !os.SameFile(named, opened) {
+		return errors.New("target changed while it was opened")
+	}
+	inbox, err := os.Stat(inboxDir)
+	if err != nil {
+		return nil //nolint:nilerr // no inbox on this machine, nothing to refuse
+	}
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if d, err := os.Stat(dir); err == nil && os.SameFile(inbox, d) {
+			return errors.New("target is in the runner's inbox; build outside it and rename the job in")
+		}
+		if dir == filepath.Dir(dir) {
+			return nil
+		}
+	}
 }

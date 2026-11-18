@@ -79,9 +79,9 @@ func TestBudget(t *testing.T) {
 	dir := t.TempDir()
 	put(t, dir, "f", make([]byte, 10))
 	root := rootOf(t, dir)
-	b := &budget{left: 15}
-	if _, err := b.read(root, "f", 9); !errors.Is(err, errOverCap) {
-		t.Fatalf("over its cap: %v", err)
+	b := &budget{left: 25}
+	if _, err := b.read(root, "f", 9); !errors.Is(err, errOverCap) || b.left != 15 {
+		t.Fatalf("over its cap: %v, left %d: a refused file must still count", err, b.left)
 	}
 	if data, err := b.read(root, "f", 10); err != nil || len(data) != 10 || b.left != 5 {
 		t.Fatalf("read: %d %v left %d", len(data), err, b.left)

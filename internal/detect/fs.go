@@ -84,10 +84,11 @@ var (
 func (b *budget) read(dir *os.Root, name string, limit int64) ([]byte, error) {
 	if fi, err := dir.Lstat(name); err == nil && fi.Mode().IsRegular() {
 		switch {
-		case fi.Size() > limit:
-			return nil, fmt.Errorf("%s: %w", name, errOverCap)
-		case fi.Size() > b.left:
+		case fi.Size() > b.left: // a file refused for its own cap still counts against the tree's
 			return nil, fmt.Errorf("%s: %w", name, errOverBudget)
+		case fi.Size() > limit:
+			b.left -= fi.Size()
+			return nil, fmt.Errorf("%s: %w", name, errOverCap)
 		}
 	}
 	data, err := wholefile.ReadIn(dir, name, min(limit, b.left))
@@ -139,5 +140,63 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	if err := dir.Rename(staging, name); err != nil {
 		return fail(fmt.Errorf("publish %s: %w", name, err))
 	}
+	return syncDir(dir)
+}
+
+// syncDir makes a rename in dir durable (ENGINEERING.md 7).
+func syncDir(dir *os.Root) error {
+	f, err := dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("sync: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("sync: %w", err)
+	}
 	return nil
+}
+
+// treeBytes is the bytes of every regular file under dir, depth levels of directories deep at most, each
+// listed under maxEntries and never through a link (R5).
+func treeBytes(dir *os.Root, depth int) (int64, error) {
+	f, err := dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, fmt.Errorf("size: %w", err)
+	}
+	list, err := f.ReadDir(maxEntries + 1)
+	_ = f.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return 0, fmt.Errorf("size: %w", err)
+	}
+	if len(list) > maxEntries {
+		return 0, fmt.Errorf("size: over %d entries", maxEntries)
+	}
+	var total int64
+	for _, e := range list {
+		switch {
+		case e.Type().IsRegular():
+			fi, err := dir.Lstat(e.Name())
+			if err != nil {
+				return 0, fmt.Errorf("size: %w", err)
+			}
+			total += fi.Size()
+		case e.IsDir() && depth > 0:
+			sub, err := openDir(dir, e.Name())
+			if err != nil {
+				return 0, err
+			}
+			n, err := treeBytes(sub, depth-1)
+			_ = sub.Close()
+			if err != nil {
+				return 0, err
+			}
+			total += n
+		default:
+			return 0, fmt.Errorf("size: %s is neither a regular file nor a directory within depth", e.Name())
+		}
+	}
+	return total, nil
 }

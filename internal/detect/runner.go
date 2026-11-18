@@ -106,15 +106,15 @@ func execRequest(program string, timeoutS int64) []byte {
 
 // result is what the judge reads from a runner's result.json.
 type result struct {
-	Schema, Runs                             int64
-	ID, Label, RunnerCommit, ImageCommit     string
-	ImageSHA, Verdict                        string
-	Kind, Name, ContentKey, Program          string
-	ProgramSHA                               string
-	TimeoutS                                 int64
-	RunVerdict, JobResult                    string
-	JobExit, LaurelBytes                     int64
-	HasJob, HasExit, HasLaurelBytes, HasExec bool
+	Schema, Runs                         int64
+	ID, Label, RunnerCommit, ImageCommit string
+	ImageSHA, Verdict                    string
+	Kind, Name, ContentKey, Program      string
+	ProgramSHA                           string
+	TimeoutS                             int64
+	RunVerdict, JobResult                string
+	JobExit, LaurelBytes                 int64
+	HasJob, HasExit, HasExec             bool
 }
 
 // The runner's result shape at 2c09799: each key's type, required or optional. A key outside it, or of
@@ -266,7 +266,7 @@ func decodeResult(data []byte) (result, error) {
 			r.RunVerdict, _ = str(o, "verdict")
 			r.JobResult, _ = str(o, "job_result")
 			r.JobExit, r.HasExit = integer(o, "job_exit")
-			r.LaurelBytes, r.HasLaurelBytes = integer(o, "laurel_bytes")
+			r.LaurelBytes, _ = integer(o, "laurel_bytes")
 		}
 	}
 	return r, nil
