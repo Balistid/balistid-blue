@@ -274,6 +274,7 @@ class DocsBudgetTest(unittest.TestCase):
                      "lab/windows/20261116t163124z-ba1549c1--x/serial.txt",
                      f"{window}/serial-0.txt", f"{window}/serial-01.txt", f"{window}/serial-.txt",
                      f"{window}/other.txt", f"{window}/result.txt", f"{window}/job-laurel.json",
+                     f"{window}/serial.txt-x", f"{window}/result.json-x", f"{window}/job-laurel.txt.bak",
                      "lab/pairs/dev-1.toml", "lab/job-laurel.txt", "lab/serial.txt", f"{window}/x/job-laurel.txt",
                      "tools/ci/job-laurel.txt", "lab/rules/dev-1/x/opus-1.json", "cmd/job-laurel.txt/main.go",
                      "lab/windows/job-laurel.txt/result.json", f"{window}/serial.txt/result.json",
@@ -1039,11 +1040,27 @@ class WindowRescanTest(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     self.rescan(repo)
 
-    def test_result_json_and_other_paths_are_not_decoded(self):
+    def test_only_window_files_are_decoded(self):
         self.assertTrue(rescan_skipped.window_text(f"{WINDOW}/serial-3.txt"))
+        self.assertTrue(rescan_skipped.window_result(f"{WINDOW}/result.json"))
         for path in (f"{WINDOW}/result.json", "lab/serial.txt", "tools/ci/job-out.txt", f"{WINDOW}/x/job-out.txt"):
             with self.subTest(path=path):
                 self.assertFalse(rescan_skipped.window_text(path))
+        for path in ("lab/result.json", f"{WINDOW}/x/result.json", "lab/results/2026-11-20.json"):
+            with self.subTest(path=path):
+                self.assertFalse(rescan_skipped.window_result(path))
+
+    def test_key_in_a_results_escaped_reason_is_found(self):
+        """The runner escapes a result's reasons too (rangerun WriteResult); JSON then doubles each backslash."""
+        reason = printable(self.api_key_record().rstrip(b"\n")).decode()
+        clean = json.dumps({"id": "x", "reason": "the job ran", "runs": [{"reason": "ok"}]}).encode() + b"\n"
+        bad = json.dumps({"id": "x", "reason": "the job ran", "runs": [{"reason": reason}]}).encode() + b"\n"
+        self.assertEqual(self.rescan(self.history({f"{WINDOW}/result.json": clean})), 0)
+        self.assertNotEqual(self.rescan(self.history({f"{WINDOW}/result.json": bad}, {f"{WINDOW}/result.json": clean})), 0)
+        for data in (b"not json", json.dumps({"reason": "\\x4"}).encode()):
+            with self.subTest(data=data):
+                with self.assertRaises(SystemExit):
+                    self.rescan(self.history({f"{WINDOW}/result.json": data}))
 
 
 class HistoryScanTest(unittest.TestCase):
@@ -1059,6 +1076,14 @@ class HistoryScanTest(unittest.TestCase):
                           (0, ok + ok), (0, ok.replace("3 commits", "3 commit"))):
             with self.subTest(code=code, log=log):
                 self.assertTrue(rescan_skipped.history_problems(code, log))
+
+    def test_a_gitleaksignore_fails_the_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp)
+            commit(repo, GOOD_MSG)
+            (repo / ".gitleaksignore").write_text("x\n")
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(rescan_skipped.history(self.gitleaks(), REPO_ROOT / ".gitleaks.toml", repo), 1)
 
     def test_git_that_fails_fails_the_scan(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bindir:
