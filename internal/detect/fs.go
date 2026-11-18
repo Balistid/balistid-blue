@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
@@ -91,6 +92,9 @@ var (
 // read reads the regular file name in dir under limit and the budget.
 func (b *budget) read(dir *os.Root, name string, limit int64) ([]byte, error) {
 	if fi, err := dir.Lstat(name); err == nil && fi.Mode().IsRegular() {
+		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Nlink != 1 {
+			return nil, fmt.Errorf("%s: must have exactly one link", name) // a link is refused before any cap
+		}
 		switch {
 		case fi.Size() > b.left: // a file refused for its own cap still counts against the tree's
 			return nil, fmt.Errorf("%s: %w", name, errOverBudget)
@@ -120,6 +124,9 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	fail := func(err error) error {
 		return errors.Join(err, dir.RemoveAll(staging))
 	}
+	if err := dir.Chmod(staging, dirMode); err != nil { // the mode asked for, not what the umask left of it
+		return fail(fmt.Errorf("staging: %w", err))
+	}
 	sub, err := openDir(dir, staging)
 	if err != nil {
 		return fail(err)
@@ -136,7 +143,10 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	if err := rename(dir, staging, name); err != nil {
 		return fail(fmt.Errorf("publish %s: %w", name, err))
 	}
-	return syncDir(dir)
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("%s is published but not durable: %w", name, err) // a retry finds it there
+	}
+	return nil
 }
 
 // statOpened, rename, syncDir, syncFile and lstatIn are the calls only a racing writer or a failing disk makes

@@ -394,7 +394,8 @@ func TestAWindowFileThatCannotBeReadFailsTheRead(t *testing.T) {
 			if err := os.Link(filepath.Join(lab, "windows", f.dir, name), filepath.Join(t.TempDir(), "l")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), "lab: windows/"+f.dir+": "+name+": must have exactly one link") {
+			if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), "lab: windows/"+f.dir+": "+name+": must have exactly one link") ||
+				errors.Unwrap(err) == nil {
 				t.Fatalf("%v", err)
 			}
 		})
@@ -739,6 +740,7 @@ func TestVerifyFailsWhileAJobRuns(t *testing.T) {
 		bytes.Replace(placeholder, []byte(placeholderReason), []byte("the runner stopped"), 1),
 		[]byte("not json"),
 		[]byte(`{"runs":[{"verdict":"INVALID","reason":"` + placeholderReason + `"},{"verdict":"RAN","reason":"x"}]}`),
+		[]byte(`{"runs":[{"verdict":"INVALID","verdict":"INVALID","reason":"` + placeholderReason + `"}]}`),
 	} {
 		if unfinished(map[string][]byte{ResultFile: other}) {
 			t.Errorf("%.60s... read as a placeholder", other)
@@ -786,7 +788,58 @@ func TestAJobTargetThatCannotBeStatedOrPlaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := outsideInbox("relative", opened, nil); err == nil || !strings.Contains(err.Error(), "target: getwd") {
+	if err := outsideInbox("relative", opened, nil); !errors.Is(err, fs.ErrNotExist) || !strings.Contains(err.Error(), "target: getwd") {
 		t.Fatalf("a relative target with no working directory: %v", err)
+	}
+}
+
+// TestALinkOverItsCapIsALink: a hard-linked result.json over its own cap fails the read as a link; it is not left
+// out as merely too big.
+func TestALinkOverItsCapIsALink(t *testing.T) {
+	f := baseFixture(t)
+	f.window[ResultFile] = append(f.window[ResultFile], bytes.Repeat([]byte(" "), resultCap)...)
+	lab := f.write(t)
+	if err := os.Link(filepath.Join(lab, "windows", f.dir, ResultFile), filepath.Join(t.TempDir(), "l")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), "must have exactly one link") {
+		t.Fatalf("%v", err)
+	}
+}
+
+// TestAResultThatChangesWhileReadIsRefused: verify and import read a result's files, then list them again.
+func TestAResultThatChangesWhileReadIsRefused(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	orig := relistFiles
+	t.Cleanup(func() { relistFiles = orig })
+	relistFiles = func(d *os.Root) ([]string, error) {
+		l, err := orig(d)
+		return append(l, "serial.txt"), err
+	}
+	if n, err := Import(t.TempDir(), res, id); err == nil || n != 0 || !strings.Contains(err.Error(), id+" changed while it was read") {
+		t.Fatalf("import: %d %v", n, err)
+	}
+	if findings, _, err := Verify(f.write(t), res); err != nil || !findingWith(findings, id+" changed while it was read") {
+		t.Fatalf("verify: %v %v", findings, err)
+	}
+	relistFiles = func(*os.Root) ([]string, error) { return nil, errors.New("gone") }
+	if _, err := Import(t.TempDir(), res, id); err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+		t.Fatalf("a relist that fails: %v", err)
+	}
+}
+
+// TestAJobDirectoryHasItsModeUnderAnyUmask: the runner reads the job as others, whatever umask the caller has.
+func TestAJobDirectoryHasItsModeUnderAnyUmask(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+	target := t.TempDir()
+	out, err := jobIn(baseFixture(t).write(t), fixturePair, "tech-a", target, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(target, strings.Fields(out)[0])); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("%v %v", fi.Mode(), err)
 	}
 }

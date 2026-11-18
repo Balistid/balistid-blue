@@ -118,14 +118,13 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 		}
 		data, err := b.read(w, n, limit)
 		switch {
+		case err == nil:
+			in.files[n] = data
 		case errors.Is(err, errOverBudget):
 			return windowInput{}, fmt.Errorf("lab: over %d bytes", LabCap)
-		case errors.Is(err, errOverCap):
-			continue // left out: the window's reason names it missing
-		case err != nil:
+		case !errors.Is(err, errOverCap): // a file over its own cap is left out: its window's reason names it missing
 			return windowInput{}, fmt.Errorf("lab: windows/%s: %w", d, err) // a link or a file that changed
 		}
-		in.files[n] = data
 	}
 	return in, nil
 }
@@ -341,6 +340,9 @@ func unfinished(files map[string][]byte) bool {
 // racing verify, which no test can time.
 var relist = func(dir *os.Root) ([]string, error) { return entries(dir, true) }
 
+// relistFiles lists a result's files again after they were read; a test replaces it the same way.
+var relistFiles = func(dir *os.Root) ([]string, error) { return entries(dir, false) }
+
 func compareWindow(results, windows *os.Root, id string, rb, lb *budget, digest interface{ Write([]byte) (int, error) }) []string {
 	orig, err := readAll(results, id, rb)
 	if err != nil {
@@ -401,6 +403,11 @@ func readAll(dir *os.Root, name string, b *budget) (map[string][]byte, error) {
 			return nil, err
 		}
 	}
+	// the runner writes a result's files, then its result.json, in the result's own directory (rangerun finish):
+	// a list that changed while they were read is not one result
+	if again, err := relistFiles(d); err != nil || !slices.Equal(names, again) {
+		return nil, fmt.Errorf("%s changed while it was read", name)
+	}
 	return files, nil
 }
 
@@ -437,7 +444,12 @@ func Import(labDir, resultsDir, id string) (int64, error) {
 	if size > LabCap {
 		return 0, fmt.Errorf("lab/ would hold %d bytes, over %d", size, LabCap)
 	}
-	if err := lab.Mkdir("windows", 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+	switch err := lab.Mkdir("windows", 0o755); {
+	case err == nil:
+		if err := syncDir(lab); err != nil { // the new windows/ itself must survive a crash
+			return 0, err
+		}
+	case !errors.Is(err, os.ErrExist):
 		return 0, fmt.Errorf("windows: %w", err)
 	}
 	windows, err := openDir(lab, "windows")

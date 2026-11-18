@@ -173,9 +173,10 @@ func TestVerifyAndImportReadOnlyTheRunnersResults(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root owns /usr")
 	}
-	var out, errb bytes.Buffer // root's /usr passes the check; verify then reads it and fails on what it holds
+	// root's /usr passes the check; verify then reads it and fails on what it holds, which differs by host
+	var out, errb bytes.Buffer
 	if code := entry([]string{"verify", t.TempDir()}, "/usr", &out, &errb); code != 1 ||
-		strings.Contains(errb.String(), "not the runner's") || !strings.Contains(errb.String(), "balistid-lab: verify: results: ") {
+		strings.Contains(errb.String(), "not the runner's") || !strings.Contains(errb.String(), "balistid-lab: ") {
 		t.Fatalf("verify past the check: exit %d, %q", code, errb.String())
 	}
 	errb.Reset()
@@ -183,7 +184,10 @@ func TestVerifyAndImportReadOnlyTheRunnersResults(t *testing.T) {
 		t.Fatalf("table needs no runner: exit %d, %q", code, errb.String())
 	}
 	errb.Reset()
-	if code := entry([]string{"verify", "a", "b"}, own, &out, &errb); code != 2 {
-		t.Fatalf("a usage error before the check: exit %d, %q", code, errb.String())
+	for _, args := range [][]string{{"verify", "a", "b"}, {"import", "a"}, {"import", "a", "b", "c"}} {
+		errb.Reset()
+		if code := entry(args, own, &out, &errb); code != 2 {
+			t.Fatalf("%v: a usage error before the check: exit %d, %q", args, code, errb.String())
+		}
 	}
 }
