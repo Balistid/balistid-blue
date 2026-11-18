@@ -72,6 +72,8 @@ func TestIntegers(t *testing.T) {
 		{"1.0", false, false, 0},
 		{"1e3", false, false, 0},
 		{"9223372036854775808", false, false, 0},
+		{"+1", false, false, 0}, // ParseInt takes it, JSON does not
+		{"01", false, false, 0},
 		{"9223372036854775807", true, true, 9223372036854775807},
 		{"-9223372036854775808", true, true, -9223372036854775808},
 	} {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -72,12 +71,13 @@ func escape(raw []byte) []byte {
 }
 
 // unescape inverts escape; ok only if escaping the result gives file back, byte for byte (ADR 0079 point 3).
+// Only the round trip decides: a sequence escape never writes, such as \y41 or \x4A, decodes to bytes that escape
+// back otherwise.
 func unescape(file []byte) (raw []byte, ok bool) {
-	raw = make([]byte, 0, len(file))
 	for i := 0; i < len(file); i++ {
-		if file[i] == '\\' && i+3 < len(file) && file[i+1] == 'x' {
-			if v, err := strconv.ParseUint(string(file[i+2:i+4]), 16, 8); err == nil {
-				raw = append(raw, byte(v))
+		if file[i] == '\\' && i+3 < len(file) {
+			if v, err := hex.DecodeString(string(file[i+2 : i+4])); err == nil {
+				raw = append(raw, v...)
 				i += 3
 				continue
 			}
@@ -284,10 +284,10 @@ func (r *result) readJob(v any) error {
 	if !jobNameRe.MatchString(r.Name) {
 		return fmt.Errorf("%w: job name", errNotResult)
 	}
-	var ok [3]bool
-	r.Program, ok[0] = str(job, "program")
-	r.TimeoutS, ok[1] = integer(job, "timeout_s")
-	r.ProgramSHA, ok[2] = str(job, "program_sha256")
-	r.HasExec = ok[0] && ok[1] && ok[2]
+	var program, timeout, programSHA bool
+	r.Program, program = str(job, "program")
+	r.TimeoutS, timeout = integer(job, "timeout_s")
+	r.ProgramSHA, programSHA = str(job, "program_sha256")
+	r.HasExec = program && timeout && programSHA
 	return nil
 }
