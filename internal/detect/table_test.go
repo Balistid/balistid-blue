@@ -190,3 +190,79 @@ func TestTableIsReproducible(t *testing.T) {
 		t.Fatalf("table does not decode back: %v", err)
 	}
 }
+
+// TestEveryRowNamesItsFields: each row of a lab of four valid windows and an invalid one, field by field.
+func TestEveryRowNamesItsFields(t *testing.T) {
+	f := fourWindows(t, baseFixture(t))
+	f.extra["20261118t110000z-0123abcd-junk"] = map[string][]byte{ResultFile: []byte("{}\n")}
+	out := load(t, f.write(t)).Table()
+	if len(out.Windows) != 5 {
+		t.Fatalf("windows %+v", out.Windows)
+	}
+	if w := out.Windows[0]; w != (WindowRow{Window: "20261118t110000z-0123abcd-junk", Reason: ReasonResultDecode}) {
+		t.Fatalf("the invalid window's row %+v", w)
+	}
+	base := out.Windows[1]
+	if base.Window != f.dir || base.Pair != fixturePair || base.Run != "tech-a" || !base.Valid || base.Reason != "" {
+		t.Fatalf("the base window's row %+v", base)
+	}
+	p := out.Pairs[0]
+	if p.Pair != fixturePair || !p.Counted || p.Reason != "" || p.Windows["tech-a"] != f.dir || len(p.Windows) != 4 {
+		t.Fatalf("the pair's row %+v", p)
+	}
+	for run, dir := range p.Windows {
+		if !strings.Contains(dir, "-"+run+"-") {
+			t.Fatalf("%s's window %s", run, dir)
+		}
+	}
+	if r := out.Rules[0]; r.Rule != fixtureRuleFile || r.Pair != fixturePair || !r.Counted || len(r.Verdicts) != 4 {
+		t.Fatalf("the rule's row %+v", r)
+	}
+	if len(out.Controls) != 2 || out.Controls[0] != (ControlRow{Control: "empty any", Windows: 4}) ||
+		out.Controls[1] != (ControlRow{Control: "empty all", Windows: 4}) {
+		t.Fatalf("controls over the valid windows only: %+v", out.Controls)
+	}
+	empty := string((&Lab{}).Table().Encode())
+	for _, key := range []string{`"windows": []`, `"pairs": []`, `"rules": []`, `"cross": []`, `"control": "empty any"`} {
+		if !strings.Contains(empty, key) {
+			t.Fatalf("an empty lab's table lacks %s:\n%s", key, empty)
+		}
+	}
+}
+
+// TestABrokenPairOrRuleHasNoCrossRows: only a rule of a pair that decodes with all its rules is scored on others.
+func TestABrokenPairOrRuleHasNoCrossRows(t *testing.T) {
+	for _, broken := range []string{"pair", "rule"} {
+		t.Run(broken, func(t *testing.T) {
+			f := fourWindows(t, baseFixture(t))
+			lab := f.write(t)
+			gPair := pairJSON(reference, map[string]string{
+				"tech-a": baseProgram + "# g\n", "tech-b": "#!/bin/sh\nuname -m\n", "twin-a": "#!/bin/sh\nid -n\n", "twin-b": "#!/bin/sh\nid -G\n",
+			})
+			files := map[string][]byte{"pairs/fiy.json": []byte(gPair), "rules/fiy/opus-1.json": []byte(fixtureRule)}
+			switch broken {
+			case "pair":
+				files["pairs/fiy.json"] = []byte(strings.Replace(gPair, `"attack":"T0000"`, `"attack":1`, 1))
+			case "rule":
+				files["rules/fiy/opus-2.json"] = []byte(strings.Replace(fixtureRule, `"op":"eq"`, `"op":"regex"`, 1))
+			}
+			for path, data := range files {
+				put(t, lab, path, data)
+			}
+			// fiy's first window of its current content: before fix's, so fiy's good rule would be scored on all
+			// four of fix's.
+			name := jobName("fiy", "tech-a", contentHash(files))
+			id := "20261118T110000Z-0123abcd-" + name
+			put(t, lab, "windows/"+strings.ToLower(id)+"/"+ResultFile, resultFor(id, name, "x.sh", 60, []byte("#!/bin/sh\n"), 1))
+			out := load(t, lab).Table()
+			if out.Windows[0].Pair != "fiy" {
+				t.Fatalf("fiy's window is not first: %+v", out.Windows[0])
+			}
+			for _, c := range out.Cross {
+				if strings.HasPrefix(c.Rule, "rules/fiy/") {
+					t.Fatalf("a rule of a broken %s scored: %+v", broken, c)
+				}
+			}
+		})
+	}
+}
