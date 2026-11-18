@@ -1057,7 +1057,7 @@ class WindowRescanTest(unittest.TestCase):
         bad = json.dumps({"id": "x", "reason": "the job ran", "runs": [{"reason": reason}]}).encode() + b"\n"
         self.assertEqual(self.rescan(self.history({f"{WINDOW}/result.json": clean})), 0)
         self.assertNotEqual(self.rescan(self.history({f"{WINDOW}/result.json": bad}, {f"{WINDOW}/result.json": clean})), 0)
-        for data in (b"not json", json.dumps({"reason": "\\x4"}).encode()):
+        for data in (b"not json", json.dumps({"reason": "\\x4"}).encode(), b'{"reason":"x","reason":"ok"}\n'):
             with self.subTest(data=data):
                 with self.assertRaises(SystemExit):
                     self.rescan(self.history({f"{WINDOW}/result.json": data}))

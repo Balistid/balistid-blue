@@ -114,7 +114,7 @@ type result struct {
 	TimeoutS                             int64
 	RunVerdict, JobResult                string
 	JobExit, LaurelBytes                 int64
-	HasJob, HasExit, HasExec             bool
+	HasExit, HasExec                     bool
 }
 
 // The runner's result shape at 2c09799: each key's type, required or optional. A key outside it, or of
@@ -277,7 +277,6 @@ func (r *result) readJob(v any) error {
 	if err != nil {
 		return err
 	}
-	r.HasJob = true
 	r.Name, _ = str(job, "name")
 	r.Kind, _ = str(job, "kind")
 	r.ContentKey, _ = str(job, "content_key")

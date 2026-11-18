@@ -58,11 +58,19 @@ def strings_of(value: object) -> list[str]:
     return []
 
 
+def unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """An object whose keys repeat fails: json.loads keeps only the last value, which would hide the others."""
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError("a key repeats in one object")
+    return dict(pairs)
+
+
 def result_text(data: bytes) -> bytes:
     """A window's result.json holds the runner's escape inside its strings (the reasons, the guest's kernel): each
     string is decoded as the runner wrote it, one per line, so a key a guest put in a reason is scanned too."""
     try:
-        doc = json.loads(data)
+        doc = json.loads(data, object_pairs_hook=unique_keys)
     except ValueError as err:
         raise ValueError(f"not JSON: {err}") from err
     return b"\n".join(unescape(s.encode()) for s in strings_of(doc)) + b"\n"

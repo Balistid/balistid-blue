@@ -145,6 +145,7 @@ var (
 	statOpened = func(sub *os.Root) (os.FileInfo, error) { return sub.Stat(".") }
 	rename     = func(dir *os.Root, from, to string) error { return dir.Rename(from, to) }
 	syncDir    = syncDirOf
+	syncFile   = func(f *os.File) error { return errors.Join(f.Sync(), f.Close()) }
 )
 
 // syncDirOf makes a rename in dir durable (ENGINEERING.md 7).
@@ -153,7 +154,7 @@ func syncDirOf(dir *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
-	if err := errors.Join(f.Sync(), f.Close()); err != nil {
+	if err := syncFile(f); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
 	return nil
