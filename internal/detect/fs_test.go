@@ -135,9 +135,17 @@ func TestTreeBytes(t *testing.T) {
 	if n, err := treeBytes(rootOf(t, dir), 2); err == nil || n != 0 || !strings.Contains(err.Error(), "neither a regular file") {
 		t.Fatalf("a link two levels down: %d %v", n, err)
 	}
+	top := t.TempDir()
+	put(t, top, "a", make([]byte, 3))
+	if err := os.Symlink("a", filepath.Join(top, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := treeBytes(rootOf(t, top), 2); err == nil || n != 0 || !strings.Contains(err.Error(), "neither a regular file") {
+		t.Fatalf("a link at the top: %d %v", n, err)
+	}
 	locked(t, filepath.Join(dir, "s"), 0o300)
-	if _, err := treeBytes(rootOf(t, dir), 2); !errors.Is(err, fs.ErrPermission) {
-		t.Fatalf("an unreadable directory: %v", err)
+	if n, err := treeBytes(rootOf(t, dir), 2); !errors.Is(err, fs.ErrPermission) || n != 0 {
+		t.Fatalf("an unreadable directory: %d %v", n, err)
 	}
 	many := t.TempDir()
 	for i := range maxEntries {
@@ -147,8 +155,8 @@ func TestTreeBytes(t *testing.T) {
 		t.Fatalf("exactly maxEntries: %d %v", n, err)
 	}
 	put(t, many, "last", nil)
-	if _, err := treeBytes(rootOf(t, many), 0); err == nil {
-		t.Fatal("over maxEntries sized")
+	if n, err := treeBytes(rootOf(t, many), 0); err == nil || n != 0 || errors.Unwrap(err) == nil {
+		t.Fatalf("over maxEntries sized: %d %v", n, err)
 	}
 }
 
@@ -200,6 +208,15 @@ func TestPublish(t *testing.T) {
 	if err := publish(root, "out", map[string][]byte{"c": nil}, 0o750, 0o640); err == nil {
 		t.Fatal("published over an existing directory")
 	}
+	if err := os.Mkdir(filepath.Join(dir, "empty"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := publish(root, "empty", map[string][]byte{"c": []byte("x")}, 0o750, 0o640); err == nil {
+		t.Fatal("published over an existing empty directory, which a rename replaces")
+	}
+	if list, err := os.ReadDir(filepath.Join(dir, "empty")); err != nil || len(list) != 0 {
+		t.Fatalf("the empty directory changed: %v %v", list, err)
+	}
 	if err := publish(root, "bad", map[string][]byte{"../escape": []byte("x")}, 0o750, 0o640); err == nil {
 		t.Fatal("published a file outside its directory")
 	}
@@ -207,7 +224,7 @@ func TestPublish(t *testing.T) {
 		t.Fatalf("a write's cause: %v", err)
 	}
 	list, err := os.ReadDir(dir)
-	if err != nil || len(list) != 1 || list[0].Name() != "out" {
+	if err != nil || len(list) != 2 || list[0].Name() != "empty" || list[1].Name() != "out" {
 		t.Fatalf("publish left %v", list)
 	}
 }
