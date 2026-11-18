@@ -609,8 +609,13 @@ func TestARuleThatCannotBeReadIsBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := load(t, lab)
-	if e := l.pairs[fixturePair].ruleErr; e == nil || !strings.Contains(e.Error(), "rules/fix/a.json: ") {
-		t.Fatalf("ruleErr %v", e)
+	if e := l.pairs[fixturePair].ruleErr; e == nil || !strings.Contains(e.Error(), "rules/fix/a.json: a.json: must have exactly one link") {
+		t.Fatalf("ruleErr %v, want the read's own cause", e)
+	}
+	g := baseFixture(t)
+	g.rules["rules/fix/a.json"] = string(make([]byte, ruleCap+1))
+	if e := load(t, g.write(t)).pairs[fixturePair].ruleErr; !errors.Is(e, errOverCap) {
+		t.Fatalf("a rule over its cap: %v", e)
 	}
 	if len(l.rules[fixturePair]) != 1 || l.rules[fixturePair][0].Path != fixtureRuleFile {
 		t.Fatalf("rules read %+v", l.rules[fixturePair])
@@ -620,5 +625,73 @@ func TestARuleThatCannotBeReadIsBroken(t *testing.T) {
 func TestRunnerOwnedKeepsItsCause(t *testing.T) {
 	if err := RunnerOwned(filepath.Join(t.TempDir(), "none")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("%v", err)
+	}
+}
+
+// TestVerifyListsBothSidesAgain: a list that changed or failed while verify read it is a finding (R13).
+func TestVerifyListsBothSidesAgain(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	lab := f.write(t)
+	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	if findings, _, err := Verify(lab, res); err != nil || len(findings) != 0 {
+		t.Fatalf("a true copy: %v %v", findings, err)
+	}
+	orig := relist
+	t.Cleanup(func() { relist = orig })
+	for _, c := range []struct {
+		name, want string
+		list       func(dir *os.Root, calls int) ([]string, error)
+	}{
+		{"the runner's results grew", "the runner's results changed", func(d *os.Root, calls int) ([]string, error) {
+			l, err := orig(d)
+			if calls == 1 {
+				l = append(l, "20261118T230000Z-00000000-late")
+			}
+			return l, err
+		}},
+		{"the results do not list", "the runner's results changed", func(d *os.Root, calls int) ([]string, error) {
+			if calls == 1 {
+				return nil, errors.New("gone")
+			}
+			return orig(d)
+		}},
+		{"lab/windows lost a window", "lab/windows changed", func(d *os.Root, calls int) ([]string, error) {
+			l, err := orig(d)
+			if calls == 2 {
+				l = nil
+			}
+			return l, err
+		}},
+		{"lab/windows does not list", "lab/windows changed", func(d *os.Root, calls int) ([]string, error) {
+			if calls == 2 {
+				return nil, errors.New("gone")
+			}
+			return orig(d)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			calls := 0
+			relist = func(d *os.Root) ([]string, error) { calls++; return c.list(d, calls) }
+			findings, _, err := Verify(lab, res)
+			if err != nil || len(findings) != 1 || !findingWith(findings, c.want) {
+				t.Fatalf("%v %v, want only %q", findings, err, c.want)
+			}
+		})
+	}
+}
+
+// TestATargetSwappedWhileOpenedIsRefused: the directory the job opened must be the one its path names.
+func TestATargetSwappedWhileOpenedIsRefused(t *testing.T) {
+	target, other := t.TempDir(), t.TempDir()
+	opened, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outsideInbox(target, opened, t.TempDir()); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
+		t.Fatalf("%v", err)
+	}
+	if err := outsideInbox(filepath.Join(target, "none"), opened, t.TempDir()); err == nil {
+		t.Fatal("a target that is gone")
 	}
 }
