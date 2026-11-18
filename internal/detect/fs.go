@@ -144,7 +144,7 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 		return fail(fmt.Errorf("publish %s: %w", name, err))
 	}
 	if err := syncDir(dir); err != nil {
-		return fmt.Errorf("%s is published but not durable: %w", name, err) // a retry finds it there
+		return fmt.Errorf("%s is published but not durable, sync its directory: %w", name, err) // a retry refuses the name
 	}
 	return nil
 }

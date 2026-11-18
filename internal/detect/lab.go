@@ -405,7 +405,11 @@ func readAll(dir *os.Root, name string, b *budget) (map[string][]byte, error) {
 	}
 	// the runner writes a result's files, then its result.json, in the result's own directory (rangerun finish):
 	// a list that changed while they were read is not one result
-	if again, err := relistFiles(d); err != nil || !slices.Equal(names, again) {
+	again, err := relistFiles(d)
+	if err != nil {
+		return nil, fmt.Errorf("%s: list again: %w", name, err)
+	}
+	if !slices.Equal(names, again) {
 		return nil, fmt.Errorf("%s changed while it was read", name)
 	}
 	return files, nil
@@ -444,13 +448,11 @@ func Import(labDir, resultsDir, id string) (int64, error) {
 	if size > LabCap {
 		return 0, fmt.Errorf("lab/ would hold %d bytes, over %d", size, LabCap)
 	}
-	switch err := lab.Mkdir("windows", 0o755); {
-	case err == nil:
-		if err := syncDir(lab); err != nil { // the new windows/ itself must survive a crash
-			return 0, err
-		}
-	case !errors.Is(err, os.ErrExist):
+	if err := lab.Mkdir("windows", 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 		return 0, fmt.Errorf("windows: %w", err)
+	}
+	if err := syncDir(lab); err != nil { // windows/ itself must survive a crash, also when an earlier import made it
+		return 0, err
 	}
 	windows, err := openDir(lab, "windows")
 	if err != nil {

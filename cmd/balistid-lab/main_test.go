@@ -176,7 +176,7 @@ func TestVerifyAndImportReadOnlyTheRunnersResults(t *testing.T) {
 	// root's /usr passes the check; verify then reads it and fails on what it holds, which differs by host
 	var out, errb bytes.Buffer
 	if code := entry([]string{"verify", t.TempDir()}, "/usr", &out, &errb); code != 1 ||
-		strings.Contains(errb.String(), "not the runner's") || !strings.Contains(errb.String(), "balistid-lab: ") {
+		strings.Contains(errb.String(), "not the runner's") || !strings.Contains(errb.String(), "balistid-lab: verify") {
 		t.Fatalf("verify past the check: exit %d, %q", code, errb.String())
 	}
 	errb.Reset()
