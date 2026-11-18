@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"strconv"
 	"unicode/utf8"
@@ -28,78 +27,53 @@ var (
 var errRepeated = errors.New("repeated key")
 
 // decode reads data as exactly one JSON value of valid UTF-8. A key repeated in one object is refused, or, when
-// sameDup is set (Laurel's records, ADR 0079 point 3), kept once if both values are the same.
+// sameDup is set (Laurel's records, ADR 0079 point 3), kept once if both values are the same. json.Valid is the one
+// syntax check: after it the decoder's tokens cannot fail, so walk reads them without checking.
 func decode(data []byte, sameDup bool) (any, error) {
 	if !utf8.Valid(data) || !json.Valid(data) {
 		return nil, errors.New("not one valid JSON value")
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	tok, err := dec.Token()
-	if err != nil {
-		return nil, fmt.Errorf("decode: %w", err)
-	}
-	v, err := walk(dec, tok, sameDup)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, errors.New("more than one JSON value")
-	}
-	return v, nil
+	return walk(dec, nextToken(dec), sameDup)
+}
+
+// nextToken is the decoder's next token; json.Valid held, so it has one.
+func nextToken(dec *json.Decoder) json.Token {
+	t, _ := dec.Token() //nolint:errcheck // json.Valid held: no token can fail
+	return t
 }
 
 func walk(dec *json.Decoder, tok json.Token, sameDup bool) (any, error) {
-	switch t := tok.(type) {
-	case json.Delim:
-		switch t {
-		case '{':
-			o := object{}
-			for dec.More() {
-				kt, err := dec.Token()
-				if err != nil {
-					return nil, fmt.Errorf("decode: %w", err)
-				}
-				key, _ := kt.(string) // json.Valid held: an object's token here is its key
-				vt, err := dec.Token()
-				if err != nil {
-					return nil, fmt.Errorf("decode: %w", err)
-				}
-				v, err := walk(dec, vt, sameDup)
-				if err != nil {
-					return nil, err
-				}
-				if old, seen := o[key]; seen && (!sameDup || !same(old, v)) {
-					return nil, fmt.Errorf("key %q: %w", key, errRepeated)
-				}
-				o[key] = v
+	switch tok {
+	case json.Delim('{'):
+		o := object{}
+		for dec.More() {
+			key, _ := nextToken(dec).(string) // an object's token here is its key
+			v, err := walk(dec, nextToken(dec), sameDup)
+			if err != nil {
+				return nil, err
 			}
-			if _, err := dec.Token(); err != nil { // '}'
-				return nil, fmt.Errorf("decode: %w", err)
+			if old, seen := o[key]; seen && (!sameDup || !same(old, v)) {
+				return nil, fmt.Errorf("key %q: %w", key, errRepeated)
 			}
-			return o, nil
-		case '[':
-			list := []any{}
-			for dec.More() {
-				vt, err := dec.Token()
-				if err != nil {
-					return nil, fmt.Errorf("decode: %w", err)
-				}
-				v, err := walk(dec, vt, sameDup)
-				if err != nil {
-					return nil, err
-				}
-				list = append(list, v)
-			}
-			if _, err := dec.Token(); err != nil { // ']'
-				return nil, fmt.Errorf("decode: %w", err)
-			}
-			return list, nil
+			o[key] = v
 		}
-		return nil, errors.New("unexpected delimiter")
-	default:
-		return tok, nil // string, json.Number, bool or nil
+		nextToken(dec) // '}'
+		return o, nil
+	case json.Delim('['):
+		list := []any{}
+		for dec.More() {
+			v, err := walk(dec, nextToken(dec), sameDup)
+			if err != nil {
+				return nil, err
+			}
+			list = append(list, v)
+		}
+		nextToken(dec) // ']'
+		return list, nil
 	}
+	return tok, nil // string, json.Number, bool or nil
 }
 
 // same reports whether two decoded values are equal, without reflection on untrusted data (ENGINEERING.md 7).
@@ -154,7 +128,7 @@ func fields(v any, required, optional []string) (object, error) {
 			return nil, fmt.Errorf("key %q missing", k)
 		}
 	}
-	allowed := make(map[string]bool, len(required)+len(optional))
+	allowed := map[string]bool{}
 	for _, k := range append(append([]string{}, required...), optional...) {
 		allowed[k] = true
 	}
@@ -181,8 +155,7 @@ func asInt(v any) (int64, bool) {
 	if !ok || !integerLiteral.MatchString(string(n)) {
 		return 0, false
 	}
-	i, err := strconv.ParseInt(string(n), 10, 64)
-	return i, err == nil
+	return parseInt(string(n))
 }
 
 // eventInt returns v if it is an integer of a record, in any spelling JSON allows, that fits an int64.
@@ -191,8 +164,7 @@ func eventInt(v any) (int64, bool) {
 	if !ok || !eventInteger.MatchString(string(n)) {
 		return 0, false
 	}
-	i, err := strconv.ParseInt(string(n), 10, 64)
-	return i, err == nil
+	return parseInt(string(n))
 }
 
 // plainText reports whether b holds only printable ASCII and LF, as pairs and rules must (ADR 0079 point 3).
@@ -203,4 +175,13 @@ func plainText(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// parseInt is a decimal int64, or 0 and false when it does not fit (ParseInt alone would give the bound).
+func parseInt(s string) (int64, bool) {
+	i, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return i, true
 }

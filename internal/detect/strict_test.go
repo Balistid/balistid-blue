@@ -2,6 +2,7 @@ package detect
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -39,6 +40,15 @@ func TestStrictDecode(t *testing.T) {
 			t.Errorf("decode(%q, %v): err %v, want ok %v", c.in, c.sameDup, err, c.ok)
 		}
 	}
+	if _, err := decode([]byte(`{"a":1,"a":2}`), false); !errors.Is(err, errRepeated) {
+		t.Fatalf("a repeated key: %v", err)
+	}
+	if _, err := decode([]byte(`[{"a":1,"a":2}]`), true); !errors.Is(err, errRepeated) {
+		t.Fatalf("a repeated key in a list: %v", err)
+	}
+	if _, err := decode([]byte(`{"x":{"a":1,"a":2}}`), true); !errors.Is(err, errRepeated) {
+		t.Fatalf("a repeated key in an object's value: %v", err)
+	}
 	v, err := decode([]byte(`{"a":[1,"x",true,null,{"b":2}]}`), false)
 	if err != nil {
 		t.Fatal(err)
@@ -62,21 +72,26 @@ func TestIntegers(t *testing.T) {
 		{"1.0", false, false, 0},
 		{"1e3", false, false, 0},
 		{"9223372036854775808", false, false, 0},
+		{"9223372036854775807", true, true, 9223372036854775807},
+		{"-9223372036854775808", true, true, -9223372036854775808},
 	} {
 		got, ok := asInt(json.Number(c.in))
-		if ok != c.own || (ok && got != c.want) {
+		if ok != c.own || got != map[bool]int64{true: c.want, false: 0}[ok] {
 			t.Errorf("asInt(%s) = %d %v", c.in, got, ok)
 		}
 		got, ok = eventInt(json.Number(c.in))
-		if ok != c.rec || (ok && got != c.want) {
+		if ok != c.rec || got != map[bool]int64{true: c.want, false: 0}[ok] {
 			t.Errorf("eventInt(%s) = %d %v", c.in, got, ok)
 		}
 	}
-	if _, ok := asInt("1"); ok {
+	if got, ok := asInt("1"); ok || got != 0 {
 		t.Error("a string is an integer")
 	}
-	if _, ok := eventInt("1"); ok {
+	if got, ok := eventInt("1"); ok || got != 0 {
 		t.Error("a string is a record's integer")
+	}
+	if got, ok := integer(object{"a": json.Number("7")}, "a"); !ok || got != 7 {
+		t.Error("integer of an object's key")
 	}
 }
 
@@ -100,7 +115,7 @@ func TestFieldsAndPlainText(t *testing.T) {
 	if _, ok := str(o, "b"); ok {
 		t.Error("a number passed as a string")
 	}
-	for in, want := range map[string]bool{"a b\n~": true, "\r\n": false, "\t": false, "\x7f": false, "é": false, "": true} {
+	for in, want := range map[string]bool{"a b\n~": true, " ": true, "\x1f": false, "\r\n": false, "\t": false, "\x7f": false, "é": false, "": true} {
 		if plainText([]byte(in)) != want {
 			t.Errorf("plainText(%q) != %v", in, want)
 		}
