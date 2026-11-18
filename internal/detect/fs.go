@@ -145,11 +145,7 @@ func syncDir(dir *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("sync: %w", err)
-	}
-	if err := f.Close(); err != nil {
+	if err := errors.Join(f.Sync(), f.Close()); err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
 	return nil
