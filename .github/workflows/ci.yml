@@ -154,7 +154,7 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@${MUTESTING_VERSION}"
       - name: Mutants on changed security-decision code must die
         run: |
-          "$RUNNER_TEMP/bin/go-mutesting" --workers=4 --exec-timeout=120 --per-test --coverage --no-diffs \
+          "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --no-diffs \
             --output-statuses=enx --logger-github --blacklist=tools/ci/mutation-blacklist \
             --baseline="$RUNNER_TEMP/no-baseline.json" \
             --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
