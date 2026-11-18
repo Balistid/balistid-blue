@@ -400,8 +400,8 @@ jobs:
           echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
       - name: Scan full history
-        # Force text diffs so .gitattributes cannot hide files; the scan ignores inline allow comments and any
-        # committed .gitleaksignore (docs-budget rejects that path too), and fails on an error or on no commits.
+        # Force text diffs so .gitattributes cannot hide files; the scan ignores inline allow comments, fails when a
+        # .gitleaksignore exists (gitleaks always reads it; docs-budget rejects the path too), on an error or no commits.
         run: |
           printf '* diff\n' > .git/info/attributes
           python3 tools/ci/rescan_skipped.py --history --gitleaks "$RUNNER_TEMP/gitleaks" --config .gitleaks.toml

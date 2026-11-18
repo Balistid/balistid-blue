@@ -16,6 +16,7 @@ fails on an error or on a scan of no commits as well as on a leak.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -42,6 +43,31 @@ def window_text(path: str) -> bool:
     return path.endswith(".txt") and docs_budget.WINDOW_FILE.fullmatch(path) is not None
 
 
+def window_result(path: str) -> bool:
+    return path.endswith("/result.json") and docs_budget.WINDOW_FILE.fullmatch(path) is not None
+
+
+def strings_of(value: object) -> list[str]:
+    """Every string in a decoded JSON value, keys included, in document order."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k, *strings_of(v)]]
+    if isinstance(value, list):
+        return [s for v in value for s in strings_of(v)]
+    return []
+
+
+def result_text(data: bytes) -> bytes:
+    """A window's result.json holds the runner's escape inside its strings (the reasons, the guest's kernel): each
+    string is decoded as the runner wrote it, one per line, so a key a guest put in a reason is scanned too."""
+    try:
+        doc = json.loads(data)
+    except ValueError as err:
+        raise ValueError(f"not JSON: {err}") from err
+    return b"\n".join(unescape(s.encode()) for s in strings_of(doc)) + b"\n"
+
+
 def unescape(data: bytes) -> bytes:
     """Decode the runner's escape; bytes it cannot have written, or would have written otherwise, are an error."""
     if not ESCAPED.fullmatch(data):
@@ -61,10 +87,11 @@ def extract(repo: Path, rev_range: str, out: Path) -> list[tuple[str, str, Path]
                 continue
             if skipped(path):
                 data = docs_budget.blob(repo, sha)
-            elif window_text(path) and sha not in decoded:
+            elif (window_text(path) or window_result(path)) and sha not in decoded:
                 decoded.add(sha)  # the same blob decodes the same in every commit that holds it
+                decode = result_text if window_result(path) else unescape
                 try:
-                    data = SNIFF_PAD + unescape(docs_budget.blob(repo, sha))
+                    data = SNIFF_PAD + decode(docs_budget.blob(repo, sha))
                 except ValueError as err:
                     raise SystemExit(f"rescan: {commit[:12]} {path}: {err}") from err
             else:
@@ -100,8 +127,12 @@ def history_problems(returncode: int, log: str) -> list[str]:
 
 
 def history(gitleaks: str, config: Path, repo: Path, env: dict[str, str] | None = None) -> int:
-    """Scan every commit in git mode as CI does, inline allow comments and any committed ignore file ignored."""
+    """Scan every commit in git mode as CI does, inline allow comments ignored. gitleaks always reads
+    <repo>/.gitleaksignore and no flag stops it, so a repository holding one fails here, not only in docs-budget."""
     docs_budget.commits_in(repo, "HEAD")  # a history with no commits fails here
+    if (repo / ".gitleaksignore").exists():
+        print("secrets: a .gitleaksignore would hide findings from gitleaks", file=sys.stderr)
+        return 1
     with tempfile.TemporaryDirectory() as no_ignore:
         proc = subprocess.run(
             [gitleaks, "git", "--config", str(config.resolve()), "--redact", "--no-banner",
