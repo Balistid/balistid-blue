@@ -108,7 +108,7 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 		return windowInput{}, fmt.Errorf("lab: windows/%s: %w", d, err)
 	}
 	for _, n := range names {
-		if n != ResultFile && !textName.MatchString(n) {
+		if !textName.MatchString(n) { // result.json is one too
 			return windowInput{}, fmt.Errorf("lab: windows/%s/%s is not a runner's file name", d, n)
 		}
 		limit := int64(textCap)
@@ -364,7 +364,7 @@ func readAll(dir *os.Root, name string, b *budget) (map[string][]byte, error) {
 	}
 	files := map[string][]byte{}
 	for _, n := range names {
-		if n != ResultFile && !textName.MatchString(n) {
+		if !textName.MatchString(n) { // result.json is one too
 			return nil, fmt.Errorf("%s is not a runner's file name", n)
 		}
 		if files[n], err = b.read(d, n, textCap); err != nil {
