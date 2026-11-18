@@ -95,7 +95,14 @@ func TestAWindowOfOtherContentExcludesThePair(t *testing.T) {
 	}
 }
 
-func TestCrossRows(t *testing.T) {
+func TestCrossRows(t *testing.T) { crossRows(t, false) }
+
+// TestCrossRowsStartAtTheCurrentContent: fiy ran other content at 11:00, before fix's windows; its current rule
+// was bound after them, so it is scored on none of them (ADR 0079 point 8).
+func TestCrossRowsStartAtTheCurrentContent(t *testing.T) { crossRows(t, true) }
+
+func crossRows(t *testing.T, oldRun bool) {
+	t.Helper()
 	f := fourWindows(t, baseFixture(t))
 	lab := f.write(t)
 	// A second pair whose rule matches uname: its windows come after fix's first, fix's rule is scored on its.
@@ -120,8 +127,13 @@ func TestCrossRows(t *testing.T) {
 		put(t, lab, "windows/"+strings.ToLower(id)+"/"+ResultFile, resultFor(id, name, r.Program, r.TimeoutS, r.Text, len(raw)))
 		put(t, lab, "windows/"+strings.ToLower(id)+"/"+LaurelFile, escape(raw))
 	}
+	if oldRun {
+		name := jobName("fiy", "tech-a", strings.Repeat("0", 32))
+		old := "20261118T110000Z-0123abcd-" + name
+		put(t, lab, "windows/"+strings.ToLower(old)+"/"+ResultFile, resultFor(old, name, "x.sh", 60, []byte("#!/bin/sh\n"), 1))
+	}
 	out := load(t, lab).Table()
-	if len(out.Pairs) != 2 || !out.Pairs[0].Counted || !out.Pairs[1].Counted {
+	if len(out.Pairs) != 2 || !out.Pairs[1].Counted || out.Pairs[0].Counted == oldRun {
 		t.Fatalf("pairs: %+v", out.Pairs)
 	}
 	byRule := map[string][]CrossRow{}

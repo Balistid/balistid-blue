@@ -236,6 +236,12 @@ func reasonCases() []reasonCase {
 			return bytes.ReplaceAll(baseRecords(t), []byte("balistid-canary-"), []byte("balistid-canarx-"))
 		})},
 		{"canary run by another binary", ReasonNoCanary, recs(func(t *testing.T) []byte { return onCanaryLine(t, `"exe":"/usr/bin/true"`, `"exe":"/usr/bin/tru2"`) })},
+		{"canary under another user's name", ReasonNoCanary, func(t *testing.T, f *fixture) {
+			f.records(t, onCanaryLine(t, `"UID":"root"`, `"UID":"nobody"`), true)
+		}},
+		{"canary under another uid", ReasonNoCanary, func(t *testing.T, f *fixture) {
+			f.records(t, onCanaryLine(t, `,"uid":0,`, `,"uid":5,`), false)
+		}},
 		{"canary exec failed", ReasonNoCanary, recs(func(t *testing.T) []byte { return onCanaryLine(t, `"success":"yes"`, `"success":"no!"`) })},
 		{"canary before the program", ReasonNoCanary, func(t *testing.T, f *fixture) {
 			ls := bytes.SplitAfter(baseRecords(t), []byte("\n"))

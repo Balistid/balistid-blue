@@ -187,6 +187,15 @@ func TestJob(t *testing.T) {
 	if _, err := jobIn(lab, fixturePair, "tech-b", inbox, inbox); err == nil {
 		t.Fatal("job wrote into the runner's inbox")
 	}
+	if err := os.Mkdir(filepath.Join(inbox, "x"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobIn(lab, fixturePair, "tech-b", filepath.Join(inbox, "x"), inbox); err == nil {
+		t.Fatal("job wrote into a directory inside the runner's inbox")
+	}
+	if _, err := jobIn(lab, fixturePair, "tech-b", t.TempDir(), inbox); err != nil {
+		t.Fatalf("a target outside the inbox: %v", err)
+	}
 	g := baseFixture(t)
 	g.pair = strings.ReplaceAll(g.pair, "\n", "\r\n")
 	if _, err := Job(g.write(t), fixturePair, "tech-a", t.TempDir()); err == nil {
