@@ -27,8 +27,8 @@ pull requests, and warns where they disagree. Its parts:
   `verify` against the runner's originals; `acceptance/1.toml` (7 metrics); T38-T40; `lab/` paths. Older: git log.
 
 ## Next step
-1. The `ci:` pull request of the gates (lane balistid-gates): every runner file of a window in the layout, its
-   decoded secret scan, the 16 MiB cap of `lab/`; then CI's `table` twice and in a fresh clone (table_reproducible).
+1. With the first `lab/` (B1): CI's `table` twice and in a fresh clone (table_reproducible); the window layout, its
+   decoded secret scan and the 16 MiB cap of `lab/` land in this pull request.
 2. Gate B1: a neutral development pair, each of its four runs once (a rerun needs a changed program), the control
    rows as expected, then the judge and `internal/wholefile` into CODEOWNERS and `go_gate.py`'s owned roots, proven
    by a trial pull request that cannot pass unapproved.

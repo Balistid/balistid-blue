@@ -69,7 +69,7 @@ CI_ONLY = (
     ("docs-budget", "docs_budget.py"),
     ("pin-check", "--config zizmor.yml"),
     ("commit-lint", "commit_lint.py"),
-    ("secrets", 'gitleaks" git'),
+    ("secrets", "rescan_skipped.py --history"),
     ("workflow-lint", 'actionlint" -color'),
     ("range-kvm", "range_kvm.py --work"),
     ("mutation", "go-mutesting"),

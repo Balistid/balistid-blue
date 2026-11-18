@@ -4,9 +4,9 @@
 Rule R12 (ENGINEERING.md): running code first, documents about it second. The allowlist is closed:
 a path that matches no entry fails, whatever its suffix. Prose files also have line and byte caps.
 Only regular files are allowed (no symlinks, no submodules). Every path segment follows a strict
-grammar (lowercase, at most one extension from a short list) unless it is one of a few exact names;
-the gitleaks default path allowlist matches only names outside that grammar, so no tracked file can
-hide from the secret scan by its name. Sizes are measured on the committed blob, not the
+grammar (lowercase, at most one extension from a short list) unless it is one of a few exact names or
+a window's file under lab/; the gitleaks default path allowlist matches only names outside that grammar,
+so no tracked file can hide from the secret scan by its name. Sizes are measured on the committed blob, not the
 checked-out file (which .gitattributes filters could change). Changing either list requires an ADR (adr/0001-repo-governance.md);
 code directories are added by the ADR that picks the implementation language.
 """
@@ -54,10 +54,9 @@ LAYOUT: tuple[str, ...] = (
     "tools/ci/tests/*.py",
     "tools/ci/mutation-blacklist",  # equivalent mutants the mutation gate skips (ADR 0066)
     "acceptance/[0-9].toml",
-    # The detection judge's data, bytes from the runner kept as they are (ADR 0077).
+    # The detection judge's data, bytes from the runner kept as they are (ADR 0077); windows by WINDOW_FILE.
     "lab/pairs/*.json",
     "lab/rules/*/*.json",
-    "lab/windows/*/result.json",
     "lab/results/*.json",
     "lab/agent-errors.jsonl",
     # Go and deployment layout (ADR 0003).
@@ -162,6 +161,16 @@ DIR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 FILE_RE = re.compile(
     r"^[a-z0-9][a-z0-9_-]*(?:\.(?:md|py|yml|toml|go|mod|sum|json|jsonl|rules|conf|service|socket|timer))?$"
 )
+# A window holds every file the runner wrote for one result, under its id in lower case (ADR 0079 point 2). The
+# .txt names are allowed only here, as leaves; .gitleaks.toml's content_key path takes this id (a test compares them).
+WINDOW_ID = r"[0-9]{8}t[0-9]{6}z-[0-9a-f]{8}-[a-z0-9][a-z0-9-]{0,63}"
+WINDOW_FILE = re.compile(
+    rf"lab/windows/{WINDOW_ID}/(?:result\.json|job-laurel\.txt|job-out\.txt|serial(?:-[1-9][0-9]*)?\.txt)"
+)
+# Every blob under lab/ is printable ASCII and LF, as gitleaks git skips a binary blob; together they hold at most
+# LAB_BYTES (ADR 0079 point 9).
+LAB_CONTENT = re.compile(rb"[\x20-\x7e\n]*")
+LAB_BYTES = 16 << 20
 
 # Path patterns that the default config of the pinned gitleaks (v8.30.1, config/gitleaks.toml)
 # exempts from scanning, minus those the name grammar already blocks (dot or uppercase segments,
@@ -256,7 +265,7 @@ def grammar_violation(path: str) -> str | None:
     for seg in dirs:
         if seg not in EXACT_DIRS and not DIR_RE.match(seg):
             return f"directory name {seg!r} breaks the name grammar"
-    if name not in EXACT_SEGMENTS and not FILE_RE.match(name):
+    if name not in EXACT_SEGMENTS and not FILE_RE.match(name) and not WINDOW_FILE.fullmatch(path):
         return f"file name {name!r} breaks the name grammar"
     return None
 
@@ -352,6 +361,7 @@ def map_violations(repo: Path, entries: list[tuple[str, str, str]]) -> list[str]
 
 def check(repo: Path, rev: str | None = None) -> list[str]:
     violations = []
+    lab_bytes = 0
     entries = tracked_entries(repo, rev)
     violations.extend(map_violations(repo, entries))
     for mode, sha, path in entries:
@@ -383,9 +393,14 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
         if path.startswith(ROOT_INSTALLED) and path not in CONTENT_GRAMMAR and (number := unreadable_line(blob(repo, sha), path)):
             violations.append(f"{path}: line {number} is not printable ASCII of at most {line_cap(path)} bytes")
             continue
+        if path.startswith("lab/"):
+            data = blob(repo, sha)
+            lab_bytes += len(data)
+            if not LAB_CONTENT.fullmatch(data):
+                violations.append(f"{path}: content is not printable ASCII and LF only")
         cap = doc_cap(path)
         if cap is None:
-            if not any(matches(path, pattern) for pattern in LAYOUT):
+            if not any(matches(path, pattern) for pattern in LAYOUT) and not WINDOW_FILE.fullmatch(path):
                 violations.append(f"{path}: not in repository layout allowlist")
             continue
         data = blob(repo, sha)
@@ -394,6 +409,8 @@ def check(repo: Path, rev: str | None = None) -> list[str]:
             violations.append(f"{path}: {lines} lines > cap {cap}")
         if len(data) > cap * BYTES_PER_LINE:
             violations.append(f"{path}: {len(data)} bytes > cap {cap * BYTES_PER_LINE}")
+    if lab_bytes > LAB_BYTES:
+        violations.append(f"lab/: {lab_bytes} bytes > cap {LAB_BYTES}")
     return violations
 
 

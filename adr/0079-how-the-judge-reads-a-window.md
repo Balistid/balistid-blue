@@ -57,4 +57,4 @@ differ on each and hide a false verdict. Laurel repeats `pid` with the same valu
 
 - Each point has a fixture breaking only it. Not closed: a result added while `verify` reads is seen only by its
   second listing; a decoy pair running a near-copy of another's program to fit that one's rules; host root and its
-  clock (ADR 0077 point 8). The layout cap and the scan of every window file land in their own `ci:` pull request.
+  clock (ADR 0077 point 8). The layout, the cap and the decoded scan of every window file land with this ADR.
