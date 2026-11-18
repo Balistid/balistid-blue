@@ -13,7 +13,7 @@ max = 0
 unit = "valid windows where the built-in empty `any` rule gives other than MISSED (technique) or QUIET (twin), and split-match fixtures that match"
 rows = ["T40"]
 adr = "0077"
-method = "balistid-lab table over lab/ and a test over every fixture window; an INVALID window is not counted here. A split-match fixture is a rule whose leaves each match a different event of one window; it must give MISSED (ADR 0078 point 4)."
+method = "balistid-lab table over lab/ and a test over every fixture window; an INVALID window is not counted here. A split-match fixture is an `all` rule whose leaves each match a different event of one window, no event matching all; it must not match: MISSED on a technique, QUIET on a twin (ADR 0078 point 4)."
 
 [[metric]]
 id = "control_all"

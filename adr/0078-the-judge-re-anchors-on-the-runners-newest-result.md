@@ -31,10 +31,11 @@ pass, and the fixtures' window is gone. Review of ADR 0077 also found its point 
    `20261117T164346Z-4e1197c7-hard-exec-1` (kind exec, RAN, image 2c09799; `job-laurel.txt` sha256
    `499fdf58a43fcabac45125d1823e306e4a582b63bb0eccc3d6b66ebe63087801`, `result.json` sha256
    `595cfffa9175728a60fc9c16892b2619dab226534dcdf5f430a8ea9bc539131c`). Its records are decoded under
-   `internal/detect/testdata`; a test escapes them back and compares that sha256, so the base cannot be edited.
+   `internal/detect/testdata`; a test escapes them back and compares the first sha256, so the base cannot be
+   edited; the second records which result was used, as the test builds the result at runtime.
 4. A rule is judged on one event: a window matches when one event of the job's uid satisfies the whole `all` or
-   `any`; a step on a list lets each leaf take its own element. A fixture splitting a match across two events must
-   not match (`acceptance/1.toml`, `control_empty`).
+   `any`; a step on a list lets each leaf take its own element. An `all` whose leaves match only on different
+   events must not match (`acceptance/1.toml`, `control_empty`).
 5. There is no third anchor. If this one is lost, `windows_match_originals` is missed and, as `acceptance/1.toml`
    says of any missed metric, the pilot's report is blocked.
 6. ADR 0077 point 8 adds: any 24 results from any inbox job drop the anchor; a directory left in the inbox over 30

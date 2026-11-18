@@ -19,12 +19,11 @@ pull requests, and warns where they disagree. Its parts:
 | Installer, CLI (0048, 0053, 0058, 0068) | signed install of a component; `balistid status` | on `main`; recorder installed on the host 2026-11-14 |
 
 ## Done in the last sessions
-- ADR 0078 (this pull request): the anchor is the newest result once the inbox was emptied, fixtures come from
+- ADR 0078 (this pull request): the anchor is the newest result once the inbox is emptied, fixtures come from
   hard-exec-1's window, a rule is judged on one event; the runner's re-run is issue #295.
 - #293 (ADR 0077): what makes a window valid, rules as data, the job's name bound to the pair's and rules' content,
   `verify` against the runner's originals; `acceptance/1.toml` (7 metrics); T38-T40; `lab/` paths.
-- #292 (307e6cc, ADR 0076): the recorder freezes unmet; 23 metrics wait with it; #291 closed unmerged.
-- #285 (dfc833a): every writable mount of a unit is no-exec, as root on systemd 259; #289 Go 1.27.4; older: git log.
+- #292 (ADR 0076): the recorder freezes unmet, 23 metrics wait with it; #285, #289 and older: git log.
 
 ## Next step
 1. The detection judge as ADR 0077 says: `internal/detect`, `cmd/balistid-lab` (`job`, `import`, `table`, `verify`)
@@ -36,5 +35,6 @@ pull requests, and warns where they disagree. Its parts:
    blind and merged first, four runner jobs, then the pilot report on 2026-11-20 with what it measures and not.
 
 ## Open decisions (maintainer)
-- Approve ADR 0078 and its lines in `acceptance/1.toml` and rows T35, T38 (owned paths).
+- Move every directory out of the runner's inbox (ADR 0078 point 1; #294 merges only at 0), then approve ADR 0078,
+  its lines in `acceptance/1.toml` (`control_empty`, the anchor, the base) and row T38 (owned paths).
 - #202 (default caps) and #240 (other rules files) wait with the frozen recorder (ADR 0076).
