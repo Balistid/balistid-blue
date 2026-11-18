@@ -34,7 +34,8 @@ func TestTableOfAnEmptyLab(t *testing.T) {
 
 func TestVerifyFailsWithoutTheAnchor(t *testing.T) {
 	var out, errb bytes.Buffer
-	if code := run([]string{"verify", t.TempDir()}, t.TempDir(), &out, &errb); code != 1 || !strings.Contains(errb.String(), "no longer kept") {
+	if code := run([]string{"verify", t.TempDir()}, t.TempDir(), &out, &errb); code != 1 || !strings.Contains(errb.String(), "no longer kept") ||
+		!strings.HasSuffix(errb.String(), "\nbalistid-lab: verify failed, 1 findings\n") {
 		t.Fatalf("exit %d, stderr %q", code, errb.String())
 	}
 	results := t.TempDir()
@@ -63,6 +64,9 @@ func TestErrorsAreExit1(t *testing.T) {
 func TestPrintableEscapesWhatCouldForgeALine(t *testing.T) {
 	if got := printable("a\nb\x1b[31m\x00é~"); got != `a\x0ab\x1b[31m\x00\xc3\xa9~` {
 		t.Fatalf("printable: %q", got)
+	}
+	if got := printable("\x1f \x7f"); got != `\x1f \x7f` {
+		t.Fatalf("printable's bounds: %q", got)
 	}
 }
 
