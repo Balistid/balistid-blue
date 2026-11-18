@@ -2,6 +2,8 @@ package detect
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +68,8 @@ func TestRulesThatDoNotDecode(t *testing.T) {
 	for _, js := range []string{
 		`{"all":[],"any":[]}`,
 		`{"ANY":[]}`,
+		`[{"any":[]}]`,
+		`"any"`,
 		`{"any":{}}`,
 		`{"any":[{"field":["a"],"op":"regex","value":"x"}]}`,
 		`{"any":[{"field":["a"],"op":"has","value":"x"}]}`,
@@ -120,6 +124,11 @@ func TestLeavesOnSyntheticEvents(t *testing.T) {
 		{`{"a":{"b":"x"}}`, `{"any":[{"field":["a"],"op":"eq","value":"x"}]}`, false},
 		{`{"a":"x"}`, `{"any":[{"field":["a","b"],"op":"has"}]}`, false},
 		{`{"a":true}`, `{"any":[{"field":["a"],"op":"eq","value":"true"}]}`, false},
+		{`{"a":"x","b":"y"}`, `{"all":[{"field":["a"],"op":"eq","value":"x"},{"field":["b"],"op":"eq","value":"z"}]}`, false},
+		{`{"a":"x","b":"y"}`, `{"all":[{"field":["a"],"op":"eq","value":"q"},{"field":["b"],"op":"eq","value":"y"}]}`, false},
+		{`{"a":"x","b":"y"}`, `{"any":[{"field":["a"],"op":"eq","value":"q"},{"field":["b"],"op":"eq","value":"y"}]}`, true},
+		{`{"a":1}`, `{"any":[{"field":["a"],"op":"eq","value":""}]}`, false},
+		{`{"a":"0"}`, `{"any":[{"field":["a"],"op":"eq","value":0}]}`, false},
 	} {
 		if got := ruleOf(t, c.rule).matches([]object{ev(c.event)}); got != c.want {
 			t.Errorf("%s on %s: %v, want %v", c.rule, c.event, got, c.want)
@@ -127,6 +136,24 @@ func TestLeavesOnSyntheticEvents(t *testing.T) {
 	}
 	if _, err := decodeRule(object{"any": []any{object{"field": []any{"a"}, "op": "eq", "value": json.Number("-0")}}}); err == nil {
 		t.Error("a rule's -0 decoded")
+	}
+	if r := ruleOf(t, `{"all":[{"field":["a"],"op":"has"}]}`); !r.All || len(r.Leaves) != 1 {
+		t.Errorf("an all rule: %+v", r)
+	}
+	if r := ruleOf(t, `{"any":[{"field":["a"],"op":"has"}]}`); r.All {
+		t.Errorf("an any rule: %+v", r)
+	}
+	for js, why := range map[string]string{
+		`{"any":[{"field":["a"],"op":"has","extra":1}]}`: `"extra"`,
+		`{"any":[{"field":["a"],"op":"regex"}]}`:         "regex",
+	} {
+		v, err := decode([]byte(js), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := decodeRule(v); err == nil || !strings.Contains(err.Error(), why) || errors.Unwrap(err) == nil {
+			t.Errorf("%s: %v, want %s wrapped", js, err, why)
+		}
 	}
 	if (Rule{}).matches(nil) || ControlAll.matches(nil) {
 		t.Error("a rule matched no events")

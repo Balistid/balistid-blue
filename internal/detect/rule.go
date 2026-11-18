@@ -34,22 +34,19 @@ var (
 )
 
 func decodeRule(v any) (Rule, error) {
-	o, ok := v.(object)
-	if !ok || len(o) != 1 {
+	o, _ := v.(object) // not an object: nil, of no keys
+	if len(o) != 1 {
 		return Rule{}, errors.New("a rule is one of all or any")
 	}
 	var r Rule
-	var list any
-	if l, ok := o["all"]; ok {
-		r.All, list = true, l
-	} else if l, ok := o["any"]; ok {
-		list = l
-	} else {
-		return Rule{}, errors.New("a rule is one of all or any")
+	list, all := o["all"]
+	if !all {
+		list = o["any"] // nil when the one key is neither
 	}
+	r.All = all
 	leaves, ok := list.([]any)
 	if !ok {
-		return Rule{}, errors.New("a rule's leaves are a list")
+		return Rule{}, errors.New("a rule is all or any of a list of leaves")
 	}
 	for i, lv := range leaves {
 		leaf, err := decodeLeaf(lv)
