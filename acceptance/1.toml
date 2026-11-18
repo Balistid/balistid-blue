@@ -29,7 +29,7 @@ max = 0
 unit = "INVALID reasons of ADR 0077 points 2 to 4 without a fixture that yields exactly that reason, and fixtures that yield MISSED or QUIET instead"
 rows = ["T30", "T38", "T39", "T40"]
 adr = "0077"
-method = "A test walks the closed list of reasons in internal/detect: the base fixture is the real window of p0-smoke-1 under a fixture pair's name and program, its result and keys built at test time, valid as it stands, and each fixture breaks one condition of it, its result or its pair or rule; a reason added without a fixture fails the test."
+method = "A test walks the closed list of reasons in internal/detect: the base fixture is the real window of hard-exec-1 (ADR 0078 point 3) under a fixture pair's name and program, its result and keys built at test time, valid as it stands, and each fixture breaks one condition of it, its result or its pair or rule; a reason added without a fixture fails the test."
 
 [[metric]]
 id = "fault_tests_kill"
@@ -58,7 +58,7 @@ method = "A test runs each subcommand in a temporary tree and lists every file c
 [[metric]]
 id = "windows_match_originals"
 max = 0
-unit = "runner results after the anchor of ADR 0077 point 6 that are not in lab/windows byte for byte, windows there with no such result, and an anchor no longer kept, at the pilot's report"
+unit = "runner results after the anchor of ADR 0078 point 1 that are not in lab/windows byte for byte, windows there with no such result, and an anchor no longer kept, at the pilot's report"
 rows = ["T38"]
 adr = "0077"
 method = "The maintainer runs balistid-lab verify from a clean checkout of the commit he tags, against the host's runner results, before signing the tag; any finding fails it."
