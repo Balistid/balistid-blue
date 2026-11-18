@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -8,7 +9,7 @@ import (
 func TestDecodePair(t *testing.T) {
 	good := pairJSON(reference, programsFor())
 	p, err := decodePair(fixturePair, []byte(good))
-	if err != nil || p.Attack != "T0000" || p.Author != "test" || p.Brief != fixtureBrief || len(p.Runs) != 4 ||
+	if err != nil || p.Name != fixturePair || p.Attack != "T0000" || p.Author != "test" || p.Brief != fixtureBrief || len(p.Runs) != 4 ||
 		p.Runs["tech-a"].Program != "prog.sh" || string(p.Runs["tech-a"].Text) != baseProgram || p.Runs["twin-b"].TimeoutS != 60 {
 		t.Fatalf("%+v %v", p, err)
 	}
@@ -50,9 +51,73 @@ func TestDecodePair(t *testing.T) {
 	if _, err := decodePair(strings.Repeat("a", MaxPairRun-len("-twin-a")), []byte(good)); err != nil {
 		t.Fatalf("a pair name at the limit: %v", err)
 	}
+	if MaxPairRun != 30 {
+		t.Fatalf("MaxPairRun %d, ADR 0077 point 2 says 30", MaxPairRun)
+	}
+	for _, c := range []struct{ name, old, repl string }{
+		{"timeout 1", `"timeout_s":60`, `"timeout_s":1`},
+		{"timeout 300", `"timeout_s":60`, `"timeout_s":300`},
+		{"text of exactly 1 MiB", `"text":"#!/bin/sh\nid -g\n"`, `"text":"#!/bin/sh\n` + strings.Repeat("x", 1<<20-len("#!/bin/sh\n")) + `"`},
+	} {
+		if _, err := decodePair(fixturePair, []byte(strings.Replace(good, c.old, c.repl, 1))); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
 	big := strings.Replace(good, `"text":"#!/bin/sh\nid -g\n"`, `"text":"#!/bin/sh\n`+strings.Repeat("x", 1<<20)+`"`, 1)
 	if _, err := decodePair(fixturePair, []byte(big)); err == nil {
 		t.Fatal("a program over 1 MiB decoded")
+	}
+}
+
+// TestEachPairRefusalNamesItsCause: a check that let its case through to a later one fails with another cause.
+func TestEachPairRefusalNamesItsCause(t *testing.T) {
+	good := pairJSON(reference, programsFor())
+	for _, c := range []struct {
+		name, old, repl, why string
+		wraps                bool
+	}{
+		{"not JSON", `"attack":`, `"attack"`, "not one valid JSON value", false},
+		{"a key repeated, same value", `"attack":"T0000"`, `"attack":"T0000","attack":"T0000"`, "repeated key", true},
+		{"a key missing", `"author":"test",`, ``, `key "author" missing`, false},
+		{"attack a number", `"attack":"T0000"`, `"attack":1`, "attack, author and brief", false},
+		{"author a number", `"author":"test"`, `"author":1`, "attack, author and brief", false},
+		{"brief a number", `"brief":"` + fixtureBrief + `"`, `"brief":1`, "attack, author and brief", false},
+		{"the reference broken", `"op":"eq"`, `"op":"regex"`, "reference: ", true},
+		{"a run missing", `"twin-b":`, `"twin-c":`, "runs: ", true},
+		{"a run's key missing", `"timeout_s":60,"text"`, `"text"`, "run tech-a: ", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := strings.Replace(good, c.old, c.repl, 1)
+			if data == good {
+				t.Fatalf("%q not found", c.old)
+			}
+			_, err := decodePair(fixturePair, []byte(data))
+			if err == nil || !strings.Contains(err.Error(), c.why) || (errors.Unwrap(err) != nil) != c.wraps {
+				t.Fatalf("err %v, want %q (wraps %v)", err, c.why, c.wraps)
+			}
+		})
+	}
+}
+
+// TestEachRuleFileRefusalNamesItsCause, as for a pair.
+func TestEachRuleFileRefusalNamesItsCause(t *testing.T) {
+	for _, c := range []struct{ name, old, repl, why string }{
+		{"not JSON", `"model":`, `"model"`, "not one valid JSON value"},
+		{"a key repeated, same value", `"model":"test"`, `"model":"test","model":"test"`, "repeated key"},
+		{"a key missing", `"model":"test",`, ``, `key "model" missing`},
+		{"model a number", `"model":"test"`, `"model":1`, "model, sample and brief_sha256"},
+		{"sample a string", `"sample":1`, `"sample":"1"`, "model, sample and brief_sha256"},
+		{"brief sha a number", `"brief_sha256":"` + sha([]byte(fixtureBrief)) + `"`, `"brief_sha256":1`, "model, sample and brief_sha256"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := strings.Replace(fixtureRule, c.old, c.repl, 1)
+			if data == fixtureRule {
+				t.Fatalf("%q not found", c.old)
+			}
+			if _, err := decodeRuleFile(fixtureRuleFile, []byte(data)); err == nil || !strings.Contains(err.Error(), c.why) {
+				t.Fatalf("err %v, want %q", err, c.why)
+			}
+		})
 	}
 }
 
@@ -115,6 +180,8 @@ func TestJobNames(t *testing.T) {
 		"x-tech-a-" + strings.Repeat("A", 32),
 		"x-tech-c-" + h,
 		"x-tech-a" + h,
+		"x-tech-ax" + h, // the dash before the hash is the name's, not any byte
+		"x-tech-a-" + h + "0",
 		"tech-a-" + h,
 		"-tech-a-" + h,
 		"X-tech-a-" + h,

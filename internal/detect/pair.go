@@ -19,7 +19,8 @@ const MaxPairRun = 30
 
 var (
 	pairName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-	hex32    = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	// jobNameParts splits `<pair>-<run>-<32 hex>` at its last dash.
+	jobNameParts = regexp.MustCompile(`^(.+)-([0-9a-f]{32})$`)
 )
 
 // Run is one of a pair's programs.
@@ -67,11 +68,11 @@ func decodePair(name string, data []byte) (Pair, error) {
 		return Pair{}, err
 	}
 	p := Pair{Name: name, Runs: map[string]Run{}}
-	var ok [3]bool
-	p.Attack, ok[0] = str(o, "attack")
-	p.Author, ok[1] = str(o, "author")
-	p.Brief, ok[2] = str(o, "brief")
-	if !ok[0] || !ok[1] || !ok[2] {
+	var attack, author, brief bool
+	p.Attack, attack = str(o, "attack")
+	p.Author, author = str(o, "author")
+	p.Brief, brief = str(o, "brief")
+	if !attack || !author || !brief {
 		return Pair{}, errors.New("attack, author and brief are strings")
 	}
 	if p.Reference, err = decodeRule(o["reference"]); err != nil {
@@ -115,11 +116,11 @@ func decodeRuleFile(path string, data []byte) (RuleFile, error) {
 		return RuleFile{}, err
 	}
 	rf := RuleFile{Path: path}
-	var ok [3]bool
-	rf.Model, ok[0] = str(o, "model")
-	rf.Sample, ok[1] = integer(o, "sample")
-	rf.BriefSHA256, ok[2] = str(o, "brief_sha256")
-	if !ok[0] || !ok[1] || !ok[2] || !hex64.MatchString(rf.BriefSHA256) {
+	var model, sample, briefSHA bool
+	rf.Model, model = str(o, "model")
+	rf.Sample, sample = integer(o, "sample")
+	rf.BriefSHA256, briefSHA = str(o, "brief_sha256")
+	if !model || !sample || !briefSHA || !hex64.MatchString(rf.BriefSHA256) {
 		return RuleFile{}, errors.New("model, sample and brief_sha256")
 	}
 	if _, isObject := o["params"].(object); !isObject {
@@ -154,13 +155,11 @@ func jobName(pair, run, hash string) string { return pair + "-" + run + "-" + ha
 
 // splitJobName parses a job name into pair, run and hash, or fails.
 func splitJobName(name string) (pair, run, hash string, ok bool) {
-	if len(name) < 34 || name[len(name)-33] != '-' {
+	m := jobNameParts.FindStringSubmatch(name)
+	if m == nil {
 		return "", "", "", false
 	}
-	hash, rest := name[len(name)-32:], name[:len(name)-33]
-	if !hex32.MatchString(hash) {
-		return "", "", "", false
-	}
+	rest, hash := m[1], m[2]
 	for _, rn := range RunNames {
 		if p, found := strings.CutSuffix(rest, "-"+rn); found && pairName.MatchString(p) {
 			return p, rn, hash, true
