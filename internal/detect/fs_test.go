@@ -347,7 +347,7 @@ func TestAStagingModeThatCannotBeSetAndAFileThatDoesNotSync(t *testing.T) {
 		t.Fatalf("staging left behind: %v", list)
 	}
 	put(t, pub, "f", []byte("x"))
-	file, err := os.Open(filepath.Join(pub, "f"))
+	file, err := rootOf(t, pub).Open("f")
 	if err != nil {
 		t.Fatal(err)
 	}
