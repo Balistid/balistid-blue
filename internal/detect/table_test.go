@@ -335,8 +335,9 @@ func TestOnlyAPlacedWindowStartsCrossRows(t *testing.T) {
 			name := jobName("fiy", "tech-a", contentHash(map[string][]byte{"pairs/fiy.json": []byte(gPair), "rules/fiy/opus-1.json": []byte(fixtureRule)}))
 			r := p.Runs["tech-a"]
 			raw := baseRecords(t)
-			put(t, lab, "windows/"+c.dir+name+"/"+ResultFile, resultFor(c.id+name, name, r.Program, r.TimeoutS, r.Text, len(raw)))
-			put(t, lab, "windows/"+c.dir+name+"/"+LaurelFile, escape(raw))
+			id, dir := c.id+name, c.dir+name
+			put(t, lab, "windows/"+dir+"/"+ResultFile, resultFor(id, name, r.Program, r.TimeoutS, r.Text, len(raw)))
+			put(t, lab, "windows/"+dir+"/"+LaurelFile, escape(raw))
 			for _, row := range load(t, lab).Table().Cross {
 				if row.Rule == "rules/fiy/opus-1.json" {
 					t.Fatalf("an unplaced window started fiy's cross rows: %+v", row)

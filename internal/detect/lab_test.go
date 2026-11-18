@@ -843,3 +843,34 @@ func TestAJobDirectoryHasItsModeUnderAnyUmask(t *testing.T) {
 		t.Fatalf("%v %v", fi.Mode(), err)
 	}
 }
+
+// TestImportSyncsANewWindowsDirectoryFirst: a lab whose new windows/ does not sync gets no window in it.
+func TestImportSyncsANewWindowsDirectoryFirst(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	orig := syncDir
+	t.Cleanup(func() { syncDir = orig })
+	gone := errors.New("gone")
+	syncDir = func(*os.Root) error { return gone }
+	lab := t.TempDir()
+	if n, err := Import(lab, res, id); !errors.Is(err, gone) || n != 0 || strings.Contains(err.Error(), "published") {
+		t.Fatalf("%d %v", n, err)
+	}
+	if list, err := os.ReadDir(filepath.Join(lab, "windows")); err != nil || len(list) != 0 {
+		t.Fatalf("%v %v", list, err)
+	}
+}
+
+// TestAResultHoldingADirectoryIsRefusedAsSuch: the cause is the directory, not a list that changed.
+func TestAResultHoldingADirectoryIsRefusedAsSuch(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	res := results(t, map[string]map[string][]byte{id: f.window}, true)
+	if err := os.Mkdir(filepath.Join(res, id, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(t.TempDir(), res, id); err == nil || !strings.Contains(err.Error(), "sub is not a regular file") {
+		t.Fatalf("%v", err)
+	}
+}

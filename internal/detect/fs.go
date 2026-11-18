@@ -124,7 +124,7 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	fail := func(err error) error {
 		return errors.Join(err, dir.RemoveAll(staging))
 	}
-	if err := dir.Chmod(staging, dirMode); err != nil { // the mode asked for, not what the umask left of it
+	if err := chmodIn(dir, staging, dirMode); err != nil { // the mode asked for, not what the umask left of it
 		return fail(fmt.Errorf("staging: %w", err))
 	}
 	sub, err := openDir(dir, staging)
@@ -149,7 +149,7 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	return nil
 }
 
-// statOpened, rename, syncDir, syncFile and lstatIn are the calls only a racing writer or a failing disk makes
+// statOpened, rename, syncDir, syncFile, lstatIn and chmodIn are the calls only a racing writer or a failing disk makes
 // fail; tests replace them to stand for those.
 var (
 	statOpened = func(sub *os.Root) (os.FileInfo, error) { return sub.Stat(".") }
@@ -157,6 +157,7 @@ var (
 	syncDir    = syncDirOf
 	syncFile   = func(f *os.File) error { return errors.Join(f.Sync(), f.Close()) }
 	lstatIn    = func(dir *os.Root, name string) (os.FileInfo, error) { return dir.Lstat(name) }
+	chmodIn    = func(dir *os.Root, name string, mode os.FileMode) error { return dir.Chmod(name, mode) }
 )
 
 // syncDirOf makes a rename in dir durable (ENGINEERING.md 7).
