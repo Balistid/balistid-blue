@@ -1,10 +1,15 @@
 package detect
 
 import (
+	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -210,14 +215,37 @@ func TestJob(t *testing.T) {
 
 func TestLoadRefusesWhatIsNotLab(t *testing.T) {
 	for _, c := range []struct {
-		name  string
-		setup func(t *testing.T, lab string)
+		name, why string
+		setup     func(t *testing.T, lab string)
 	}{
-		{"rules without a pair", func(t *testing.T, lab string) { put(t, lab, "rules/orphan/x.json", []byte("{}")) }},
-		{"a pair file not .json", func(t *testing.T, lab string) { put(t, lab, "pairs/x.txt", []byte("{}")) }},
-		{"a file in windows/", func(t *testing.T, lab string) { put(t, lab, "windows/x", []byte("{}")) }},
-		{"a window file of another name", func(t *testing.T, lab string) { put(t, lab, "windows/d/Weird", []byte("{}")) }},
-		{"a window file a link", func(t *testing.T, lab string) {
+		{"rules without a pair", "rules/orphan has no pair", func(t *testing.T, lab string) { put(t, lab, "rules/orphan/x.json", []byte("{}")) }},
+		{"a pair file not .json", "pairs/x.txt is not a pair's file", func(t *testing.T, lab string) { put(t, lab, "pairs/x.txt", []byte("{}")) }},
+		{"a file in windows/", "lab: windows: x is not a directory", func(t *testing.T, lab string) { put(t, lab, "windows/x", []byte("{}")) }},
+		{"a window file of another name", "windows/d/Weird is not a runner's file name", func(t *testing.T, lab string) { put(t, lab, "windows/d/Weird", []byte("{}")) }},
+		{"a directory in a window", "lab: windows/d: sub is not a regular file", func(t *testing.T, lab string) { put(t, lab, "windows/d/sub/x", nil) }},
+		{"a directory in pairs/", "lab: pairs: d is not a regular file", func(t *testing.T, lab string) { put(t, lab, "pairs/d/x", nil) }},
+		{"a file in rules/", "lab: rules: f is not a directory", func(t *testing.T, lab string) { put(t, lab, "rules/f", nil) }},
+		{"a directory in a pair's rules", "lab: rules/x: d is not a regular file", func(t *testing.T, lab string) {
+			put(t, lab, "pairs/x.json", []byte("{}"))
+			put(t, lab, "rules/x/d/y", nil)
+		}},
+		{"pairs/ a file", "lab: pairs is not a directory", func(t *testing.T, lab string) { put(t, lab, "pairs", nil) }},
+		{"rules/ a file", "lab: rules is not a directory", func(t *testing.T, lab string) { put(t, lab, "rules", nil) }},
+		{"windows/ a file", "lab: windows is not a directory", func(t *testing.T, lab string) { put(t, lab, "windows", nil) }},
+		{"pairs over lab/'s cap", "lab: over", func(t *testing.T, lab string) {
+			for _, p := range []string{"a", "b", "c", "d"} {
+				put(t, lab, "pairs/"+p+".json", make([]byte, pairCap-1))
+			}
+		}},
+		{"rules over lab/'s cap", "lab: over", func(t *testing.T, lab string) {
+			for _, p := range []string{"a", "b", "c"} {
+				put(t, lab, "pairs/"+p+".json", make([]byte, pairCap))
+			}
+			for i := range 17 {
+				put(t, lab, "rules/c/r"+strconv.Itoa(i)+".json", make([]byte, ruleCap))
+			}
+		}},
+		{"a window file a link", "lab: windows/d: ", func(t *testing.T, lab string) {
 			put(t, lab, "pairs/x.json", []byte("{}"))
 			if err := os.MkdirAll(filepath.Join(lab, "windows", "d"), 0o750); err != nil {
 				t.Fatal(err)
@@ -226,12 +254,12 @@ func TestLoadRefusesWhatIsNotLab(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"pairs/ a link", func(t *testing.T, lab string) {
+		{"pairs/ a link", "lab: pairs is not a directory", func(t *testing.T, lab string) {
 			if err := os.Symlink("/", filepath.Join(lab, "pairs")); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"lab/ over its cap", func(t *testing.T, lab string) {
+		{"lab/ over its cap", "lab: over", func(t *testing.T, lab string) {
 			put(t, lab, "windows/a/serial.txt", make([]byte, LabCap/2+1))
 			put(t, lab, "windows/b/serial.txt", make([]byte, LabCap/2+1))
 		}},
@@ -239,10 +267,22 @@ func TestLoadRefusesWhatIsNotLab(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			lab := t.TempDir()
 			c.setup(t, lab)
-			if _, err := Load(lab); err == nil {
-				t.Fatal("loaded")
+			if _, err := Load(lab); err == nil || !strings.Contains(err.Error(), c.why) {
+				t.Fatalf("err %v, want %q", err, c.why)
 			}
 		})
+	}
+	if _, err := Load(filepath.Join(t.TempDir(), "none")); err == nil || errors.Unwrap(err) == nil {
+		t.Fatalf("a missing lab: %v", err)
+	}
+	for _, dir := range []string{"windows/d", "rules/x"} {
+		lab := t.TempDir()
+		put(t, lab, "pairs/x.json", []byte("{}"))
+		put(t, lab, dir+"/f", nil)
+		locked(t, filepath.Join(lab, dir), 0o300)
+		if _, err := Load(lab); !errors.Is(err, fs.ErrPermission) {
+			t.Fatalf("an unreadable %s: %v", dir, err)
+		}
 	}
 	if lab, err := Load(t.TempDir()); err != nil || len(lab.Windows) != 0 {
 		t.Fatalf("an empty lab: %v", err)
@@ -284,5 +324,243 @@ func TestTheDigestCoversTheComparedSet(t *testing.T) {
 	f2, d2, err2 := Verify(lab, empty)
 	if err1 != nil || err2 != nil || len(f1) != 0 || len(f2) != 0 || d1 == d2 {
 		t.Fatalf("no window %v %s, an empty one %v %s", f1, d1, f2, d2)
+	}
+}
+
+// TestEachFileAtItsCap: a result, a pair and a rule of exactly their cap are read; one byte more is not.
+func TestEachFileAtItsCap(t *testing.T) {
+	pad := func(data []byte, size int) []byte { // trailing spaces, then the LF a pair or rule must end in: the same JSON
+		body := bytes.TrimSuffix(data, []byte("\n"))
+		end := []byte{}
+		if len(body) < len(data) {
+			end = []byte("\n")
+		}
+		return append(append(append([]byte{}, body...), bytes.Repeat([]byte(" "), size-len(data))...), end...)
+	}
+	for _, c := range []struct {
+		name string
+		cap  int
+		want Reason
+		set  func(t *testing.T, f *fixture, size int)
+	}{
+		{"result", resultCap, ReasonResultDecode, func(_ *testing.T, f *fixture, size int) { f.window[ResultFile] = pad(f.window[ResultFile], size) }},
+		{"pair", pairCap, ReasonPair, func(t *testing.T, f *fixture, size int) {
+			f.pair = string(pad([]byte(f.pair), size))
+			f.window = f.windowFor(t, "tech-a", baseRecords(t)) // the job name binds the content
+		}},
+		{"rule", ruleCap, ReasonRule, func(t *testing.T, f *fixture, size int) {
+			f.rules[fixtureRuleFile] = string(pad([]byte(f.rules[fixtureRuleFile]), size))
+			f.window = f.windowFor(t, "tech-a", baseRecords(t))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := baseFixture(t)
+			c.set(t, f, c.cap)
+			if w := f.judge(t); !w.Valid() {
+				t.Fatalf("at the cap: %+v", w)
+			}
+			g := baseFixture(t)
+			c.set(t, g, c.cap+1)
+			if w := g.judge(t); w.Reason != c.want {
+				t.Fatalf("over the cap: %+v", w)
+			}
+		})
+	}
+}
+
+// TestARecordsFileThatCannotBeReadIsMissing: a hard link to the records is not read, so the window has none.
+func TestARecordsFileThatCannotBeReadIsMissing(t *testing.T) {
+	f := baseFixture(t)
+	lab := f.write(t)
+	if err := os.Link(filepath.Join(lab, "windows", f.dir, LaurelFile), filepath.Join(t.TempDir(), "l")); err != nil {
+		t.Fatal(err)
+	}
+	if w := load(t, lab).Windows[0]; w.Reason != ReasonLaurelFile {
+		t.Fatalf("%+v", w)
+	}
+}
+
+// TestOnlyExecResultsCountTheirProgram: a result that is no exec job does not make another's program repeated.
+func TestOnlyExecResultsCountTheirProgram(t *testing.T) {
+	f := baseFixture(t)
+	other := bytes.Replace(f.window[ResultFile], []byte(`"program": "prog.sh",`), nil, 1)
+	if bytes.Equal(other, f.window[ResultFile]) {
+		t.Fatal("no program key")
+	}
+	f.extra["20261118t110000z-0123abcd-other"] = map[string][]byte{ResultFile: other}
+	for _, w := range load(t, f.write(t)).Windows {
+		if w.Dir == f.dir && !w.Valid() {
+			t.Fatalf("the base: %+v", w)
+		}
+	}
+}
+
+// TestARuleOfABrokenPairIsListed: a pair that does not decode keeps its rules' rows, uncounted.
+func TestARuleOfABrokenPairIsListed(t *testing.T) {
+	f := baseFixture(t)
+	f.pair = strings.Replace(f.pair, `"attack":"T0000"`, `"attack":1`, 1)
+	out := load(t, f.write(t)).Table()
+	if len(out.Rules) != 1 || out.Rules[0].Rule != fixtureRuleFile || out.Rules[0].Counted {
+		t.Fatalf("rules %+v", out.Rules)
+	}
+}
+
+// TestEachJobRefusalNamesItsCause, and a job reads only its own pair.
+func TestEachJobRefusalNamesItsCause(t *testing.T) {
+	old := syscall.Umask(0) // the modes the judge asks for, not the session's umask
+	t.Cleanup(func() { syscall.Umask(old) })
+	repeated := func(s, key string) string { return strings.Replace(s, key, key+","+key, 1) }
+	for _, c := range []struct {
+		name, pair, run, why string
+		edit                 func(f *fixture)
+		cause                error
+	}{
+		{"no such pair", "nope", "tech-a", `no pair "nope"`, nil, nil},
+		{"no such run", fixturePair, "tech-c", `run "tech-c" is not one of`, nil, nil},
+		{"a pair with a repeated key", fixturePair, "tech-a", "pair: ", func(f *fixture) { f.pair = repeated(f.pair, `"attack":"T0000"`) }, errRepeated},
+		{"a rule with a repeated key", fixturePair, "tech-a", "rules: ", func(f *fixture) {
+			f.rules[fixtureRuleFile] = repeated(f.rules[fixtureRuleFile], `"model":"test"`)
+		}, errRepeated},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := baseFixture(t)
+			if c.edit != nil {
+				c.edit(f)
+			}
+			_, err := Job(f.write(t), c.pair, c.run, t.TempDir())
+			if err == nil || !strings.Contains(err.Error(), c.why) || (c.cause != nil && !errors.Is(err, c.cause)) {
+				t.Fatalf("err %v, want %q", err, c.why)
+			}
+		})
+	}
+	f := baseFixture(t)
+	lab := f.write(t)
+	for path, why := range map[string]string{"": "lab: ", "pairs": "lab: pairs is not a directory", "rules": "lab: rules is not a directory", "pairs/d/x": "lab: pairs: "} {
+		dir := t.TempDir()
+		if path != "" {
+			put(t, dir, path, nil)
+		} else {
+			dir = filepath.Join(dir, "none")
+		}
+		if _, err := Job(dir, fixturePair, "tech-a", t.TempDir()); err == nil || !strings.Contains(err.Error(), why) {
+			t.Errorf("lab %q: %v, want %q", path, err, why)
+		}
+	}
+	if _, err := Job(lab, fixturePair, "tech-a", filepath.Join(t.TempDir(), "none")); err == nil || !strings.Contains(err.Error(), "target: ") {
+		t.Fatalf("a missing target: %v", err)
+	}
+	// Another pair sorted first whose rules do not read, and rules without a pair: neither stops this pair's job.
+	put(t, lab, "pairs/aaa.json", []byte("{}"))
+	put(t, lab, "rules/aaa/d/x", nil)
+	put(t, lab, "rules/orphan/x.json", []byte("{}"))
+	target := t.TempDir()
+	out, err := Job(lab, fixturePair, "tech-a", target)
+	if err != nil {
+		t.Fatalf("a job beside other pairs: %v", err)
+	}
+	name := strings.Fields(out)[0]
+	for path, want := range map[string]os.FileMode{name: 0o750 | os.ModeDir, name + "/job.json": 0o640, name + "/prog.sh": 0o640} {
+		if fi, err := os.Stat(filepath.Join(target, path)); err != nil || fi.Mode() != want {
+			t.Errorf("%s: %v %v, want %v", path, fi.Mode(), err, want)
+		}
+	}
+}
+
+// TestEachImportRefusalNamesItsCause: every refused import returns 0 and why.
+func TestEachImportRefusalNamesItsCause(t *testing.T) {
+	f := baseFixture(t)
+	id := idOf(t, f)
+	sub := "20261118T130000Z-00000000-sub"
+	res := results(t, map[string]map[string][]byte{id: f.window, sub: {ResultFile: []byte("{}")}}, true)
+	put(t, res, sub+"/d/x", nil)
+	linked := t.TempDir()
+	if err := os.Symlink("x", filepath.Join(linked, "l")); err != nil {
+		t.Fatal(err)
+	}
+	deep := t.TempDir()
+	put(t, deep, "windows/w/sub/x", nil)
+	missing := filepath.Join(t.TempDir(), "none")
+	for _, c := range []struct {
+		name, lab, results, id, why string
+	}{
+		{"the anchor itself", t.TempDir(), res, Anchor, "is not a result after the anchor"},
+		{"a name after the anchor but not a result's", t.TempDir(), res, "zzz", "zzz is not a result after the anchor"},
+		{"a result the runner does not hold", t.TempDir(), res, "20261118T140000Z-00000000-none", "no result 20261118T140000Z-00000000-none"},
+		{"a result that does not read", t.TempDir(), res, sub, "result " + sub + ": "},
+		{"no results", t.TempDir(), missing, id, "results: "},
+		{"no lab", missing, res, id, "lab: "},
+		{"a link in lab/", linked, res, id, "neither a regular file"},
+		{"a directory too deep in lab/", deep, res, id, "within depth"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, err := Import(c.lab, c.results, c.id)
+			if err == nil || n != 0 || !strings.Contains(err.Error(), c.why) {
+				t.Fatalf("%d %v, want %q", n, err, c.why)
+			}
+		})
+	}
+}
+
+// TestImportsOneAfterAnother: a second result goes into the existing windows/, each with the runner's modes.
+func TestImportsOneAfterAnother(t *testing.T) {
+	old := syscall.Umask(0) // the modes the judge asks for, not the session's umask; no test here runs in parallel
+	t.Cleanup(func() { syscall.Umask(old) })
+	f := baseFixture(t)
+	id := idOf(t, f)
+	other := "20261118T130000Z-00000000-other"
+	res := results(t, map[string]map[string][]byte{id: f.window, other: {ResultFile: []byte("{}")}}, true)
+	lab := t.TempDir()
+	for _, r := range []string{id, other} {
+		if _, err := Import(lab, res, r); err != nil {
+			t.Fatalf("%s: %v", r, err)
+		}
+	}
+	for path, want := range map[string]os.FileMode{
+		"windows":                           0o755 | os.ModeDir,
+		"windows/" + strings.ToLower(other): 0o755 | os.ModeDir,
+		"windows/" + strings.ToLower(other) + "/" + ResultFile: 0o644,
+	} {
+		if fi, err := os.Stat(filepath.Join(lab, path)); err != nil || fi.Mode() != want {
+			t.Errorf("%s: %v %v, want %v", path, fi.Mode(), err, want)
+		}
+	}
+	big := "20261118T150000Z-00000000-big"
+	full := results(t, map[string]map[string][]byte{big: {ResultFile: make([]byte, LabCap)}}, true)
+	if n, err := Import(t.TempDir(), full, big); err != nil || n != LabCap {
+		t.Fatalf("a result of exactly lab/'s cap: %d %v", n, err)
+	}
+}
+
+// TestEachVerifyFailureNamesItsCause: an error for what verify cannot read, a finding for a window it cannot.
+func TestEachVerifyFailureNamesItsCause(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "none")
+	fileIn := func(path string) string {
+		d := t.TempDir()
+		put(t, d, path, nil)
+		return d
+	}
+	for _, c := range []struct{ name, lab, results, why string }{
+		{"no results", t.TempDir(), missing, "results: "},
+		{"no lab", missing, results(t, nil, true), "lab: "},
+		{"a file among the results", t.TempDir(), fileIn(Anchor + "x"), "results: "},
+		{"a file in windows/", fileIn("windows/x"), results(t, nil, true), "lab: windows: "},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, _, err := Verify(c.lab, c.results); err == nil || !strings.Contains(err.Error(), c.why) || errors.Unwrap(err) == nil {
+				t.Fatalf("err %v, want %q", err, c.why)
+			}
+		})
+	}
+	id := "20261118T130000Z-00000000-x"
+	res := results(t, map[string]map[string][]byte{id: {ResultFile: []byte("{}")}}, true)
+	put(t, res, id+"/d/x", nil)
+	if findings, _, err := Verify(t.TempDir(), res); err != nil || !findingWith(findings, "result "+id+": ") {
+		t.Fatalf("a result that does not read: %v %v", findings, err)
+	}
+	lab := t.TempDir()
+	put(t, lab, "windows/"+strings.ToLower(id)+"/d/x", nil)
+	good := results(t, map[string]map[string][]byte{id: {ResultFile: []byte("{}")}}, true)
+	if findings, _, err := Verify(lab, good); err != nil || !findingWith(findings, "windows/"+strings.ToLower(id)+": ") {
+		t.Fatalf("a window that does not read: %v %v", findings, err)
 	}
 }
