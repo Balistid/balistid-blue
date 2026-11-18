@@ -513,11 +513,8 @@ func jobIn(labDir, pair, run, target, inboxDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("target: %w", err)
 	}
-	inbox, err := os.Stat(inboxDir)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		inbox = nil // no inbox on this machine, nothing to refuse
-	case err != nil:
+	inbox, err := os.Stat(inboxDir) // nil without an inbox on this machine: nothing to refuse
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("inbox: %w", err)
 	}
 	if err := outsideInbox(target, opened, inbox); err != nil {
