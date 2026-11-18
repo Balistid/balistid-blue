@@ -138,10 +138,10 @@ func (lab *Lab) Table() TableOutput {
 // cross scores a rule on every valid window of another pair made after the first window of its own pair's
 // current content, so the rule was bound before those windows existed (ADR 0079 point 8); none without one.
 func cross(rf RuleFile, pair, since string, all []Window) []CrossRow {
-	var rows []CrossRow
 	if since == "" {
-		return rows
+		return nil
 	}
+	var rows []CrossRow
 	for _, w := range all {
 		if w.Pair == pair || w.Dir <= since {
 			continue
