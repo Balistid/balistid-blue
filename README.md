@@ -80,6 +80,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `internal/rangeguest/` | Parsers for what the guest reads: auditctl, /proc, Laurel JSON, auditd state |
 | `internal/rangejob/` | Contract between agents and the range runner, starting with the inbox request |
 | `internal/rangerun/` | The range runner: its record of the inbox (one run per job name and content in 30 days) and quota; it never changes the inbox |
+| `cmd/balistid-lab/`, `internal/detect/` | The detection judge: windows, pairs and rules as data, verdicts, `job`, `import`, `table`, `verify` (ADR 0077-0079) |
 | `internal/anchor/` | The ledger's log: the collector's stream as typed entries in Tessera, signed checkpoints, resume from the log's tail (ADR 0027) |
 | `internal/entry/` | The ledger's log entries: typed events of hashes and ranges, their byte encoding and strict decoding (ADR 0026) |
 | `internal/relay/` | The ledger's checkpoints to the witness (c2sp.org/tlog-witness) and back its verified cosignature, the entry bundles to the Pi; holds no signing key (ADR 0006, 0026, 0031) |
@@ -109,8 +110,7 @@ CI fails when a directory with tracked files has no row here, or a row names som
 | `packaging/laurel/` | PKGBUILD for the pinned Laurel release binary |
 | `range/` | mkosi configuration and guest unit of the range image |
 | `tools/ci/` | Repository gates (layout and this map, commit lint, pins, secrets, Go), the runner's release manifest, root probes on CI's systemd (`probe_*.py`), and their tests |
-| `githooks/` | Local hooks; CI is the authority, hooks give earlier feedback |
-| `.github/` | CI workflow, code owners, issue and pull request templates |
+| `githooks/`, `.github/` | Local hooks (CI is the authority, they give earlier feedback); CI workflow, code owners, issue and pull request templates |
 
 A code graph (graphify) is deliberately not kept: at this size it would only add something to go stale.
 Revisit when floor 0 runs several processes.
