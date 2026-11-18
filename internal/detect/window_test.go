@@ -240,6 +240,31 @@ func reasonCases() []reasonCase {
 			f.records(t, onCanaryLine(t, `,"uid":0,`, `,"uid":5,`), false)
 		}},
 		{"canary exec failed", ReasonNoCanary, recs(func(t *testing.T) []byte { return onCanaryLine(t, `"success":"yes"`, `"success":"no!"`) })},
+		{"canary just before the program", ReasonNoCanary, func(t *testing.T, f *fixture) {
+			ls := bytes.SplitAfter(baseRecords(t), []byte("\n"))
+			moved := append(append(append([][]byte{}, ls[:5]...), ls[9]), ls[5:9]...)
+			moved = append(moved, ls[10:]...)
+			if !bytes.Contains(moved[5], []byte("balistid-canary-")) || !bytes.Contains(moved[6], []byte(programArgv)) {
+				t.Fatal("the base's program or canary moved")
+			}
+			f.records(t, bytes.Join(moved, nil), false)
+		}},
+		{"canary's argv[0] another binary", ReasonNoCanary, recs(func(t *testing.T) []byte {
+			return onCanaryLine(t, `"ARGV":["/usr/bin/true"`, `"ARGV":["/usr/bin/tru2"`)
+		})},
+		{"canary's uid a string", ReasonNoCanary, func(t *testing.T, f *fixture) {
+			f.records(t, onCanaryLine(t, `,"uid":0,`, `,"uid":"0",`), true)
+		}},
+		{"the program under the job's uid, another name", ReasonNoProgramExec, func(t *testing.T, f *fixture) {
+			f.records(t, onProgramLine(t, `"UID":"balistid-job"`, `"UID":"balistid-jox"`), false)
+		}},
+		{"the last record without its LF", ReasonLaurelLine, recs(func(t *testing.T) []byte {
+			raw := baseRecords(t)
+			return append(raw[:len(raw)-1:len(raw)-1], ' ')
+		})},
+		{"records of exactly the cap", ReasonLaurelLine, func(t *testing.T, f *fixture) {
+			f.records(t, append(bytes.Repeat([]byte("a"), LaurelCap-1), '\n'), true)
+		}},
 		{"canary before the program", ReasonNoCanary, func(t *testing.T, f *fixture) {
 			ls := bytes.SplitAfter(baseRecords(t), []byte("\n"))
 			var canaryLine []byte
@@ -279,5 +304,26 @@ func TestEachReasonHasAFixture(t *testing.T) {
 	}
 	if len(covered) != len(Reasons) {
 		t.Errorf("%d reasons covered, %d in the closed list", len(covered), len(Reasons))
+	}
+}
+
+// TestTheProgramAndCanaryAlone: the program as the first record and the canary right after it are a valid window.
+func TestTheProgramAndCanaryAlone(t *testing.T) {
+	ls := bytes.SplitAfter(baseRecords(t), []byte("\n"))
+	f := baseFixture(t)
+	f.records(t, append(append([]byte{}, ls[5]...), ls[9]...), true)
+	if w := f.judge(t); !w.Valid() || len(w.events) != 1 {
+		t.Fatalf("%+v", w)
+	}
+}
+
+// TestTheAnchorItselfIsBeforeTheAnchor: the anchor's own result is not the pilot's (ADR 0078 point 1).
+func TestTheAnchorItselfIsBeforeTheAnchor(t *testing.T) {
+	r, err := decodeResult(resultFor(Anchor, "pr13-run-d4", "prog.sh", 60, []byte(baseProgram), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reason, _ := check(windowInput{dir: strings.ToLower(Anchor)}, r); reason != ReasonBeforeAnchor {
+		t.Fatalf("reason %q", reason)
 	}
 }
