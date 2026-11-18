@@ -3,6 +3,7 @@ package detect
 import (
 	"bytes"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -69,14 +70,13 @@ func sha(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-func baseRecords(t testing.TB) []byte {
-	t.Helper()
-	raw, err := os.ReadFile("testdata/hard-exec-1.jsonl")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return raw
-}
+// hardExec1 is embedded, not read by path: a test binary run outside the package directory (go-mutesting's
+// per-test coverage map runs it from the repository root) would fail a relative read and cover nothing.
+//
+//go:embed testdata/hard-exec-1.jsonl
+var hardExec1 []byte
+
+func baseRecords(testing.TB) []byte { return bytes.Clone(hardExec1) }
 
 func resultFor(id, name, program string, timeout int64, text []byte, laurelBytes int) []byte {
 	return []byte(strings.NewReplacer(

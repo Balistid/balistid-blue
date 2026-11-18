@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,7 +30,12 @@ func TestOnlyTheStandardLibrary(t *testing.T) {
 		"github.com/Balistid/balistid-blue/internal/detect":    true,
 		"github.com/Balistid/balistid-blue/internal/wholefile": true,
 	}
-	for _, dir := range []string{".", "../../cmd/balistid-lab"} {
+	_, self, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
+	here := filepath.Dir(self) // not the working directory: a mutation tool may run tests from elsewhere
+	for _, dir := range []string{here, filepath.Join(here, "..", "..", "cmd", "balistid-lab")} {
 		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
 		if err != nil || len(files) == 0 {
 			t.Fatalf("%s: %v", dir, err)
