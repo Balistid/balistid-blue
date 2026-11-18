@@ -125,7 +125,8 @@ jobs:
     # pull request (ADR 0066); uncovered mutants are listed in the job's log for review.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # A pull request that adds a whole package mutates every line of it: the judge alone is ~1,800 mutants.
+    timeout-minutes: 150
     env:
       GOFLAGS: -mod=readonly
       GOWORK: "off"
@@ -153,7 +154,7 @@ jobs:
           GOBIN="$RUNNER_TEMP/bin" go install "github.com/jonbaldie/go-mutesting/v2/cmd/go-mutesting@${MUTESTING_VERSION}"
       - name: Mutants on changed security-decision code must die
         run: |
-          "$RUNNER_TEMP/bin/go-mutesting" --workers=2 --exec-timeout=120 --per-test --coverage --no-diffs \
+          "$RUNNER_TEMP/bin/go-mutesting" --workers=4 --exec-timeout=120 --per-test --coverage --no-diffs \
             --output-statuses=enx --logger-github --blacklist=tools/ci/mutation-blacklist \
             --baseline="$RUNNER_TEMP/no-baseline.json" \
             --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
