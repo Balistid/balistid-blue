@@ -94,9 +94,10 @@ func optionalDir(root *os.Root, name string) (*os.Root, error) {
 	return d, nil
 }
 
-// readWindow reads every file of a window; a file it cannot read is noted for its closed reason.
+// readWindow reads every file of a window; a file it cannot read is left out, which its closed reason names as
+// missing (ADR 0079 point 2).
 func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
-	in := windowInput{dir: d, files: map[string][]byte{}, readErr: map[string]error{}}
+	in := windowInput{dir: d, files: map[string][]byte{}}
 	w, err := openDir(windows, d)
 	if err != nil {
 		return in, fmt.Errorf("lab: windows/%w", err)
@@ -118,11 +119,9 @@ func readWindow(windows *os.Root, d string, b *budget) (windowInput, error) {
 		if errors.Is(err, errOverBudget) {
 			return in, fmt.Errorf("lab: over %d bytes", LabCap)
 		}
-		if err != nil {
-			in.readErr[n] = err
-			continue
+		if err == nil {
+			in.files[n] = data
 		}
-		in.files[n] = data
 	}
 	return in, nil
 }

@@ -64,7 +64,6 @@ func (w Window) Valid() bool { return w.Reason == "" }
 type windowInput struct {
 	dir      string
 	files    map[string][]byte // the window's files it could read, by name
-	readErr  map[string]error  // the files it could not
 	pairs    map[string]pairEntry
 	programs map[string]int // windows in lab/ per program sha256
 }
@@ -88,10 +87,7 @@ func checkWindow(in windowInput) Window {
 	if pair, run, hash, ok := splitJobName(r.Name); ok {
 		w.Pair, w.Run, w.Hash = pair, run, hash
 	}
-	w.Reason, w.events = check(in, r)
-	if w.Reason != "" {
-		w.events = nil
-	}
+	w.Reason, w.events = check(in, r) // events only when valid
 	return w
 }
 
@@ -102,7 +98,7 @@ func check(in windowInput, r result) (Reason, []object) {
 		return ReasonSchema, nil
 	case r.Label != "agent":
 		return ReasonLabel, nil
-	case !r.HasJob || r.Kind != "exec" || !r.HasExec:
+	case r.Kind != "exec" || !r.HasExec: // no job: no kind
 		return ReasonKind, nil
 	case r.Runs != 1:
 		return ReasonRuns, nil
@@ -117,10 +113,10 @@ func check(in windowInput, r result) (Reason, []object) {
 	case r.ID <= Anchor:
 		return ReasonBeforeAnchor, nil
 	}
-	pairName, runName, hash, ok := splitJobName(r.Name)
+	pairName, runName, hash, _ := splitJobName(r.Name) // a name that does not parse gives "", which names no pair
 	entry, isPair := in.pairs[pairName]
 	switch {
-	case !ok || !isPair:
+	case !isPair:
 		return ReasonName, nil
 	case entry.pairErr != nil:
 		return ReasonPair, nil
@@ -167,8 +163,8 @@ func checkRecords(in windowInput, r result, jobUID string) (Reason, []object) {
 		if errors.Is(err, errRepeated) {
 			return ReasonDuplicateKey, nil
 		}
-		ev, isObject := v.(object)
-		if err != nil || !isObject {
+		ev, isObject := v.(object) // a line that does not decode is nil
+		if !isObject {
 			return ReasonLaurelLine, nil
 		}
 		events = append(events, ev)
@@ -180,32 +176,30 @@ func checkRecords(in windowInput, r result, jobUID string) (Reason, []object) {
 // user's name and uid agree on every event (ADR 0079 point 5), and a successful canary exec under root after
 // the program; it returns the job's events.
 func checkExecs(events []object, jobUID string) (Reason, []object) {
-	program := -1
-	for i, ev := range events {
-		if user(ev) == JobUser && numericUID(ev) == jobUID && execOK(ev) && argvIs(ev, "/bin/sh", JobProgram) {
-			program = i
-			break
-		}
-	}
-	if program < 0 {
-		return ReasonNoProgramExec, nil
-	}
 	var job []object
+	program, canaryAfter, uidsAgree := false, false, true
 	for _, ev := range events {
 		name, number := user(ev), numericUID(ev)
-		if (name == JobUser) != (number == jobUID) {
-			return ReasonJobUID, nil
-		}
+		uidsAgree = uidsAgree && (name == JobUser) == (number == jobUID)
 		if name == JobUser {
 			job = append(job, ev)
 		}
-	}
-	for _, ev := range events[program+1:] {
-		if user(ev) == "root" && numericUID(ev) == "0" && execOK(ev) && canary(ev) {
-			return "", job
+		if name == JobUser && number == jobUID && execOK(ev) && argvIs(ev, "/bin/sh", JobProgram) {
+			program = true
+		}
+		if program && name == "root" && number == "0" && execOK(ev) && canary(ev) {
+			canaryAfter = true
 		}
 	}
-	return ReasonNoCanary, nil
+	switch {
+	case !program:
+		return ReasonNoProgramExec, nil
+	case !uidsAgree:
+		return ReasonJobUID, nil
+	case !canaryAfter:
+		return ReasonNoCanary, nil
+	}
+	return "", job
 }
 
 func syscallOf(ev object) object {
