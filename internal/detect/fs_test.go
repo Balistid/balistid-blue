@@ -237,3 +237,53 @@ func TestPublishIntoAReadOnlyDirectory(t *testing.T) {
 		t.Fatalf("publish into a read-only directory: %v", err)
 	}
 }
+
+// TestWhatOnlyARaceOrTheDiskFails: a directory swapped while opened, a rename or a sync that fails each refuse.
+func TestWhatOnlyARaceOrTheDiskFails(t *testing.T) {
+	dir := t.TempDir()
+	put(t, dir, "d/f", []byte("x"))
+	root := rootOf(t, dir)
+	other, err := os.Stat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := root.Lstat("d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStat, origRename, origSync := statOpened, rename, syncDir
+	t.Cleanup(func() { statOpened, rename, syncDir = origStat, origRename, origSync })
+	for _, c := range []struct {
+		name string
+		stat func(*os.Root) (os.FileInfo, error)
+	}{
+		{"swapped for another directory", func(*os.Root) (os.FileInfo, error) { return other, nil }},
+		{"no longer statable", func(*os.Root) (os.FileInfo, error) { return before, errors.New("gone") }},
+	} {
+		statOpened = c.stat
+		if _, err := openDir(root, "d"); err == nil || !strings.Contains(err.Error(), "changed while it was opened") {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+	statOpened = origStat
+	gone := errors.New("disk")
+	rename = func(*os.Root, string, string) error { return gone }
+	if err := publish(root, "out", map[string][]byte{"a": nil}, 0o750, 0o640); !errors.Is(err, gone) {
+		t.Fatalf("a rename that fails: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("published after a failed rename: %v", err)
+	}
+	rename = origRename
+	syncDir = func(*os.Root) error { return gone }
+	if err := publish(root, "out2", map[string][]byte{"a": nil}, 0o750, 0o640); !errors.Is(err, gone) {
+		t.Fatalf("a sync that fails: %v", err)
+	}
+	syncDir = origSync
+	if err := syncDirOf(root); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if list, _ := os.ReadDir(dir); len(list) != 2 {
+		t.Fatalf("staging left behind: %v", list)
+	}
+}

@@ -36,7 +36,7 @@ func openDir(root *os.Root, name string) (*os.Root, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	after, err := sub.Stat(".")
+	after, err := statOpened(sub)
 	if err != nil || !os.SameFile(before, after) {
 		_ = sub.Close()
 		return nil, fmt.Errorf("%s changed while it was opened", name)
@@ -133,14 +133,22 @@ func publish(dir *os.Root, name string, files map[string][]byte, dirMode, fileMo
 	if _, err := dir.Lstat(name); !errors.Is(err, fs.ErrNotExist) {
 		return fail(fmt.Errorf("%s already exists", name))
 	}
-	if err := dir.Rename(staging, name); err != nil {
+	if err := rename(dir, staging, name); err != nil {
 		return fail(fmt.Errorf("publish %s: %w", name, err))
 	}
 	return syncDir(dir)
 }
 
-// syncDir makes a rename in dir durable (ENGINEERING.md 7).
-func syncDir(dir *os.Root) error {
+// statOpened, rename and syncDir are the calls only a racing writer or a failing disk makes fail; tests replace
+// them to stand for those.
+var (
+	statOpened = func(sub *os.Root) (os.FileInfo, error) { return sub.Stat(".") }
+	rename     = func(dir *os.Root, from, to string) error { return dir.Rename(from, to) }
+	syncDir    = syncDirOf
+)
+
+// syncDirOf makes a rename in dir durable (ENGINEERING.md 7).
+func syncDirOf(dir *os.Root) error {
 	f, err := dir.Open(".")
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
