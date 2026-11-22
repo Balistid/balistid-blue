@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "20261122T093654Z-00ba8fce-dev-read-tech-a-15985d52e94d038484b917d16c62f664",
+  "label": "agent",
+  "runner_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_sha256": "693e28f3e561f5959dd1bcda486fe8ed1bbc11a6c3b120263b9634e262e933a7",
+  "job": {
+    "name": "dev-read-tech-a-15985d52e94d038484b917d16c62f664",
+    "kind": "exec",
+    "program": "tech-a.sh",
+    "timeout_s": 30,
+    "content_key": "ab7a66d1169625990a62dc22c488b17b2dccc2c5986c69af08dbd59a464ad880",
+    "program_sha256": "e42b59b127b80b3fd48044bb6fb558d04e44da8df9303328329ae7ea501b21e2",
+    "job_disk_sha256": "174604f518518dce4fdf80274fad1c75a4831c4992419a3b48268c821fc5b93e"
+  },
+  "limits": {
+    "run_timeout_s": 600,
+    "serial_budget": 1048576,
+    "job_out_cap": 2097152,
+    "job_laurel_cap": 6291456,
+    "mem_reserve": 4294967296,
+    "job_memory": 2684354560,
+    "disk_reserve": 5368709120
+  },
+  "verdict": "RAN",
+  "reason": "the job ran; its output and Laurel records are the agent's to judge",
+  "runs": [
+    {
+      "verdict": "RAN",
+      "reason": "the job ran; its output and Laurel records are the agent's to judge",
+      "guest_kernel": "7.2.8-arch1-2",
+      "job_result": "success",
+      "job_exit": 0,
+      "out_bytes": 382,
+      "laurel_bytes": 12534
+    }
+  ]
+}

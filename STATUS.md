@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-11-18 by claude/opus-5.5 (J2: the detection judge's code and ADR 0079, how it reads a window)
+Updated: 2026-11-22 by claude/opus-5.5 (gate B1: the judge's first real windows)
 
 ## Where we are
 
@@ -13,28 +13,28 @@ pull requests, and warns where they disagree. Its parts:
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured; on the host in version A |
 | Range, runner (0009-0011, 0018-0021, 0028) | VM where agents run jobs; the runner exports each job's records | installed at 2c09799 (no collector in its image); `range-kvm` self-tests every pull request on GitHub's KVM; after a reboot on 2026-11-17 it re-ran 24 October jobs left in the inbox, which dropped `p0-smoke-1` (ADR 0078) |
-| Detection judge (0009 point 7, 0076, 0077) | verdicts from a job's records, rules as data | built in this pull request (`internal/detect`, `cmd/balistid-lab`, ADR 0079); no window in `lab/` yet |
+| Detection judge (0009 point 7, 0076, 0077) | verdicts from a job's records, rules as data | on `main` (`internal/detect`, `cmd/balistid-lab`, ADR 0079); gate B1 met 2026-11-22 on four windows in `lab/`; its lock is #298 |
 | Collector, store, shard (0005, 0007, 0013, 0016, 0017, 0029) | Laurel's records into sealed SQLite shards under a cap | on `main`, code-owned; frozen (ADR 0076), the collector kept in the range image |
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030-0032) | signed log, cosigned off the host | on `main`; frozen until an agent on the host gets root (ADR 0076 point 5) |
 | Installer, CLI (0048, 0053, 0058, 0068) | signed install of a component; `balistid status` | on `main`; recorder installed on the host 2026-11-14 |
 
 ## Done in the last sessions
-- This pull request: the judge (25 closed INVALID reasons, rules on one event, table, verify, import, job),
+- Gate B1 (this pull request): the four dev-read runs ran once each on 2026-11-22 (4 of the pilot's 23 results
+  after the anchor), imported byte for byte; `verify` passes and the table holds every value fixed in #297 before the
+  runs: 4 windows valid, the pair counted, both controls 4 windows and 0 wrong, `opus-1` CAUGHT, CAUGHT, QUIET, QUIET,
+  no cross rows. Scripts: 3 Codex rounds; residual: a result planted mid-hand-over (only the runner writes).
+- #296: the judge (25 closed INVALID reasons, rules on one event, table, verify, import, job),
   ADR 0079, `lab/`'s gates; 3 rounds each of Opus critic and Codex security, a reply round, no escaped mutant but
   3 equivalents. Residual: another content's window vetoes its pair on its claimed hash (narrowing fails open, T39);
   a name made between publish's check and rename is replaced (os.Root has no RENAME_NOREPLACE); parallel imports.
-- #294 (ADR 0078): the anchor, fixtures from hard-exec-1, a rule on one event; runner re-run is issue #295.
-- #293 (ADR 0077): window validity, rules as data, job names bound to content, `verify`; older: git log.
+- #294 (ADR 0078, the anchor; runner re-run is issue #295), #293 (ADR 0077, window validity); older: git log.
 
 ## Next step
-1. With the first `lab/` (B1): CI's `table` twice and in a fresh clone (table_reproducible); the window layout, its
-   decoded secret scan and the 16 MiB cap of `lab/` land in this pull request.
-2. Gate B1: a neutral development pair (it reads files the image surely has), each of its four runs once, the control
-   rows as expected, then the judge and `internal/wholefile` into CODEOWNERS and `go_gate.py`'s owned roots, proven
-   by a trial pull request that cannot pass unapproved.
-3. One test pair from Codex, rules from several models written blind and merged first, four runner jobs, then the
+1. Lock the judge (#298): `internal/detect`, `cmd/balistid-lab` into CODEOWNERS and `go_gate.py`'s owned roots,
+   proven by a trial pull request that cannot pass unapproved.
+2. One test pair from Codex, rules from several models written blind and merged first, four runner jobs, then the
    pilot report with what it measures and not.
 
 ## Open decisions (maintainer)
-- Approve this pull request: ADR 0079, the judge's code, its rows in the README map and the mutation gate.
+- Approve this pull request (`STATUS.md`) and #298 (the lock).
 - #202 (default caps) and #240 (other rules files) wait with the frozen recorder (ADR 0076).

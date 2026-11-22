@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "20261122T102228Z-17577526-dev-read-twin-b-15985d52e94d038484b917d16c62f664",
+  "label": "agent",
+  "runner_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_sha256": "693e28f3e561f5959dd1bcda486fe8ed1bbc11a6c3b120263b9634e262e933a7",
+  "job": {
+    "name": "dev-read-twin-b-15985d52e94d038484b917d16c62f664",
+    "kind": "exec",
+    "program": "twin-b.sh",
+    "timeout_s": 30,
+    "content_key": "2721f6e7441029dbed2c4281b0f68df6c38d17deb9df19d63191b2dee087b264",
+    "program_sha256": "c139ca32beac707773410bc0fc44c18407a3eb2d90ccb10b93743a48423bb788",
+    "job_disk_sha256": "c28fd1bd938a5b432b1b512fb7ae9db9aa8d47a3b54a9f65073320873d5f2533"
+  },
+  "limits": {
+    "run_timeout_s": 600,
+    "serial_budget": 1048576,
+    "job_out_cap": 2097152,
+    "job_laurel_cap": 6291456,
+    "mem_reserve": 4294967296,
+    "job_memory": 2684354560,
+    "disk_reserve": 5368709120
+  },
+  "verdict": "RAN",
+  "reason": "the job ran; its output and Laurel records are the agent's to judge",
+  "runs": [
+    {
+      "verdict": "RAN",
+      "reason": "the job ran; its output and Laurel records are the agent's to judge",
+      "guest_kernel": "7.2.8-arch1-2",
+      "job_result": "success",
+      "job_exit": 0,
+      "out_bytes": 20,
+      "laurel_bytes": 9905
+    }
+  ]
+}
