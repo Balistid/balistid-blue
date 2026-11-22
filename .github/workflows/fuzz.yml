@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"

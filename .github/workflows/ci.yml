@@ -53,7 +53,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
@@ -63,7 +63,7 @@ jobs:
       - name: Install golangci-lint (pinned by sha256)
         run: |
           gl="golangci-lint-${GOLANGCI_VERSION}-linux-amd64"
-          curl -fsSLo "$RUNNER_TEMP/gl.tgz" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/gl.tgz" \
             "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/$gl.tar.gz"
           echo "$GOLANGCI_SHA256  $RUNNER_TEMP/gl.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP"
@@ -106,7 +106,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
@@ -150,7 +150,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
@@ -189,7 +189,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
@@ -216,7 +216,7 @@ jobs:
           persist-credentials: false
       - name: Install Go (pinned by sha256) and check it against go.mod
         run: |
-          curl -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/go.tgz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
           echo "$GO_SHA256  $RUNNER_TEMP/go.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/go.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/go/bin" >> "$GITHUB_PATH"
@@ -306,14 +306,14 @@ jobs:
       - name: Install zizmor (pinned by sha256) for the pin-check gate tests
         run: |
           tarball="zizmor-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/$tarball"
           echo "$ZIZMOR_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" zizmor
       - name: Install gitleaks (pinned by sha256) for the rescan detection test
         run: |
           tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
           echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
@@ -362,7 +362,7 @@ jobs:
       - name: Install zizmor (pinned by sha256)
         run: |
           tarball="zizmor-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/$tarball"
           echo "$ZIZMOR_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" zizmor
@@ -409,7 +409,7 @@ jobs:
       - name: Install gitleaks (pinned by sha256)
         run: |
           tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
           echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
@@ -434,7 +434,7 @@ jobs:
       - name: Install actionlint (pinned by sha256)
         run: |
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" actionlint
@@ -442,7 +442,7 @@ jobs:
       - name: Install shellcheck (pinned by sha256)
         run: |
           tarball="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz"
-          curl -fsSLo "$RUNNER_TEMP/$tarball" \
+          curl --retry 3 --retry-all-errors -fsSLo "$RUNNER_TEMP/$tarball" \
             "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/$tarball"
           echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
