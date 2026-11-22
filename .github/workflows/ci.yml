@@ -173,7 +173,7 @@ jobs:
             --git-diff-lines --git-diff-base="$BASE_SHA" --fail-on-escaped \
             ./internal/anchor/ ./internal/unixsock/ ./internal/cosign/ ./internal/link/ ./internal/collector/ \
             ./internal/rangevm/ ./internal/relay/ ./internal/entry/ ./internal/shard/ ./internal/store/ ./internal/watch/ \
-            ./internal/detect/ ./cmd/balistid-ledger/ ./cmd/balistid-lab/
+            ./internal/detect/ ./internal/wholefile/ ./cmd/balistid-ledger/ ./cmd/balistid-lab/
 
   go-race:
     runs-on: ubuntu-24.04

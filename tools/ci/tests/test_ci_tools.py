@@ -838,8 +838,8 @@ class OwnedDepsTest(unittest.TestCase):
     # The binaries root installs are in the gate, and CI lists exactly the gate's roots (ADR 0011).
     def test_gate_roots_match_ci(self):
         root = Path(__file__).resolve().parents[3]
-        self.assertTrue({"cmd/balistid-runner", "cmd/balistid", "cmd/balistid-collector", "cmd/balistid-install"}
-                        <= set(go_gate.OWNED_ROOTS))
+        self.assertTrue({"cmd/balistid-runner", "cmd/balistid", "cmd/balistid-collector", "cmd/balistid-install",
+                         "cmd/balistid-lab"} <= set(go_gate.OWNED_ROOTS))
         ci = (root / ".github/workflows/ci.yml").read_text()
         listed = [line for line in ci.splitlines() if "go list -deps -json" in line]
         self.assertEqual(len(listed), 1)
