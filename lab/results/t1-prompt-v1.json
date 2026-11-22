@@ -1,0 +1,99 @@
+{
+ "version": "rule-prompt-v1",
+ "template": "You write ONE detection rule for a security measurement lab. Reply with exactly one JSON object, the rule, and nothing else: no prose, no code fence.\n\nThe brief (it describes an attack technique and a legitimate twin activity; both run as an unprivileged job user in a Linux VM without network):\n{BRIEF}\n\nWhat the rule sees. The VM records every exec of the job with auditd, turned into JSON events by Laurel. A rule is judged on ONE event at a time and fires if it is true on any event of a run. It must fire on runs of the technique and on no event of the twin's runs. Below is one real event from a different, unrelated job, to show the shape (some file attributes cut):\n{EXAMPLE}\nNotes on the shape: EXECVE.ARGV is the list of argument strings as typed (argv[0] is the program name as typed, e.g. \"cat\", not \"/usr/bin/cat\"). SYSCALL.ARGV holds raw register values, not arguments. PATH is a list of the files the exec touched. A field path that reaches a list tests each element.\n\nThe rule language:\n- A rule is {\"any\": [leaf, ...]} (true if at least one leaf is true) or {\"all\": [leaf, ...]} (true if every leaf is true). No nesting.\n- A leaf is {\"field\": [key, key, ...], \"op\": \"eq\" | \"contains\" | \"has\", \"value\": ...}: field is the path of keys into the event, e.g. [\"EXECVE\", \"ARGV\"] or [\"SYSCALL\", \"comm\"].\n- \"eq\": the value at the path (or some element of a list there) equals value; value is a string or an integer.\n- \"contains\": the string at the path (or some string element of a list there) contains value as a substring; value is a string.\n- \"has\": the path exists; this op takes no value.\n\nExample of the format only (it detects nothing useful): {\"all\": [{\"field\": [\"EXECVE\", \"ARGV\"], \"op\": \"eq\", \"value\": \"true\"}, {\"field\": [\"SYSCALL\", \"UID\"], \"op\": \"has\"}]}\n",
+ "example_event": {
+  "ID": "1795342045.446:192",
+  "SYSCALL": {
+   "arch": "0xc000003e",
+   "syscall": 59,
+   "success": "yes",
+   "exit": 0,
+   "items": 2,
+   "ppid": 415,
+   "pid": 416,
+   "auid": 4294967295,
+   "uid": 970,
+   "gid": 970,
+   "euid": 970,
+   "suid": 970,
+   "fsuid": 970,
+   "egid": 970,
+   "sgid": 970,
+   "fsgid": 970,
+   "tty": "(none)",
+   "ses": 4294967295,
+   "comm": "cat",
+   "exe": "/usr/bin/cat",
+   "key": "balistid-exec",
+   "ARCH": "x86_64",
+   "SYSCALL": "execve",
+   "AUID": "unset",
+   "UID": "balistid-job",
+   "GID": "balistid-job",
+   "EUID": "balistid-job",
+   "SUID": "balistid-job",
+   "FSUID": "balistid-job",
+   "EGID": "balistid-job",
+   "SGID": "balistid-job",
+   "FSGID": "balistid-job",
+   "ARGV": [
+    "0x55933c2f6da0",
+    "0x55933c2f7680",
+    "0x55933c2f4790",
+    "0x21"
+   ],
+   "PID": {
+    "EVENT_ID": "1795342045.446:192",
+    "systemd_service": [
+     "balistid-job-run"
+    ]
+   },
+   "PPID": {
+    "EVENT_ID": "1795342045.443:191"
+   },
+   "UID_GROUPS": [
+    "balistid-job"
+   ],
+   "SPAWNED_BY": {
+    "EVENT_ID": "1795342045.443:191",
+    "pid": 415,
+    "comm": "program",
+    "exe": "/usr/bin/bash"
+   }
+  },
+  "EXECVE": {
+   "argc": 2,
+   "ARGV": [
+    "cat",
+    "/etc/group"
+   ]
+  },
+  "CWD": {
+   "cwd": "/"
+  },
+  "PATH": [
+   {
+    "item": 0,
+    "name": "/usr/bin/cat",
+    "nametype": "NORMAL",
+    "OUID": "root",
+    "OGID": "root"
+   },
+   {
+    "item": 1,
+    "name": "/lib64/ld-linux-x86-64.so.2",
+    "nametype": "NORMAL",
+    "OUID": "root",
+    "OGID": "root"
+   }
+  ],
+  "PROCTITLE": {
+   "ARGV": [
+    "cat",
+    "/etc/group"
+   ]
+  }
+ },
+ "how": "The prompt for a pair is the template with {BRIEF} replaced by the pair's brief and {EXAMPLE} by example_event as written by json.dumps(indent=1) plus a newline. Every author gets that prompt once per sample, in an empty directory, tools off where its CLI allows, no retry; an answer that is not one rule is a recorded failure.",
+ "template_sha256": "957c1c189706c16b81391728f7be3864fa65942cc9ca04acc5aedeb4482ff10c"
+}
