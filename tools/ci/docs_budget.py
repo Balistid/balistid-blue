@@ -52,6 +52,7 @@ LAYOUT: tuple[str, ...] = (
     "githooks/commit-msg",
     "tools/ci/*.py",
     "tools/ci/tests/*.py",
+    "tools/lab/*.py",  # the pilot's blind rule authors (T1), so anyone can run them again
     "tools/ci/mutation-blacklist",  # equivalent mutants the mutation gate skips (ADR 0066)
     "acceptance/[0-9].toml",
     # The detection judge's data, bytes from the runner kept as they are (ADR 0077); windows by WINDOW_FILE.
