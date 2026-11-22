@@ -1,3 +1,4 @@
+// Trial for the judge lock: this pull request must not merge without the maintainer.
 package detect
 
 import (
