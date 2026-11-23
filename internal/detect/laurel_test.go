@@ -2,11 +2,15 @@ package detect
 
 import (
 	"bytes"
+	"os"
+	"strings"
 	"testing"
 )
 
-// Laurel 0.8.2's own uri_escape cases (src/quote.rs), raw bytes and what Laurel writes.
+// Laurel 0.8.2's 20 uri_escape cases (src/quote.rs), two of json_serialize's surrogates (src/json.rs), then ours.
 var laurelCases = []struct{ raw, quoted string }{
+	{"\xc3\xa4\xc3\xb6\xc3\xbc", "äöü"}, {"\xf0\xf0\x9f\x92\x96asdf", "%f0💖asdf"},
+	{"\xf0\x9f\x84\xbb\xf0\x9f\x84\xb0\xf0\x9f\x85\x84\xf0\x9f\x85\x81\xf0\x9f\x84\xb4\xf0\x9f\x84\xbb", "🄻🄰🅄🅁🄴🄻"},
 	{" ", " "}, {"asdf", "asdf"}, {"+", "%2b"}, {"%", "%25"}, {"+++", "%2b%2b%2b"}, {"%%%", "%25%25%25"},
 	{"%+%", "%25%2b%25"}, {"\xc3\xa4", "ä"}, {"\xe2\x82\xac", "€"}, {"\xf0\x9f\x92\x96", "💖"},
 	{"abcd\xc3\xa4\xc3\xb6\xc3\xbcefgh", "abcdäöüefgh"}, {"\xc3\xc3\xa4", "%c3ä"},
@@ -14,6 +18,17 @@ var laurelCases = []struct{ raw, quoted string }{
 	{"\xf0\x9f\xf0\x9f\x92\x96", "%f0%9f💖"}, {"\xf0\x9f\x92\xf0\x9f\x92\x96", "%f0%9f%92💖"},
 	{"\xEF\xBB\xBF", "%ef%bb%bf"}, {"\xed\xa0\x80", "%ed%a0%80"}, {"\xed\xbf\xbf", "%ed%bf%bf"},
 	{"a\nb\tc\x7f", "a%0ab%09c%7f"},
+}
+
+// laurelQuote is Laurel 0.8.2's quoting: a Laurel upgrade must re-check it against src/quote.rs (ADR 0080).
+func TestLaurelQuoteIsForThePackagedLaurel(t *testing.T) {
+	pkg, err := os.ReadFile("../../packaging/laurel/PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pkg), "\npkgver=0.8.2\n") {
+		t.Fatal("Laurel is no longer 0.8.2: check laurelQuote against its src/quote.rs URIEscapeWriter (ADR 0080)")
+	}
 }
 
 func TestLaurelQuoteMatchesLaurel(t *testing.T) {
@@ -30,7 +45,7 @@ func TestLaurelQuoteMatchesLaurel(t *testing.T) {
 // What Laurel cannot have written stays as the judge read it before ADR 0080.
 func TestLaurelTextKeepsWhatLaurelDidNotWrite(t *testing.T) {
 	for _, s := range []string{
-		"%2B", "%2", "%", "a%zz", "%25+", "1+%25", "%41", "%e2%82%ac", "no escapes + here", "",
+		"%2B", "%2b%2F", "%2", "%", "a%zz", "%25+", "1+%25", "%41", "%e2%82%ac", "no escapes + here", "",
 	} {
 		if got := laurelText(s); got != s {
 			t.Errorf("laurelText(%q) = %q, want it unchanged", s, got)
@@ -53,6 +68,8 @@ func TestLeafMatchesArgvAsTyped(t *testing.T) {
 		{Leaf{[]string{"EXECVE", "ARGV"}, OpContains, "strftime(\"%Y"}, awk, true},
 		{Leaf{[]string{"EXECVE", "ARGV"}, OpContains, "%25Y"}, awk, false},
 		{Leaf{[]string{"EXECVE", "ARGV"}, OpEq, "--date=now"}, "--date=now", true},
+		{Leaf{[]string{"EXECVE", "ARGV"}, OpEq, "%25"}, "%2525", true}, // decoded once, not twice
+		{Leaf{[]string{"EXECVE", "ARGV"}, OpEq, "%"}, "%2525", false},
 	}
 	for _, c := range cases {
 		if got := c.leaf.test(c.v); got != c.want {

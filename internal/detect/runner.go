@@ -30,7 +30,7 @@ const (
 	LaurelFile = "job-laurel.txt"
 	ResultFile = "result.json"
 	// Version names the rules a table or a verify was made under (ENGINEERING.md, evidence).
-	Version = "ADR 0077-0079"
+	Version = "ADR 0077-0080"
 )
 
 // image is a known range image: its sha256 and the uid its image gives the job's user.
