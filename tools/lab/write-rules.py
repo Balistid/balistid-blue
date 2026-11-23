@@ -2,7 +2,9 @@
 """T1: blind rule authors for one pair, the same way for every vendor. The maintainer runs it outside the agent sandbox.
 
 Each author gets the same prompt (prompt-v1.txt with the pair's brief and one example event of another pair), in a
-fresh empty directory, with tools off where the CLI allows it, one attempt per sample, no retry. For each answer it
+fresh empty directory, with tools off where the CLI allows it, one answer per sample: no retry after any answer;
+only a request the service refused before the model answered (gemini-api: HTTP 429/500/503) is asked again, and a
+sample whose record has no output at all is set aside (raw/<pair>/infra-failed/, published too) and run again. For each answer it
 keeps the raw record (prompt, stdout, stderr, rc, CLI version, times) and, when the answer is one valid rule, a rule
 file in the lab's format (model, sample, params, brief_sha256). An invalid answer stays a recorded failure.
 
@@ -21,8 +23,8 @@ def utc():
 
 def need_flags(cli, flags):
     if cli == "gemini-api":  # no CLI: this script makes the request itself
-        if not os.environ.get("GEMINI_API_KEY"):
-            sys.exit("STOP: GEMINI_API_KEY is not set; nothing was run for gemini-api")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{20,}", os.environ.get("GEMINI_API_KEY", "")):
+            sys.exit("STOP: GEMINI_API_KEY is not set or not a key (letters, digits, - and _ only); nothing was run")
         return
     h = subprocess.run([cli, "--help"] if cli != "codex" else ["codex", "exec", "--help"],
                        capture_output=True, text=True, timeout=60)
@@ -30,6 +32,11 @@ def need_flags(cli, flags):
     missing = [f for f in flags if f not in out]
     if missing:
         sys.exit(f"STOP: {cli} --help lacks {missing}; nothing was run for it")
+
+
+def author_env(vendor):
+    """The author's environment: the Gemini key only for the request that needs it, never for an agent CLI."""
+    return {k: v for k, v in os.environ.items() if vendor == "gemini-api" or k != "GEMINI_API_KEY"}
 
 
 def command(vendor, model, prompt, work):
@@ -59,27 +66,27 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generat
 
 def gemini_api_call(model):
     """Prompt on stdin, the API's JSON reply on stdout. The key comes from the environment, never argv or output.
-    A 429 (free tier) or a 500/503 (overloaded) is not an answer, so it waits and asks again (at most 3 times);
-    any other error ends it."""
+    A 429 (free tier) or a 500/503 (overloaded) is not an answer, so it waits and asks again (3 tries in all,
+    bounded below TIMEOUT); any other error ends it."""
     import urllib.error, urllib.request
     body = json.dumps({"contents": [{"role": "user", "parts": [{"text": sys.stdin.read()}]}]}).encode()
-    for attempt in range(4):
+    for attempt in range(3):
         time.sleep(13)  # about 5 requests a minute
         req = urllib.request.Request(GEMINI_URL.format(model), data=body, method="POST", headers={
             "Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
         try:
-            with urllib.request.urlopen(req, timeout=600) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 sys.stdout.write(r.read().decode())
                 return 0
         except urllib.error.HTTPError as e:
             msg = e.read().decode(errors="replace")[:600]
-            if e.code in (429, 500, 503) and attempt < 3:
+            if e.code in (429, 500, 503) and attempt < 2:
                 print(f"HTTP {e.code}, waiting 65 s (attempt {attempt + 1})", file=sys.stderr)
                 time.sleep(65)
                 continue
             print(f"HTTP {e.code}: {msg}", file=sys.stderr)
             return 1
-        except OSError as e:
+        except Exception as e:  # only the type: a message could carry the request, its header and so the key
             print(f"request failed: {type(e).__name__}", file=sys.stderr)
             return 1
     return 1
@@ -110,12 +117,14 @@ def tool_use(vendor, stdout):
             return int(d["stats"]["tools"]["totalCalls"])
         except (ValueError, KeyError, TypeError):
             return None
-    if vendor == "gemini-api":  # no tools declared; a functionCall part would still be counted
+    if vendor == "gemini-api":  # no tools declared; any part other than text or thought counts as a tool event
         try:
-            json.loads(stdout)
-        except ValueError:
+            d = json.loads(stdout)
+            parts = [x for c in d.get("candidates", []) for x in (c.get("content") or {}).get("parts", [])]
+        except (ValueError, AttributeError, TypeError):
             return None
-        return stdout.count('"functionCall"')
+        return sum(1 for x in parts if set(x) - {"text", "thought", "thoughtSignature"}) + \
+            (1 if "groundingMetadata" in stdout else 0)
     hits = sum(stdout.count(m) for m in TOOL_MARKS)
     if vendor == "codex":
         return hits
@@ -200,7 +209,7 @@ def main():
             old = out / "raw" / name / f"{stem}.json"
             if old.exists():
                 r = json.loads(old.read_text())
-                if r.get("rc") in (0, "timeout") or r.get("stdout"):
+                if r.get("rc") in (0, "timeout") or r.get("stdout") or r.get("answer"):
                     summary.append((stem, "kept (already recorded)")); continue
                 # the service failed before the model answered (no output): not an attempt, kept aside and run again
                 keep = out / "raw" / name / "infra-failed" / f"{stem}-{r.get('started_at', 'x')}.json"
@@ -210,7 +219,8 @@ def main():
             cmd, stdin = command(vendor, model, prompt, work)
             started = utc()
             try:
-                p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=TIMEOUT, cwd=work)
+                p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=TIMEOUT, cwd=work,
+                                   env=author_env(vendor))
                 rc, so, se = p.returncode, p.stdout, p.stderr
             except subprocess.TimeoutExpired as e:
                 rc, so, se = "timeout", e.stdout or "", e.stderr or ""
@@ -243,7 +253,8 @@ def preflight(a):
         work = tempfile.mkdtemp(prefix="t1-pre-")
         cmd, stdin = command(vendor, model, "Reply with exactly one word: OK", work)
         try:
-            p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=300, cwd=work)
+            p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=300, cwd=work,
+                               env=author_env(vendor))
             text = answer_text(vendor, p.stdout, work).strip()
             ok = p.returncode == 0 and "OK" in text
             print(f"{'ok  ' if ok else 'FAIL'} {vendor}:{model} rc={p.returncode} answer={text[:60]!r} "
@@ -279,7 +290,8 @@ def drop_account_metadata(text):
 
 def collect(a):
     """Copies out/rules/<pair>/*.json into lab/rules/<pair>/ and joins out/raw/*.json into
-    lab/results/t1-authors-<pair>.json (every answer, valid or not). Refuses to overwrite."""
+    lab/results/t1-authors-<pair>.json (every answer, valid or not, and every attempt set aside because the
+    service failed before any answer). Refuses to overwrite or to write an API key."""
     name = pathlib.Path(a.pair).stem
     out = pathlib.Path(a.out).expanduser()
     v = a.add_vendor
@@ -290,14 +302,22 @@ def collect(a):
     glob_pat = f"{v}-*.json" if v else "*.json"
     raws = [json.loads(p.read_text()) for p in sorted((out / "raw" / name).glob(glob_pat))]
     raws = [r for r in raws if r["brief_sha256"] == hashlib.sha256(json.loads(pathlib.Path(a.pair).read_text())["brief"].encode()).hexdigest()]
-    for r in raws:  # read off the stored output after the run, the same for every author
+    aside = [json.loads(p.read_text()) for p in sorted((out / "raw" / name / "infra-failed").glob(glob_pat))]
+    for r in raws + aside:
+        # the service failed before the model answered: no output, an HTTP error from the request itself
+        r["service_error"] = r.get("rc") not in (0, "timeout") and not r.get("stdout") and \
+            r.get("stderr", "").lstrip().startswith(("HTTP ", "request failed"))
+    for r in raws + aside:  # read off the stored output after the run, the same for every author
         r["tool_attempt_denied"] = "auto-denied" in r.get("stderr", "") or '"denied_actions":["' in r.get("stdout", "").replace(" ", "")
         for k in ("stdout", "stderr"):
             r[k] = drop_account_metadata(r.get(k, ""))
     if not raws:
         sys.exit(f"STOP: no recorded answers for {name} in {out / 'raw' / name}")
     res.parent.mkdir(parents=True, exist_ok=True)
-    body = scrub(json.dumps({"pair": name, "answers": raws}, ensure_ascii=True, indent=1)) + "\n"
+    body = scrub(json.dumps({"pair": name, "answers": raws, "set_aside": aside}, ensure_ascii=True, indent=1)) + "\n"
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if re.search(r"AIza[0-9A-Za-z_-]{30,}", body) or (len(key) > 8 and key in body):
+        sys.exit(f"STOP: {res} would hold an API key; nothing was written")
     res.write_text(body)
     lab_rules.mkdir(parents=True, exist_ok=bool(v))
     for p in sorted((out / "rules" / name).glob(glob_pat)):
