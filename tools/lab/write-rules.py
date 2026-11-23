@@ -27,7 +27,7 @@ def need_flags(cli, flags):
             sys.exit("STOP: GEMINI_API_KEY is not set or not a key (letters, digits, - and _ only); nothing was run")
         return
     h = subprocess.run([cli, "--help"] if cli != "codex" else ["codex", "exec", "--help"],
-                       capture_output=True, text=True, timeout=60)
+                       capture_output=True, text=True, timeout=60, env=author_env(cli))
     out = h.stdout + h.stderr  # Go's flag package (agy) prints its help on stderr
     missing = [f for f in flags if f not in out]
     if missing:
@@ -66,26 +66,29 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generat
 
 def gemini_api_call(model):
     """Prompt on stdin, the API's JSON reply on stdout. The key comes from the environment, never argv or output.
-    A 429 (free tier) or a 500/503 (overloaded) is not an answer, so it waits and asks again (3 tries in all,
-    bounded below TIMEOUT); any other error ends it."""
+    A 429 (free tier) or a 500/503 (overloaded) is not an answer, so it waits and asks again once (2 tries,
+    bounded below TIMEOUT); a read timeout is the model's and exits 124, recorded as "timeout"; any other error ends it."""
     import urllib.error, urllib.request
     body = json.dumps({"contents": [{"role": "user", "parts": [{"text": sys.stdin.read()}]}]}).encode()
-    for attempt in range(3):
+    for attempt in range(2):
         time.sleep(13)  # about 5 requests a minute
         req = urllib.request.Request(GEMINI_URL.format(model), data=body, method="POST", headers={
             "Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
         try:
-            with urllib.request.urlopen(req, timeout=180) as r:
+            with urllib.request.urlopen(req, timeout=400) as r:
                 sys.stdout.write(r.read().decode())
                 return 0
         except urllib.error.HTTPError as e:
             msg = e.read().decode(errors="replace")[:600]
-            if e.code in (429, 500, 503) and attempt < 2:
+            if e.code in (429, 500, 503) and attempt < 1:
                 print(f"HTTP {e.code}, waiting 65 s (attempt {attempt + 1})", file=sys.stderr)
                 time.sleep(65)
                 continue
             print(f"HTTP {e.code}: {msg}", file=sys.stderr)
             return 1
+        except TimeoutError:  # the model took too long: an attempt like any author's timeout, never asked again
+            print("request timed out", file=sys.stderr)
+            return 124
         except Exception as e:  # only the type: a message could carry the request, its header and so the key
             print(f"request failed: {type(e).__name__}", file=sys.stderr)
             return 1
@@ -179,6 +182,7 @@ def main():
                     help="vendor:model, vendor in claude|codex|agy|gemini|gemini-api (key in GEMINI_API_KEY)")
     ap.add_argument("--preflight", action="store_true", help="one 'reply OK' call per author: checks model, flags, login")
     ap.add_argument("--collect", action="store_true", help="copy rules and one raw record file into lab/ of the cwd")
+    ap.add_argument("--note", default="", help="with --collect: a note stored at the top of the published records")
     ap.add_argument("--add-vendor", default="", help="with --collect: add only this vendor's answers to a pair that has "
                     "rules already (its rules next to the others, its records in t1-authors-<pair>-<vendor>.json)")
     a = ap.parse_args()
@@ -203,13 +207,14 @@ def main():
     summary = []
     for vendor, model in authors:
         cli_version = ("api v1beta generateContent" if vendor == "gemini-api" else
-                       subprocess.run([vendor, "--version"], capture_output=True, text=True, timeout=60).stdout.strip())
+                       subprocess.run([vendor, "--version"], capture_output=True, text=True, timeout=60,
+                                      env=author_env(vendor)).stdout.strip())
         for n in range(1, a.samples + 1):
             stem = f"{vendor}-{re.sub(r'[^a-z0-9-]', '-', model.lower())}-{n}"
             old = out / "raw" / name / f"{stem}.json"
             if old.exists():
                 r = json.loads(old.read_text())
-                if r.get("rc") in (0, "timeout") or r.get("stdout") or r.get("answer"):
+                if not service_failed(r):
                     summary.append((stem, "kept (already recorded)")); continue
                 # the service failed before the model answered (no output): not an attempt, kept aside and run again
                 keep = out / "raw" / name / "infra-failed" / f"{stem}-{r.get('started_at', 'x')}.json"
@@ -222,6 +227,8 @@ def main():
                 p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=TIMEOUT, cwd=work,
                                    env=author_env(vendor))
                 rc, so, se = p.returncode, p.stdout, p.stderr
+                if vendor == "gemini-api" and rc == 124:
+                    rc = "timeout"
             except subprocess.TimeoutExpired as e:
                 rc, so, se = "timeout", e.stdout or "", e.stderr or ""
             text = answer_text(vendor, so if isinstance(so, str) else so.decode(), work)
@@ -288,6 +295,12 @@ def drop_account_metadata(text):
     return text
 
 
+def service_failed(r):
+    """No output and no answer, and the request itself reported an HTTP or transport error: not an attempt."""
+    return r.get("rc") not in (0, "timeout") and not r.get("stdout") and not r.get("answer") and \
+        r.get("stderr", "").lstrip().startswith(("HTTP ", "request failed"))
+
+
 def collect(a):
     """Copies out/rules/<pair>/*.json into lab/rules/<pair>/ and joins out/raw/*.json into
     lab/results/t1-authors-<pair>.json (every answer, valid or not, and every attempt set aside because the
@@ -305,8 +318,7 @@ def collect(a):
     aside = [json.loads(p.read_text()) for p in sorted((out / "raw" / name / "infra-failed").glob(glob_pat))]
     for r in raws + aside:
         # the service failed before the model answered: no output, an HTTP error from the request itself
-        r["service_error"] = r.get("rc") not in (0, "timeout") and not r.get("stdout") and \
-            r.get("stderr", "").lstrip().startswith(("HTTP ", "request failed"))
+        r["service_error"] = service_failed(r)
     for r in raws + aside:  # read off the stored output after the run, the same for every author
         r["tool_attempt_denied"] = "auto-denied" in r.get("stderr", "") or '"denied_actions":["' in r.get("stdout", "").replace(" ", "")
         for k in ("stdout", "stderr"):
@@ -314,10 +326,12 @@ def collect(a):
     if not raws:
         sys.exit(f"STOP: no recorded answers for {name} in {out / 'raw' / name}")
     res.parent.mkdir(parents=True, exist_ok=True)
-    body = scrub(json.dumps({"pair": name, "answers": raws, "set_aside": aside}, ensure_ascii=True, indent=1)) + "\n"
+    doc = {"pair": name, **({"note": a.note} if getattr(a, "note", "") else {}), "answers": raws, "set_aside": aside}
+    plain = json.dumps(doc, ensure_ascii=True, indent=1)
     key = os.environ.get("GEMINI_API_KEY", "")
-    if re.search(r"AIza[0-9A-Za-z_-]{30,}", body) or (len(key) > 8 and key in body):
+    if re.search(r"AIza[0-9A-Za-z_-]{30,}", plain) or (len(key) > 8 and key in plain):  # before scrub can hide it
         sys.exit(f"STOP: {res} would hold an API key; nothing was written")
+    body = scrub(plain) + "\n"
     res.write_text(body)
     lab_rules.mkdir(parents=True, exist_ok=bool(v))
     for p in sorted((out / "rules" / name).glob(glob_pat)):
