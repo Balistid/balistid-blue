@@ -158,7 +158,8 @@ func reach(v any, path []string, whole bool, test func(any) bool) bool {
 }
 
 // test is the leaf's op on one value the path reached. `has` holds on a value that is not null and not an
-// empty list; `eq` compares strings as strings and integers by value; `contains` takes strings only.
+// empty list; `eq` compares strings as strings and integers by value; `contains` takes strings only. A record's
+// string is compared as Laurel decodes to (ADR 0080).
 func (l Leaf) test(v any) bool {
 	switch l.Op {
 	case OpHas:
@@ -168,7 +169,7 @@ func (l Leaf) test(v any) bool {
 		switch want := l.Value.(type) {
 		case string:
 			got, ok := v.(string)
-			return ok && got == want
+			return ok && laurelText(got) == want
 		case json.Number:
 			w, _ := asInt(want)
 			got, ok := eventInt(v)
@@ -177,7 +178,7 @@ func (l Leaf) test(v any) bool {
 	case OpContains:
 		want, _ := l.Value.(string)
 		got, ok := v.(string)
-		return ok && strings.Contains(got, want)
+		return ok && strings.Contains(laurelText(got), want)
 	}
 	return false
 }
