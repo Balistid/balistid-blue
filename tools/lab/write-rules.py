@@ -20,6 +20,10 @@ def utc():
 
 
 def need_flags(cli, flags):
+    if cli == "gemini-api":  # no CLI: this script makes the request itself
+        if not os.environ.get("GEMINI_API_KEY"):
+            sys.exit("STOP: GEMINI_API_KEY is not set; nothing was run for gemini-api")
+        return
     h = subprocess.run([cli, "--help"] if cli != "codex" else ["codex", "exec", "--help"],
                        capture_output=True, text=True, timeout=60)
     out = h.stdout + h.stderr  # Go's flag package (agy) prints its help on stderr
@@ -40,15 +44,52 @@ def command(vendor, model, prompt, work):
         # Go's flag package stops at the first non-flag word: every flag first, the prompt last
         return ["agy", "--model", model, "--mode", "plan", "--sandbox", "--output-format", "json", "--print", prompt], None
     if vendor == "gemini":
-        # headless: shell and writes are never approved, file tools stay inside the empty working directory
-        return ["gemini", "-m", model, "--output-format", "json", "--approval-mode", "default", "-p", prompt], None
+        # headless: shell and writes are never approved, file tools stay inside the empty working directory;
+        # --skip-trust trusts only that empty directory for this run (headless refuses an untrusted one)
+        return ["gemini", "-m", model, "--output-format", "json", "--approval-mode", "default", "--skip-trust",
+                "-p", prompt], None
+    if vendor == "gemini-api":
+        # no agent around the model: one request with no tools declared, so it cannot call any
+        return [sys.executable, "-I", str(pathlib.Path(__file__).resolve()), "--gemini-api-call", model], prompt
     sys.exit(f"STOP: unknown vendor {vendor}")
+
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
+
+
+def gemini_api_call(model):
+    """Prompt on stdin, the API's JSON reply on stdout. The key comes from the environment, never argv or output.
+    A 429 (free tier) or a 500/503 (overloaded) is not an answer, so it waits and asks again (at most 3 times);
+    any other error ends it."""
+    import urllib.error, urllib.request
+    body = json.dumps({"contents": [{"role": "user", "parts": [{"text": sys.stdin.read()}]}]}).encode()
+    for attempt in range(4):
+        time.sleep(13)  # about 5 requests a minute
+        req = urllib.request.Request(GEMINI_URL.format(model), data=body, method="POST", headers={
+            "Content-Type": "application/json", "x-goog-api-key": os.environ["GEMINI_API_KEY"]})
+        try:
+            with urllib.request.urlopen(req, timeout=600) as r:
+                sys.stdout.write(r.read().decode())
+                return 0
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode(errors="replace")[:600]
+            if e.code in (429, 500, 503) and attempt < 3:
+                print(f"HTTP {e.code}, waiting 65 s (attempt {attempt + 1})", file=sys.stderr)
+                time.sleep(65)
+                continue
+            print(f"HTTP {e.code}: {msg}", file=sys.stderr)
+            return 1
+        except OSError as e:
+            print(f"request failed: {type(e).__name__}", file=sys.stderr)
+            return 1
+    return 1
 
 
 FLAGS = {"claude": ["--tools", "--strict-mcp-config", "--settings", "--output-format"],
          "codex": ["--sandbox", "--skip-git-repo-check", "--ephemeral", "--json", "--output-last-message"],
          "agy": ["--print", "--model", "--mode", "--sandbox", "--output-format"],
-         "gemini": ["--model", "--output-format", "--approval-mode", "--prompt"]}
+         "gemini": ["--model", "--output-format", "--approval-mode", "--skip-trust", "--prompt"],
+         "gemini-api": []}
 
 TOOL_MARKS = ("command_execution", "exec_command", "mcp_tool_call", "web_search", "file_change", "tool_use",
               "function_call", "toolCall", "tool_call")
@@ -69,6 +110,12 @@ def tool_use(vendor, stdout):
             return int(d["stats"]["tools"]["totalCalls"])
         except (ValueError, KeyError, TypeError):
             return None
+    if vendor == "gemini-api":  # no tools declared; a functionCall part would still be counted
+        try:
+            json.loads(stdout)
+        except ValueError:
+            return None
+        return stdout.count('"functionCall"')
     hits = sum(stdout.count(m) for m in TOOL_MARKS)
     if vendor == "codex":
         return hits
@@ -83,6 +130,11 @@ def answer_text(vendor, stdout, work):
         d = json.loads(stdout)
     except ValueError:
         return stdout
+    if vendor == "gemini-api":
+        try:
+            return "".join(x.get("text", "") for x in d["candidates"][0]["content"]["parts"] if not x.get("thought"))
+        except (KeyError, IndexError, TypeError):
+            return ""
     for k in ("result", "response", "text", "output"):
         if isinstance(d, dict) and isinstance(d.get(k), str):
             return d[k]
@@ -108,11 +160,14 @@ def one_rule(text):
 
 def main():
     ap = argparse.ArgumentParser()
+    if len(sys.argv) == 3 and sys.argv[1] == "--gemini-api-call":
+        return gemini_api_call(sys.argv[2])
     ap.add_argument("--pair", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--prompt-record", default="lab/results/t1-prompt-v1.json")
-    ap.add_argument("--author", action="append", default=[], help="vendor:model, vendor in claude|codex|agy")
+    ap.add_argument("--author", action="append", default=[],
+                    help="vendor:model, vendor in claude|codex|agy|gemini|gemini-api (key in GEMINI_API_KEY)")
     ap.add_argument("--preflight", action="store_true", help="one 'reply OK' call per author: checks model, flags, login")
     ap.add_argument("--collect", action="store_true", help="copy rules and one raw record file into lab/ of the cwd")
     ap.add_argument("--add-vendor", default="", help="with --collect: add only this vendor's answers to a pair that has "
@@ -138,11 +193,19 @@ def main():
         need_flags(vendor, FLAGS.get(vendor, []))
     summary = []
     for vendor, model in authors:
-        cli_version = subprocess.run([vendor, "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
+        cli_version = ("api v1beta generateContent" if vendor == "gemini-api" else
+                       subprocess.run([vendor, "--version"], capture_output=True, text=True, timeout=60).stdout.strip())
         for n in range(1, a.samples + 1):
             stem = f"{vendor}-{re.sub(r'[^a-z0-9-]', '-', model.lower())}-{n}"
-            if (out / "raw" / name / f"{stem}.json").exists():
-                summary.append((stem, "kept (already recorded)")); continue
+            old = out / "raw" / name / f"{stem}.json"
+            if old.exists():
+                r = json.loads(old.read_text())
+                if r.get("rc") in (0, "timeout") or r.get("stdout"):
+                    summary.append((stem, "kept (already recorded)")); continue
+                # the service failed before the model answered (no output): not an attempt, kept aside and run again
+                keep = out / "raw" / name / "infra-failed" / f"{stem}-{r.get('started_at', 'x')}.json"
+                keep.parent.mkdir(exist_ok=True)
+                old.rename(keep)
             work = tempfile.mkdtemp(prefix="t1-author-")
             cmd, stdin = command(vendor, model, prompt, work)
             started = utc()
@@ -186,8 +249,9 @@ def preflight(a):
             print(f"{'ok  ' if ok else 'FAIL'} {vendor}:{model} rc={p.returncode} answer={text[:60]!r} "
                   f"tools={tool_use(vendor, p.stdout)} err={p.stderr.strip()[-160:]!r}")
             bad += not ok
-        except subprocess.TimeoutExpired:
-            print(f"FAIL {vendor}:{model} timeout"); bad += 1
+        except subprocess.TimeoutExpired as e:
+            err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+            print(f"FAIL {vendor}:{model} timeout err={err.strip()[-200:]!r}"); bad += 1
         shutil.rmtree(work, ignore_errors=True)
     print("PREFLIGHT OK" if not bad else f"PREFLIGHT: {bad} author(s) fail, fix before the real run")
     return 1 if bad else 0
@@ -202,7 +266,8 @@ def scrub(text):
     return text
 
 
-ACCOUNT_KEYS = ("session_id", "uuid", "credential_expires_at", "thread_id", "conversation_id", "request_id")
+ACCOUNT_KEYS = ("session_id", "uuid", "credential_expires_at", "thread_id", "conversation_id", "request_id",
+                "responseId")
 
 
 def drop_account_metadata(text):

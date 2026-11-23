@@ -1,0 +1,59 @@
+{
+ "pair": "tmp-hidden",
+ "answers": [
+  {
+   "vendor": "gemini-api",
+   "model": "gemini-3.8-flash",
+   "sample": 1,
+   "cli_version": "api v1beta generateContent",
+   "started_at": "2026-11-22T18:53:07Z",
+   "ended_at": "2026-11-22T18:54:00Z",
+   "rc": 1,
+   "prompt_sha256": "6f519ba90379cbc3134c10fc0062cb527536ee540f1beca0af051f2ade12840b",
+   "brief_sha256": "2b42ed5916a024cda11d37461cc987d8e1d8d5f4586cdf456f17ec3716755b67",
+   "answer": "",
+   "stdout": "",
+   "stderr": "HTTP 503: {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n\n",
+   "tool_events": null,
+   "valid": false,
+   "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "tool_attempt_denied": false
+  },
+  {
+   "vendor": "gemini-api",
+   "model": "gemini-3.8-flash",
+   "sample": 2,
+   "cli_version": "api v1beta generateContent",
+   "started_at": "2026-11-22T18:54:00Z",
+   "ended_at": "2026-11-22T18:55:06Z",
+   "rc": 1,
+   "prompt_sha256": "6f519ba90379cbc3134c10fc0062cb527536ee540f1beca0af051f2ade12840b",
+   "brief_sha256": "2b42ed5916a024cda11d37461cc987d8e1d8d5f4586cdf456f17ec3716755b67",
+   "answer": "",
+   "stdout": "",
+   "stderr": "HTTP 503: {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n\n",
+   "tool_events": null,
+   "valid": false,
+   "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "tool_attempt_denied": false
+  },
+  {
+   "vendor": "gemini-api",
+   "model": "gemini-3.8-flash",
+   "sample": 3,
+   "cli_version": "api v1beta generateContent",
+   "started_at": "2026-11-22T18:55:06Z",
+   "ended_at": "2026-11-22T18:57:53Z",
+   "rc": 1,
+   "prompt_sha256": "6f519ba90379cbc3134c10fc0062cb527536ee540f1beca0af051f2ade12840b",
+   "brief_sha256": "2b42ed5916a024cda11d37461cc987d8e1d8d5f4586cdf456f17ec3716755b67",
+   "answer": "",
+   "stdout": "",
+   "stderr": "HTTP 503: {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n\n",
+   "tool_events": null,
+   "valid": false,
+   "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "tool_attempt_denied": false
+  }
+ ]
+}
