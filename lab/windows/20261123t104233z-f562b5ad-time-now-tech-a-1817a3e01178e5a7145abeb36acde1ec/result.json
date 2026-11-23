@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "20261123T104233Z-f562b5ad-time-now-tech-a-1817a3e01178e5a7145abeb36acde1ec",
+  "label": "agent",
+  "runner_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_commit": "2c09799a44e766ea3b3f0597bd8c9ab32db9d31e",
+  "image_sha256": "693e28f3e561f5959dd1bcda486fe8ed1bbc11a6c3b120263b9634e262e933a7",
+  "job": {
+    "name": "time-now-tech-a-1817a3e01178e5a7145abeb36acde1ec",
+    "kind": "exec",
+    "program": "tech-a.sh",
+    "timeout_s": 30,
+    "content_key": "59d27182e3687809aa2c8636534755816aafcbffbd5b491c3b5e87b3edf59835",
+    "program_sha256": "fa89a3548e4eb5fcfec233b33a0b7762ceab1cd94bffbf07a1ee88c08929e9a9",
+    "job_disk_sha256": "a7e40c2a30dd87fcf600ffb95ff5a0c8ada2bf3f8c0fe87609f7946c371eab43"
+  },
+  "limits": {
+    "run_timeout_s": 600,
+    "serial_budget": 1048576,
+    "job_out_cap": 2097152,
+    "job_laurel_cap": 6291456,
+    "mem_reserve": 4294967296,
+    "job_memory": 2684354560,
+    "disk_reserve": 5368709120
+  },
+  "verdict": "RAN",
+  "reason": "the job ran; its output and Laurel records are the agent's to judge",
+  "runs": [
+    {
+      "verdict": "RAN",
+      "reason": "the job ran; its output and Laurel records are the agent's to judge",
+      "guest_kernel": "7.2.8-arch1-2",
+      "job_result": "success",
+      "job_exit": 0,
+      "out_bytes": 24,
+      "laurel_bytes": 19211
+    }
+  ]
+}
