@@ -17,6 +17,7 @@
    "tool_events": null,
    "valid": false,
    "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "service_error": true,
    "tool_attempt_denied": false
   },
   {
@@ -35,6 +36,7 @@
    "tool_events": null,
    "valid": false,
    "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "service_error": true,
    "tool_attempt_denied": false
   },
   {
@@ -53,7 +55,9 @@
    "tool_events": null,
    "valid": false,
    "why_invalid": "not one JSON object (Expecting value: line 1 column 1 (char 0))",
+   "service_error": true,
    "tool_attempt_denied": false
   }
- ]
+ ],
+ "set_aside": []
 }
