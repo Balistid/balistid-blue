@@ -17,7 +17,11 @@ var laurelCases = []struct{ raw, quoted string }{
 	{"\xf0\xf0\x9f\x92\x96", "%f0💖"}, {"\xf0\xf0\x9f\x92\x96\xf0", "%f0💖%f0"},
 	{"\xf0\x9f\xf0\x9f\x92\x96", "%f0%9f💖"}, {"\xf0\x9f\x92\xf0\x9f\x92\x96", "%f0%9f%92💖"},
 	{"\xEF\xBB\xBF", "%ef%bb%bf"}, {"\xed\xa0\x80", "%ed%a0%80"}, {"\xed\xbf\xbf", "%ed%bf%bf"},
-	{"a\nb\tc\x7f", "a%0ab%09c%7f"},
+	{"a\nb\tc\x7f", "a%0ab%09c%7f"}, {"~\x1f", "~%1f"}, {"\xc3\xa4\x80", "ä%80"}, {"\xe2\x82\xac\x80", "€%80"}, {"\xf0\x9f\x92\x96\x80", "💖%80"},
+	{"\xc2\x80\xdf\xbf", "\u0080\u07ff"}, {"\xc1\xbf", "%c1%bf"}, {"\xe0\xa0\x80\xe1\x80\x80", "\u0800\u1000"},
+	{"\xef\xbf\xbd", "\ufffd"}, {"\xe0\x80\x80", "%e0%80%80"}, {"\xf0\x90\x80\x80", "\U00010000"},
+	{"\xf1\x80\x80\x80", "\U00040000"}, {"\xf4\x8f\xbf\xbf", "\U0010ffff"}, {"\xf4\x90\x80\x80", "%f4%90%80%80"},
+	{"\xf5\x80\x80\x80", "%f5%80%80%80"}, {"\xc3", "%c3"},
 }
 
 // laurelQuote is Laurel 0.8.2's quoting: a Laurel upgrade must re-check it against src/quote.rs (ADR 0080).
@@ -39,6 +43,13 @@ func TestLaurelQuoteMatchesLaurel(t *testing.T) {
 		if got := laurelText(c.quoted); got != c.raw {
 			t.Errorf("laurelText(%q) = %q, want %q", c.quoted, got, c.raw)
 		}
+	}
+}
+
+// A string without `%` is the common case on every leaf: it costs no allocation.
+func TestLaurelTextWithoutPercentAllocatesNothing(t *testing.T) {
+	if n := testing.AllocsPerRun(100, func() { _ = laurelText("/usr/bin/date --date=now") }); n != 0 {
+		t.Fatalf("laurelText allocates %v times on a string without %%", n)
 	}
 }
 
