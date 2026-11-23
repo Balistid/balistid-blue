@@ -1,5 +1,6 @@
 {
  "pair": "env-locale",
+ "note": "Answers of 2026-11-22 18:45-19:00Z came from tools/lab/write-rules.py before its later fixes (503 retry, GEMINI_API_KEY only for gemini-api, service_error labels added at collect); the request, parsing and tool checks for claude and codex are the same. Gemini (gemini-api) is excluded after HTTP 503 from Google on 22.11. 19:50Z, 20:01Z, 22:41Z and 23.11. 08:40Z: n=1, not a model result.",
  "answers": [
   {
    "vendor": "gemini-api",
