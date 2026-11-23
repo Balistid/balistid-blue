@@ -5,6 +5,16 @@ import (
 	"unicode/utf8"
 )
 
+// recordString is a record's string value as the program saw it, the one way a rule reads a string of a record:
+// decoded once here, so no op compares Laurel's quoting or decodes twice (`%2525` is `%25`, not `%`).
+func recordString(v any) (string, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return "", false
+	}
+	return laurelText(s), true
+}
+
 // laurelText is s as the program saw it: Laurel 0.8.2 writes a byte string with `%`, `+`, control bytes, 0x7f,
 // invalid UTF-8 and the BOM as %xx (src/quote.rs, URIEscapeWriter), so `%Y` arrives as `%25Y` (ADR 0080). A string
 // that is not exactly Laurel's quoting of its decoding comes back unchanged, as the judge read it before 0080.
@@ -19,7 +29,7 @@ func laurelText(s string) string {
 	return string(raw)
 }
 
-// laurelUnquote decodes every %xx; false on a `%` not followed by two hex digits.
+// laurelUnquote decodes every %xx; false on a `%` not followed by two lower-case hex digits.
 func laurelUnquote(s string) ([]byte, bool) {
 	out := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
@@ -45,10 +55,8 @@ func hexValue(c byte) (byte, bool) {
 	switch {
 	case '0' <= c && c <= '9':
 		return c - '0', true
-	case 'a' <= c && c <= 'f':
+	case 'a' <= c && c <= 'f': // Laurel writes lower-case hex only
 		return c - 'a' + 10, true
-	case 'A' <= c && c <= 'F':
-		return c - 'A' + 10, true
 	}
 	return 0, false
 }

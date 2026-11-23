@@ -168,8 +168,8 @@ func (l Leaf) test(v any) bool {
 	case OpEq:
 		switch want := l.Value.(type) {
 		case string:
-			got, ok := v.(string)
-			return ok && laurelText(got) == want
+			got, ok := recordString(v)
+			return ok && got == want
 		case json.Number:
 			w, _ := asInt(want)
 			got, ok := eventInt(v)
@@ -177,8 +177,8 @@ func (l Leaf) test(v any) bool {
 		}
 	case OpContains:
 		want, _ := l.Value.(string)
-		got, ok := v.(string)
-		return ok && strings.Contains(laurelText(got), want)
+		got, ok := recordString(v)
+		return ok && strings.Contains(got, want)
 	}
 	return false
 }

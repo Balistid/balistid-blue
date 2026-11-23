@@ -23,9 +23,10 @@ the 12 T2 windows has sha256 `f03da395...` (time-now's 22 rule rows uncounted, n
 2. A string with no `%` is the same either way, so no window of T1's pairs but time-now changes: the verdicts of
    `dev-read` and `tmp-hidden` rules on all 16 windows are unchanged, and the reference of `time-now` now gives
    CAUGHT, CAUGHT, QUIET, QUIET.
-3. Firewall: this ADR and its code merge before the pull request that adds the T2 windows to `lab/`; its tests use
-   synthetic rules and ARGV strings copied from the windows, never `lab/rules/time-now`; no verdict of a time-now
-   author rule is computed before that merge.
+3. Firewall, a procedure and no gate: this ADR and its code merge before the pull request that adds the T2 windows
+   to `lab/`; its tests use synthetic rules and ARGV strings copied from the windows, never `lab/rules/time-now`; no
+   verdict of a time-now author rule on a time-now window is computed before that merge (the T2 table above holds
+   time-now rules on the other pairs' windows only, where decoding changes no string).
 
 ## Alternatives considered
 
