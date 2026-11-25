@@ -2,7 +2,7 @@
 
 <img src="https://avatars.githubusercontent.com/u/336239940?v=4&s=192" width="96" alt="Balistid logo"><h1>Balistid Blue</h1>
 
-**Maintained open-source security tools under one light layer, no detection counts before the lab measured it.**
+**Open-source security tools under one light layer. No detection counts until the lab has measured it.**
 For one Linux host. Local first. No sensor of its own.
 
 [![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
@@ -19,12 +19,11 @@ Six questions Balistid is meant to answer about what runs on the host, AI agents
 
 ```mermaid
 flowchart LR
-  A["Allowed?<br/>what it may do"] --> B["Done?<br/>what it did"] --> C["State?<br/>what is true now"]
-  C --> D["Honest?<br/>does the claim match"] --> E["Proven?<br/>does the check work"] --> F["Act?<br/>does anyone need to"]
+  A["Allowed?<br/>may it"]:::plan --> B["Done?<br/>did it"]:::now --> C["State?<br/>is it so"]:::plan --> D["Honest?<br/>is it true"]:::plan
+  D --> E["Proven?<br/>does it work"]:::now --> F["Act?<br/>do I need to"]:::plan ~~~ G[" "]:::none
+  classDef none fill:transparent,stroke:transparent,color:transparent
   classDef now fill:#1f6feb,stroke:#1f6feb,color:#ffffff
   classDef plan fill:transparent,stroke:#8b949e,stroke-dasharray:5 4
-  class B,E now
-  class A,C,D,F plan
 ```
 
 Solid: code on `main` today, recording and the lab. Dashed: planned, not built.
