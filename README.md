@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://avatars.githubusercontent.com/u/336239940?v=4&s=192" width="96" alt="Balistid logo"><h1>Balistid Blue</h1>
+<h1><picture><source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg"><img src=".github/banner-light.svg" width="420" alt="Balistid Blue"></picture></h1>
 
 **Open-source security tools under one light layer. No detection counts until the lab has measured it.**
 For one Linux host. Local first. No sensor of its own.
