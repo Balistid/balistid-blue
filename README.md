@@ -17,16 +17,14 @@ For one Linux host. Local first. No sensor of its own.
 
 Six questions Balistid is meant to answer about what runs on the host, AI agents first:
 
-```mermaid
-flowchart LR
-  A["Allowed?<br/>may it"]:::plan --> B["Done?<br/>did it"]:::now --> C["State?<br/>is it so"]:::plan --> D["Honest?<br/>is it true"]:::plan
-  D --> E["Proven?<br/>does it work"]:::now --> F["Act?<br/>do I need to"]:::plan ~~~ G[" "]:::none
-  classDef none fill:transparent,stroke:transparent,color:transparent
-  classDef now fill:#1f6feb,stroke:#1f6feb,color:#ffffff
-  classDef plan fill:transparent,stroke:#8b949e,stroke-dasharray:5 4
-```
-
-Solid: code on `main` today, recording and the lab. Dashed: planned, not built.
+| Step | Question | Today |
+|---|---|---|
+| **Allowed** | What may the agent do? | planned |
+| **Done** | What did it do? | **recorded**, on one host and in the lab |
+| **State** | What is true on the host now? | planned |
+| **Honest** | Does what it claims match? | planned |
+| **Proven** | Does the check really work? | **measured** in the lab |
+| **Act** | Does anyone need to step in? | planned |
 
 ## Measured, not claimed
 
