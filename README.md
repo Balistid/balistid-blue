@@ -2,7 +2,7 @@
 
 <h1><picture><source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg"><img src=".github/banner-light.svg" width="420" alt="Balistid Blue"></picture></h1>
 
-**Record and check what happens on one Linux machine, AI agents included. Built from open-source tools.**
+**Open-source security for Linux machines where AI agents work.**
 
 [![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
 [![Fuzz](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml) [![Licence](https://img.shields.io/github/license/Balistid/balistid-blue)](LICENSE) [![Go version](https://img.shields.io/github/go-mod/go-version/Balistid/balistid-blue)](go.mod) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-555) [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-b08800)](STATUS.md)
@@ -60,7 +60,7 @@ It is for one machine: no fleet management, no SOC features for many tenants, no
 
 ## How it is developed
 
-AI agents write most of the code under the rules in [ENGINEERING.md](ENGINEERING.md), and commits name the author in an `Agent:` line. Changes go through pull requests and CI, and the maintainer approves those that touch the paths in [CODEOWNERS](.github/CODEOWNERS). Report vulnerabilities privately, see [SECURITY.md](SECURITY.md); for bugs and ideas open an issue.
+Changes go through pull requests and CI, under the rules in [ENGINEERING.md](ENGINEERING.md), and the maintainer approves those that touch the paths in [CODEOWNERS](.github/CODEOWNERS). Report vulnerabilities privately, see [SECURITY.md](SECURITY.md); for bugs and ideas open an issue.
 
 ## Repository map
 
