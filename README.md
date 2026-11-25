@@ -2,8 +2,7 @@
 
 <h1><picture><source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg"><img src=".github/banner-light.svg" width="420" alt="Balistid Blue"></picture></h1>
 
-**Open-source security tools under one light layer. No detection counts until the lab has measured it.**
-For one Linux host. Local first. No sensor of its own.
+**Security for one Linux machine and the AI agents on it, built from open-source tools.**
 
 [![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
 [![Fuzz](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml) [![Licence](https://img.shields.io/github/license/Balistid/balistid-blue)](LICENSE) [![Go version](https://img.shields.io/github/go-mod/go-version/Balistid/balistid-blue)](go.mod) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-555) [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-b08800)](STATUS.md)
@@ -11,57 +10,55 @@ For one Linux host. Local first. No sensor of its own.
 </div>
 
 > [!WARNING]
-> **Pre-alpha: it does not protect a host yet.** It records on one machine, below its own acceptance numbers, and
-> measures detections in a VM. Where we are: `STATUS.md`. Why: ADR 0076.
+> This is pre-alpha and does not protect your machine yet. [STATUS.md](STATUS.md) says what works today.
 
-## The idea
+## What Balistid is
 
-Six questions Balistid is meant to answer about what runs on the host, AI agents first:
+Balistid is meant to guard one Linux machine, including from the AI agents that work on it. The plan is to join open-source security tools into one small platform that records what happens, spots an attack, stops it, and checks whether an agent told the truth about what it did. A lab measures which of these parts work, and in the end one light should tell you whether you have to look.
 
-| Step | Question | Today |
+It is for a single person with a single machine, not a company with a security team. It has no sensor of its own and today builds on auditd and Laurel (x86-64). Most of it does not exist yet:
+
+| Part | Question it answers | Today |
 |---|---|---|
-| **Allowed** | What may the agent do? | planned |
-| **Done** | What did it do? | **recorded**, on one host and in the lab |
-| **State** | What is true on the host now? | planned |
-| **Honest** | Does what it claims match? | planned |
-| **Proven** | Does the check really work? | **measured** in the lab |
-| **Act** | Does anyone need to step in? | planned |
+| Limits | What may an agent do? | planned |
+| Record | What happened on the machine? | runs on one machine, none of its targets met yet, frozen (ADR 0076) |
+| Detection | Was that an attack? | rules are being measured in the lab |
+| Response | Can it be stopped, and undone if that was a mistake? | planned |
+| State | What does the machine look like now? | planned |
+| Claims | Is what the agent said true? | planned |
+| Packages | What did a pacman or AUR package do during install? | planned |
+| Lab | Does any of this work? | running, see below |
+| Red | How would an attacker get around it? | planned |
+| Light | Do I have to look? | planned |
 
-## Measured, not claimed
+## Testing detections
 
-A detection counts only if it catches an attack **and** stays quiet on its twin: a harmless run that looks alike.
-Models write the rules blind, VM runs give the records, a judge on the host gives the verdict. Recompute it:
+A rule that fires on an attack is easy to write. The trouble starts when it also fires on normal work. So each attack in the lab has a harmless twin that looks almost the same, and a rule passes only if it catches the attack in both of its variants and ignores both twins. AI models write the rules from a short description, without seeing the commands.
+
+| What an attacker does | Harmless twin | Rules that passed |
+|---|---|---|
+| List the files in `/tmp`, hidden ones too | List only the visible ones | 14 of 21 |
+| Read the current time | Work out when the machine booted | 0 of 22 |
+
+In the second test 17 rules caught the attack at least once, and every one of them flagged a twin too. The numbers are small: three rules from each of seven models, and one from Gemini in the second test. They say nothing about which model is better. A third test could not be measured because its scripts need `grep` and the VM image has none. You can recompute them with Go 1.27:
 
 ```sh
 git clone https://github.com/Balistid/balistid-blue && cd balistid-blue
-go run ./cmd/balistid-lab verify lab   # every imported window, byte for byte
-go run ./cmd/balistid-lab table lab    # every rule, every verdict
+go run ./cmd/balistid-lab verify lab   # is the recorded data unchanged?
+go run ./cmd/balistid-lab table lab    # what did each rule do on each run?
 ```
 
-Pilot, raw counts, three rules per model (one from Gemini): on `tmp-hidden` 14 of 21 rules do both, on `time-now` 0 of 22. Small samples, no ranking, one pair not measured; more in `STATUS.md`.
+## How it works
 
-## Floors
+On the machine, auditd passes kernel events to Laurel, the collector stores them in SQLite files, and a signed log makes later changes visible. Without a second device that holds only against an attacker who is not root. The code for a witness on a Raspberry Pi is here too. The recorder stays as it is for now, and the log and the witness wait until an agent gets root on the machine (ADR 0076).
 
-Each floor must be useful on its own, even if the next one never ships.
+In the lab, `balistid-range` boots an Arch Linux VM, the test runs inside, and the host decides the result.
 
-| Floor | What it gives you | Today |
-|---|---|---|
-| 0 Recorder | A tamper-evident timeline of what happened on the host | On one host, unmet, frozen (ADR 0076) |
-| 1 Detection | An alert on the phone, proven by an attack it must catch and normal work it must not | Measured in the lab |
-| 2 Response | Contain what a proven detection found, explained and reversible | Planned |
-| 3 AI agent actor | AI coding agents as first-class actors: normal work told apart from abuse | Planned |
-| 4 Package actor | What a pacman or AUR package did when it was installed | Planned |
-| 5 UX and AI server | Explained verdicts, an interruption budget, a nightly report; a hardened AI server | Planned |
+## Plan
 
-**Built for** one person: a workstation, a homelab, a self-hosted AI server. One install, few interruptions.
-**Not for** fleets or SOC teams. **Never** a new kernel sensor where auditd, Tetragon, AIDE or YARA already do the
-job, and never a claim of protection without a test that fails when the protection is removed.
+The code and the decision records speak of floors: 0 recorder, 1 detection, 2 response, 3 AI agents, 4 packages, 5 daily use and hardening for an AI server. Each should be useful even if the next one never ships.
 
-## How it fits together
-
-Range: `balistid-range` boots an Arch image once in QEMU inside bwrap and turns the guest's facts into a verdict
-(ADR 0004, 0009). Floor 0: auditd → Laurel → collector → SQLite shards → signed ledger → relay → Raspberry Pi witness
-(ADR 0005-0007, 0027, 0031), run on KVM for pull requests (`range-kvm`, ADR 0028). Why lives in `adr/`, risks in `THREAT_MODEL.md`.
+It will not manage fleets, offer SOC features for many tenants or become a hosted service. It will not add a kernel sensor where auditd, Tetragon, AIDE or YARA do the job, or claim protection that no test has shown.
 
 ## Repository map
 
