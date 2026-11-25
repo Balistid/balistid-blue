@@ -48,6 +48,9 @@ LAYOUT: tuple[str, ...] = (
     ".github/workflows/*.yml",
     ".github/actionlint.yml",
     ".github/ISSUE_TEMPLATE/*.yml",
+    # The README's banner, for GitHub's dark and light theme; both contents are pinned (PINNED).
+    ".github/banner-dark.svg",
+    ".github/banner-light.svg",
     "githooks/pre-commit",
     "githooks/commit-msg",
     "tools/ci/*.py",
@@ -155,6 +158,7 @@ EXACT_SEGMENTS = {
     "LICENSE", "README.md", "SECURITY.md", "THREAT_MODEL.md", "ENGINEERING.md", "CLAUDE.md",
     "AGENTS.md", "STATUS.md", ".gitignore", ".editorconfig", ".gitattributes", ".gitleaks.toml",
     ".github", "CODEOWNERS", "ISSUE_TEMPLATE", "PKGBUILD", ".golangci.yml",
+    "banner-dark.svg", "banner-light.svg",
 }
 # The only exact names a directory may take; a file's exact name is never a directory's (ADR 0077).
 EXACT_DIRS = {".github", "ISSUE_TEMPLATE"}
@@ -180,8 +184,8 @@ LAB_BYTES = 16 << 20
 # exempts from scanning, minus those the name grammar already blocks (dot or uppercase segments,
 # dotted directory names) and with every vendor/ path folded into one pattern. A tracked path matching
 # one is refused, except go.mod and go.sum at the root, whose whole content must instead match a strict
-# grammar (CONTENT_GRAMMAR), and the collector's socket unit, whose content is pinned (PINNED), so nothing
-# can hide in them.
+# grammar (CONTENT_GRAMMAR), and the collector's socket unit and the README's two banners, whose content is pinned
+# (PINNED), so nothing can hide in them.
 # Update this list together with GITLEAKS_VERSION in ci.yml.
 GITLEAKS_SKIPPED = tuple(re.compile(p) for p in (
     r"gitleaks\.toml",
@@ -223,6 +227,8 @@ CONTENT_GRAMMAR["range/witness/go.mod"] = CONTENT_GRAMMAR["go.mod"]
 # change here, in code-owned tools/ci (ADR 0003, point 4), and --range still passes the older commits.
 PINNED = {
     "deploy/collector/balistid-collector.socket": {"79d6b3020d547eb7d4ca361afed2b52099583a5d48253d914d7c0890e85f6305"},
+    ".github/banner-dark.svg": {"3e0481ef1d3cee7a94a28093b2287f4b01b55d1aaf14cadb49bfff7098e534f6"},
+    ".github/banner-light.svg": {"df77e9c5c7af3f084365f0d765d6031a85c5e0363e17b7b5a63e00f546d1a880"},
 }
 # Files root installs (units, rules, the range image, packages): every line is printable ASCII, no tab,
 # at most 200 bytes. Anything else (a NUL, U+2028, a no-break space, a line over systemd's limit) lets
