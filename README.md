@@ -6,6 +6,7 @@
 For one Linux host. Local first. No sensor of its own.
 
 [![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
+[![Fuzz](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml) [![Licence](https://img.shields.io/github/license/Balistid/balistid-blue)](LICENSE) [![Go version](https://img.shields.io/github/go-mod/go-version/Balistid/balistid-blue)](go.mod) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-555) [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-b08800)](STATUS.md)
 
 </div>
 
