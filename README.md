@@ -2,7 +2,7 @@
 
 <h1><picture><source media="(prefers-color-scheme: dark)" srcset=".github/banner-dark.svg"><img src=".github/banner-light.svg" width="420" alt="Balistid Blue"></picture></h1>
 
-**Security for one Linux machine and the AI agents on it, built from open-source tools.**
+**Record and check what happens on one Linux machine, AI agents included. Built from open-source tools.**
 
 [![CI](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/ci.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Balistid/balistid-blue/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Balistid/balistid-blue)
 [![Fuzz](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml/badge.svg?branch=main)](https://github.com/Balistid/balistid-blue/actions/workflows/fuzz.yml) [![Licence](https://img.shields.io/github/license/Balistid/balistid-blue)](LICENSE) [![Go version](https://img.shields.io/github/go-mod/go-version/Balistid/balistid-blue)](go.mod) ![Platform: Linux](https://img.shields.io/badge/platform-Linux-555) [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-b08800)](STATUS.md)
@@ -10,55 +10,57 @@
 </div>
 
 > [!WARNING]
-> This is pre-alpha and does not protect your machine yet. [STATUS.md](STATUS.md) says what works today.
+> Balistid is pre-alpha and does not protect your machine yet. The current state is in [STATUS.md](STATUS.md).
 
-## What Balistid is
+## What it is
 
-Balistid is meant to guard one Linux machine, including from the AI agents that work on it. The plan is to join open-source security tools into one small platform that records what happens, spots an attack, stops it, and checks whether an agent told the truth about what it did. A lab measures which of these parts work, and in the end one light should tell you whether you have to look.
-
-It is for a single person with a single machine, not a company with a security team. It has no sensor of its own and today builds on auditd and Laurel (x86-64). Most of it does not exist yet:
+AI coding agents run commands, edit files and install packages, and then they tell you what they did. Balistid is meant to guard one Linux machine against attackers, and to show when an agent's actions do not match its report. It is for a person who looks after that machine alone.
 
 | Part | Question it answers | Today |
 |---|---|---|
-| Limits | What may an agent do? | planned |
-| Record | What happened on the machine? | runs on one machine, none of its targets met yet, frozen (ADR 0076) |
-| Detection | Was that an attack? | rules are being measured in the lab |
-| Response | Can it be stopped, and undone if that was a mistake? | planned |
-| State | What does the machine look like now? | planned |
-| Claims | Is what the agent said true? | planned |
-| Packages | What did a pacman or AUR package do during install? | planned |
-| Lab | Does any of this work? | running, see below |
-| Red | How would an attacker get around it? | planned |
-| Light | Do I have to look? | planned |
+| Record | What happened on the machine? | runs on one machine, frozen with none of its 43 targets passed |
+| Detection | Was that an attack? | rules are measured in the lab, none runs on a machine |
+| Lab | Does a rule really work? | running, results below |
 
-## Testing detections
+Planned: limits on what an agent may do, stopping an attack and undoing a mistaken stop, the state of the machine now, checking what an agent claims, what a package did during install, attacks on Balistid itself, and one light that says whether you have to look.
 
-A rule that fires on an attack is easy to write. The trouble starts when it also fires on normal work. So each attack in the lab has a harmless twin that looks almost the same, and a rule passes only if it catches the attack in both of its variants and ignores both twins. AI models write the rules from a short description, without seeing the commands.
+## First results
 
-| What an attacker does | Harmless twin | Rules that passed |
+A useful rule catches an attack and stays quiet on normal work. Each technique in the lab therefore has a harmless twin that looks almost the same. A rule passes if it catches both variants of the technique and ignores both twins.
+
+| Technique tested | Harmless twin | Rules that passed |
 |---|---|---|
 | List the files in `/tmp`, hidden ones too | List only the visible ones | 14 of 21 |
 | Read the current time | Work out when the machine booted | 0 of 22 |
 
-In the second test 17 rules caught the attack at least once, and every one of them flagged a twin too. The numbers are small: three rules from each of seven models, and one from Gemini in the second test. They say nothing about which model is better. A third test could not be measured because its scripts need `grep` and the VM image has none. You can recompute them with Go 1.27:
+In the second test 17 rules caught the technique at least once, and every one of them flagged a twin too. Seven AI models wrote three rules each, and the second test also counts one from Gemini. They got a short brief, the rule format and one sample event, without the test scripts. The samples are too small to rank models, the first brief hints at the answer, and the second test is hard because its twins print a time too. A third test could not be measured: its scripts need `grep` and the VM has none.
+
+To count the verdicts yourself you need git, jq and Go 1.27:
 
 ```sh
 git clone https://github.com/Balistid/balistid-blue && cd balistid-blue
-go run ./cmd/balistid-lab verify lab   # is the recorded data unchanged?
-go run ./cmd/balistid-lab table lab    # what did each rule do on each run?
+go run ./cmd/balistid-lab table lab | jq -r '.rules[] | select(.counted) | "\(.pair) \([.verdicts[]] | join(" "))"' | sort | uniq -c
 ```
+
+Each line counts rules with the same four verdicts: two variants, then two twins. Expect `14 tmp-hidden CAUGHT CAUGHT QUIET QUIET` and no such line for `time-now`. `dev-read` was the trial run. The recorded runs are in [lab/windows](lab/windows); comparing them with the originals (`verify`) works only on the machine that made them.
 
 ## How it works
 
-On the machine, auditd passes kernel events to Laurel, the collector stores them in SQLite files, and a signed log makes later changes visible. Without a second device that holds only against an attacker who is not root. The code for a witness on a Raspberry Pi is here too. The recorder stays as it is for now, and the log and the witness wait until an agent gets root on the machine (ADR 0076).
+On the machine, auditd passes kernel events to Laurel, a collector stores them in SQLite files and a ledger keeps a signed log. Root on that machine can still rewrite all of it. An outside witness on a Raspberry Pi should close that gap; it is tested in a VM and not in use. The recorder is frozen since 16 November 2026, because its hardest parts matter only once an agent has root there, and none has ([ADR 0076](adr/0076-floor-1-first-the-recorder-freezes-unmet.md)).
 
-In the lab, `balistid-range` boots an Arch Linux VM, the test runs inside, and the host decides the result.
+In the lab, each run gets a fresh Arch Linux VM. The verdict is computed outside it, from the records the VM reported. Work goes in floors: 0 is the recorder, 1 is detection, the planned parts follow.
 
-## Plan
+| Built from | Open-source tools |
+|---|---|
+| Recording | [auditd](https://github.com/linux-audit/audit-userspace), [Laurel](https://github.com/threathunters-io/laurel), [SQLite](https://sqlite.org) |
+| Signed log, witness | [Tessera](https://github.com/transparency-dev/tessera), [litewitness](https://github.com/FiloSottile/torchwood), [WireGuard](https://www.wireguard.com), [nftables](https://nftables.org), [ntfy](https://ntfy.sh) |
+| Lab | [QEMU](https://www.qemu.org), [mkosi](https://github.com/systemd/mkosi), [bubblewrap](https://github.com/containers/bubblewrap) |
 
-The code and the decision records speak of floors: 0 recorder, 1 detection, 2 response, 3 AI agents, 4 packages, 5 daily use and hardening for an AI server. Each should be useful even if the next one never ships.
+It is for one machine: no fleet management, no SOC features for many tenants, no hosted service. It does not write a kernel sensor that someone already maintains, and it claims no protection that a test has not shown.
 
-It will not manage fleets, offer SOC features for many tenants or become a hosted service. It will not add a kernel sensor where auditd, Tetragon, AIDE or YARA do the job, or claim protection that no test has shown.
+## How it is developed
+
+AI agents write most of the code under the rules in [ENGINEERING.md](ENGINEERING.md), and commits name the author in an `Agent:` line. Changes go through pull requests and CI, and the maintainer approves those that touch the paths in [CODEOWNERS](.github/CODEOWNERS). Report vulnerabilities privately, see [SECURITY.md](SECURITY.md); for bugs and ideas open an issue.
 
 ## Repository map
 
