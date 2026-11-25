@@ -452,6 +452,9 @@ class RepositoryMapTest(unittest.TestCase):
 
 # The collector's socket unit as deployed (ADR 0016): its sha256 is pinned in docs_budget (ADR 0003).
 SOCKET_UNIT = (Path(__file__).resolve().parents[3] / "deploy/collector/balistid-collector.socket").read_text()
+# The README's banners, pinned the same way.
+BANNERS = {p: (Path(__file__).resolve().parents[3] / p).read_text()
+           for p in (".github/banner-dark.svg", ".github/banner-light.svg")}
 
 
 class GoLayoutTest(unittest.TestCase):
@@ -541,6 +544,20 @@ class GoLayoutTest(unittest.TestCase):
                         SOCKET_UNIT.replace("0660", "0666"), ""):
             with self.subTest(content=content[-30:]):
                 self.assert_budget({path: content}, 1)
+
+    def test_banner_other_than_pinned_fails(self):
+        dark, light = BANNERS[".github/banner-dark.svg"], BANNERS[".github/banner-light.svg"]
+        self.assert_budget(dict(BANNERS), 0)
+        for path, content in BANNERS.items():
+            for other in (content + "\n", content[:-1], content.replace("#13A8D6", "#13A8D7"), "<svg/>\n", "",
+                          light if content == dark else dark):
+                with self.subTest(path=path, content=other[-30:]):
+                    self.assert_budget({path: other}, 1)
+        for path in (".github/logo.svg", ".github/banner-dark.png", ".github/banner.svg", "banner-dark.svg",
+                     "cmd/balistid/banner-dark.svg", "lab/rules/dev-1/banner-dark.svg", ".github/workflows/banner-dark.svg",
+                     ".github/banner-dark.svg/x.md"):
+            with self.subTest(path=path):
+                self.assert_budget({path: dark}, 1)
 
     def test_line_outside_the_allowlist_in_a_root_installed_file_fails(self):
         for name in ("deploy/collector/tmpfiles.conf", "deploy/runner/balistid-runner-tick.service",
