@@ -14,7 +14,7 @@
 
 ## What it is
 
-AI coding agents run commands, edit files and install packages, and then they tell you what they did. Balistid is meant to guard one Linux machine against attackers, and to show when an agent's actions do not match its report. It is for a person who looks after that machine alone.
+AI coding agents run commands, edit files and install packages, and then they tell you what they did. Balistid is meant to guard one Linux machine against attackers, and to show when an agent's actions do not match its report. It is for one machine: no fleet management, no SOC features for many tenants, no hosted service. It does not write a kernel sensor that someone already maintains, and it claims no protection that a test has not shown.
 
 | Part | Question it answers | Today |
 |---|---|---|
@@ -33,9 +33,7 @@ A useful rule catches an attack and stays quiet on normal work. Each technique i
 | List the files in `/tmp`, hidden ones too | List only the visible ones | 14 of 21 |
 | Read the current time | Work out when the machine booted | 0 of 22 |
 
-In the second test 17 rules caught the technique at least once, and every one of them flagged a twin too. Seven AI models wrote three rules each, and the second test also counts one from Gemini. They got a short brief, the rule format and one sample event, without the test scripts. The samples are too small to rank models, the first brief hints at the answer, and the second test is hard because its twins print a time too. A third test could not be measured: its scripts need `grep` and the VM has none.
-
-To count the verdicts yourself you need git, jq and Go 1.27:
+In the second test 17 rules caught the technique at least once, and every one of them flagged a twin too. Seven AI models wrote three rules each, and the second test also counts one from Gemini. They got a short brief, the rule format and one sample event, without the test scripts. The samples are too small to rank models, the first brief hints at the answer, and the second test is hard because its twins print a time too. A third test could not be measured: its scripts need `grep` and the VM has none. To count the verdicts yourself you need git, jq and Go 1.27:
 
 ```sh
 git clone https://github.com/Balistid/balistid-blue && cd balistid-blue
@@ -46,17 +44,22 @@ Each line counts rules with the same four verdicts: two variants, then two twins
 
 ## How it works
 
-On the machine, auditd passes kernel events to Laurel, a collector stores them in SQLite files and a ledger keeps a signed log. Root on that machine can still rewrite all of it. An outside witness on a Raspberry Pi should close that gap; it is tested in a VM and not in use. The recorder is frozen since 16 November 2026, because its hardest parts matter only once an agent has root there, and none has ([ADR 0076](adr/0076-floor-1-first-the-recorder-freezes-unmet.md)).
+```mermaid
+flowchart TD; classDef later stroke-dasharray:5 4
+  host["Linux machine<br/>AI agents, programs"] --> audit["auditd + Laurel<br/>kernel events"] --> rec["Recorder<br/>SQLite, signed log"]
+  rec -.->|VM only| pi["Witness<br/>Raspberry Pi"]:::later
+  rec -.->|planned| judge["Detection judge<br/>rules to verdicts"]
+  lab["Lab<br/>fresh VM per run"] --> judge
+  judge -.->|planned| light["Status light"]:::later
+```
 
-In the lab, each run gets a fresh Arch Linux VM. The verdict is computed outside it, from the records the VM reported. Work goes in floors: 0 is the recorder, 1 is detection, the planned parts follow.
+Solid lines run today; dashed ones are planned or run only in a VM. Root on the machine can still rewrite the signed log, and the witness is meant to close that gap. The recorder is frozen since 16 November 2026, because its hardest parts matter only once an agent has root there, and none has ([ADR 0076](adr/0076-floor-1-first-the-recorder-freezes-unmet.md)). In the lab the verdict is computed outside the VM, from the records it reported. Work goes in floors: 0 is the recorder, 1 is detection, the planned parts follow.
 
 | Built from | Open-source tools |
 |---|---|
 | Recording | [auditd](https://github.com/linux-audit/audit-userspace), [Laurel](https://github.com/threathunters-io/laurel), [SQLite](https://sqlite.org) |
 | Signed log, witness | [Tessera](https://github.com/transparency-dev/tessera), [litewitness](https://github.com/FiloSottile/torchwood), [WireGuard](https://www.wireguard.com), [nftables](https://nftables.org), [ntfy](https://ntfy.sh) |
 | Lab | [QEMU](https://www.qemu.org), [mkosi](https://github.com/systemd/mkosi), [bubblewrap](https://github.com/containers/bubblewrap) |
-
-It is for one machine: no fleet management, no SOC features for many tenants, no hosted service. It does not write a kernel sensor that someone already maintains, and it claims no protection that a test has not shown.
 
 ## How it is developed
 
