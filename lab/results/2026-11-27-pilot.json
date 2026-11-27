@@ -1,0 +1,218 @@
+{
+ "report": "pilot of floor 1, gate B2",
+ "date": "2026-11-27",
+ "agent": "claude/fable-5.2",
+ "data": {
+  "lab_at": "bd7fd982db397e5895ef8d0808e4cd3ad1cf3bbb",
+  "judge": "ADR 0077-0080",
+  "verify_sha256": "718db9211c511341b26fc40a8f0b690215df1e175a842f1db6d0b0207c3c3074",
+  "recompute": "go run ./cmd/balistid-lab table lab",
+  "other_implementations": "Two implementations of ADR 0077 point 4, 0079 point 4 and 0080 in Python, written apart, gave the judge's verdict for all 176 rule rows on their own windows and all 305 cross rows. That shows the code follows the ADRs, not that the ADRs are right."
+ },
+ "windows": {
+  "all": 16,
+  "valid": 12,
+  "job_events_in_each_valid_window": 2
+ },
+ "controls": [
+  {
+   "control": "empty any",
+   "windows": 12,
+   "wrong": 0
+  },
+  {
+   "control": "empty all",
+   "windows": 12,
+   "wrong": 0
+  }
+ ],
+ "cross": {
+  "verdicts": {
+   "QUIET": 305
+  },
+  "rows_from_rules_of_the_unmeasured_pair": 147
+ },
+ "pairs": [
+  {
+   "pair": "dev-read",
+   "attack": "T1082",
+   "pair_author": "claude/opus-5.5",
+   "counted": true,
+   "rules": 1,
+   "verdicts": {
+    "CAUGHT CAUGHT QUIET QUIET": 1
+   },
+   "clean": 1
+  },
+  {
+   "pair": "env-locale",
+   "attack": "T1614.001",
+   "pair_author": "codex/gpt-6",
+   "counted": false,
+   "rules": 21,
+   "reason": "tech-a has no valid window"
+  },
+  {
+   "pair": "time-now",
+   "attack": "T1124",
+   "pair_author": "codex/gpt-6",
+   "counted": true,
+   "rules": 22,
+   "verdicts": {
+    "CAUGHT CAUGHT NOISY NOISY": 10,
+    "CAUGHT MISSED NOISY QUIET": 7,
+    "MISSED MISSED QUIET QUIET": 5
+   },
+   "clean": 0
+  },
+  {
+   "pair": "tmp-hidden",
+   "attack": "T1083",
+   "pair_author": "codex/gpt-6",
+   "counted": true,
+   "rules": 21,
+   "verdicts": {
+    "CAUGHT CAUGHT QUIET QUIET": 14,
+    "CAUGHT MISSED NOISY QUIET": 1,
+    "CAUGHT MISSED QUIET QUIET": 1,
+    "MISSED MISSED QUIET QUIET": 5
+   },
+   "clean": 14
+  }
+ ],
+ "tmp_hidden": {
+  "clean_of_3_per_author_in_file_order_no_ranking": {
+   "claude-claude-fable-5-2": 3,
+   "claude-claude-haiku-5-5": 1,
+   "claude-claude-opus-5-5": 3,
+   "claude-claude-sonnet-5-5": 3,
+   "codex-gpt-6-1-terra": 0,
+   "codex-gpt-6-2-sol": 3,
+   "codex-gpt-6-astra": 1
+  },
+  "how_the_clean_rules_match": "All 14 match the one argument the technique has and its twin has not, --almost-all. The brief hints at it: it names hidden entries.",
+  "list": {
+   "what": "a list of flag spellings, --almost-all among them, and no program",
+   "rules": [
+    "claude-claude-fable-5-2-1",
+    "claude-claude-fable-5-2-2",
+    "claude-claude-fable-5-2-3",
+    "claude-claude-opus-5-5-1",
+    "claude-claude-opus-5-5-2",
+    "claude-claude-opus-5-5-3",
+    "claude-claude-sonnet-5-5-2"
+   ]
+  },
+  "letter_a": {
+   "what": "ls and an argument containing the letter a",
+   "rules": [
+    "claude-claude-sonnet-5-5-3",
+    "codex-gpt-6-2-sol-1",
+    "codex-gpt-6-2-sol-2",
+    "codex-gpt-6-2-sol-3"
+   ]
+  },
+  "dash_a": {
+   "what": "ls and an argument containing -a, which --almost-all does",
+   "rules": [
+    "claude-claude-haiku-5-5-2",
+    "claude-claude-sonnet-5-5-1",
+    "codex-gpt-6-astra-3"
+   ]
+  },
+  "why_the_others_miss": "Five expect a short spelling (-a1, -1a, -a, -A) where the scripts use the long one; two tie the rule to one variant's -1.",
+  "clean_rules_matching_a_made_up_command": {
+   "ls -a /tmp": {
+    "list": 7,
+    "letter_a": 4,
+    "dash_a": 3
+   },
+   "ls -A /tmp": {
+    "list": 7,
+    "letter_a": 0,
+    "dash_a": 0
+   },
+   "ls -la /tmp": {
+    "list": 5,
+    "letter_a": 4,
+    "dash_a": 0
+   },
+   "uname -a": {
+    "list": 7,
+    "letter_a": 0,
+    "dash_a": 0
+   },
+   "git branch --all": {
+    "list": 7,
+    "letter_a": 0,
+    "dash_a": 0
+   },
+   "ls --color=auto /tmp": {
+    "list": 0,
+    "letter_a": 4,
+    "dash_a": 0
+   },
+   "ls /var": {
+    "list": 0,
+    "letter_a": 1,
+    "dash_a": 0
+   }
+  },
+  "made_up_commands": "An illustration of the rules' shapes under the judge's semantics, not a measurement: no window, no runner."
+ },
+ "time_now": {
+  "how_the_rules_match": {
+   "ARGV contains %Z, present in all four runs": [
+    "claude-claude-fable-5-2-1",
+    "claude-claude-fable-5-2-3",
+    "claude-claude-opus-5-5-1",
+    "claude-claude-opus-5-5-2",
+    "claude-claude-opus-5-5-3",
+    "claude-claude-sonnet-5-5-1",
+    "claude-claude-sonnet-5-5-2",
+    "claude-claude-sonnet-5-5-3",
+    "codex-gpt-6-2-sol-2",
+    "codex-gpt-6-2-sol-3"
+   ],
+   "matches no run": [
+    "claude-claude-fable-5-2-2",
+    "codex-gpt-6-astra-1",
+    "codex-gpt-6-astra-2",
+    "codex-gpt-6-astra-3",
+    "gemini-api-gemini-3-8-flash-3"
+   ],
+   "the program is date, as in tech-a and twin-a": [
+    "claude-claude-haiku-5-5-1",
+    "claude-claude-haiku-5-5-2",
+    "claude-claude-haiku-5-5-3",
+    "codex-gpt-6-1-terra-1",
+    "codex-gpt-6-1-terra-2",
+    "codex-gpt-6-1-terra-3",
+    "codex-gpt-6-2-sol-1"
+   ]
+  },
+  "why_no_rule_is_clean": "Both twins print a time and the zone with the technique's format string, so a twin is the technique too, and the brief describes only the technique. The reference repeats the literal --date=now and the whole awk program; a shorter rule could separate them, but only with the twins known.",
+  "adr_0080": "ADR 0080 changed the locked judge after the windows were made, by procedure and not by a gate. Without its decoding the reference misses tech-b and the ten %Z rules match no run; no clean verdict of the pilot depends on it."
+ },
+ "reading": [
+  "The instrument works: a job whose program failed is INVALID and not MISSED, and the verdicts can be recomputed.",
+  "The pilot does not compare models, by rank or by family. tmp-hidden measures whether a rule covers one spelling of one flag; time-now measures a defect of its pair; env-locale did not run.",
+  "What it does show of the authors: all 63 answers of the seven models were valid rules, and two errors repeat, a rule tied to one variant's flag and a rule on a file that an exec record does not hold (PATH.name /etc/localtime).",
+  "QUIET on a twin is no evidence of few false alarms: seven clean rules name no program, seven match by a substring, and each cross window holds one unrelated command.",
+  "All three pairs of T1 had a defect that the acceptance check (the reference gives CAUGHT CAUGHT QUIET QUIET) cannot see, as any two different command lines can be told apart by quoting one."
+ ],
+ "not_measured": [
+  "false alarms in daily work; general skill of a model; anything but exec records (image 2c09799 records no file reads and no network)",
+  "the briefs of tmp-hidden and time-now describe no twin, though the prompt says a brief does; tmp-hidden's brief hints at the answer",
+  "the three pairs of T1 were written by Codex and three of the seven rule authors are GPT models, against the plan's rule that Codex is not measured on a pair it wrote; their rows stand apart",
+  "three samples a model, two measured pairs; Gemini gave one rule in 15 attempts (nine through its API, six through its CLI) and enters no statement on models",
+  "blindness is procedure, not proof: the pairs were on main before the authors wrote",
+  "the maintainer's verify from a clean checkout and the signed tag are not done yet"
+ ],
+ "related_work": [
+  "Cai et al., From Texts to Rules: Generating Sigma Rules with LLMs from CTRs (SIGMERGE), USENIX Security 2026: LLM-written Sigma rules, 200 malicious and 600 benign look-alike samples run in virtual machines, false-negative rate 12.0%, false-positive rate 7.17%; one generator, its case studies on Windows 10.",
+  "Bertiger et al., Evaluating LLM Generated Detection Rules in Cybersecurity, arXiv 2509.16749: email rules in MQL by an agent against 11 held-out human rules on a labelled corpus; no attack is run.",
+  "Not read in full by the report's author: CTI-REALM (arXiv 2603.13517), AuditBench (arXiv 2606.10281), Detecting Shadow AI (arXiv 2611.12377).",
+  "Nothing here is claimed as new: each part exists in published work."
+ ]
+}

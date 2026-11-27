@@ -33,7 +33,7 @@ A useful rule catches an attack and stays quiet on normal work. Each technique i
 | List the files in `/tmp`, hidden ones too | List only the visible ones | 14 of 21 |
 | Read the current time | Work out when the machine booted | 0 of 22 |
 
-In the second test 17 rules caught the technique at least once, and every one of them flagged a twin too. Seven AI models wrote three rules each, and the second test also counts one from Gemini. They got a short brief, the rule format and one sample event, without the test scripts. The samples are too small to rank models, the first brief hints at the answer, and the second test is hard because its twins print a time too. A third test could not be measured: its scripts need `grep` and the VM has none. To count the verdicts yourself you need git, jq and Go 1.27:
+In the second test 17 rules caught the technique at least once, and every one of them flagged a twin too. Seven AI models wrote three rules each, and the second test also counts one from Gemini. They got a short brief, the rule format and one sample event, without the test scripts. Read the numbers as a test of the lab, not of the models. All 14 passing rules match the one flag that differs, `--almost-all`: seven list flag spellings and name no program, seven match it by a substring such as the letter `a`, so passing here does not mean few false alarms. In the second test the brief did not say what the twins do, and they print the time and zone too. A third test could not be measured: its scripts need `grep` and the VM has none. The [report](lab/results/2026-11-27-pilot.json) has the rest. To count the verdicts yourself you need git, jq and Go 1.27:
 
 ```sh
 git clone https://github.com/Balistid/balistid-blue && cd balistid-blue
