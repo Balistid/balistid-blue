@@ -69,6 +69,13 @@ ANNOTATION_MAX = 4000
 RESULT_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}")
 # A trial's name as ADR 0018 point 1 allows it; the launcher's closed table refuses any other (T37).
 TRIAL_NAME = re.compile(r"[a-z0-9-]{1,32}")
+# Files no build, image or run reads (internal/rangevm/session.go imageFiles, range/, deploy/, packaging/, the Go
+# packages). A pull request or merge group that changes only these skips the KVM run (ADR 0081); an allowlist, so a
+# new path runs the self-test until it is added here.
+PROSE = re.compile(r"(?:README|STATUS|SECURITY|THREAT_MODEL|ENGINEERING|CLAUDE|AGENTS)\.md|adr/[0-9]{4}-[a-z0-9-]+\.md"
+                   r"|\.github/pull_request_template\.md|\.github/ISSUE_TEMPLATE/[a-z0-9-]+\.yml"
+                   r"|\.github/banner-(?:dark|light)\.svg")
+REV_RANGE = re.compile(r"[0-9a-f]{40}\.\.[0-9a-f]{40}")
 
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -178,6 +185,22 @@ class RangeError(Exception):
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
+def prose_only(paths: Sequence[str]) -> bool:
+    """True when paths is not empty and every one is prose (PROSE); an empty change runs the self-test."""
+    return bool(paths) and all(PROSE.fullmatch(p) for p in paths)
+
+
+def changed_paths(rev_range: str, run: Runner, repo: Path) -> list[str]:
+    """Every path git diff names between the two commits of rev_range (base..head), both sides of a rename."""
+    if not REV_RANGE.fullmatch(rev_range):
+        raise RangeError(f"not a base..head range of full commit shas: {rev_range!r}")
+    done = run(["git", "-C", str(repo), "diff", "--name-only", "--no-renames", "-z", rev_range, "--"],
+               capture_output=True, check=False)
+    if done.returncode != 0:
+        raise RangeError(f"git diff {rev_range} failed (exit {done.returncode})")
+    return [p for p in done.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+
+
 def check_runner(env: Mapping[str, str]) -> None:
     """Refuse anywhere but a GitHub-hosted runner: the script changes the machine with sudo."""
     if env.get("GITHUB_ACTIONS") != "true" or env.get("RUNNER_ENVIRONMENT") != "github-hosted":
@@ -239,10 +262,28 @@ def docker_argv(repo: Path, state: Path, cache: Path, uid: int, trial: str = "")
 def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ, run: Runner = subprocess.run,
          kvm: Path = KVM, sysctl: Path = USERNS_SYSCTL) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--work", type=Path, required=True, help="directory for the state and cache mounts")
+    parser.add_argument("--work", type=Path, help="directory for the state and cache mounts")
     parser.add_argument("--repo", type=Path, default=Path.cwd())
     parser.add_argument("--trial", help="run this trial of the table instead of the self-test (ADR 0037)")
+    parser.add_argument("--prose-only", metavar="BASE..HEAD",
+                        help="only exit 0 when every path the range changes is prose (ADR 0081), else 1; runs nothing")
     args = parser.parse_args(argv)
+    if args.prose_only is not None:
+        if args.work is not None or args.trial is not None:
+            parser.error("--prose-only takes no --work or --trial")
+        try:
+            paths = changed_paths(args.prose_only, run, args.repo)
+        except RangeError as err:
+            print(f"range-kvm: {err}; the self-test runs", file=sys.stderr)
+            return 1
+        if prose_only(paths):
+            # Only names PROSE matched reach the log, so no file name can be read as a workflow command.
+            print(f"range-kvm: skipped, the change is prose only (ADR 0081): {' '.join(paths)}")
+            return 0
+        print("range-kvm: the change is not prose only, the self-test runs")
+        return 1
+    if args.work is None:
+        parser.error("--work is required")
     trial = args.trial or ""
     what = f"trial {trial}" if TRIAL_NAME.fullmatch(trial) else "self-test"
     title = f"range-kvm {what}"

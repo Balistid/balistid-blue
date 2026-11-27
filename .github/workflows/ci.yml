@@ -455,8 +455,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Build the commit's range image and run its self-test on KVM
-        run: python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range"
+        # A pull request or merge group that changes only prose skips it (ADR 0081); push and schedule always run.
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then
+            range="$(python3 tools/ci/change_range.py)"
+            if python3 tools/ci/range_kvm.py --prose-only "$range"; then exit 0; fi
+          fi
+          python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range"
       # No artifact: the tested code writes the state directory, and upload-artifact follows its symlinks
       # into files of the runner's own processes. The verdict is in the log.

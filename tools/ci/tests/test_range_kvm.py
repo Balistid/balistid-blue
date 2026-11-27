@@ -356,8 +356,20 @@ class HostLines(unittest.TestCase):
 class Workflow(unittest.TestCase):
     def test_job_runs_the_script_with_no_secret_or_write_permission(self) -> None:
         job = ci_job("range-kvm")
-        runs = re.findall(r"(?m)^\s+(?:- )?run: (.*)$", job)
-        self.assertEqual(runs, ['python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range"'])
+        self.assertEqual(re.findall(r"(?m)^\s+(?:- )?run: (.*)$", job), ["|"])
+        script = job.split("run: |\n", 1)[1]
+        self.assertEqual([line.strip() for line in script.splitlines() if line.strip() and not line.strip().startswith("#")], [
+            'if [ "$EVENT" = pull_request ] || [ "$EVENT" = merge_group ]; then',
+            'range="$(python3 tools/ci/change_range.py)"',
+            'if python3 tools/ci/range_kvm.py --prose-only "$range"; then exit 0; fi',
+            "fi",
+            'python3 tools/ci/range_kvm.py --work "$RUNNER_TEMP/range"'])
+        for name, expr in (("EVENT", "github.event_name"), ("PR_BASE", "github.event.pull_request.base.sha"),
+                           ("PR_HEAD", "github.event.pull_request.head.sha"),
+                           ("GROUP_BASE", "github.event.merge_group.base_sha"),
+                           ("GROUP_HEAD", "github.event.merge_group.head_sha")):
+            self.assertIn(f"{name}: ${{{{ {expr} }}}}", job)
+        self.assertIn("fetch-depth: 0", job)
         self.assertIn("persist-credentials: false", job)
         # The workflow's contents: read applies, and the state directory the tested code writes is never uploaded.
         for needle in ("secrets.", "github.token", "permissions:", "continue-on-error", "|| true", "actions/upload-artifact@"):
@@ -368,6 +380,84 @@ class Workflow(unittest.TestCase):
     def test_job_tests_the_tree_that_would_land(self) -> None:
         # Like every other job: the merge commit, whose workflow then runs its own script.
         self.assertNotIn("ref:", ci_job("range-kvm"))
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout
+
+
+class ProseOnly(unittest.TestCase):
+    """ADR 0081: only a change made entirely of allowlisted prose skips the KVM run; anything else runs it."""
+
+    def test_prose_paths_skip(self) -> None:
+        for paths in (["README.md"], ["STATUS.md", "adr/0081-range-kvm-skips-prose-only-changes.md"],
+                      [".github/banner-dark.svg", ".github/ISSUE_TEMPLATE/bug.yml", ".github/pull_request_template.md"]):
+            with self.subTest(paths=paths):
+                self.assertTrue(range_kvm.prose_only(paths))
+
+    def test_anything_else_runs(self) -> None:
+        for extra in ("cmd/balistid/main.go", "range/mkosi.conf", "deploy/audit/balistid.rules", "go.mod",
+                      ".github/workflows/ci.yml", "tools/ci/range_kvm.py", "adr/0081-x.go", "adr/sub/0081-x.md",
+                      "README.md.bak", "lab/pairs/x.json", "docs/README.md", "Readme.md", "README.md\n", "",
+                      ".github/banner.svg", ".github/ISSUE_TEMPLATE/../workflows/ci.yml"):
+            with self.subTest(extra=extra):
+                self.assertFalse(range_kvm.prose_only(["README.md", extra]))
+        self.assertFalse(range_kvm.prose_only([]))
+
+    def repo_with_change(self, files: dict[str, str], rename: tuple[str, str] | None = None) -> tuple[Path, str]:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        git(tmp, "init", "-q")
+        git(tmp, "config", "user.email", "t@example.invalid")
+        git(tmp, "config", "user.name", "t")
+        (tmp / "README.md").write_text("a\n")
+        (tmp / "main.go").write_text("package main\n")
+        git(tmp, "add", ".")
+        git(tmp, "commit", "-q", "-m", "base")
+        base = git(tmp, "rev-parse", "HEAD").strip()
+        for name, text in files.items():
+            (tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp / name).write_text(text)
+        if rename:
+            git(tmp, "mv", *rename)
+        git(tmp, "add", "-A")
+        git(tmp, "commit", "-q", "--allow-empty", "-m", "change")
+        return tmp, f"{base}..{git(tmp, 'rev-parse', 'HEAD').strip()}"
+
+    def prose_exit(self, repo: Path, rev_range: str) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = range_kvm.main(["--prose-only", rev_range, "--repo", str(repo)])
+        return rc, out.getvalue()
+
+    def test_a_readme_change_skips_and_says_so(self) -> None:
+        rc, out = self.prose_exit(*self.repo_with_change({"README.md": "b\n"}))
+        self.assertEqual((rc, out), (0, "range-kvm: skipped, the change is prose only (ADR 0081): README.md\n"))
+
+    def test_code_or_a_rename_out_of_prose_runs(self) -> None:
+        for files, rename in (({"README.md": "b\n", "main.go": "package main // x\n"}, None),
+                              ({}, ("main.go", "STATUS.md")), ({}, None)):
+            with self.subTest(files=files, rename=rename):
+                self.assertEqual(self.prose_exit(*self.repo_with_change(files, rename))[0], 1)
+
+    def test_a_bad_range_or_git_failure_runs_and_nothing_else_starts(self) -> None:
+        repo, rev_range = self.repo_with_change({"README.md": "b\n"})
+        for bad in ("", "HEAD~1..HEAD", rev_range + " --output=x", rev_range.split("..")[1], "f" * 40 + ".." + "e" * 40):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.prose_exit(repo, bad)[0], 1)
+        calls: list[list[str]] = []
+
+        def failing_git(argv, **_kw) -> subprocess.CompletedProcess:
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 128, b"README.md\0", b"fatal")  # partial output is not trusted
+
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = range_kvm.main(["--prose-only", rev_range, "--repo", str(repo)], run=failing_git)
+        self.assertEqual((rc, [c[0] for c in calls]), (1, ["git"]))
+
+    def test_prose_only_takes_no_work_or_trial(self) -> None:
+        for extra in (["--work", "x"], ["--trial", "fido"]):
+            with self.subTest(extra=extra), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                range_kvm.main(["--prose-only", "a" * 40 + ".." + "b" * 40, *extra])
 
 
 class TrialWorkflow(unittest.TestCase):
