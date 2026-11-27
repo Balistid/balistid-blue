@@ -45,12 +45,12 @@ Each line counts rules with the same four verdicts: two variants, then two twins
 ## How it works
 
 ```mermaid
+%%{init: {"flowchart": {"rankSpacing": 24, "nodeSpacing": 24, "padding": 6}}}%%
 flowchart TD; classDef later stroke-dasharray:5 4
   host["Linux machine<br/>AI agents, programs"] --> audit["auditd + Laurel<br/>kernel events"] --> rec["Recorder<br/>SQLite, signed log"]
   rec -.->|VM only| pi["Witness<br/>Raspberry Pi"]:::later
-  rec -.->|planned| judge["Detection judge<br/>rules to verdicts"]
+  rec -.->|planned| judge["Detection judge<br/>rules to verdicts"] -.->|planned| light["Status light"]:::later
   lab["Lab<br/>fresh VM per run"] --> judge
-  judge -.->|planned| light["Status light"]:::later
 ```
 
 Solid lines run today; dashed ones are planned or run only in a VM. Root on the machine can still rewrite the signed log, and the witness is meant to close that gap. The recorder is frozen since 16 November 2026, because its hardest parts matter only once an agent has root there, and none has ([ADR 0076](adr/0076-floor-1-first-the-recorder-freezes-unmet.md)). In the lab the verdict is computed outside the VM, from the records it reported. Work goes in floors: 0 is the recorder, 1 is detection, the planned parts follow.
