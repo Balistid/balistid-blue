@@ -389,11 +389,21 @@ def git(repo: Path, *args: str) -> str:
 class ProseOnly(unittest.TestCase):
     """ADR 0081: only a change made entirely of allowlisted prose skips the KVM run; anything else runs it."""
 
+    @staticmethod
+    def files(*paths: str) -> list[tuple[str, str, str]]:
+        return [("100644", "100644", p) for p in paths]
+
     def test_prose_paths_skip(self) -> None:
         for paths in (["README.md"], ["STATUS.md", "adr/0081-range-kvm-skips-prose-only-changes.md"],
                       [".github/banner-dark.svg", ".github/ISSUE_TEMPLATE/bug.yml", ".github/pull_request_template.md"]):
             with self.subTest(paths=paths):
-                self.assertTrue(range_kvm.prose_only(paths))
+                self.assertTrue(range_kvm.prose_only(self.files(*paths)))
+        self.assertTrue(range_kvm.prose_only([("000000", "100644", "STATUS.md"), ("100644", "000000", "SECURITY.md")]))
+
+    def test_a_prose_path_that_is_not_a_plain_file_runs(self) -> None:
+        for old, new in (("100644", "120000"), ("120000", "100644"), ("100644", "100755"), ("000000", "160000")):
+            with self.subTest(old=old, new=new):
+                self.assertFalse(range_kvm.prose_only([(old, new, "README.md")]))
 
     def test_anything_else_runs(self) -> None:
         for extra in ("cmd/balistid/main.go", "range/mkosi.conf", "deploy/audit/balistid.rules", "go.mod",
@@ -401,7 +411,7 @@ class ProseOnly(unittest.TestCase):
                       "README.md.bak", "lab/pairs/x.json", "docs/README.md", "Readme.md", "README.md\n", "",
                       ".github/banner.svg", ".github/ISSUE_TEMPLATE/../workflows/ci.yml"):
             with self.subTest(extra=extra):
-                self.assertFalse(range_kvm.prose_only(["README.md", extra]))
+                self.assertFalse(range_kvm.prose_only(self.files("README.md", extra)))
         self.assertFalse(range_kvm.prose_only([]))
 
     def repo_with_change(self, files: dict[str, str], rename: tuple[str, str] | None = None) -> tuple[Path, str]:
@@ -439,6 +449,20 @@ class ProseOnly(unittest.TestCase):
             with self.subTest(files=files, rename=rename):
                 self.assertEqual(self.prose_exit(*self.repo_with_change(files, rename))[0], 1)
 
+    def test_a_symlink_or_executable_readme_runs(self) -> None:
+        for change in ("symlink", "chmod"):
+            with self.subTest(change=change):
+                repo, _ = self.repo_with_change({})
+                base = git(repo, "rev-parse", "HEAD").strip()
+                if change == "symlink":
+                    (repo / "README.md").unlink()
+                    (repo / "README.md").symlink_to("main.go")
+                else:
+                    (repo / "README.md").chmod(0o755)
+                git(repo, "add", "-A")
+                git(repo, "commit", "-q", "-m", change)
+                self.assertEqual(self.prose_exit(repo, f"{base}..{git(repo, 'rev-parse', 'HEAD').strip()}")[0], 1)
+
     def test_a_bad_range_or_git_failure_runs_and_nothing_else_starts(self) -> None:
         repo, rev_range = self.repo_with_change({"README.md": "b\n"})
         for bad in ("", "HEAD~1..HEAD", rev_range + " --output=x", rev_range.split("..")[1], "f" * 40 + ".." + "e" * 40):
@@ -453,6 +477,19 @@ class ProseOnly(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             rc = range_kvm.main(["--prose-only", rev_range, "--repo", str(repo)], run=failing_git)
         self.assertEqual((rc, [c[0] for c in calls]), (1, ["git"]))
+        self.assertEqual(calls[0][-2:], [rev_range, "--"])  # the range is never read as a path or an option
+
+    def test_unreadable_raw_output_runs(self) -> None:
+        good = ":100644 100644 " + "a" * 40 + " " + "b" * 40 + " M\0README.md\0"
+        for out in (good[:-1] + "x", "garbage\0README.md\0", good + ":100644\0", ":100644 100644 x y M\0README.md\0"):
+            with self.subTest(out=out[:40]):
+                def fake(argv, out=out, **_kw) -> subprocess.CompletedProcess:
+                    return subprocess.CompletedProcess(argv, 0, out.encode(), b"")
+                try:
+                    changes = range_kvm.changed_paths("a" * 40 + ".." + "b" * 40, fake, Path("."))
+                except range_kvm.RangeError:
+                    continue
+                self.assertFalse(range_kvm.prose_only(changes), changes)
 
     def test_prose_only_takes_no_work_or_trial(self) -> None:
         for extra in (["--work", "x"], ["--trial", "fido"]):
