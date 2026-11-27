@@ -76,6 +76,10 @@ PROSE = re.compile(r"(?:README|STATUS|SECURITY|THREAT_MODEL|ENGINEERING|CLAUDE|A
                    r"|\.github/pull_request_template\.md|\.github/ISSUE_TEMPLATE/[a-z0-9-]+\.yml"
                    r"|\.github/banner-(?:dark|light)\.svg")
 REV_RANGE = re.compile(r"[0-9a-f]{40}\.\.[0-9a-f]{40}")
+# git diff --raw modes a prose entry may have on either side: absent or a plain file. A symlink, an executable
+# file or a submodule at a prose path is an entry the export treats differently, so it runs the self-test.
+PROSE_MODES = {"000000", "100644"}
+RAW = re.compile(r":([0-7]{6}) ([0-7]{6}) [0-9a-f]{40,64} [0-9a-f]{40,64} [A-Z][0-9]*")
 
 
 DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -185,20 +189,34 @@ class RangeError(Exception):
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
-def prose_only(paths: Sequence[str]) -> bool:
-    """True when paths is not empty and every one is prose (PROSE); an empty change runs the self-test."""
-    return bool(paths) and all(PROSE.fullmatch(p) for p in paths)
+def prose_only(changes: Sequence[tuple[str, str, str]]) -> bool:
+    """True when changes is not empty and every (old mode, new mode, path) is a plain file or absent on both sides
+    at a prose path (PROSE, PROSE_MODES); an empty change runs the self-test."""
+    return bool(changes) and all(PROSE.fullmatch(path) and old in PROSE_MODES and new in PROSE_MODES
+                                 for old, new, path in changes)
 
 
-def changed_paths(rev_range: str, run: Runner, repo: Path) -> list[str]:
-    """Every path git diff names between the two commits of rev_range (base..head), both sides of a rename."""
+def changed_paths(rev_range: str, run: Runner, repo: Path) -> list[tuple[str, str, str]]:
+    """(old mode, new mode, path) of every entry git diff --raw lists between the two commits of rev_range
+    (base..head), both sides of a rename; output it cannot parse is an error."""
     if not REV_RANGE.fullmatch(rev_range):
         raise RangeError(f"not a base..head range of full commit shas: {rev_range!r}")
-    done = run(["git", "-C", str(repo), "diff", "--name-only", "--no-renames", "-z", rev_range, "--"],
+    done = run(["git", "-C", str(repo), "diff", "--raw", "--no-abbrev", "--no-renames", "-z", rev_range, "--"],
                capture_output=True, check=False)
     if done.returncode != 0:
         raise RangeError(f"git diff {rev_range} failed (exit {done.returncode})")
-    return [p for p in done.stdout.decode("utf-8", "surrogateescape").split("\0") if p]
+    fields = done.stdout.decode("utf-8", "surrogateescape").split("\0")
+    if fields and fields[-1] == "":
+        fields.pop()
+    if len(fields) % 2:
+        raise RangeError("git diff --raw output is not header and path pairs")
+    changes = []
+    for header, path in zip(fields[::2], fields[1::2]):
+        m = RAW.fullmatch(header)
+        if m is None or not path:
+            raise RangeError("git diff --raw output has a line it cannot read")
+        changes.append((m.group(1), m.group(2), path))
+    return changes
 
 
 def check_runner(env: Mapping[str, str]) -> None:
@@ -278,7 +296,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ,
             return 1
         if prose_only(paths):
             # Only names PROSE matched reach the log, so no file name can be read as a workflow command.
-            print(f"range-kvm: skipped, the change is prose only (ADR 0081): {' '.join(paths)}")
+            print(f"range-kvm: skipped, the change is prose only (ADR 0081): {' '.join(p for _, _, p in paths)}")
             return 0
         print("range-kvm: the change is not prose only, the self-test runs")
         return 1
