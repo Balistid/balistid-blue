@@ -84,6 +84,13 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if all.Loss["queue"] != 3 || all.LossErrors != 0 || all.StoreLag == nil || *all.StoreLag != 1500 {
 		t.Errorf("loss %v (%d not decoded), lag %v", all.Loss, all.LossErrors, all.StoreLag)
 	}
+	if all.Jumps != 3 || all.Skipped != 10 || all.StepsBack != 2 {
+		t.Errorf("serials: %d jumps skipping %d, %d steps back; want 113, 126 and 133, 125 late, 5 a new boot",
+			all.Jumps, all.Skipped, all.StepsBack)
+	}
+	if h := d.Health[2]; h.Received == "" || h.At == "" || h.Kind != "health" {
+		t.Errorf("a health change %+v", h)
+	}
 	var states []string
 	for _, h := range d.Health {
 		states = append(states, h.State)
@@ -156,7 +163,7 @@ func TestOnlyUsersRuns(t *testing.T) {
 		all.Exec.System != 3 || all.Exec.Listed != 11 || d.ListedFrom != d.Days[1].Day {
 		t.Errorf("days %d, listed from %s, the oldest %+v, all %+v", len(d.Days), d.ListedFrom, d.Days[0].Exec, all.Exec)
 	}
-	if v := viewOf(t, out); v.Days[0].Listed != 0 || v.Days[0].ListedOf != 1 || v.Days[0].Runs != 0 {
+	if v := viewOf(t, out); v.Days[0].RunCounts != nil || v.Days[0].Execs.Outside != 1 || v.Days[1].RunCounts == nil {
 		t.Errorf("view of the oldest day %+v", v.Days[0])
 	}
 }
