@@ -114,7 +114,8 @@ func judge(ctx context.Context, cfg config) (string, error) {
 			return statusUnknown, err
 		}
 	}
-	// One sample decides and dates the end: an expired read never publishes COMPLETE.
+	// One sample ends the read: the limit bounds the read, not the write of the last file. COMPLETE says the read
+	// ended before the limit, and written is this sample.
 	end := cfg.Now()
 	switch {
 	case !end.Before(deadline): // the limit is a hard stop, even when the last shard was read whole

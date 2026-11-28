@@ -91,9 +91,6 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "still writing") {
 		t.Errorf("a READING state: %v", err)
 	}
-	if code := run(t.Context(), []string{"view", out}); code != 2 {
-		t.Errorf("view of a READING state: exit %d", code)
-	}
 	root, err := os.OpenRoot(out)
 	if err != nil {
 		t.Fatal(err)

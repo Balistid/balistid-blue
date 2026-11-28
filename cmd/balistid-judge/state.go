@@ -22,26 +22,26 @@ const (
 
 // stateDoc is state.json (ADR 0082 points 2 and 3). view decodes it strictly, so a field added here is added there.
 type stateDoc struct {
-	Schema       int                  `json:"schema_version"`
-	Judge        string               `json:"judge"`
-	Version      string               `json:"version"`
-	Written      string               `json:"written"`
-	Status       string               `json:"status"`
-	Reason       string               `json:"reason,omitempty"`
-	Store        *storeDoc            `json:"store,omitempty"`
-	Read         []shardDoc           `json:"shards_read"`
-	NotRead      []notReadDoc         `json:"shards_not_read"`
-	Unsealed     []string             `json:"unsealed_not_read"`
-	TornIndex    bool                 `json:"torn_index_line"`
-	ReadLimitMin int                  `json:"read_limit_min"`
-	BudgetMiB    int64                `json:"byte_budget_mib"`
-	MaxRuns      int                  `json:"max_runs"`
-	ListedFrom   string               `json:"listed_from,omitempty"`
-	Health       []transition         `json:"health_changes"`
-	HealthHeld   string               `json:"health_changes_withheld,omitempty"`
-	Keys         map[string]*keyCount `json:"by_rule_key"`
-	KeysOver     uint64               `json:"rule_keys_over_cap"`
-	Days         []dayRow             `json:"days"`
+	Schema  int    `json:"schema_version"`
+	Judge   string `json:"judge"`
+	Version string `json:"version"`
+	// Written is when the file was made; in a final state, the clock sample that ended the read, which the limit
+	// bounds: writing that last file comes after it.
+	Written      string       `json:"written"`
+	Status       string       `json:"status"`
+	Reason       string       `json:"reason,omitempty"`
+	Store        *storeDoc    `json:"store,omitempty"`
+	Read         []shardDoc   `json:"shards_read"`
+	NotRead      []notReadDoc `json:"shards_not_read"`
+	Unsealed     []string     `json:"unsealed_not_read"`
+	TornIndex    bool         `json:"torn_index_line"`
+	ReadLimitMin int          `json:"read_limit_min"`
+	BudgetMiB    int64        `json:"byte_budget_mib"`
+	MaxRuns      int          `json:"max_runs"`
+	ListedFrom   string       `json:"listed_from,omitempty"`
+	Health       []transition `json:"health_changes"`
+	HealthHeld   string       `json:"health_changes_withheld,omitempty"`
+	Days         []dayRow     `json:"days"`
 }
 
 type storeDoc struct {
@@ -124,11 +124,6 @@ func (st *state) render(rd *reader, written int64) stateDoc {
 	d := st.doc
 	d.Written = timeText(written)
 	d.Read, d.NotRead = append([]shardDoc{}, st.read...), st.notRead()
-	d.Keys = make(map[string]*keyCount, len(rd.keys))
-	for k, c := range rd.keys {
-		d.Keys[k] = &keyCount{Records: c.Records, Bytes: c.Bytes}
-	}
-	d.KeysOver = rd.keysOver
 	d.Health = []transition{}
 	if rd.over {
 		d.HealthHeld = "more than " + strconv.Itoa(maxEvents) + " health changes: the list is not kept"
@@ -139,6 +134,10 @@ func (st *state) render(rd *reader, written int64) stateDoc {
 	for day, row := range rd.rows {
 		r := *row
 		r.Records, r.Loss, r.Undecoded = maps.Clone(r.Records), maps.Clone(r.Loss), maps.Clone(r.Undecoded)
+		r.Keys = make(map[string]*keyCount, len(row.Keys))
+		for k, c := range row.Keys {
+			r.Keys[k] = &keyCount{Records: c.Records, Bytes: c.Bytes}
+		}
 		rows[day] = &r
 	}
 	d.Days = []dayRow{}

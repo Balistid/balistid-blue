@@ -78,8 +78,9 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if all.Records["laurel"] != 41 || all.Records["balistid-health"] != 9 {
 		t.Errorf("records %v, want 41 of Laurel's and 9 own", all.Records)
 	}
-	if d.Keys["balistid-open"] == nil || d.Keys["balistid-open"].Records != 36 || d.Keys["balistid-exec"].Records != 4 || d.Keys[""].Records != 1 {
-		t.Errorf("by rule key %v", d.Keys)
+	if k := d.Days[0].Keys; len(d.Days) != 1 || k["balistid-open"] == nil || k["balistid-open"].Records != 36 ||
+		k["balistid-exec"].Records != 4 || k[""].Records != 1 {
+		t.Errorf("by rule key %v", k)
 	}
 	if all.Loss["queue"] != 3 || all.LossErrors != 0 || all.StoreLag == nil || *all.StoreLag != 1500 {
 		t.Errorf("loss %v (%d not decoded), lag %v", all.Loss, all.LossErrors, all.StoreLag)
