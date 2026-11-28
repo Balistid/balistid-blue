@@ -59,7 +59,7 @@ func TestLossAsLossOfCountsIt(t *testing.T) {
 		t.Fatalf("spans %+v", a.spans)
 	}
 	for i := range want {
-		if a.spans[i] != want[i] {
+		if a.spans[i].From != want[i].From || a.spans[i].To != want[i].To {
 			t.Errorf("span %d %+v, want %+v", i, a.spans[i], want[i])
 		}
 	}

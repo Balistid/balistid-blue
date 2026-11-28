@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +30,8 @@ const (
 	// readLimit is acceptance read_limit_min: the judge stops reading shards after it and says what it left.
 	readLimit = 90 * time.Minute
 	execDays  = 7
+	// maxSealed is the last Unix second whose nanoseconds fit an int64; the seal index takes any int64.
+	maxSealed = math.MaxInt64 / int64(time.Second)
 	// checkEvery is how many records are read between looks at the clock.
 	checkEvery = 1024
 	// resultMode is world-readable: every local user reads what the recorder saw (ADR 0082 consequences).
@@ -70,6 +73,12 @@ func judge(ctx context.Context, cfg config) (string, error) {
 	}
 	var cutoff int64
 	if n := len(seals); n > 0 {
+		if sealed := seals[n-1].Sealed; sealed <= execDays*86400 || sealed > maxSealed {
+			err := fmt.Errorf("the last seal's time, %d s, is not one the judge can count from", sealed)
+			st := newState(nil, 0, 0, limitMin)
+			st.doc.Status, st.doc.Reason = statusUnknown, err.Error()
+			return statusUnknown, errors.Join(err, writeBoth(out, st, start.UnixNano()))
+		}
 		cutoff = (seals[n-1].Sealed - execDays*86400) * 1e9
 	}
 	st := newState(seals, sizes, cutoff, limitMin)
@@ -97,6 +106,8 @@ func judge(ctx context.Context, cfg config) (string, error) {
 			st.doc.NotRead[0].Reason = err.Error()
 			return st.doc.Status, errors.Join(err, writeState(out, st, cfg.Now().UnixNano()))
 		}
+		// exec.jsonl holds the shard's runs before state.json names the shard read: a crash in between leaves
+		// runs whose shard state.json lists as not read, and the next run starts both files anew.
 		st.merge(l.Name, a)
 		if err := writeState(out, st, cfg.Now().UnixNano()); err != nil {
 			return statusUnknown, err
@@ -155,8 +166,8 @@ func shardBytes(dir string, seals []store.Seal) (int64, error) {
 	return n, nil
 }
 
-// readShard reads one sealed shard into its accumulator and its exec lines in front of exec.jsonl's. On any error
-// exec.jsonl stays as it was.
+// readShard reads one sealed shard into its accumulator, its exec lines into a file of their own, and only once
+// the shard was read whole appends them to exec.jsonl. On a read error nothing is appended.
 func readShard(ctx context.Context, cfg config, out *os.Root, l store.Seal, cutoff int64, deadline time.Time) (*shardAcc, error) {
 	if !cfg.Now().Before(deadline) {
 		return nil, errReadLimit
@@ -175,13 +186,13 @@ func readShard(ctx context.Context, cfg config, out *os.Root, l store.Seal, cuto
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("read %s: %w", l.Name, err), part.abort())
 	}
-	if a.execs.Exported == 0 { // older than the 7 days, mostly: no copy of the whole file for nothing
+	if a.execs.Exported == 0 {
 		return a, part.abort()
 	}
 	return a, part.commit()
 }
 
-// part is the next exec.jsonl being written: the lines of the shard being read, then the current file's.
+// part is one shard's exec lines, held until the shard was read whole.
 type part struct {
 	root *os.Root
 	name string
@@ -195,57 +206,43 @@ func newPart(root *os.Root) (*part, error) {
 		return nil, fmt.Errorf("write %s: %w", execFile, err)
 	}
 	name := ".tmp-" + hex.EncodeToString(rnd[:])
-	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	f, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("write %s: %w", execFile, err)
 	}
 	return &part{root: root, name: name, f: f, w: bufio.NewWriterSize(f, 1<<20)}, nil
 }
 
-// commit appends the current exec.jsonl, then renames the whole over it, as wholefile does.
+// commit appends the shard's lines to exec.jsonl and syncs it. A crash in the append leaves a torn last line,
+// which view refuses; the lines' order is the order shards were read, newest first, which view does not need.
 func (p *part) commit() error {
 	err := p.w.Flush()
 	if err == nil {
-		err = p.appendCurrent()
+		_, err = p.f.Seek(0, io.SeekStart)
 	}
 	if err == nil {
-		err = errors.Join(p.f.Chmod(resultMode), p.f.Sync())
+		err = p.appendTo()
 	}
-	if err = errors.Join(err, p.f.Close()); err != nil {
-		return errors.Join(fmt.Errorf("write %s: %w", execFile, err), p.root.Remove(p.name))
+	if err != nil {
+		return errors.Join(fmt.Errorf("append to %s: %w", execFile, err), p.abort())
 	}
-	if err := p.root.Rename(p.name, execFile); err != nil {
-		return errors.Join(fmt.Errorf("write %s: %w", execFile, err), p.root.Remove(p.name))
-	}
-	return syncDir(p.root)
+	return p.abort()
 }
 
-func (p *part) appendCurrent() error {
-	cur, err := p.root.OpenFile(execFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+func (p *part) appendTo() error {
+	cur, err := p.root.OpenFile(execFile, os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return err //nolint:wrapcheck // commit names the file
 	}
-	defer cur.Close() //nolint:errcheck // read-only
 	if fi, err := cur.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return errors.Join(err, errors.New("not a regular file"))
+		return errors.Join(err, errors.New("not a regular file"), cur.Close())
 	}
-	_, err = io.Copy(p.f, cur)
-	return err //nolint:wrapcheck // commit names the file
+	_, err = io.Copy(cur, p.f)
+	return errors.Join(err, cur.Sync(), cur.Close())
 }
 
 func (p *part) abort() error {
 	return errors.Join(p.f.Close(), p.root.Remove(p.name))
-}
-
-func syncDir(root *os.Root) error {
-	d, err := root.Open(".")
-	if err != nil {
-		return fmt.Errorf("sync the results directory: %w", err)
-	}
-	if err := errors.Join(d.Sync(), d.Close()); err != nil {
-		return fmt.Errorf("sync the results directory: %w", err)
-	}
-	return nil
 }
 
 // writeBoth starts a run: state.json from the seals and an empty exec.jsonl.
