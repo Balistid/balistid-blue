@@ -24,7 +24,7 @@ FILES = {"balistid-judge.service"}
 # No other uid's groups, no user namespace that would remap the collector's files, no restart, no slice.
 FORBIDDEN = COLLECTOR_FORBIDDEN | {"SupplementaryGroups", "PrivateUsers", "Restart", "Slice", "AmbientCapabilities"}
 
-SERVICE_UNIT = {"Description": ["Balistid Blue judge: the recording days from the sealed store"]}
+SERVICE_UNIT = {"Description": ["Balistid Blue judge: the recorder's state and the users' execs from the sealed store"]}
 SERVICE = {
     "Type": "oneshot",
     "User": "balistid-collector",
