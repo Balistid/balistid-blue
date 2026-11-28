@@ -89,6 +89,9 @@ func judge(ctx context.Context, cfg config) (string, error) {
 	if err := writeBoth(out, st.last); err != nil {
 		return statusUnknown, err
 	}
+	if len(seals) == 0 { // nothing read is not a read of everything (R6)
+		return st.fail(out, cfg, statusUnknown, "the store holds no sealed shard", errors.New("no sealed shard"))
+	}
 	deadline := start.Add(cfg.Limit)
 	for st.next < len(seals) {
 		l := seals[st.next]
@@ -111,8 +114,9 @@ func judge(ctx context.Context, cfg config) (string, error) {
 		}
 	}
 	switch {
-	case !cfg.Now().Before(deadline): // the last shard may have taken it past the limit
-		return st.fail(out, cfg, statusPartial, "the read limit of "+strconv.Itoa(limitMin)+" min passed", errReadLimit)
+	case !cfg.Now().Before(deadline): // the limit is a hard stop, even when the last shard was read whole
+		return st.fail(out, cfg, statusPartial, "the read limit of "+strconv.Itoa(limitMin)+
+			" min passed while the last shard was read; no sealed shard is unread", errReadLimit)
 	case torn:
 		return st.fail(out, cfg, statusPartial, "the seal index ends in a torn line", errors.New("a torn seal index"))
 	}
@@ -290,8 +294,12 @@ func (p *part) appendTo() error {
 	if err != nil {
 		return err //nolint:wrapcheck // commit names the file
 	}
-	if fi, err := cur.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return errors.Join(err, errors.New("not a regular file"), cur.Close())
+	fi, err := cur.Stat()
+	if err == nil && !fi.Mode().IsRegular() {
+		err = errors.New("not a regular file")
+	}
+	if err != nil {
+		return errors.Join(err, cur.Close())
 	}
 	_, err = io.Copy(cur, p.f)
 	return errors.Join(err, cur.Sync(), cur.Close())

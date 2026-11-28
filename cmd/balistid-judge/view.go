@@ -40,7 +40,8 @@ const (
 	broken        = "broken"
 )
 
-const agentIs = "a run is under an agent when one of its spawners is Claude Code's binary, known by its path"
+const agentIs = "a run is under an agent when one of its spawners is Claude Code's binary, known only by its path " +
+	"/home/<user>/.local/share/claude/versions/<version>: one installed elsewhere is not known as an agent"
 
 type viewDoc struct {
 	Schema int         `json:"schema_version"`
@@ -130,7 +131,11 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("view: %w", err)
 	}
-	defer root.Close() //nolint:errcheck // read-only
+	defer root.Close()                      //nolint:errcheck // read-only
+	probes, err := readManifests(manifests) // small: a bad one fails before exec.jsonl is read
+	if err != nil {
+		return err
+	}
 	sd, stateInfo, err := readState(root, owners)
 	if err != nil {
 		return err
@@ -142,22 +147,22 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	if err := unchanged(root, stateInfo); err != nil {
 		return err
 	}
-	probes, err := readManifests(manifests)
-	if err != nil {
-		return err
-	}
 	where := assign(runs)
 	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Agent: agentIs, NotRead: sd.NotRead,
 		Unsealed: sd.Unsealed, Torn: sd.TornIndex, Owner: ownerOf(stateInfo), Listed: sd.ListedFrom}}
 	if doc.Days, doc.Covers.NoDay, err = days(sd, runs, where); err != nil {
 		return err
 	}
-	if sd.Status != statusComplete {
+	switch {
+	case sd.Status == statusComplete:
+	case len(sd.NotRead) == 0:
+		doc.Covers.Partial = "the judge's status is " + sd.Status + ": no sealed shard it lists is unread"
+	default:
 		doc.Covers.Partial = "the judge's status is " + sd.Status + ": what it did not read is not in any day"
 	}
 	doc.Top, doc.Once, doc.Broken = overAll(runs, where)
 	if len(manifests) > 0 {
-		p := checkProbes(probes, runs, where, sd.Status == statusComplete)
+		p := checkProbes(probes, runs, where, sd.Status == statusComplete, len(sd.Unsealed) > 0)
 		doc.Probes = &p
 	}
 	b, err := json.MarshalIndent(doc, "", " ")

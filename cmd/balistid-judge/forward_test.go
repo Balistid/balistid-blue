@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -395,6 +396,43 @@ func TestTheLastShardPastTheLimitIsPartial(t *testing.T) {
 	status, out, err := judgeOnce(t, ts.dir, clock)
 	if d := readStateDoc(t, out); status != statusPartial || err == nil || d.Status != statusPartial || len(d.Read) != 1 {
 		t.Errorf("status %s, on disk %s, read %d, %v", status, d.Status, len(d.Read), err)
+	}
+	// Every shard was read whole: the state and view say so, not that something is unread.
+	d := readStateDoc(t, out)
+	if v := viewOf(t, out); len(d.NotRead) != 0 || !strings.Contains(d.Reason, "while the last shard was read") ||
+		!strings.Contains(v.Covers.Partial, "no sealed shard it lists is unread") {
+		t.Errorf("reason %q, not read %v, view %q", d.Reason, d.NotRead, v.Covers.Partial)
+	}
+}
+
+// TestAStoreWithNoSealIsUnknown: a store whose index holds no seal gives nothing read, which is UNKNOWN, never
+// COMPLETE (R6).
+func TestAStoreWithNoSealIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // a store directory, as the collector keeps it
+		t.Fatal(err)
+	}
+	status, out, err := judgeOnce(t, dir, nil)
+	if d := readStateDoc(t, out); status != statusUnknown || err == nil || d.Status != statusUnknown ||
+		d.Reason != "the store holds no sealed shard" {
+		t.Errorf("status %s, on disk %s %q, %v", status, d.Status, d.Reason, err)
+	}
+}
+
+// TestAProbeOnlyInAnUnsealedShardIsSaid: in a COMPLETE read beside an unsealed shard, a probe with no run may be in
+// that shard: its reason says so, and it is not assigned.
+func TestAProbeOnlyInAnUnsealedShardIsSaid(t *testing.T) {
+	ts := agentTree(t)
+	_, out, _ := judgeOnce(t, ts.dir, nil)
+	editState(t, out, func(d *stateDoc) { d.Unsealed = []string{"00000000000000000099.db"} })
+	v := viewOf(t, out, treeManifests(t, false)...)
+	for _, e := range v.Probes.Each {
+		if e.Name == "s1p-t-d01" && (e.Assigned || e.Why != absentSealed) {
+			t.Errorf("a probe the sealed shards lack: %+v", e)
+		}
+		if e.Name == "s1p-t-d00" && !e.Assigned {
+			t.Errorf("the probe the store holds: %+v", e)
+		}
 	}
 }
 

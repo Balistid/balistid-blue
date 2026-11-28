@@ -369,8 +369,9 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	case "lost":
 		lost(row, r)
 	case "connection", "refused":
-	default:
+	default: // a kind the judge does not know may have been a health change
 		row.OwnUnknown++
+		rd.health = healthNotKnown
 	}
 }
 
