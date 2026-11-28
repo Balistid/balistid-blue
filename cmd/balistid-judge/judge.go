@@ -175,6 +175,9 @@ func readShard(ctx context.Context, cfg config, out *os.Root, l store.Seal, cuto
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("read %s: %w", l.Name, err), part.abort())
 	}
+	if a.execs.Exported == 0 { // older than the 7 days, mostly: no copy of the whole file for nothing
+		return a, part.abort()
+	}
 	return a, part.commit()
 }
 
