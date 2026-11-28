@@ -118,7 +118,7 @@ Decided in ADR 0008. A `(lint: …)` marker covers only the clause it follows; t
   strictly (`DisallowUnknownFields`, explicit version check). Every parser has a fuzz target (R10).
 - **Files Balistid Blue writes whole** (configs, keys, manifests, exports): mode 0600, or 0640 with
   `//nolint:gosec // group-readable for <uid>` (lint: gosec G306), or 0644 for the collector's status report every
-  user's CLI reads (ADR 0048); written to a temp file, fsynced,
+  user's CLI reads (ADR 0048) and the host judge's two results (ADR 0082); written to a temp file, fsynced,
   renamed, then the directory fsynced. Paths under directories another uid can write are opened
   without following symlinks. SQLite shards and Tessera tiles manage their own files: their safety
   comes from a 0750 directory owned by the service, umask 0027 and the seal of ADR 0005.

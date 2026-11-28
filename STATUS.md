@@ -21,8 +21,8 @@ implementations agree on each; it compares no models. `python3 tools/ci/status.p
 
 ## Done in the last sessions
 - This pull request, step S1 (ADR 0082): `balistid-judge` reads forward once and writes `state.json` (seals, health
-  changes, a row per UTC day: loss, lag, serial gaps, seconds not OK) and `exec.jsonl` (no argument or path); `view`
-  builds the tree and prints every count by day as a lower bound beside that day's evidence, and checks probes.
+  records as stored, per UTC day sums and maxima: loss, lag, serial jumps) and `exec.jsonl` (no argument or path);
+  `view` builds the tree, prints the export's counts by day beside those sums, bounding nothing, and checks probes.
 - e141cb8, gate B2: the pilot's report, `lab/results/2026-11-27-pilot.json`. tmp-hidden: 14 of 21 rules catch
   both variants and stay quiet on both twins; time-now 0 of 22; env-locale not measured; cross rows 0 NOISY of 305.
 - #313-#319, ADR 0081: the README, its banners and diagram; `range-kvm` skips a change that is prose only.
