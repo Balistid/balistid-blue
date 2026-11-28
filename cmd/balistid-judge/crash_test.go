@@ -47,11 +47,11 @@ func TestAProbeIsOneRun(t *testing.T) {
 			Process: procKey{EventID: "1795340222.002:" + strconv.Itoa(i+2)}, SpawnedBy: &spawner{procKey: procKey{EventID: agent}}})
 	}
 	probes := []probe{{Name: "make", Kind: kindDirect, At: at.Format(time.RFC3339Nano), Ran: true}}
-	p := checkProbes(probes, runs, assign(runs), true, false)
+	p := checkProbes(probes, runs, assign(runs), true, false, "")
 	if p.Direct.Assigned != 0 || p.Each[0].Runs != 50 || p.Each[0].Why != moreThanOne {
 		t.Errorf("probes %+v", p)
 	}
-	p = checkProbes(probes, runs[:2], assign(runs[:2]), true, false)
+	p = checkProbes(probes, runs[:2], assign(runs[:2]), true, false, "")
 	if p.Direct.Assigned != 1 {
 		t.Errorf("one run: %+v", p)
 	}
@@ -78,7 +78,7 @@ func TestProbeRules(t *testing.T) {
 	probes := []probe{named("in"), named("early"), named("outside"), named("gone"), {Name: "in2", Kind: kindDirect,
 		At: at.Format(time.RFC3339Nano)}}
 	want := map[string]string{"in": "", "early": timeOff, "outside": "chain " + endedObserved, "gone": absent, "in2": notRun}
-	p := checkProbes(probes, runs, assign(runs), true, false)
+	p := checkProbes(probes, runs, assign(runs), true, false, "")
 	for _, e := range p.Each {
 		if e.Why != want[e.Name] || e.Assigned != (want[e.Name] == "") {
 			t.Errorf("%s: %+v", e.Name, e)
@@ -87,10 +87,21 @@ func TestProbeRules(t *testing.T) {
 	if p.Direct != (kindCount{Count: 5, Found: 3, Assigned: 1}) {
 		t.Errorf("direct %+v", p.Direct)
 	}
-	for _, e := range checkProbes(probes, runs, assign(runs), false, false).Each {
+	for _, e := range checkProbes(probes, runs, assign(runs), false, false, "").Each {
 		if e.Assigned || e.Why != notComplete {
 			t.Errorf("a read not complete: %+v", e)
 		}
+	}
+}
+
+// TestAProbeBeforeTheWindow: a probe timed on a day before listed_from can have no run in exec.jsonl, which is not
+// the same as absent from the store; it is still not assigned.
+func TestAProbeBeforeTheWindow(t *testing.T) {
+	probes := []probe{{Name: "early", Kind: kindDirect, At: "2026-11-20T23:59:59+01:00", Ran: true},
+		{Name: "late", Kind: kindDirect, At: "2026-11-21T00:00:00Z", Ran: true}}
+	p := checkProbes(probes, nil, nil, true, false, "2026-11-21")
+	if e := p.Each; e[0].Why != beforeWindow || e[0].Assigned || e[1].Why != absent {
+		t.Errorf("probes %+v", e)
 	}
 }
 

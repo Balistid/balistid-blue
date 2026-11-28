@@ -404,6 +404,15 @@ func TestAProbeOnlyInAnUnsealedShardIsSaid(t *testing.T) {
 	}
 }
 
+// TestTheWindowIsTheLatestSeals: a last seal earlier than the one before it, as a clock that stepped back writes, does
+// not move the window back: it starts at the latest seal's day less 7.
+func TestTheWindowIsTheLatestSeals(t *testing.T) {
+	day := int64(86400)
+	if got := listFrom([]store.Seal{{Sealed: 3 * day}, {Sealed: 20*day + 5}, {Sealed: 10 * day}}); got != 13 {
+		t.Errorf("listed from day %d, want 13", got)
+	}
+}
+
 // TestTheBudgetPicksTheStart: the read starts at the first shard of the oldest UTC day whose shards to the newest fit
 // the byte budget; when the newest day alone does not fit, at its first shard.
 func TestTheBudgetPicksTheStart(t *testing.T) {

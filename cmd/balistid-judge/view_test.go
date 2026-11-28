@@ -337,6 +337,17 @@ func TestViewRefusesAStateItCannotSearch(t *testing.T) {
 	}
 }
 
+// TestViewRefusesAStatusTheJudgeDoesNotWrite: a status outside READING, COMPLETE, PARTIAL and UNKNOWN, OK above all,
+// is refused, never printed.
+func TestViewRefusesAStatusTheJudgeDoesNotWrite(t *testing.T) {
+	ts := agentTree(t)
+	_, out, _ := judgeOnce(t, ts.dir, nil)
+	editState(t, out, func(d *stateDoc) { d.Status = "OK" })
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "none the judge writes") {
+		t.Errorf("status OK: %v", err)
+	}
+}
+
 // TestViewOfAnUnknownState prints what it covers and the reason, and no day, when the judge could not read.
 func TestViewOfAnUnknownState(t *testing.T) {
 	_, out, err := judgeOnce(t, filepath.Join(t.TempDir(), "missing"), nil)

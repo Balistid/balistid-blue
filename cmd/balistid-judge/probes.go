@@ -138,6 +138,7 @@ const (
 	notRun       = "not run"
 	absent       = "absent"
 	absentSealed = "absent from the sealed shards; an unsealed shard was not read"
+	beforeWindow = "before the listed window"
 	moreThanOne  = "more than one run"
 	timeOff      = "time off"
 )
@@ -145,8 +146,9 @@ const (
 // checkProbes finds each probe by its name. It is assigned only when the judge's read is COMPLETE, exactly one
 // run has its name (a unique copy runs once; a name with more runs is a program's), that run is under an agent and
 // its event time is within probeSkew of the manifest's (acceptance probes_assigned). One with no run while a shard
-// was unsealed may be in it: it is said, and still a miss.
-func checkProbes(probes []probe, runs []execRun, where []string, complete, unsealed bool) probesDoc {
+// was unsealed may be in it, and one timed before listedFrom's day cannot be in exec.jsonl: each is said, and still
+// a miss.
+func checkProbes(probes []probe, runs []execRun, where []string, complete, unsealed bool, listedFrom string) probesDoc {
 	byName := map[string][]int{}
 	for i, r := range runs {
 		byName[r.Name] = append(byName[r.Name], i)
@@ -162,6 +164,8 @@ func checkProbes(probes []probe, runs []execRun, where []string, complete, unsea
 			res.Why = notComplete
 		case !p.Ran:
 			res.Why = notRun
+		case len(found) == 0 && listedFrom != "" && at.UTC().Format(time.DateOnly) < listedFrom:
+			res.Why = beforeWindow
 		case len(found) == 0 && unsealed:
 			res.Why = absentSealed
 		case len(found) == 0:

@@ -41,7 +41,8 @@ const (
 )
 
 // budgetRate is half the rate the judge read at under the unit's CPU policy (ADR 0082 point 2): on 2026-11-28
-// TestBigStore under `chrt -i 0 nice -n 19`, at a load of about 4 on 16 cores, read 1336 MiB in 36 s, 37.5 MiB/s.
+// TestBigStore under `chrt -i 0 nice -n 19`, at a load of about 4 on 16 cores, read 1336 MiB at 37.5 MiB/s (about
+// 36 s).
 const budgetRate = 18 << 20
 
 // budgetBytes is what the judge reads at most: the read limit at budgetRate, about 95 GiB.
@@ -196,12 +197,17 @@ func sum(sizes []int64) int64 {
 }
 
 // listFrom is the first UTC day whose runs exec.jsonl lists: the newest seal's day less execDays (ADR 0082 point 4),
-// known before the read, so exec.jsonl is only appended to.
+// known before the read, so exec.jsonl is only appended to. The newest is the latest time of any seal: the store's
+// clock can step back.
 func listFrom(seals []store.Seal) int64 {
 	if len(seals) == 0 {
 		return math.MinInt64
 	}
-	return seals[len(seals)-1].Sealed/86400 - execDays
+	newest := seals[0].Sealed
+	for _, l := range seals {
+		newest = max(newest, l.Sealed)
+	}
+	return newest/86400 - execDays
 }
 
 // startOf is the first shard of the first UTC day, by the seals' times, whose shards to the newest fit budgetBytes;
