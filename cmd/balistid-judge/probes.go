@@ -118,6 +118,7 @@ type probesDoc struct {
 	Subshell kindCount     `json:"subshell"`
 	Detached kindCount     `json:"detached"`
 	Each     []probeResult `json:"each"`
+	Missing  string        `json:"a_run_missing"`
 }
 
 type probeResult struct {
@@ -129,31 +130,31 @@ type probeResult struct {
 	Why      string `json:"not_assigned,omitempty"`
 }
 
+const missingIs = "a run can be missing from exec.jsonl because the store lacks it, because it " +
+	"was received before listed_from, or because its shard is not sealed yet"
+
 // probeSkew is how far a probe's run may be from its manifest's time (ADR 0082 point 6).
 const probeSkew = 5 * time.Second
 
 // Why a probe is not assigned.
 const (
-	notComplete  = "read not complete"
-	notRun       = "not run"
-	absent       = "absent"
-	absentSealed = "absent from the sealed shards; an unsealed shard was not read"
-	beforeWindow = "before the listed window"
-	moreThanOne  = "more than one run"
-	timeOff      = "time off"
+	notComplete = "read not complete"
+	notRun      = "not run"
+	notListed   = "not in exec.jsonl"
+	moreThanOne = "more than one run"
+	timeOff     = "time off"
 )
 
 // checkProbes finds each probe by its name. It is assigned only when the judge's read is COMPLETE, exactly one
-// run has its name (a unique copy runs once; a name with more runs is a program's), that run is under an agent and
-// its event time is within probeSkew of the manifest's (acceptance probes_assigned). One with no run while a shard
-// was unsealed may be in it, and one timed before listedFrom's day cannot be in exec.jsonl: each is said, and still
-// a miss.
-func checkProbes(probes []probe, runs []execRun, where []string, complete, unsealed bool, listedFrom string) probesDoc {
+// run listed in exec.jsonl has its name (a unique copy runs once; a name with more is a program's), that run is under
+// an agent and its event time is within probeSkew of the manifest's (acceptance probes_assigned). One with no run
+// is only not in exec.jsonl: missingIs says why that can be.
+func checkProbes(probes []probe, runs []execRun, where []string, complete bool) probesDoc {
 	byName := map[string][]int{}
 	for i, r := range runs {
 		byName[r.Name] = append(byName[r.Name], i)
 	}
-	d := probesDoc{Each: []probeResult{}}
+	d := probesDoc{Each: []probeResult{}, Missing: missingIs}
 	kinds := map[string]*kindCount{kindDirect: &d.Direct, kindSubshell: &d.Subshell, kindDetached: &d.Detached}
 	for _, p := range probes {
 		at, _ := time.Parse(time.RFC3339Nano, p.At) // decodeManifest parsed it
@@ -164,12 +165,8 @@ func checkProbes(probes []probe, runs []execRun, where []string, complete, unsea
 			res.Why = notComplete
 		case !p.Ran:
 			res.Why = notRun
-		case len(found) == 0 && listedFrom != "" && at.UTC().Format(time.DateOnly) < listedFrom:
-			res.Why = beforeWindow
-		case len(found) == 0 && unsealed:
-			res.Why = absentSealed
 		case len(found) == 0:
-			res.Why = absent
+			res.Why = notListed
 		case len(found) > 1:
 			res.Why = moreThanOne
 		case where[found[0]] != underAgent:

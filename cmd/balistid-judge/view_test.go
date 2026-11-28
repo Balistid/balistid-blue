@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Balistid/balistid-blue/internal/rawrecord"
+	"github.com/Balistid/balistid-blue/internal/store"
 )
 
 // agentTree is a store whose runs need SPAWNED_BY to be told apart: the agent, a shell it spawned and three
@@ -134,7 +141,7 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 		t.Fatalf("probes %+v", p)
 	}
 	for _, e := range p.Each {
-		if e.Name == "s1p-t-d01" && (e.Runs != 0 || e.Assigned || e.Why != absent) {
+		if e.Name == "s1p-t-d01" && (e.Runs != 0 || e.Assigned || e.Why != notListed) {
 			t.Errorf("a probe the store lacks: %+v", e)
 		}
 	}
@@ -377,7 +384,7 @@ func TestADayNotReadIsNotZero(t *testing.T) {
 	if err := view(out, nil, mine(), &b); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(b.Bytes(), []byte("{\n   \"day\": \"2026-01-01\",\n   \"read\": false\n  }")) {
+	if !bytes.Contains(b.Bytes(), []byte("{\n   \"day\": \"2026-01-01\",\n   \"has_read_records\": false\n  }")) {
 		t.Errorf("view %s", b.Bytes())
 	}
 	if v := viewOf(t, out); len(v.Days) != 2 || v.Days[0].DayCounts != nil || !v.Days[1].Read {
@@ -441,5 +448,75 @@ func FuzzDecodeRuns(f *testing.F) {
 			}
 		}
 		_ = assign(runs)
+	})
+}
+
+// TestADayBesideAShardNotReadSaysSo: a day with records that is also the seal day of a shard not read (the budget's
+// cut inside the window) counts that shard, and the summaries' range starts at the first day with run counts.
+func TestADayBesideAShardNotReadSaysSo(t *testing.T) {
+	ts := threeShards(t)
+	_, out, _ := judgeOnce(t, ts.dir, nil)
+	var day string
+	editState(t, out, func(d *stateDoc) {
+		day, d.ListedFrom = d.Days[0].Day, "2020-01-01"
+		d.NotRead = append(d.NotRead, notReadDoc{Name: "x.db", Sealed: day + "T12:00:00Z", Reason: "budget"})
+	})
+	v := viewOf(t, out)
+	if len(v.Days) != 1 || v.Days[0].DayCounts == nil || v.Days[0].SealedHere != 1 {
+		t.Errorf("days %+v", v.Days)
+	}
+	if want := "runs in exec.jsonl, received from " + day + " to " + day; v.Top.Of != want || v.Once.Of != want {
+		t.Errorf("of %q, %q", v.Top.Of, v.Once.Of)
+	}
+	if !strings.Contains(v.Covers.Counts, "a shard not read can hold records of a day shown") {
+		t.Errorf("counts %q", v.Covers.Counts)
+	}
+}
+
+// TestNoRunIsNoneListed: with no run in exec.jsonl the summaries say none is listed, whatever listed_from and the
+// days are, and never print a range.
+func TestNoRunIsNoneListed(t *testing.T) {
+	ts := newTestStore(t, 16<<20)
+	ts.own("health", map[string]any{"state": "OK"})
+	ts.seal(false)
+	_, out, _ := judgeOnce(t, ts.dir, nil)
+	editState(t, out, func(d *stateDoc) { d.Status, d.ListedFrom = statusPartial, "2099-01-01" })
+	if v := viewOf(t, out); v.Top.Of != "runs in exec.jsonl: none listed" || v.Once.Of != v.Top.Of {
+		t.Errorf("of %q, %q", v.Top.Of, v.Once.Of)
+	}
+}
+
+func FuzzDecodeState(f *testing.F) {
+	rd := newReader(math.MinInt64)
+	rd.out = bufio.NewWriter(io.Discard)
+	for i, r := range []rawrecord.Record{healthAt(base, "OK"), sensorAt(1, base), sensorAt(2, base+dayNS),
+		own(store.HealthProvider, base, `{"schema_version":1,"kind":"stats","max_lag_ms":1500,"lost_health":2}`)} {
+		r.Seq = uint64(i + 1)
+		if err := rd.add(r); err != nil {
+			f.Fatal(err)
+		}
+	}
+	sd := newState(nil, 0, 0, 90).render(rd, base)
+	sd.Status, sd.ListedFrom = statusComplete, "2026-01-01"
+	sd.NotRead = []notReadDoc{{Name: "x.db", Sealed: "2026-01-02T00:00:00Z", Reason: "budget"}}
+	b, err := json.MarshalIndent(sd, "", " ")
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(b)
+	f.Fuzz(func(t *testing.T, data []byte) {
+		sd, err := decodeState(data)
+		if err != nil {
+			return
+		}
+		if !slices.Contains([]string{statusReading, statusComplete, statusPartial, statusUnknown}, sd.Status) {
+			t.Fatalf("status %q", sd.Status)
+		}
+		for i := 1; i < len(sd.Days); i++ {
+			if sd.Days[i].Day <= sd.Days[i-1].Day {
+				t.Fatalf("days %q then %q", sd.Days[i-1].Day, sd.Days[i].Day)
+			}
+		}
+		_, _ = days(sd, nil, nil)
 	})
 }

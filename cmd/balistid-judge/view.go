@@ -44,7 +44,7 @@ const agentIs = "a run is under an agent when one of its spawners is Claude Code
 	"/home/<user>/.local/share/claude/versions/<version>: one installed elsewhere is not known as an agent"
 
 const countsAre = "the day sums count what the records show, so a zero is not \"no loss\"; the counts of runs " +
-	"are of exec.jsonl and bound nothing"
+	"are of exec.jsonl and bound nothing; a shard not read can hold records of a day shown"
 
 type viewDoc struct {
 	Schema int         `json:"schema_version"`
@@ -74,15 +74,16 @@ type coversDoc struct {
 // runs.
 type dayView struct {
 	Day  string `json:"day"`
-	Read bool   `json:"read"`
+	Read bool   `json:"has_read_records"`
 	*DayCounts
 }
 
 // DayCounts is a day read: its sums, and from the window's first day on the runs exec.jsonl holds of it.
 type DayCounts struct {
 	*RunCounts
-	Execs    execCounts `json:"execs"`
-	Evidence evidence   `json:"evidence"`
+	SealedHere int        `json:"shards_not_read_sealed_this_day,omitempty"`
+	Execs      execCounts `json:"execs"`
+	Evidence   evidence   `json:"evidence"`
 }
 
 // RunCounts is where the chains of a day's runs in exec.jsonl ended.
@@ -173,12 +174,12 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	}
 	doc.Top, doc.Once, doc.Broken = overAll(runs, where)
 	of := "runs in exec.jsonl: none listed"
-	if n := len(sd.Days); n > 0 && sd.ListedFrom != "" {
-		of = "runs in exec.jsonl, received from " + sd.ListedFrom + " to " + sd.Days[n-1].Day
+	if i := slices.IndexFunc(doc.Days, func(v dayView) bool { return v.DayCounts != nil && v.RunCounts != nil }); i >= 0 && len(runs) > 0 {
+		of = "runs in exec.jsonl, received from " + doc.Days[i].Day + " to " + sd.Days[len(sd.Days)-1].Day
 	}
 	doc.Top.Of, doc.Once.Of = of, of
 	if len(manifests) > 0 {
-		p := checkProbes(probes, runs, where, sd.Status == statusComplete, len(sd.Unsealed) > 0, sd.ListedFrom)
+		p := checkProbes(probes, runs, where, sd.Status == statusComplete)
 		doc.Probes = &p
 	}
 	b, err := json.MarshalIndent(doc, "", " ")
@@ -227,8 +228,11 @@ func days(sd stateDoc, runs []execRun, where []string) ([]dayView, error) {
 	}
 	for _, s := range sd.NotRead {
 		sealed, _ := time.Parse(time.RFC3339, s.Sealed) // readState parsed it
-		if day := sealed.UTC().Format(time.DateOnly); byDay[day] == nil {
+		switch day := sealed.UTC().Format(time.DateOnly); {
+		case byDay[day] == nil:
 			byDay[day] = &dayView{Day: day}
+		case byDay[day].DayCounts != nil:
+			byDay[day].SealedHere++
 		}
 	}
 	out := make([]dayView, 0, len(byDay))
@@ -317,34 +321,44 @@ func unchanged(root *os.Root, before fs.FileInfo) error {
 }
 
 func readState(root *os.Root, owners []uint32) (stateDoc, fs.FileInfo, error) {
-	var sd stateDoc
 	fi, err := ownedFile(root, stateFile, owners)
 	if err != nil {
-		return sd, nil, err
+		return stateDoc{}, nil, err
 	}
 	b, err := wholefile.ReadIn(root, stateFile, stateMax)
 	if err != nil {
-		return sd, nil, fmt.Errorf("view: %s: %w", stateFile, err)
+		return stateDoc{}, nil, fmt.Errorf("view: %s: %w", stateFile, err)
 	}
+	sd, err := decodeState(b)
+	if err != nil {
+		return sd, nil, err
+	}
+	return sd, fi, nil
+}
+
+// decodeState decodes state.json strictly and checks what view relies on: a status the judge writes, days in order
+// and a seal time for every shard not read.
+func decodeState(b []byte) (stateDoc, error) {
+	var sd stateDoc
 	if err := strictDecode(b, &sd); err != nil || sd.Schema != 1 {
-		return sd, nil, failed("view: %s is not the judge's state of schema 1", err, stateFile)
+		return sd, failed("view: %s is not the judge's state of schema 1", err, stateFile)
 	}
 	switch sd.Status {
 	case statusReading, statusComplete, statusPartial, statusUnknown:
 	default:
-		return sd, nil, fmt.Errorf("view: %s has the status %q, none the judge writes", stateFile, sd.Status)
+		return sd, fmt.Errorf("view: %s has the status %q, none the judge writes", stateFile, sd.Status)
 	}
 	for i, r := range sd.Days {
 		if _, err := time.Parse(time.DateOnly, r.Day); err != nil || i > 0 && r.Day <= sd.Days[i-1].Day {
-			return sd, nil, fmt.Errorf("view: %s: day %d does not read, or is not after the one before", stateFile, i)
+			return sd, fmt.Errorf("view: %s: day %d does not read, or is not after the one before", stateFile, i)
 		}
 	}
 	for _, s := range sd.NotRead {
 		if _, err := time.Parse(time.RFC3339, s.Sealed); err != nil {
-			return sd, nil, fmt.Errorf("view: %s: shard %s has no seal time", stateFile, s.Name)
+			return sd, fmt.Errorf("view: %s: shard %s has no seal time", stateFile, s.Name)
 		}
 	}
-	return sd, fi, nil
+	return sd, nil
 }
 
 // readRuns reads exec.jsonl line by line, each strictly: a line it cannot read fails the whole view.
@@ -401,8 +415,14 @@ func decodeRuns(r io.Reader) ([]execRun, error) {
 	}
 }
 
-// ambiguous is an event id two runs of other pids carry: which of them spawned a run is not known.
+// ambiguous is an event id two runs carry that differ for a chain: which of them spawned a run is not known.
 const ambiguous = -1
+
+// sameForChain reports two runs a chain cannot tell apart: either may stand for the other, in any order.
+func sameForChain(a, b execRun) bool {
+	return a.PID == b.PID && a.Agent == b.Agent && a.SpawnerAgent == b.SpawnerAgent &&
+		(a.SpawnedBy == nil) == (b.SpawnedBy == nil) && (a.SpawnedBy == nil || *a.SpawnedBy == *b.SpawnedBy)
+}
 
 // assign says where every run is, walking SPAWNED_BY through the exec events' own keys: a pid alone is reused.
 func assign(runs []execRun) []string {
@@ -414,7 +434,7 @@ func assign(runs []execRun) []string {
 		}
 		if j, ok := byEvent[id]; !ok {
 			byEvent[id] = i
-		} else if j == ambiguous || runs[j].PID != r.PID {
+		} else if j == ambiguous || !sameForChain(runs[j], r) {
 			byEvent[id] = ambiguous
 		}
 	}

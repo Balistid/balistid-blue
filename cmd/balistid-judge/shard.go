@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
@@ -80,10 +80,12 @@ type evidence struct {
 
 // dayRow is one UTC day of records by their receive time: sums and maxima of that day's records.
 type dayRow struct {
-	Day     string            `json:"day"`
-	Records map[string]uint64 `json:"records"`
-	Bytes   uint64            `json:"bytes"`
-	Exec    execCounts        `json:"exec"`
+	Day      string               `json:"day"`
+	Records  map[string]uint64    `json:"records"`
+	Bytes    uint64               `json:"bytes"`
+	Exec     execCounts           `json:"exec"`
+	Keys     map[string]*keyCount `json:"by_rule_key"`
+	KeysOver uint64               `json:"rule_keys_over_cap"`
 	evidence
 	day int64
 }
@@ -93,8 +95,6 @@ type dayRow struct {
 type reader struct {
 	rows       map[int64]*dayRow
 	listFrom   int64 // the first day whose runs are listed, known from the seals before the read
-	keys       map[string]*keyCount
-	keysOver   uint64
 	trans      []transition
 	over       bool
 	tooMany    bool
@@ -106,7 +106,7 @@ type reader struct {
 }
 
 func newReader(listFrom int64) *reader {
-	return &reader{rows: map[int64]*dayRow{}, keys: map[string]*keyCount{}, listFrom: listFrom}
+	return &reader{rows: map[int64]*dayRow{}, listFrom: listFrom}
 }
 
 func dayText(day int64) string { return time.Unix(day*86400, 0).UTC().Format(time.DateOnly) }
@@ -125,7 +125,7 @@ func (rd *reader) row(day int64) *dayRow {
 		return r
 	}
 	r := &dayRow{Day: dayText(day), day: day, Records: map[string]uint64{},
-		evidence: evidence{Loss: map[string]uint64{}, Undecoded: map[string]uint64{}}}
+		Keys: map[string]*keyCount{}, evidence: evidence{Loss: map[string]uint64{}, Undecoded: map[string]uint64{}}}
 	if len(rd.rows) >= maxDays {
 		rd.tooMany = true
 		return r
@@ -188,7 +188,7 @@ func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	if rec.Event {
 		maxOf(&row.ArrivalLag, (r.Received-rec.EventNS)/int64(time.Millisecond))
 	}
-	rd.key(rec.Key, r.OrigLen)
+	row.key(rec.Key, r.OrigLen)
 	switch {
 	case rec.Refused != "":
 		row.Exec.Refused++
@@ -245,29 +245,34 @@ func auditdOwn(data []byte) bool {
 	return bytes.HasPrefix(data[len(`{"ID":"`)+end+1:], []byte(`,"DAEMON_`))
 }
 
-func (rd *reader) key(k string, size uint64) {
-	c, ok := rd.keys[k]
+// key counts a record under its audit rule's key; a day holds maxKeys keys, those after them are counted apart.
+func (row *dayRow) key(k string, size uint64) {
+	c, ok := row.Keys[k]
 	if !ok {
-		if len(rd.keys) >= maxKeys {
-			rd.keysOver++
+		if len(row.Keys) >= maxKeys {
+			row.KeysOver++
 			return
 		}
 		c = &keyCount{}
-		rd.keys[k] = c
+		row.Keys[k] = c
 	}
 	c.Records++
 	c.Bytes += size
 }
 
-// change lists a health change as stored, with its own time when it has one. Its state is cut at maxState bytes and
-// marked: a record may hold 4 KiB, and maxEvents of those would pass the 64 MiB view reads of state.json.
+// change lists a health change as stored, with its own time when it has one. Its state keeps only the printable
+// ASCII JSON writes as itself (any other byte is ?) and is cut at maxState bytes and marked: a record may hold 4 KiB,
+// and maxEvents of those, or of escapes, would pass the 64 MiB view reads of state.json.
 func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
-	if len(state) > maxState {
-		i := maxState
-		for i > 0 && !utf8.RuneStart(state[i]) {
-			i--
+	cut := len(state) > maxState
+	b := []byte(state[:min(len(state), maxState)])
+	for i, c := range b {
+		if c < 0x20 || c > 0x7e || strings.IndexByte(`"\<>&`, c) >= 0 {
+			b[i] = '?'
 		}
-		state = state[:i] + cutMark
+	}
+	if state = string(b); cut {
+		state += cutMark
 	}
 	if len(rd.trans) >= maxEvents {
 		rd.over = true
@@ -322,7 +327,10 @@ func (rd *reader) stats(row *dayRow, r rawrecord.Record) {
 		Lag        *int64  `json:"lag_ms"`
 		LostHealth *uint64 `json:"lost_health"`
 	}
-	_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
+	if json.Unmarshal(r.Data, &l) != nil { // a note that does not decode gives no lag and no lost_health
+		row.OwnUnknown++
+		return
+	}
 	for _, ms := range []*int64{l.MaxLag, l.Lag} {
 		if ms != nil {
 			maxOf(&row.StoreLag, *ms)

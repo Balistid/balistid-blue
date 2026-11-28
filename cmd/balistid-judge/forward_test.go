@@ -22,8 +22,8 @@ type tally struct {
 	records map[string]uint64
 	bytes   uint64
 	loss    map[string]uint64
-	keys    map[string]keyCount
-	exec    execCounts // Listed holds every run of a user, listed or not
+	keys    map[string]map[string]keyCount // by day
+	exec    execCounts                     // Listed holds every run of a user, listed or not
 	runs    map[string][]string
 	from    string    // the newest seal's UTC day less 7
 	serials [3]uint64 // jumps, skipped, steps back, from each sensor record's serial and the one before
@@ -37,7 +37,7 @@ func tallyOf(t *testing.T, dir string) tally {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := tally{records: map[string]uint64{}, loss: map[string]uint64{}, keys: map[string]keyCount{},
+	c := tally{records: map[string]uint64{}, loss: map[string]uint64{}, keys: map[string]map[string]keyCount{},
 		runs: map[string][]string{}}
 	if n := len(seals); n > 0 {
 		c.from = time.Unix(seals[n-1].Sealed, 0).UTC().AddDate(0, 0, -7).Format(time.DateOnly)
@@ -106,9 +106,12 @@ func (c *tally) sensor(t *testing.T, r rawrecord.Record, day string) {
 	if err != nil {
 		return
 	}
-	k := c.keys[rec.Key]
+	if c.keys[day] == nil {
+		c.keys[day] = map[string]keyCount{}
+	}
+	k := c.keys[day][rec.Key]
 	k.Records, k.Bytes = k.Records+1, k.Bytes+r.OrigLen
-	c.keys[rec.Key] = k
+	c.keys[day][rec.Key] = k
 	switch {
 	case rec.Refused != "":
 		c.exec.Refused++
@@ -172,9 +175,14 @@ func checkSums(t *testing.T, dir, out string) {
 	if users != c.exec {
 		t.Errorf("exec %+v, the store's %+v", all.Exec, c.exec)
 	}
-	keys := map[string]keyCount{}
-	for k, v := range d.Keys {
-		keys[k] = *v
+	keys := map[string]map[string]keyCount{}
+	for _, r := range d.Days {
+		for k, v := range r.Keys {
+			if keys[r.Day] == nil {
+				keys[r.Day] = map[string]keyCount{}
+			}
+			keys[r.Day][k] = *v
+		}
 	}
 	if !reflect.DeepEqual(keys, c.keys) {
 		t.Errorf("by rule key %v, the store's %v", keys, c.keys)
@@ -387,15 +395,15 @@ func TestAStoreWithNoSealIsUnknown(t *testing.T) {
 	}
 }
 
-// TestAProbeOnlyInAnUnsealedShardIsSaid: in a COMPLETE read beside an unsealed shard, a probe with no run may be in
-// that shard: its reason says so, and it is not assigned.
+// TestAProbeOnlyInAnUnsealedShardIsSaid: in a COMPLETE read beside an unsealed shard, a probe with no run is not in
+// exec.jsonl, the one thing measured, and not assigned; the block says an unsealed shard may hold it.
 func TestAProbeOnlyInAnUnsealedShardIsSaid(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
 	editState(t, out, func(d *stateDoc) { d.Unsealed = []string{"00000000000000000099.db"} })
 	v := viewOf(t, out, treeManifests(t, false)...)
 	for _, e := range v.Probes.Each {
-		if e.Name == "s1p-t-d01" && (e.Assigned || e.Why != absentSealed) {
+		if e.Name == "s1p-t-d01" && (e.Assigned || e.Why != notListed || !strings.Contains(v.Probes.Missing, "not sealed yet")) {
 			t.Errorf("a probe the sealed shards lack: %+v", e)
 		}
 		if e.Name == "s1p-t-d00" && !e.Assigned {

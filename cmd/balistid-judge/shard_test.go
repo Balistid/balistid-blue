@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
@@ -126,18 +126,24 @@ func TestHealthChangesAsStored(t *testing.T) {
 	}
 }
 
-// TestALongHealthStateIsCut: a state of 4 KiB is listed cut at maxState bytes, at a rune boundary and marked, so the
-// list's cap of changes keeps state.json under what view reads.
+// TestALongHealthStateIsCut: a state of 4 KiB of bytes JSON escapes is listed as printable ASCII, cut at maxState
+// bytes and marked, so maxEvents of the largest change, encoded, stay under what view reads of state.json.
 func TestALongHealthStateIsCut(t *testing.T) {
-	long := "a" + strings.Repeat("é", 2000)
+	long := "a\\u0001<é" + strings.Repeat("\\u0000", 600)
 	rd := readerOf(t, own(store.HealthProvider, base, `{"schema_version":1,"kind":"health","state":"`+long+`"}`))
 	s := rd.trans[0].State
-	if len(s) > maxState+len(cutMark) || !strings.HasSuffix(s, cutMark) || !utf8.ValidString(s) ||
-		!strings.HasPrefix(long, strings.TrimSuffix(s, cutMark)) {
+	if len(s) != maxState+len(cutMark) || !strings.HasPrefix(s, "a?????") || !strings.HasSuffix(s, cutMark) {
 		t.Errorf("state of %d bytes: %q", len(s), s)
 	}
-	if maxEvents*(maxState+len(cutMark)+200) > stateMax {
-		t.Errorf("%d changes of a cut state can pass the %d bytes view reads", maxEvents, stateMax)
+	worst := rd.trans[0]
+	worst.Seq, worst.Received, worst.At = math.MaxUint64, timeText(math.MinInt64), timeText(math.MinInt64)
+	one, err := json.Marshal(worst)
+	if err != nil || bytes.ContainsRune(one, '\\') {
+		t.Fatalf("%s %v", one, err)
+	}
+	b, err := json.MarshalIndent(stateDoc{Health: slices.Repeat([]transition{worst}, maxEvents)}, "", " ")
+	if err != nil || len(b) > stateMax {
+		t.Errorf("%d changes of a cut state are %d bytes, view reads %d (%v)", maxEvents, len(b), stateMax, err)
 	}
 }
 
@@ -150,5 +156,43 @@ func TestTooManyDaysIsAnError(t *testing.T) {
 	}
 	if err == nil || len(rd.rows) > maxDays {
 		t.Errorf("%d days, %v", len(rd.rows), err)
+	}
+}
+
+// TestANoteThatDoesNotDecodeGivesNothing: a stats or lag note that does not decode is an own record not known, and
+// neither its lags nor its lost_health are the day's.
+func TestANoteThatDoesNotDecodeGivesNothing(t *testing.T) {
+	for _, kind := range []string{"stats", "lag"} {
+		rows := rowsOf(readerOf(t, own(store.HealthProvider, base,
+			`{"schema_version":1,"kind":"`+kind+`","max_lag_ms":"x","lag_ms":99,"lost_health":99}`)))
+		if r := rows[0]; r.OwnUnknown != 1 || r.StoreLag != nil || r.LostHealth != nil {
+			t.Errorf("%s: unknown %d, lag %v, lost_health %v", kind, r.OwnUnknown, r.StoreLag, r.LostHealth)
+		}
+	}
+}
+
+// TestAnEmptyHealthStateIsNotListed: a health note with no state is an own record not known, not a change.
+func TestAnEmptyHealthStateIsNotListed(t *testing.T) {
+	rd := readerOf(t, healthAt(base, ""))
+	if rows := rowsOf(rd); len(rd.trans) != 0 || rows[0].OwnUnknown != 1 {
+		t.Errorf("changes %v, unknown %d", rd.trans, rows[0].OwnUnknown)
+	}
+}
+
+// TestRuleKeysAreCappedByDay: a day counts maxKeys rule keys and the records of any later key apart; the next day's
+// keys are its own, whatever came first.
+func TestRuleKeysAreCappedByDay(t *testing.T) {
+	var recs []rawrecord.Record
+	for i := range maxKeys + 2 {
+		recs = append(recs, rawrecord.New(0, store.SensorProvider, uint64(i+1), base, otherLine(uint64(i+1), strconv.Itoa(i))))
+	}
+	next := uint64(maxKeys + 3)
+	recs = append(recs, rawrecord.New(0, store.SensorProvider, next, base+dayNS, otherLine(next, "late")))
+	rows := rowsOf(readerOf(t, recs...))
+	if len(rows[0].Keys) != maxKeys || rows[0].KeysOver != 2 || rows[0].Keys["0"] == nil {
+		t.Errorf("first day: %d keys, %d over", len(rows[0].Keys), rows[0].KeysOver)
+	}
+	if k := rows[1].Keys; len(k) != 1 || k["late"] == nil || k["late"].Records != 1 || rows[1].KeysOver != 0 {
+		t.Errorf("second day: %v, %d over", k, rows[1].KeysOver)
 	}
 }
