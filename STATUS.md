@@ -4,11 +4,11 @@ Updated: 2026-11-28 by claude/opus-5.5 (step S1: the host judge's first output, 
 
 ## Where we are
 
-Floor 0 (recorder) is frozen unmet (ADR 0076): version A runs on the maintainer's host since 2026-11-14 and
-stays as it is, but for a security fix, until 2026-11-30; no metric of `acceptance/0.toml` has passed there.
-Floor 1's pilot is measured and valid as a test of the instrument (gate B2): its verdicts can be recomputed and
-two more implementations agree on each. It does not compare models, by rank or by family. `python3
-tools/ci/status.py` shows this file next to the ADRs, the runner's results and open pull requests. Its parts:
+Floor 0 (recorder) is frozen unmet (ADR 0076): version A runs on the host since 2026-11-14, as it is until
+2026-11-30 but for a security fix; no metric of `acceptance/0.toml` passed there. On 2026-11-28 its collector
+reports `UNKNOWN canary-missed`; what the store holds is not known until the host judge runs (ADR 0082).
+Floor 1's pilot is valid as a test of the instrument (gate B2): its verdicts can be recomputed and two more
+implementations agree on each; it compares no models. `python3 tools/ci/status.py` shows this file. Its parts:
 | Part | Does | State |
 |---|---|---|
 | Sensor (ADR 0004) | auditd + Laurel record kernel events | configured; on the host in version A |
@@ -17,7 +17,7 @@ tools/ci/status.py` shows this file next to the ADRs, the runner's results and o
 | Collector, store, shard (0005, 0007, 0013, 0016, 0017, 0029) | Laurel's records into sealed SQLite shards under a cap | on `main`, code-owned; frozen (ADR 0076), the collector kept in the range image |
 | Ledger, relay, Pi witness (0006, 0026, 0027, 0030-0032) | signed log, cosigned off the host | on `main`; frozen until an agent on the host gets root (ADR 0076 point 5) |
 | Installer, CLI (0048, 0053, 0058, 0068) | signed install of a component; `balistid status` | on `main`; recorder installed on the host 2026-11-14 |
-| Host judge (0074, 0082) | the recorder's state and the users' execs from the sealed store; `view` assigns runs to agents | on this branch, not installed; its probes (`acceptance/2.toml`) run after the install |
+| Host judge (0074, 0082) | the recorder's state and the users' execs from the sealed store; `view` assigns runs to agents | on this branch, not installed; its probes ran on 2026-11-28, before the install (`acceptance/2.toml`) |
 
 ## Done in the last sessions
 - This pull request, step S1 (ADR 0082): `balistid-judge` writes `state.json` (seals, health changes, loss, lag,
@@ -28,8 +28,8 @@ tools/ci/status.py` shows this file next to the ADRs, the runner's results and o
 - #310: T2's 12 windows, byte for byte. #309 (ADR 0080): the judge compares strings as Laurel decodes to.
 
 ## Next step
-1. The maintainer installs `judge` from a signed bundle and starts the unit; an agent runs the 30 + 10 probes of
-   ADR 0082 point 6, and `view` with their manifest gives `probes_assigned` once their shard is sealed.
+1. The maintainer installs `judge` from a signed bundle and starts the unit; `view` with the manifests of the
+   probes run on 2026-11-28 gives `probes_assigned`, a miss if the store lacks them.
 2. The roadmap (2026-11-29) orders what follows and names the first rule to run on the maintainer's machine.
 
 ## Open decisions (maintainer)
