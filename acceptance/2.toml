@@ -12,10 +12,10 @@ note = "A miss blocks using the assignment of runs to agents in the next step; s
 [[metric]]
 id = "probes_assigned"
 min = 29
-unit = "of 30 uniquely named copies of /usr/bin/true run directly by an agent, those whose name has exactly one run in a COMPLETE read, under Claude Code's binary, within 5 s of the time in the agent's own manifest: a check against error, not against an agent that lies, and not proof that the run was the probe"
+unit = "of 30 uniquely named copies of /usr/bin/true run directly by an agent, those whose name has exactly one run listed in exec.jsonl in a COMPLETE read, under Claude Code's binary, within 5 s of the time in the agent's own manifest: a check against error, not against an agent that lies, and not proof that the run was the probe"
 rows = ["T4", "T25"]
 adr = "0082"
-method = "An agent runs the 30 probes and writes their manifest (name, kind, time); after their shard is sealed the maintainer starts the unit and runs balistid-judge view on its directory with the manifests. A probe counts only when the judge's status is COMPLETE, exactly one run has its name, that run is under an agent and its event time is within 5 s of the manifest's; any other probe, one the store lacks too, is a miss with its reason. The 10 run first in a subshell and the 10 detached by a double fork are reported, with no bar (ADR 0082 point 6). This method was tightened on 2026-11-28, after the probes ran and before any result of the judge existed."
+method = "An agent runs the 30 probes and writes their manifest (name, kind, time); after their shard is sealed the maintainer starts the unit and runs balistid-judge view on its directory with the manifests. A probe counts only when the judge's status is COMPLETE, exactly one run listed in exec.jsonl has its name, that run is under an agent and its event time is within 5 s of the manifest's; any other probe, one the store lacks too, is a miss with its reason. The 10 run first in a subshell and the 10 detached by a double fork are reported, with no bar (ADR 0082 point 6). This method was tightened on 2026-11-28, after the probes ran and before any result of the judge existed."
 
 [[metric]]
 id = "names_outside_alphabet"
