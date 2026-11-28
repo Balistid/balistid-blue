@@ -21,7 +21,7 @@ lag as a record (ADR 0017), so it can answer itself. ADR 0074's judge is a stub;
 2. State comes first, from the seals alone. Shards are then read oldest first, in one pass, from the first UTC
    day whose shards up to the newest fit a byte budget (half the rate measured under the unit's CPU policy);
    older ones are named as not read. After each shard its runs are appended to `exec.jsonl` and `state.json` is
-   rewritten whole. 90 minutes are a hard stop; then the read is PARTIAL.
+   rewritten whole. A read not ended within 90 minutes is PARTIAL: the limit bounds the read.
 3. `state.json` holds the seals, every health change as stored (seq, receive time, its own time, state), and per
    UTC day sums and maxima of that day's records: records, bytes, execs, loss by stage, the largest lag and
    `lost_health`, serials that jump or step back, silences, lines not decoded. A zero there is not "no loss".
@@ -34,8 +34,8 @@ lag as a record (ADR 0017), so it can answer itself. ADR 0074's judge is a stub;
    export, by day, beside that day's sums, and bound nothing. A day not read is not read, never zero; a state
    still being written is refused. Nothing is concluded from a run's absence.
 6. Probes check the assignment (`acceptance/2.toml`): of 30 uniquely named copies of `/usr/bin/true` an agent ran,
-   29 have one run of their name in a COMPLETE read, under an agent, within 5 s of their manifest's time (not shown:
-   that it was the probe). 20 more are only reported. The method was tightened after they ran, before any result.
+   29 have one listed run of their name in a COMPLETE read, under an agent, within 5 s of their manifest's time
+   (not shown: that it was the probe). 20 more are only reported. The method was tightened after they ran.
 7. The maintainer starts the unit by hand (`systemctl start balistid-judge.service`), as ADR 0074 point 1 has
    it: R8 covers what installs, and the unit runs only what `balistid-install` put there.
 8. Fresh events for the first detection on the host will come from one Laurel writing a rotated file (`read-users`),
