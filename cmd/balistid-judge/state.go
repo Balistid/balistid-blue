@@ -72,7 +72,8 @@ type notReadDoc struct {
 	Reason string `json:"reason"`
 }
 
-// serialDoc is what the serials' runs share; their gaps are in the days.
+// serialDoc is what the serials' runs share; their gaps are in the days. Duplicate counts serials held twice, and
+// also those that came after their hole was counted at the cap.
 type serialDoc struct {
 	Segments  int    `json:"segments"`
 	Duplicate uint64 `json:"duplicate"`

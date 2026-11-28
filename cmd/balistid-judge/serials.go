@@ -35,7 +35,7 @@ type serials struct {
 	segments  int
 	startNext bool
 	startBoot string
-	duplicate uint64
+	duplicate uint64 // serials already held, and late ones inside a hole counted at the cap, whose ranges were merged
 	overCap   uint64
 }
 
@@ -76,6 +76,8 @@ func (g *segment) add(serial uint64, at int64, s *serials, gap func(uint64, int6
 	default:
 		g.insert(serial, at, s)
 	}
+	// Past the cap the oldest hole is counted and its two ranges merged: a serial of it that comes later is counted
+	// as a duplicate, not as a fill, and the hole stays counted.
 	for len(g.ranges) > maxHeld {
 		a, b := g.ranges[0], g.ranges[1]
 		gap(b.lo-a.hi-1, b.loAt)

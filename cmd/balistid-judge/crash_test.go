@@ -93,6 +93,18 @@ func TestLagsByDay(t *testing.T) {
 	}
 }
 
+// TestAnOwnRecordOfAnUnknownKind: a kind the judge does not know may have been a health change, so after it the
+// health is not known until the next change, never still OK.
+func TestAnOwnRecordOfAnUnknownKind(t *testing.T) {
+	sec := int64(time.Second)
+	rows := rowsOf(readerOf(t, healthAt(base, "OK"), sensorAt(1, base+10*sec),
+		own(store.HealthProvider, base+20*sec, `{"schema_version":1,"kind":"newkind"}`), sensorAt(2, base+50*sec),
+		healthAt(base+60*sec, "OK"), sensorAt(3, base+70*sec)))
+	if r := rows[0]; r.OwnUnknown != 1 || r.NotKnown != 40 || r.NotOK != 0 {
+		t.Errorf("own unknown %d, not known %v s, not OK %v s", r.OwnUnknown, r.NotKnown, r.NotOK)
+	}
+}
+
 // TestHealthRecordsThatGaveWay: lost_health is the collector run's running total: 0 to 7 is 7 given way, a start
 // sets it back, and a fall without a start read begins a run too.
 func TestHealthRecordsThatGaveWay(t *testing.T) {
@@ -118,11 +130,11 @@ func TestAProbeIsOneRun(t *testing.T) {
 			Process: procKey{EventID: "1795340222.002:" + strconv.Itoa(i+2)}, SpawnedBy: &spawner{procKey: procKey{EventID: agent}}})
 	}
 	probes := []probe{{Name: "make", Kind: kindDirect, At: at.Format(time.RFC3339Nano), Ran: true}}
-	p := checkProbes(probes, runs, assign(runs), true)
+	p := checkProbes(probes, runs, assign(runs), true, false)
 	if p.Direct.Assigned != 0 || p.Each[0].Runs != 50 || p.Each[0].Why != moreThanOne {
 		t.Errorf("probes %+v", p)
 	}
-	p = checkProbes(probes, runs[:2], assign(runs[:2]), true)
+	p = checkProbes(probes, runs[:2], assign(runs[:2]), true, false)
 	if p.Direct.Assigned != 1 {
 		t.Errorf("one run: %+v", p)
 	}
@@ -149,7 +161,7 @@ func TestProbeRules(t *testing.T) {
 	probes := []probe{named("in"), named("early"), named("outside"), named("gone"), {Name: "in2", Kind: kindDirect,
 		At: at.Format(time.RFC3339Nano)}}
 	want := map[string]string{"in": "", "early": timeOff, "outside": notUnderAgent, "gone": absent, "in2": notRun}
-	p := checkProbes(probes, runs, assign(runs), true)
+	p := checkProbes(probes, runs, assign(runs), true, false)
 	for _, e := range p.Each {
 		if e.Why != want[e.Name] || e.Assigned != (want[e.Name] == "") {
 			t.Errorf("%s: %+v", e.Name, e)
@@ -158,7 +170,7 @@ func TestProbeRules(t *testing.T) {
 	if p.Direct != (kindCount{Count: 5, Found: 3, Assigned: 1}) {
 		t.Errorf("direct %+v", p.Direct)
 	}
-	for _, e := range checkProbes(probes, runs, assign(runs), false).Each {
+	for _, e := range checkProbes(probes, runs, assign(runs), false, false).Each {
 		if e.Assigned || e.Why != notComplete {
 			t.Errorf("a read not complete: %+v", e)
 		}
