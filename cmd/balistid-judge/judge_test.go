@@ -133,13 +133,13 @@ func TestNoArgumentLeaves(t *testing.T) {
 	}
 }
 
-// TestOnlyUsersRuns: exec.jsonl holds no exec of a uid below 1000, and only those received on the 7 newest days
-// read: the oldest of 8 days was listed while it was among them and is taken out once it is not.
+// TestOnlyUsersRuns: exec.jsonl holds no exec of a uid below 1000, and only those received on the newest seal's
+// UTC day or the 7 before it: of 9 days the oldest one's run is counted, never written.
 func TestOnlyUsersRuns(t *testing.T) {
 	ts := newTestStore(t, 16<<20)
 	now := time.Now()
-	for d := range 8 {
-		ts.laurelAt(uint64(d+1), now.Add(time.Duration(d-7)*24*time.Hour).UnixNano(), tool(uint64(d+1), 1000, "d"+strconv.Itoa(d)))
+	for d := range 9 {
+		ts.laurelAt(uint64(d+1), now.Add(time.Duration(d-8)*24*time.Hour).UnixNano(), tool(uint64(d+1), 1000, "d"+strconv.Itoa(d)))
 	}
 	for i, uid := range []uint32{0, 1, 999, 1000, 65534, 4294967294} {
 		ts.laurel(uint64(i+10), tool(uint64(i+10), uid, "u"+string(rune('a'+i))))
@@ -150,8 +150,8 @@ func TestOnlyUsersRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs := readExec(t, out)
-	if got := names(runs); got != "d1 d2 d3 d4 d5 d6 d7 ud ue uf" {
-		t.Errorf("exported %q, want the uids 1000 and above of the 7 newest days", got)
+	if got := names(runs); got != "d1 d2 d3 d4 d5 d6 d7 d8 ud ue uf" {
+		t.Errorf("exported %q, want the uids 1000 and above of the window", got)
 	}
 	for _, r := range runs {
 		if r.UID < minUID {
@@ -159,12 +159,35 @@ func TestOnlyUsersRuns(t *testing.T) {
 		}
 	}
 	d := readStateDoc(t, out)
-	if all := totalOf(d.Days); len(d.Days) != 8 || d.Days[0].Exec.Outside != 1 || d.Days[0].Exec.Listed != 0 ||
-		all.Exec.System != 3 || all.Exec.Listed != 10 {
-		t.Errorf("days %d, the oldest %+v, all %+v", len(d.Days), d.Days[0].Exec, all.Exec)
+	if all := totalOf(d.Days); len(d.Days) != 9 || d.Days[0].Exec.Outside != 1 || d.Days[0].Exec.Listed != 0 ||
+		all.Exec.System != 3 || all.Exec.Listed != 11 || d.ListedFrom != d.Days[1].Day {
+		t.Errorf("days %d, listed from %s, the oldest %+v, all %+v", len(d.Days), d.ListedFrom, d.Days[0].Exec, all.Exec)
 	}
 	if v := viewOf(t, out); v.Days[0].Listed != 0 || v.Days[0].ListedOf != 1 || v.Days[0].Runs != 0 {
 		t.Errorf("view of the oldest day %+v", v.Days[0])
+	}
+}
+
+// TestTheWindowIsTheNewestSeals: the days listed come from the newest seal's time, not from the records read: a
+// store whose only run was received 30 days before its seal lists nothing and counts that run.
+func TestTheWindowIsTheNewestSeals(t *testing.T) {
+	ts := newTestStore(t, 16<<20)
+	ts.laurelAt(1, time.Now().Add(-30*24*time.Hour).UnixNano(), tool(1, 1000, "old"))
+	ts.seal(true)
+	status, out, err := judgeOnce(t, ts.dir, nil)
+	if status != statusComplete || err != nil {
+		t.Fatal(status, err)
+	}
+	d := readStateDoc(t, out)
+	sealed, err := time.Parse(time.RFC3339, d.Store.LastSeal.Sealed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := sealed.AddDate(0, 0, -execDays).Format(time.DateOnly); d.ListedFrom != want {
+		t.Errorf("listed from %s, want %s", d.ListedFrom, want)
+	}
+	if e := totalOf(d.Days).Exec; len(readExec(t, out)) != 0 || e.Outside != 1 || e.Listed != 0 {
+		t.Errorf("exec %+v, %d runs listed", e, len(readExec(t, out)))
 	}
 }
 

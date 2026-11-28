@@ -62,6 +62,7 @@ type coversDoc struct {
 	Unsealed []string     `json:"unsealed_not_read"`
 	Torn     bool         `json:"torn_index_line"`
 	Owner    uint32       `json:"owner_uid"`
+	Listed   string       `json:"listed_from,omitempty"`
 	NoDay    int          `json:"runs_of_no_day_read"`
 }
 
@@ -147,7 +148,7 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	}
 	where := assign(runs)
 	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Agent: agentIs, NotRead: sd.NotRead,
-		Unsealed: sd.Unsealed, Torn: sd.TornIndex, Owner: ownerOf(stateInfo)}}
+		Unsealed: sd.Unsealed, Torn: sd.TornIndex, Owner: ownerOf(stateInfo), Listed: sd.ListedFrom}}
 	if doc.Days, doc.Covers.NoDay, err = days(sd, runs, where); err != nil {
 		return err
 	}
@@ -270,7 +271,7 @@ func ownedFile(root *os.Root, name string, owners []uint32) (fs.FileInfo, error)
 		return nil, fmt.Errorf("view: %s is not a regular file only its owner can write", name)
 	}
 	if !slices.Contains(owners, st.Uid) {
-		return nil, fmt.Errorf("view: %s is owned by uid %d, neither the collector's nor the caller's", name, st.Uid)
+		return nil, fmt.Errorf("view: %s is owned by uid %d, which is not the collector's", name, st.Uid)
 	}
 	return fi, nil
 }

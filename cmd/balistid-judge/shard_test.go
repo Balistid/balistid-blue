@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"io"
+	"math"
 	"testing"
 	"time"
 
@@ -11,10 +12,16 @@ import (
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
-// readerOf is the reader after recs, numbered in order, as one pass reads them.
+// readerOf is the reader after recs, numbered in order, as one pass reads them, listing runs of every day.
 func readerOf(t *testing.T, recs ...rawrecord.Record) *reader {
 	t.Helper()
-	rd := newReader()
+	return readerFrom(t, math.MinInt64, recs...)
+}
+
+// readerFrom is readerOf listing the runs of listFrom's day and later only.
+func readerFrom(t *testing.T, listFrom int64, recs ...rawrecord.Record) *reader {
+	t.Helper()
+	rd := newReader(listFrom)
 	rd.out = bufio.NewWriter(io.Discard)
 	for i, r := range recs {
 		r.Seq = uint64(i + 1)
@@ -184,7 +191,7 @@ func TestAGapIsCountedOnTheDayOfItsLaterEnd(t *testing.T) {
 
 // TestTooManyDaysIsAnError: records on more than maxDays UTC days stop the read instead of growing it.
 func TestTooManyDaysIsAnError(t *testing.T) {
-	rd := newReader()
+	rd := newReader(math.MinInt64)
 	var err error
 	for d := int64(0); d <= maxDays && err == nil; d++ {
 		err = rd.add(sensorAt(uint64(d+1), d*dayNS))
