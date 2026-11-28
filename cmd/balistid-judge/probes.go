@@ -134,13 +134,12 @@ const probeSkew = 5 * time.Second
 
 // Why a probe is not assigned.
 const (
-	notComplete   = "read not complete"
-	notRun        = "not run"
-	absent        = "absent"
-	absentSealed  = "absent from the sealed shards; an unsealed shard was not read"
-	moreThanOne   = "more than one run"
-	notUnderAgent = "not under an agent"
-	timeOff       = "time off"
+	notComplete  = "read not complete"
+	notRun       = "not run"
+	absent       = "absent"
+	absentSealed = "absent from the sealed shards; an unsealed shard was not read"
+	moreThanOne  = "more than one run"
+	timeOff      = "time off"
 )
 
 // checkProbes finds each probe by its name. It is assigned only when the judge's read is COMPLETE, exactly one
@@ -170,7 +169,7 @@ func checkProbes(probes []probe, runs []execRun, where []string, complete, unsea
 		case len(found) > 1:
 			res.Why = moreThanOne
 		case where[found[0]] != underAgent:
-			res.Why = notUnderAgent
+			res.Why = "chain " + where[found[0]]
 		case runs[found[0]].eventAt.Sub(at).Abs() > probeSkew:
 			res.Why = timeOff
 		default:

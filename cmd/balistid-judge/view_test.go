@@ -107,7 +107,7 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 		t.Errorf("covers %+v", v.Covers)
 	}
 	var top []string
-	for _, p := range v.Top {
+	for _, p := range v.Top.Names {
 		top = append(top, fmt.Sprintf("%s:%d", p.Name, p.Count))
 	}
 	if got := strings.Join(top, " "); got != "bash:1 make:1 s1p-t-d00:1" || v.Once.Total != 3 {
@@ -117,7 +117,7 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 		t.Fatalf("days %+v", v.Days)
 	}
 	c := v.Days[0]
-	if c.Runs != 10 || c.UnderAgent != 3 || c.EndedObserved != 5 || c.Broken != 2 || c.Listed != 10 || c.ListedOf != 10 ||
+	if c.Runs != 10 || c.UnderAgent != 3 || c.EndedObserved != 5 || c.Broken != 2 || c.Execs.Listed != 10 ||
 		c.Execs.System != 1 {
 		t.Errorf("the day %+v", c.DayCounts)
 	}
@@ -344,8 +344,13 @@ func TestViewOfAnUnknownState(t *testing.T) {
 		t.Fatal("a missing store read")
 	}
 	v := viewOf(t, out)
-	if v.Covers.Status != statusUnknown || v.Covers.Reason == "" || v.Covers.Partial == "" || len(v.Days) != 0 {
+	if v.Covers.Status != statusUnknown || v.Covers.Reason == "" || !strings.Contains(v.Covers.Partial, "read no sealed shard") ||
+		len(v.Days) != 0 {
 		t.Errorf("%+v", v)
+	}
+	b, err := os.ReadFile(filepath.Join(out, stateFile)) //nolint:gosec // the test's own directory
+	if err != nil || bytes.Contains(b, []byte(`"store"`)) {
+		t.Errorf("state.json names a store it did not read: %s %v", b, err)
 	}
 }
 
@@ -382,9 +387,9 @@ func TestListsAreCapped(t *testing.T) {
 		where = append(where, broken)
 	}
 	top, once, b := overAll(runs, where)
-	if once.Shown != listMax || once.Total != listMax+5 || len(once.Names) != listMax || len(top) != topN ||
+	if once.Shown != listMax || once.Total != listMax+5 || len(once.Names) != listMax || top.Shown != topN || top.Total != listMax+5 ||
 		b.Shown != listMax || b.Total != listMax+5 || len(b.Runs) != listMax {
-		t.Errorf("once %d of %d, top %d, broken %d of %d", once.Shown, once.Total, len(top), b.Shown, b.Total)
+		t.Errorf("once %d of %d, top %d, broken %d of %d", once.Shown, once.Total, top.Shown, b.Shown, b.Total)
 	}
 }
 

@@ -113,15 +113,17 @@ func judge(ctx context.Context, cfg config) (string, error) {
 			return statusUnknown, err
 		}
 	}
+	// One sample decides and dates the end: an expired read never publishes COMPLETE.
+	end := cfg.Now()
 	switch {
-	case !cfg.Now().Before(deadline): // the limit is a hard stop, even when the last shard was read whole
+	case !end.Before(deadline): // the limit is a hard stop, even when the last shard was read whole
 		return st.fail(out, cfg, statusPartial, "the read limit of "+strconv.Itoa(limitMin)+
 			" min passed while the last shard was read; no sealed shard is unread", errReadLimit)
 	case torn:
 		return st.fail(out, cfg, statusPartial, "the seal index ends in a torn line", errors.New("a torn seal index"))
 	}
 	d := st.last
-	d.Status, d.Written = statusComplete, timeText(cfg.Now().UnixNano())
+	d.Status, d.Written = statusComplete, timeText(end.UnixNano())
 	if err := writeState(out, d); err != nil {
 		return statusUnknown, err // state.json on disk still says READING
 	}

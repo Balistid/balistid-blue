@@ -64,8 +64,8 @@ func TestStateGoesFirst(t *testing.T) {
 	}
 }
 
-// TestViewNeedsOneRunsFiles: a COMPLETE state.json beside an exec.jsonl of fewer runs than a day lists is UNKNOWN;
-// any other status gives the runs it holds as partial; a state.json that changed while exec.jsonl was read is UNKNOWN.
+// TestViewNeedsOneRunsFiles: a state.json beside an exec.jsonl of fewer runs than a day lists is UNKNOWN, PARTIAL too;
+// a READING one is refused, and one that changed while exec.jsonl was read is UNKNOWN.
 func TestViewNeedsOneRunsFiles(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
@@ -79,14 +79,20 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not one run's") {
 		t.Errorf("a COMPLETE state beside one run: %v", err)
 	}
-	editState(t, out, func(d *stateDoc) { d.Status = statusReading })
-	v := viewOf(t, out)
-	if v.Covers.Partial == "" || len(v.Days) != 1 || v.Days[0].Runs != 1 || v.Days[0].Listed != 10 {
-		t.Errorf("a READING state: %+v", v)
+	editState(t, out, func(d *stateDoc) { d.Status = statusPartial })
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not one run's") {
+		t.Errorf("a PARTIAL state beside one run: %v", err)
 	}
-	editState(t, out, func(d *stateDoc) { d.Days = nil })
-	if v := viewOf(t, out); v.Covers.NoDay != 1 || len(v.Days) != 0 {
-		t.Errorf("a run of no day the state holds: %+v", v)
+	editState(t, out, func(d *stateDoc) { d.Status, d.Days = statusPartial, nil })
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not one run's") {
+		t.Errorf("a run of no day the state holds: %v", err)
+	}
+	editState(t, out, func(d *stateDoc) { d.Status = statusReading })
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "still writing") {
+		t.Errorf("a READING state: %v", err)
+	}
+	if code := run(t.Context(), []string{"view", out}); code != 2 {
+		t.Errorf("view of a READING state: exit %d", code)
 	}
 	root, err := os.OpenRoot(out)
 	if err != nil {

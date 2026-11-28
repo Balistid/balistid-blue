@@ -28,7 +28,7 @@ type stateDoc struct {
 	Written      string               `json:"written"`
 	Status       string               `json:"status"`
 	Reason       string               `json:"reason,omitempty"`
-	Store        storeDoc             `json:"store"`
+	Store        *storeDoc            `json:"store,omitempty"`
 	Read         []shardDoc           `json:"shards_read"`
 	NotRead      []notReadDoc         `json:"shards_not_read"`
 	Unsealed     []string             `json:"unsealed_not_read"`
@@ -86,10 +86,10 @@ func newState(seals []store.Seal, sizes int64, from int, limitMin int) *state {
 	st := &state{seals: seals, from: from, next: from}
 	d := &st.doc
 	d.Schema, d.Judge, d.Version, d.Status = 1, "ADR 0082", buildinfo.Version, statusReading
-	d.Store = storeDoc{Seals: len(seals), Bytes: sizes}
-	if n := len(seals); n > 0 {
+	if n := len(seals); n > 0 { // no store block where no seal was read: never zeros that read as a store
 		l := seals[n-1]
 		d.ListedFrom = dayText(listFrom(seals))
+		d.Store = &storeDoc{Seals: n, Bytes: sizes}
 		d.Store.LastSeal = &sealOf{Name: l.Name, First: l.First, Last: l.Last, SHA256: hex.EncodeToString(l.SHA256[:]),
 			Sealed: sealText(l)}
 	}

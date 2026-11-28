@@ -25,7 +25,10 @@ type tally struct {
 	keys    map[string]keyCount
 	exec    execCounts // Listed holds every run of a user, listed or not
 	runs    map[string][]string
-	from    string // the newest seal's UTC day less 7
+	from    string    // the newest seal's UTC day less 7
+	serials [3]uint64 // jumps, skipped, steps back, from each sensor record's serial and the one before
+	prev    uint64
+	lostMax *uint64
 }
 
 func tallyOf(t *testing.T, dir string) tally {
@@ -58,6 +61,20 @@ func (c *tally) add(t *testing.T, r rawrecord.Record) {
 		Count   uint64 `json:"count"`
 		Dropped uint64 `json:"dropped"`
 	}
+	var stats struct {
+		Kind       string  `json:"kind"`
+		LostHealth *uint64 `json:"lost_health"`
+	}
+	if r.Provider == store.SensorProvider && r.ProviderSeq != 0 && !bytes.Contains(r.Data[:min(len(r.Data), 64)], []byte(`"DAEMON_`)) {
+		switch {
+		case c.prev == 0:
+		case r.ProviderSeq > c.prev+1:
+			c.serials[0], c.serials[1] = c.serials[0]+1, c.serials[1]+r.ProviderSeq-c.prev-1
+		case r.ProviderSeq <= c.prev:
+			c.serials[2]++
+		}
+		c.prev = r.ProviderSeq
+	}
 	switch r.Provider {
 	case store.SensorProvider, store.HealthProvider, store.LossProvider:
 		c.records[r.Provider]++
@@ -72,6 +89,11 @@ func (c *tally) add(t *testing.T, r rawrecord.Record) {
 		c.loss[own.Stage] += own.Count
 	case r.Provider == store.LossProvider && json.Unmarshal(r.Data, &own) == nil && own.Dropped > 0:
 		c.loss["cap"] += own.Dropped
+	case r.Provider == store.HealthProvider && json.Unmarshal(r.Data, &stats) == nil && stats.Kind == "stats" &&
+		stats.LostHealth != nil:
+		if c.lostMax == nil || *stats.LostHealth > *c.lostMax {
+			c.lostMax = stats.LostHealth
+		}
 	case r.Provider == store.SensorProvider && r.Truncated():
 		c.loss["truncated"]++
 	case r.Provider == store.SensorProvider:
@@ -135,6 +157,12 @@ func checkSums(t *testing.T, dir, out string) {
 	all := totalOf(d.Days)
 	if !reflect.DeepEqual(all.Records, c.records) || all.Bytes != c.bytes {
 		t.Errorf("records %v, %d bytes; the store holds %v, %d", all.Records, all.Bytes, c.records, c.bytes)
+	}
+	if s := [3]uint64{all.Jumps, all.Skipped, all.StepsBack}; s != c.serials {
+		t.Errorf("serial jumps, skipped, steps back %v, the store's %v", s, c.serials)
+	}
+	if !reflect.DeepEqual(all.LostHealth, c.lostMax) {
+		t.Errorf("lost_health_max %v, the store's %v", all.LostHealth, c.lostMax)
 	}
 	if !reflect.DeepEqual(all.Loss, c.loss) {
 		t.Errorf("loss %v, the store's %v", all.Loss, c.loss)
@@ -292,6 +320,29 @@ func TestTheStartChangesNoLaterDay(t *testing.T) {
 				t.Errorf("start at day %d, day %s:\nwhole %+v\nlate  %+v", k, a.Day, a, b)
 			}
 		}
+	}
+}
+
+// TestCompleteIsWrittenAtItsDecidingSample: one look at the clock after the last shard decides COMPLETE and dates
+// it, so a clock that passes the limit only after that look never stands in a COMPLETE state.
+func TestCompleteIsWrittenAtItsDecidingSample(t *testing.T) {
+	ts := newTestStore(t, 16<<20)
+	ts.laurel(1, otherLine(1, "k"))
+	ts.seal(true)
+	calls := 0
+	start := time.Now()
+	clock := func() time.Time {
+		calls++
+		if calls > 5 { // the start, the first files, the shard's check, its state.json, the look after the last
+			return start.Add(2 * readLimit)
+		}
+		return start
+	}
+	status, out, err := judgeOnce(t, ts.dir, clock)
+	d := readStateDoc(t, out)
+	written, perr := time.Parse(time.RFC3339Nano, d.Written)
+	if status != statusComplete || err != nil || perr != nil || !written.Before(start.Add(readLimit)) {
+		t.Errorf("status %s, written %s, %v %v", status, d.Written, err, perr)
 	}
 }
 

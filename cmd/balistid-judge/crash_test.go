@@ -77,7 +77,7 @@ func TestProbeRules(t *testing.T) {
 	}
 	probes := []probe{named("in"), named("early"), named("outside"), named("gone"), {Name: "in2", Kind: kindDirect,
 		At: at.Format(time.RFC3339Nano)}}
-	want := map[string]string{"in": "", "early": timeOff, "outside": notUnderAgent, "gone": absent, "in2": notRun}
+	want := map[string]string{"in": "", "early": timeOff, "outside": "chain " + endedObserved, "gone": absent, "in2": notRun}
 	p := checkProbes(probes, runs, assign(runs), true, false)
 	for _, e := range p.Each {
 		if e.Why != want[e.Name] || e.Assigned != (want[e.Name] == "") {

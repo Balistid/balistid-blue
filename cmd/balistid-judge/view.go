@@ -43,11 +43,14 @@ const (
 const agentIs = "a run is under an agent when one of its spawners is Claude Code's binary, known only by its path " +
 	"/home/<user>/.local/share/claude/versions/<version>: one installed elsewhere is not known as an agent"
 
+const countsAre = "the day sums count what the records show, so a zero is not \"no loss\"; the counts of runs " +
+	"are of exec.jsonl and bound nothing"
+
 type viewDoc struct {
 	Schema int         `json:"schema_version"`
 	Covers coversDoc   `json:"covers"`
 	Days   []dayView   `json:"days"`
-	Top    []nameCount `json:"top_under_agents"`
+	Top    namesShown  `json:"top_under_agents"`
 	Once   namesShown  `json:"once_under_agents"`
 	Broken brokenShown `json:"broken_chain_runs"`
 	Probes *probesDoc  `json:"probes,omitempty"`
@@ -58,42 +61,46 @@ type coversDoc struct {
 	Status   string       `json:"status"`
 	Reason   string       `json:"reason,omitempty"`
 	Agent    string       `json:"agent"`
+	Counts   string       `json:"counts"`
 	Partial  string       `json:"partial,omitempty"`
 	NotRead  []notReadDoc `json:"shards_not_read"`
 	Unsealed []string     `json:"unsealed_not_read"`
 	Torn     bool         `json:"torn_index_line"`
 	Owner    uint32       `json:"owner_uid"`
 	Listed   string       `json:"listed_from,omitempty"`
-	NoDay    int          `json:"runs_of_no_day_read"`
 }
 
-// dayView is one UTC day; a day not read has no count at all, never a zero.
+// dayView is one UTC day; a day not read has no count at all, never a zero, and one before the window no count of
+// runs.
 type dayView struct {
 	Day  string `json:"day"`
 	Read bool   `json:"read"`
 	*DayCounts
 }
 
-// DayCounts is a day read: the runs exec.jsonl holds of it, each count of what the store holds and so a lower
-// bound, beside that day's evidence of what it may lack.
+// DayCounts is a day read: its sums, and from the window's first day on the runs exec.jsonl holds of it.
 type DayCounts struct {
-	Runs          uint64     `json:"runs_at_least"`
-	UnderAgent    uint64     `json:"under_agent_at_least"`
-	EndedObserved uint64     `json:"chain_ended_at_an_observed_process"`
-	Broken        uint64     `json:"chain_broken"`
-	Listed        uint64     `json:"listed"`
-	ListedOf      uint64     `json:"listed_of"`
-	Execs         execCounts `json:"execs_at_least"`
-	Evidence      evidence   `json:"evidence"`
+	*RunCounts
+	Execs    execCounts `json:"execs"`
+	Evidence evidence   `json:"evidence"`
+}
+
+// RunCounts is where the chains of a day's runs in exec.jsonl ended.
+type RunCounts struct {
+	Runs          uint64 `json:"runs"`
+	UnderAgent    uint64 `json:"under_agent"`
+	EndedObserved uint64 `json:"chain_ended_at_an_observed_process"`
+	Broken        uint64 `json:"chain_broken"`
 }
 
 type nameCount struct {
 	Name  string `json:"name"`
-	Count uint64 `json:"runs_at_least"`
+	Count uint64 `json:"runs"`
 }
 
-// namesShown is a list cut at listMax, with how many there are.
+// namesShown is a list cut at listMax, with how many there are and what it counts.
 type namesShown struct {
+	Of    string      `json:"of"`
 	Shown int         `json:"shown"`
 	Total int         `json:"total"`
 	Names []nameCount `json:"names"`
@@ -138,6 +145,9 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if sd.Status == statusReading {
+		return errors.New("view: the judge is still writing; run view when it has ended")
+	}
 	runs, err := readRuns(root, owners)
 	if err != nil {
 		return err
@@ -146,19 +156,26 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 		return err
 	}
 	where := assign(runs)
-	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Agent: agentIs, NotRead: sd.NotRead,
+	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Agent: agentIs, Counts: countsAre, NotRead: sd.NotRead,
 		Unsealed: sd.Unsealed, Torn: sd.TornIndex, Owner: ownerOf(stateInfo), Listed: sd.ListedFrom}}
-	if doc.Days, doc.Covers.NoDay, err = days(sd, runs, where); err != nil {
+	if doc.Days, err = days(sd, runs, where); err != nil {
 		return err
 	}
 	switch {
 	case sd.Status == statusComplete:
+	case sd.Store == nil:
+		doc.Covers.Partial = "the judge's status is " + sd.Status + ": it read no sealed shard"
 	case len(sd.NotRead) == 0:
 		doc.Covers.Partial = "the judge's status is " + sd.Status + ": no sealed shard it lists is unread"
 	default:
 		doc.Covers.Partial = "the judge's status is " + sd.Status + ": what it did not read is not in any day"
 	}
 	doc.Top, doc.Once, doc.Broken = overAll(runs, where)
+	of := "runs in exec.jsonl, received from " + sd.ListedFrom + " to "
+	if n := len(sd.Days); n > 0 {
+		of += sd.Days[n-1].Day
+	}
+	doc.Top.Of, doc.Once.Of = of, of
 	if len(manifests) > 0 {
 		p := checkProbes(probes, runs, where, sd.Status == statusComplete, len(sd.Unsealed) > 0)
 		doc.Probes = &p
@@ -171,20 +188,21 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	return err //nolint:wrapcheck // stdout
 }
 
-// days is one entry for every day of the state and every day of a shard it did not read, oldest first, and how many
-// runs fell on no day the state holds. COMPLETE is written after the last append, so there each day's runs must be
-// those the state counts as listed.
-func days(sd stateDoc, runs []execRun, where []string) ([]dayView, int, error) {
+// days is one entry for every day of the state and every day of a shard it did not read, oldest first. The state is
+// written after each append, so in every status view prints each day's runs are those it counts as listed.
+func days(sd stateDoc, runs []execRun, where []string) ([]dayView, error) {
 	byDay := map[string]*dayView{}
 	for i := range sd.Days {
 		r := &sd.Days[i]
-		byDay[r.Day] = &dayView{Day: r.Day, Read: true, DayCounts: &DayCounts{
-			Listed: r.Exec.Listed, ListedOf: r.Exec.Listed + r.Exec.OverCap + r.Exec.Outside, Execs: r.Exec, Evidence: r.evidence}}
+		byDay[r.Day] = &dayView{Day: r.Day, Read: true, DayCounts: &DayCounts{Execs: r.Exec, Evidence: r.evidence}}
+		if r.Day >= sd.ListedFrom { // both are dates as text, which sorts as time
+			byDay[r.Day].RunCounts = &RunCounts{}
+		}
 	}
 	noDay := 0
 	for i, r := range runs {
 		v := byDay[r.receivedAt.UTC().Format(time.DateOnly)]
-		if v == nil {
+		if v == nil || v.RunCounts == nil {
 			noDay++
 			continue
 		}
@@ -198,12 +216,12 @@ func days(sd stateDoc, runs []execRun, where []string) ([]dayView, int, error) {
 			v.Broken++
 		}
 	}
-	if sd.Status == statusComplete && noDay > 0 {
-		return nil, 0, fmt.Errorf("view: exec.jsonl holds %d runs of days state.json has not: the files are not one run's", noDay)
+	if noDay > 0 {
+		return nil, fmt.Errorf("view: exec.jsonl holds %d runs of days state.json lists none of: the files are not one run's", noDay)
 	}
 	for _, v := range byDay {
-		if sd.Status == statusComplete && v.Runs != v.Listed {
-			return nil, 0, fmt.Errorf("view: exec.jsonl holds %d runs of %s, state.json %d: the files are not one run's", v.Runs, v.Day, v.Listed)
+		if v.DayCounts != nil && v.RunCounts != nil && v.Runs != v.Execs.Listed {
+			return nil, fmt.Errorf("view: exec.jsonl holds %d runs of %s, state.json %d: the files are not one run's", v.Runs, v.Day, v.Execs.Listed)
 		}
 	}
 	for _, s := range sd.NotRead {
@@ -216,12 +234,12 @@ func days(sd stateDoc, runs []execRun, where []string) ([]dayView, int, error) {
 	for _, day := range slices.Sorted(maps.Keys(byDay)) {
 		out = append(out, *byDay[day])
 	}
-	return out, noDay, nil
+	return out, nil
 }
 
 // overAll is, over every day listed, the topN names most often under an agent, the names under one once, and the
 // runs whose chain broke, oldest first.
-func overAll(runs []execRun, where []string) ([]nameCount, namesShown, brokenShown) {
+func overAll(runs []execRun, where []string) (namesShown, namesShown, brokenShown) {
 	counts := map[string]uint64{}
 	var brokenRuns []execRun
 	for i, r := range runs {
@@ -250,7 +268,8 @@ func overAll(runs []execRun, where []string) ([]nameCount, namesShown, brokenSho
 		b.Runs = append(b.Runs, runRef{Received: r.Received, EventTime: r.EventTime, Serial: r.Serial, Name: r.Name})
 	}
 	b.Shown = len(b.Runs)
-	return append([]nameCount{}, all[:min(topN, len(all))]...), capped(once), b
+	top := append([]nameCount{}, all[:min(topN, len(all))]...)
+	return namesShown{Shown: len(top), Total: len(all), Names: top}, capped(once), b
 }
 
 // failed is what went wrong, with the decoder's error when there is one.

@@ -21,22 +21,21 @@ const (
 	minUID = 1000
 	// Caps on what the read keeps in memory (R5, T20): past maxDays the read stops as UNKNOWN, past the others it
 	// says so.
-	maxEvents  = 1 << 16
-	maxKeys    = 256
-	maxDays    = 1 << 12
-	ownCapture = 4 << 10
-	dayNS      = int64(24 * time.Hour)
+	maxEvents = 1 << 16
+	maxKeys   = 256
+	maxDays   = 1 << 12
+	dayNS     = int64(24 * time.Hour)
 )
 
 var errTooManyDays = errors.New("records on more than 4096 UTC days")
 
-// transition is a change of the collector's health: a health record, or a start or stop of the collector, at its
-// own time when that is earlier than when the store took it.
+// transition is a health, started or stopping record as stored: when the store took it, and its own time.
 type transition struct {
-	Seq   uint64 `json:"seq"`
-	At    string `json:"time"`
-	Kind  string `json:"kind"`
-	State string `json:"state"`
+	Seq      uint64 `json:"seq"`
+	Received string `json:"received"`
+	At       string `json:"at,omitempty"`
+	Kind     string `json:"kind"`
+	State    string `json:"state"`
 }
 
 // keyCount is what one audit rule key stored.
@@ -59,11 +58,16 @@ type execCounts struct {
 	Refused    uint64 `json:"refused_by_strict_reading"`
 }
 
-// evidence is what a day's records say about what the store may lack: no count of it says that nothing was lost.
+// evidence is sums and maxima of a day's records about what the store may lack; a zero is not "no loss". The
+// serial steps are serialStep's.
 type evidence struct {
 	Loss       map[string]uint64 `json:"loss_by_stage"`
 	LossErrors uint64            `json:"loss_records_not_decoded"`
 	OwnUnknown uint64            `json:"own_records_unknown"`
+	LostHealth *uint64           `json:"lost_health_max,omitempty"`
+	Jumps      uint64            `json:"serial_jumps"`
+	Skipped    uint64            `json:"serials_skipped"`
+	StepsBack  uint64            `json:"serial_steps_back"`
 	StoreLag   *int64            `json:"max_store_lag_ms"`
 	ArrivalLag *int64            `json:"max_arrival_lag_ms"`
 	Silences   uint64            `json:"silences_over_90s"`
@@ -81,20 +85,21 @@ type dayRow struct {
 	day int64
 }
 
-// reader is the judge's one pass over the shards, oldest first: sums by UTC day and what is carried from one
-// record to the next, across shards.
+// reader is the judge's one pass over the shards, oldest first: sums and maxima by UTC day, and of the record
+// before only its time and serial.
 type reader struct {
-	rows     map[int64]*dayRow
-	listFrom int64 // the first day whose runs are listed, known from the seals before the read
-	keys     map[string]*keyCount
-	keysOver uint64
-	trans    []transition
-	over     bool
-	tooMany  bool
-	n        uint64
-	lastAt   int64
-	listed   uint64 // lines in exec.jsonl and the shard's part
-	out      *bufio.Writer
+	rows       map[int64]*dayRow
+	listFrom   int64 // the first day whose runs are listed, known from the seals before the read
+	keys       map[string]*keyCount
+	keysOver   uint64
+	trans      []transition
+	over       bool
+	tooMany    bool
+	n          uint64
+	lastAt     int64
+	prevSerial uint64 // the previous sensor record's, 0 before the first
+	listed     uint64 // lines in exec.jsonl and the shard's part
+	out        *bufio.Writer
 }
 
 func newReader(listFrom int64) *reader {
@@ -164,6 +169,8 @@ func (rd *reader) add(r rawrecord.Record) error {
 func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	if r.ProviderSeq == 0 {
 		row.Undecoded["no serial"]++
+	} else if !auditdOwn(r.Data) {
+		rd.serialStep(row, r.ProviderSeq)
 	}
 	if r.Truncated() { // lossOf counts it; its line is cut in two and not read
 		row.Loss["truncated"]++
@@ -219,7 +226,7 @@ func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	return nil
 }
 
-func maxOf(p **int64, v int64) {
+func maxOf[T int64 | uint64](p **T, v T) {
 	if *p == nil || v > **p {
 		*p = &v
 	}
@@ -249,17 +256,17 @@ func (rd *reader) key(k string, size uint64) {
 	c.Bytes += size
 }
 
-// change is a health change at the record's own time when that is earlier than when the store took it.
+// change lists a health change as stored, with its own time when it has one.
 func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
-	t := r.Received
-	if at > 0 && at < t {
-		t = at
-	}
 	if len(rd.trans) >= maxEvents {
 		rd.over = true
 		return
 	}
-	rd.trans = append(rd.trans, transition{Seq: r.Seq, At: timeText(t), Kind: kind, State: state})
+	t := transition{Seq: r.Seq, Received: timeText(r.Received), Kind: kind, State: state}
+	if at > 0 {
+		t.At = timeText(at)
+	}
+	rd.trans = append(rd.trans, t)
 }
 
 // own reads one of the collector's own records (internal/collector/writer.go).
@@ -269,7 +276,7 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 		Kind          string `json:"kind"`
 		At            int64  `json:"at"`
 	}
-	if len(r.Data) > ownCapture || json.Unmarshal(r.Data, &head) != nil || head.SchemaVersion != 1 {
+	if len(r.Data) > store.MaxHealthBytes || json.Unmarshal(r.Data, &head) != nil || head.SchemaVersion != 1 {
 		row.OwnUnknown++
 		return
 	}
@@ -297,17 +304,21 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	}
 }
 
-// stats reads the store's lag.
+// stats reads the store's lag and the largest lost_health, the collector run's own running total.
 func (rd *reader) stats(row *dayRow, r rawrecord.Record) {
 	var l struct {
-		MaxLag *int64 `json:"max_lag_ms"`
-		Lag    *int64 `json:"lag_ms"`
+		MaxLag     *int64  `json:"max_lag_ms"`
+		Lag        *int64  `json:"lag_ms"`
+		LostHealth *uint64 `json:"lost_health"`
 	}
 	_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
 	for _, ms := range []*int64{l.MaxLag, l.Lag} {
 		if ms != nil {
 			maxOf(&row.StoreLag, *ms)
 		}
+	}
+	if l.LostHealth != nil {
+		maxOf(&row.LostHealth, *l.LostHealth)
 	}
 }
 

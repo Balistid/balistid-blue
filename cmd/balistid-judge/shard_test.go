@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -83,6 +85,42 @@ func TestSilenceAndClockSteps(t *testing.T) {
 		rawrecord.New(0, store.SensorProvider, 3, 160*sec, otherLine(3, "k"))))
 	if r := rows[0]; r.Silences != 1 || r.ClockBack != 1 {
 		t.Errorf("silences %d, clock back %d", r.Silences, r.ClockBack)
+	}
+}
+
+// TestSerialSteps: neighbouring sensor records' serials, auditd's own lines and records without a serial left out:
+// 9 after 6 jumps over 2, 7 after 9 and 7 again step back, 8 after 7 goes on.
+func TestSerialSteps(t *testing.T) {
+	sec := int64(time.Second)
+	daemon := rawrecord.New(0, store.SensorProvider, 100, base+4*sec, []byte(`{"ID":"1.000:100","DAEMON_END":{}}`))
+	rows := rowsOf(readerOf(t, sensorAt(5, base), sensorAt(6, base+sec), sensorAt(9, base+2*sec), daemon,
+		sensorAt(7, base+5*sec), rawrecord.New(0, store.SensorProvider, 0, base+6*sec, otherLine(0, "k")),
+		sensorAt(7, base+7*sec), sensorAt(8, base+8*sec)))
+	if r := rows[0]; r.Jumps != 1 || r.Skipped != 2 || r.StepsBack != 2 || r.Undecoded["no serial"] != 1 {
+		t.Errorf("%d jumps over %d, %d steps back, undecoded %v", r.Jumps, r.Skipped, r.StepsBack, r.Undecoded)
+	}
+}
+
+// TestHealthChangesAsStored: a change is listed with both its times as they are, the earlier one not chosen; a
+// day's lost_health_max is the largest a stats record of it carried, and absent on a day with none.
+func TestHealthChangesAsStored(t *testing.T) {
+	sec := int64(time.Second)
+	stats := func(at int64, n int) rawrecord.Record {
+		return own(store.HealthProvider, at, `{"schema_version":1,"kind":"stats","lost_health":`+strconv.Itoa(n)+`}`)
+	}
+	rd := readerOf(t, own(store.HealthProvider, base+50*sec, `{"schema_version":1,"kind":"health","state":"UNKNOWN store: x","at":`+
+		strconv.FormatInt(base+20*sec, 10)+`}`), stats(base+60*sec, 3), stats(base+70*sec, 7), stats(base+80*sec, 2),
+		sensorAt(1, base+dayNS))
+	if h := rd.trans[0]; h.Received != timeText(base+50*sec) || h.At != timeText(base+20*sec) || h.State != "UNKNOWN store: x" {
+		t.Errorf("the change %+v", h)
+	}
+	rows := rowsOf(rd)
+	if rows[0].LostHealth == nil || *rows[0].LostHealth != 7 || rows[1].LostHealth != nil {
+		t.Errorf("lost_health_max %v, %v", rows[0].LostHealth, rows[1].LostHealth)
+	}
+	b, err := json.Marshal(rows[1])
+	if err != nil || bytes.Contains(b, []byte("lost_health_max")) {
+		t.Errorf("a day with no stats: %s %v", b, err)
 	}
 }
 
