@@ -103,11 +103,13 @@ func decodeManifest(b []byte) ([]probe, error) {
 	return m.Probes, nil
 }
 
-// kindCount is one kind of probe: how many, found in exec.jsonl, assigned under an agent.
+// kindCount is one kind of probe: how many, found in exec.jsonl, assigned under an agent, and timed outside the
+// judge's period, which none of them is assigned.
 type kindCount struct {
-	Count    int `json:"count"`
-	Found    int `json:"found"`
-	Assigned int `json:"assigned"`
+	Count       int `json:"count"`
+	Found       int `json:"found"`
+	Assigned    int `json:"assigned"`
+	OutOfPeriod int `json:"out_of_period"`
 }
 
 type probesDoc struct {
@@ -126,8 +128,9 @@ type probeResult struct {
 	InPeriod bool   `json:"in_period"`
 }
 
-// checkProbes finds each probe by its name. It is assigned only when it ran, is in exec.jsonl and every run of its
-// name is under an agent; one the store lacks is a miss (acceptance probes_assigned).
+// checkProbes finds each probe by its name. It is assigned only when it ran inside the judge's period, is in
+// exec.jsonl and every run of its name is under an agent; one the store lacks is a miss (acceptance
+// probes_assigned). A run of the name outside the period is some other program's.
 func checkProbes(probes []probe, runs []execRun, where []string, period *periodDoc) probesDoc {
 	byName := map[string][]int{}
 	for i, r := range runs {
@@ -144,7 +147,7 @@ func checkProbes(probes []probe, runs []execRun, where []string, period *periodD
 		at, _ := time.Parse(time.RFC3339Nano, p.At) // decodeManifest parsed it
 		res := probeResult{Name: p.Name, Kind: p.Kind, Ran: p.Ran, Runs: len(byName[p.Name]),
 			InPeriod: period != nil && !at.Before(from) && !at.After(to)}
-		res.Assigned = p.Ran && res.Runs > 0
+		res.Assigned = p.Ran && res.Runs > 0 && res.InPeriod
 		for _, i := range byName[p.Name] {
 			res.Assigned = res.Assigned && where[i] == underAgent
 		}
@@ -152,6 +155,7 @@ func checkProbes(probes []probe, runs []execRun, where []string, period *periodD
 		k.Count++
 		k.Found += count(res.Runs > 0)
 		k.Assigned += count(res.Assigned)
+		k.OutOfPeriod += count(!res.InPeriod)
 		d.Each = append(d.Each, res)
 	}
 	return d

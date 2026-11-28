@@ -84,6 +84,7 @@ func TestKeysAsDetectReadsThem(t *testing.T) {
 		"syscall a string":  {`"syscall":59`, `"syscall":"59"`},
 		"exit -0":           {`"exit":0`, `"exit":-0`},
 		"success no":        {`"success":"yes"`, `"success":"no"`},
+		"Arch":              {`"arch":"0xc000003e"`, `"Arch":"0xc000003e"`},
 	} {
 		line := bytes.Replace(base, []byte(edit[0]), []byte(edit[1]), 1)
 		if bytes.Equal(line, base) {

@@ -68,12 +68,6 @@ func judge(ctx context.Context, cfg config) (string, error) {
 		st.doc.Status, st.doc.Reason = statusUnknown, err.Error()
 		return statusUnknown, errors.Join(err, writeBoth(out, st, start.UnixNano()))
 	}
-	sizes, err := shardBytes(cfg.Store, seals)
-	if err != nil {
-		st := newState(seals, 0, 0, limitMin)
-		st.doc.Status, st.doc.Reason = statusUnknown, err.Error()
-		return statusUnknown, errors.Join(err, writeBoth(out, st, start.UnixNano()))
-	}
 	var cutoff int64
 	if n := len(seals); n > 0 {
 		if sealed := seals[n-1].Sealed; sealed <= execDays*86400 || sealed > maxSealed {
@@ -83,6 +77,12 @@ func judge(ctx context.Context, cfg config) (string, error) {
 			return statusUnknown, errors.Join(err, writeBoth(out, st, start.UnixNano()))
 		}
 		cutoff = (seals[n-1].Sealed - execDays*86400) * 1e9
+	}
+	sizes, err := shardBytes(cfg.Store, seals)
+	if err != nil {
+		st := newState(seals, 0, cutoff, limitMin)
+		st.doc.Status, st.doc.Reason = statusUnknown, err.Error()
+		return statusUnknown, errors.Join(err, writeBoth(out, st, start.UnixNano()))
 	}
 	st := newState(seals, sizes, cutoff, limitMin)
 	st.doc.Unsealed, st.doc.TornIndex = unsealed, torn
@@ -117,7 +117,10 @@ func judge(ctx context.Context, cfg config) (string, error) {
 		}
 	}
 	st.doc.Status = statusComplete
-	return statusComplete, writeState(out, st, cfg.Now().UnixNano())
+	if err := writeState(out, st, cfg.Now().UnixNano()); err != nil {
+		return statusUnknown, err // state.json on disk still says READING
+	}
+	return statusComplete, nil
 }
 
 // sealsOf is the seal index, contiguous in seq. A shard the index does not list is accepted only above the last
@@ -273,12 +276,16 @@ func removeLeftovers(out *os.Root) error {
 	return nil
 }
 
-// writeBoth starts a run: state.json from the seals and an empty exec.jsonl.
+// writeBoth starts a run: state.json from the seals, then an empty exec.jsonl. In that order an earlier run's
+// COMPLETE state.json never stands beside the emptied file, and view reads a READING or UNKNOWN one as partial.
 func writeBoth(out *os.Root, st *state, now int64) error {
+	if err := writeState(out, st, now); err != nil {
+		return err
+	}
 	if err := wholefile.WriteIn(out, execFile, nil, resultMode); err != nil {
 		return fmt.Errorf("judge: %w", err)
 	}
-	return writeState(out, st, now)
+	return nil
 }
 
 func writeState(out *os.Root, st *state, now int64) error {

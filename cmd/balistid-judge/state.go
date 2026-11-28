@@ -34,6 +34,7 @@ type stateDoc struct {
 	Records      map[string]uint64    `json:"records"`
 	Bytes        uint64               `json:"bytes"`
 	Health       []transition         `json:"health_changes"`
+	HealthHeld   string               `json:"health_changes_withheld,omitempty"`
 	Loss         map[string]uint64    `json:"loss_by_stage"`
 	LossErrors   uint64               `json:"loss_records_not_decoded"`
 	OwnUnknown   uint64               `json:"own_records_unknown"`
@@ -209,7 +210,9 @@ func (st *state) merge(name string, a *shardAcc) {
 		}
 	}
 	st.merged++
-	st.older.firstAt, st.older.n = a.firstAt, a.n
+	if a.n > 0 { // an empty shard is no neighbour: the silence is between the shards around it
+		st.older.firstAt, st.older.n = a.firstAt, a.n
+	}
 }
 
 func addExecs(t *execCounts, a execCounts) {
@@ -301,8 +304,11 @@ func (st *state) render(written int64) stateDoc {
 	}
 	d.Serials.Gaps, d.Serials.Missing, d.Serials.Duplicate = c.gaps, c.missing, c.duplicate
 	d.Serials.HeldAtEnd, d.Serials.OverCap, d.Serials.Segments = c.held, c.overCap, len(st.segs)+st.closedSegs
-	if !st.over {
-		d.Health = st.trans
+	d.Health = []transition{}
+	if st.over {
+		d.HealthHeld = "more than " + strconv.Itoa(maxEvents) + " health changes or spans: the list is not kept"
+	} else {
+		d.Health = append(d.Health, st.trans...)
 	}
 	d.Clean = st.clean(c.spans)
 	return d

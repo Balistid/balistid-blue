@@ -53,7 +53,12 @@ func run(ctx context.Context, args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "balistid-judge: %s %v\n", status, err)
 	}
-	if status != statusComplete {
+	return exitCode(status, err)
+}
+
+// exitCode is 0 only for a COMPLETE read whose every file was written.
+func exitCode(status string, err error) int {
+	if err != nil || status != statusComplete {
 		return 2
 	}
 	return 0
