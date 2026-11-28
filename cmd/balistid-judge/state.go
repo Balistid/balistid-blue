@@ -41,7 +41,6 @@ type stateDoc struct {
 	HealthHeld   string               `json:"health_changes_withheld,omitempty"`
 	Keys         map[string]*keyCount `json:"by_rule_key"`
 	KeysOver     uint64               `json:"rule_keys_over_cap"`
-	Serials      serialDoc            `json:"serials"`
 	Days         []dayRow             `json:"days"`
 }
 
@@ -70,14 +69,6 @@ type notReadDoc struct {
 	Name   string `json:"name"`
 	Sealed string `json:"sealed"`
 	Reason string `json:"reason"`
-}
-
-// serialDoc is what the serials' runs share; their gaps are in the days. Duplicate counts serials held twice, and
-// also those that came after their hole was counted at the cap.
-type serialDoc struct {
-	Segments  int    `json:"segments"`
-	Duplicate uint64 `json:"duplicate"`
-	OverCap   uint64 `json:"gaps_counted_at_the_cap"`
 }
 
 // state is one run of the judge: the seals, the shards read from the start, and why the read stopped.
@@ -128,8 +119,7 @@ func (st *state) notRead() []notReadDoc {
 	return out
 }
 
-// render is state.json after the shards read so far. The run of serials being read has its holes counted as they
-// stand; a later serial may still fill one.
+// render is state.json after the shards read so far.
 func (st *state) render(rd *reader, written int64) stateDoc {
 	d := st.doc
 	d.Written = timeText(written)
@@ -145,29 +135,15 @@ func (st *state) render(rd *reader, written int64) stateDoc {
 	} else {
 		d.Health = append(d.Health, rd.trans...)
 	}
-	d.Serials = serialDoc{Segments: rd.ser.segments, Duplicate: rd.ser.duplicate, OverCap: rd.ser.overCap}
 	rows := make(map[int64]*dayRow, len(rd.rows))
 	for day, row := range rd.rows {
 		r := *row
 		r.Records, r.Loss, r.Undecoded = maps.Clone(r.Records), maps.Clone(r.Loss), maps.Clone(r.Undecoded)
-		r.NotOK, r.NotKnown = float64(r.notOK)/1e9, float64(r.notKnown)/1e9
 		rows[day] = &r
-	}
-	if rd.ser.cur != nil {
-		rd.ser.cur.holes(func(missing uint64, at int64) {
-			if r := rows[dayOf(at)]; r != nil {
-				r.Gaps++
-				r.Missing = satAdd(r.Missing, missing)
-			}
-		})
 	}
 	d.Days = []dayRow{}
 	for _, day := range slices.Sorted(maps.Keys(rows)) {
 		d.Days = append(d.Days, *rows[day])
-	}
-	if n := len(d.Days); n > 0 {
-		d.Days[0].Earlier = st.from > 0
-		d.Days[n-1].Later = st.next < len(st.seals) || len(d.Unsealed) > 0
 	}
 	return d
 }

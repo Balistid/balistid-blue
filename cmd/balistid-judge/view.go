@@ -77,8 +77,6 @@ type dayView struct {
 // DayCounts is a day read: the runs exec.jsonl holds of it, each count of what the store holds and so a lower
 // bound, beside that day's evidence of what it may lack.
 type DayCounts struct {
-	Earlier       bool       `json:"earlier_shards_not_read,omitempty"`
-	Later         bool       `json:"later_shards_not_read,omitempty"`
 	Runs          uint64     `json:"runs_at_least"`
 	UnderAgent    uint64     `json:"under_agent_at_least"`
 	EndedObserved uint64     `json:"chain_ended_at_an_observed_process"`
@@ -180,7 +178,7 @@ func days(sd stateDoc, runs []execRun, where []string) ([]dayView, int, error) {
 	byDay := map[string]*dayView{}
 	for i := range sd.Days {
 		r := &sd.Days[i]
-		byDay[r.Day] = &dayView{Day: r.Day, Read: true, DayCounts: &DayCounts{Earlier: r.Earlier, Later: r.Later,
+		byDay[r.Day] = &dayView{Day: r.Day, Read: true, DayCounts: &DayCounts{
 			Listed: r.Exec.Listed, ListedOf: r.Exec.Listed + r.Exec.OverCap + r.Exec.Outside, Execs: r.Exec, Evidence: r.evidence}}
 	}
 	noDay := 0

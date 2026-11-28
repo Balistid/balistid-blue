@@ -84,19 +84,12 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if all.Loss["queue"] != 3 || all.LossErrors != 0 || all.StoreLag == nil || *all.StoreLag != 1500 {
 		t.Errorf("loss %v (%d not decoded), lag %v", all.Loss, all.LossErrors, all.StoreLag)
 	}
-	if all.Gaps != 2 || all.Missing != 4 || d.Serials.Segments != 2 {
-		t.Errorf("%d gaps, %d missing, %+v; want 111-112 and 131-132, 125 late, and the new boot its own run", all.Gaps,
-			all.Missing, d.Serials)
-	}
 	var states []string
 	for _, h := range d.Health {
 		states = append(states, h.State)
 	}
 	if got := strings.Join(states, ","); got != "UNKNOWN starting,OK,UNKNOWN canary-missed,OK,UNKNOWN stopped,UNKNOWN starting,OK" {
 		t.Errorf("health changes %s", got)
-	}
-	if all.NotOK <= 0 || all.NotKnown != 0 {
-		t.Errorf("seconds not OK %v, not known %v: the store starts with a started record", all.NotOK, all.NotKnown)
 	}
 	runs := readExec(t, out)
 	if names(runs) != "tool-a tool-c" || all.Exec.Successful != 4 || all.Exec.Listed != 2 || all.Exec.System != 2 {
