@@ -31,18 +31,14 @@ func main() {
 	os.Exit(code)
 }
 
-const usage = "usage: balistid-judge | balistid-judge view <dir> [probes.json]"
+const usage = "usage: balistid-judge | balistid-judge view <dir> [manifest.json ...]"
 
 // run is the judge with its arguments: none, as the unit starts it, or view, which any user runs on its results.
 // The judge returns 0 only when every sealed shard was read, 2 when the state is PARTIAL or UNKNOWN; view 0 when
 // it read both files, 2 when not; either 1 on a usage error.
 func run(ctx context.Context, args []string) int {
-	if len(args) > 0 && args[0] == "view" && (len(args) == 2 || len(args) == 3) {
-		manifest := ""
-		if len(args) == 3 {
-			manifest = args[2]
-		}
-		if err := view(args[1], manifest, os.Stdout); err != nil {
+	if len(args) >= 2 && args[0] == "view" {
+		if err := view(args[1], args[2:], owners(), os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "balistid-judge: UNKNOWN %v\n", err)
 			return 2
 		}

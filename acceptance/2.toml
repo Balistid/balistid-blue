@@ -15,7 +15,7 @@ min = 29
 unit = "of 30 uniquely named copies of /usr/bin/true run directly by an agent, those found in exec.jsonl and assigned under an agent"
 rows = ["T4", "T25"]
 adr = "0082"
-method = "An agent runs the 30 probes and writes their manifest (name, kind, time); after their shard is sealed the maintainer starts the unit and runs balistid-judge view on its directory with the manifest. A probe the store lacks is a miss. The 10 detached probes (double fork) are reported, with no bar (ADR 0082 point 6)."
+method = "An agent runs the 30 probes and writes their manifest (name, kind, time); after their shard is sealed the maintainer starts the unit and runs balistid-judge view on its directory with the manifests. A probe the store lacks is a miss. The 10 run first in a subshell and the 10 detached by a double fork are reported, with no bar (ADR 0082 point 6)."
 
 [[metric]]
 id = "names_outside_alphabet"
