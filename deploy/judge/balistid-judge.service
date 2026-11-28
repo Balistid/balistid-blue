@@ -1,8 +1,8 @@
-# Judges the host's recording days from the collector's sealed store (ADR 0074). Started by hand, no timer and
-# no [Install]: it runs as the collector's uid with no network, the store read-only and its results in its own
-# state directory. Not in CPUUnits: it is no cost of recording.
+# Writes the recorder's state and the users' execs from the collector's sealed store (ADR 0074, 0082). Started
+# by hand, no timer and no [Install]: it runs as the collector's uid with no network, the store read-only and its
+# results in its own state directory. Not in CPUUnits: it is no cost of recording.
 [Unit]
-Description=Balistid Blue judge: the recording days from the sealed store
+Description=Balistid Blue judge: the recorder's state and the users' execs from the sealed store
 
 [Service]
 Type=oneshot
