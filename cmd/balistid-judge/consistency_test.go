@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +27,7 @@ func TestAFailedLastWriteIsNotComplete(t *testing.T) {
 	calls := 0
 	clock := func() time.Time {
 		calls++
-		if calls == 5 { // the start, the first files, the shard's check, its state.json; then the last one
+		if calls == 5 { // the start, the first files, the shard's check, its state.json, the check after the last
 			if err := os.Chmod(out, 0o500); err != nil { //nolint:gosec // a results directory no one can write to
 				t.Fatal(err)
 			}
@@ -62,8 +64,8 @@ func TestStateGoesFirst(t *testing.T) {
 	}
 }
 
-// TestViewNeedsOneRunsFiles: a COMPLETE state.json beside an exec.jsonl of fewer runs is UNKNOWN; any other status
-// gives the runs as partial and no clean count; a state.json that changed while exec.jsonl was read is UNKNOWN.
+// TestViewNeedsOneRunsFiles: a COMPLETE state.json beside an exec.jsonl of fewer runs than a day lists is UNKNOWN;
+// any other status gives the runs it holds as partial; a state.json that changed while exec.jsonl was read is UNKNOWN.
 func TestViewNeedsOneRunsFiles(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
@@ -79,8 +81,12 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 	}
 	editState(t, out, func(d *stateDoc) { d.Status = statusReading })
 	v := viewOf(t, out)
-	if v.Covers.Partial == "" || v.Clean.State != statusUnknown || v.Clean.Runs != 0 || v.Covers.Runs != 1 {
+	if v.Covers.Partial == "" || len(v.Days) != 1 || v.Days[0].Runs != 1 || v.Days[0].Listed != 10 {
 		t.Errorf("a READING state: %+v", v)
+	}
+	editState(t, out, func(d *stateDoc) { d.Days = nil })
+	if v := viewOf(t, out); v.Covers.NoDay != 1 || len(v.Days) != 0 {
+		t.Errorf("a run of no day the state holds: %+v", v)
 	}
 	root, err := os.OpenRoot(out)
 	if err != nil {
@@ -106,16 +112,10 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 	}
 }
 
-// TestViewCapsWhatItHolds: more runs than view holds are refused before exec.jsonl is read, and a file over its
-// byte cap before a line of it is.
+// TestViewCapsWhatItHolds: an exec.jsonl over its byte cap is refused before a line of it is read.
 func TestViewCapsWhatItHolds(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
-	editState(t, out, func(d *stateDoc) { d.Exec.Exported = runsMax + 1 })
-	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "4194305 runs") {
-		t.Errorf("too many runs: %v", err)
-	}
-	_, out, _ = judgeOnce(t, ts.dir, nil)
 	if err := os.Truncate(filepath.Join(out, execFile), execMax+1); err != nil { // sparse: no disk is used
 		t.Fatal(err)
 	}
@@ -124,52 +124,58 @@ func TestViewCapsWhatItHolds(t *testing.T) {
 	}
 }
 
+// TestTheJudgeListsNoMoreThanViewReads: past maxRuns a run is counted as not listed, on its day; and the longest
+// line the judge can write fits the bytes view allows a run.
+func TestTheJudgeListsNoMoreThanViewReads(t *testing.T) {
+	rd := newReader()
+	var b bytes.Buffer
+	rd.out = bufio.NewWriter(&b)
+	rd.listed = maxRuns - 1
+	for s := uint64(1); s <= 3; s++ {
+		if err := rd.add(rawrecord.New(s, store.SensorProvider, s, base, tool(s, 1000, "x"))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if e := rowsOf(rd)[0].Exec; e.Listed != 1 || e.OverCap != 2 || rd.listed != maxRuns {
+		t.Errorf("exec %+v, %d listed", e, rd.listed)
+	}
+	long := execRun{Schema: 1, EventTime: timeText(-1), Received: timeText(-1), Serial: math.MaxUint64, PID: math.MaxUint32,
+		PPID: math.MaxUint32, UID: math.MaxUint32, Process: procKey{EventID: strings.Repeat("9", 20) + ".999:" + strings.Repeat("9", 20)},
+		SpawnedBy: &spawner{procKey: procKey{EventID: strings.Repeat("9", 20) + ".999:" + strings.Repeat("9", 20)}, PID: math.MaxUint32},
+		Name:      strings.Repeat("x", 64), Agent: true, SpawnerAgent: true}
+	if line, err := json.Marshal(long); err != nil || len(line)+1 > execMax/maxRuns {
+		t.Errorf("the longest line is %d bytes, %v", len(line)+1, err)
+	}
+}
+
 // TestHealthChangesAreAList: none read is an empty list, and a list past the cap is empty with the reason.
 func TestHealthChangesAreAList(t *testing.T) {
 	st := newState(nil, 0, 0, 90)
-	b, err := json.Marshal(st.render(0))
-	if err != nil || !bytes.Contains(b, []byte(`"health_changes":[]`)) || bytes.Contains(b, []byte("withheld")) {
+	rd := newReader()
+	b, err := json.Marshal(st.render(rd, 0))
+	if err != nil || !bytes.Contains(b, []byte(`"health_changes":[]`)) || bytes.Contains(b, []byte("withheld")) ||
+		!bytes.Contains(b, []byte(`"days":[]`)) {
 		t.Errorf("%s %v", b, err)
 	}
-	st.over = true
-	if d := st.render(0); d.Health == nil || len(d.Health) != 0 || d.HealthHeld == "" {
+	rd.over = true
+	if d := st.render(rd, 0); d.Health == nil || len(d.Health) != 0 || d.HealthHeld == "" {
 		t.Errorf("over the cap: %+v %q", d.Health, d.HealthHeld)
 	}
 }
 
-// TestAnEmptyShardIsNoNeighbour: two shards 190 s apart with an empty one between them are a silence.
-func TestAnEmptyShardIsNoNeighbour(t *testing.T) {
-	sec := int64(time.Second)
-	newer := accOf(t, rawrecord.New(0, store.SensorProvider, 2, 200*sec, otherLine(2, "k")))
-	empty := accOf(t)
-	older := accOf(t, own(store.HealthProvider, 5*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
-		rawrecord.New(0, store.SensorProvider, 1, 10*sec, otherLine(1, "k")))
-	st := newState([]store.Seal{{Name: "older"}, {Name: "empty"}, {Name: "newer"}}, 0, 0, 90)
-	st.merge("newer", newer)
-	st.merge("empty", empty)
-	st.merge("older", older)
-	d := st.render(0)
-	for _, iv := range d.Clean.Intervals {
-		if iv.From <= timeText(10*sec) && iv.To >= timeText(200*sec) {
-			t.Errorf("clean %s to %s spans the silence", iv.From, iv.To)
-		}
-	}
-	if d.Silences != 1 {
-		t.Errorf("silences %d", d.Silences)
-	}
-}
-
-// TestProbesOutsideThePeriod: a probe timed outside what the judge read is not assigned, and counted apart.
-func TestProbesOutsideThePeriod(t *testing.T) {
-	ts := agentTree(t)
-	_, out, _ := judgeOnce(t, ts.dir, nil)
-	from, err := time.Parse(time.RFC3339Nano, readStateDoc(t, out).Period.From)
+// TestASilenceAcrossShards: two shards 190 s apart are a silence, counted on the day of the later record.
+func TestASilenceAcrossShards(t *testing.T) {
+	ts := newTestStore(t, 16<<20)
+	at := time.Now().Add(-time.Hour).UnixNano()
+	ts.laurelAt(1, at, otherLine(1, "k"))
+	ts.seal(false)
+	ts.laurelAt(2, at+190*int64(time.Second), otherLine(2, "k"))
+	ts.seal(true)
+	_, out, err := judgeOnce(t, ts.dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := writeManifest(t, manifestOf("t", false, from.Add(-time.Hour), [2]string{"s1p-t-d00", kindDirect}))
-	v := viewOf(t, out, m)
-	if v.Probes.Direct != (kindCount{Count: 1, Found: 1, OutOfPeriod: 1}) {
-		t.Errorf("probes %+v", v.Probes.Direct)
+	if all := totalOf(readStateDoc(t, out).Days); all.Silences != 1 {
+		t.Errorf("silences %d", all.Silences)
 	}
 }

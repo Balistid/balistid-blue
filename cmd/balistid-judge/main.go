@@ -25,6 +25,9 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "view" { // no handler: Ctrl-C ends view as it ends any program
+		os.Exit(run(context.Background(), os.Args[1:]))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	code := run(ctx, os.Args[1:])
 	stop()

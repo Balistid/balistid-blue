@@ -11,16 +11,23 @@ import (
 	"github.com/Balistid/balistid-blue/internal/store"
 )
 
-func accOf(t *testing.T, recs ...rawrecord.Record) *shardAcc {
+// readerOf is the reader after recs, numbered in order, as one pass reads them.
+func readerOf(t *testing.T, recs ...rawrecord.Record) *reader {
 	t.Helper()
-	a := newShardAcc(0, bufio.NewWriter(io.Discard))
+	rd := newReader()
+	rd.out = bufio.NewWriter(io.Discard)
 	for i, r := range recs {
 		r.Seq = uint64(i + 1)
-		if err := a.add(r); err != nil {
+		if err := rd.add(r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return a
+	return rd
+}
+
+// rowsOf is the reader's days as state.json has them.
+func rowsOf(rd *reader) []dayRow {
+	return newState(nil, 0, 0, 90).render(rd, 0).Days
 }
 
 func own(provider string, at int64, data string) rawrecord.Record {
@@ -28,11 +35,11 @@ func own(provider string, at int64, data string) rawrecord.Record {
 }
 
 // TestLossAsLossOfCountsIt: the store's loss record, the collector's lost record, a truncated sensor record and an
-// unknown provider are each a loss lossOf would count or refuse; anything the judge cannot decode is a span too.
+// unknown provider are each a loss lossOf would count or refuse, on the day the store took it.
 func TestLossAsLossOfCountsIt(t *testing.T) {
 	sec := int64(time.Second)
 	long := append([]byte(`{"ID":"1.000:9",`), bytes.Repeat([]byte("a"), rawrecord.MaxBytes)...)
-	a := accOf(t,
+	rows := rowsOf(readerOf(t,
 		own(store.HealthProvider, 1*sec, `{"schema_version":1,"kind":"health","state":"OK","at":1,"note_seq":1}`),
 		own(store.LossProvider, 2*sec, `{"schema_version":1,"dropped":5,"first_received":500000000,"last_received":600000000}`),
 		own(store.HealthProvider, 3*sec, `{"schema_version":1,"kind":"lost","stage":"dispatcher","count":9,"bytes":0,`+
@@ -44,128 +51,112 @@ func TestLossAsLossOfCountsIt(t *testing.T) {
 		own(store.HealthProvider, 7*sec, `{"schema_version":2,"kind":"health","state":"OK"}`),
 		rawrecord.New(0, store.SensorProvider, 9, 8*sec, long),
 		own("someone", 9*sec, `{}`),
-	)
-	if a.loss["cap"] != 5 || a.loss["dispatcher"] != 1 || a.loss["truncated"] != 1 || len(a.loss) != 3 {
-		t.Errorf("loss %v", a.loss)
+		own(store.HealthProvider, 2*dayNS, `{"schema_version":1,"kind":"lost","stage":"kernel","count":4,"bytes":0,`+
+			`"first_seq":0,"last_seq":0,"first_at":0,"last_at":0,"at":3,"note_seq":4}`),
+	))
+	// The day between holds no record; its row holds the seconds the health was not known, carried through it.
+	if len(rows) != 3 || rows[0].Day != "1970-01-01" || rows[1].Records["laurel"] != 0 || rows[1].NotKnown != 86400 || rows[2].Day != "1970-01-03" {
+		t.Fatalf("days %+v", rows)
 	}
-	if a.lossErrors != 3 || a.ownUnknown != 2 {
-		t.Errorf("loss records not decoded %d, own unknown %d", a.lossErrors, a.ownUnknown)
+	if l := rows[0].Loss; l["cap"] != 5 || l["dispatcher"] != 1 || l["truncated"] != 1 || len(l) != 3 {
+		t.Errorf("loss %v", l)
 	}
-	want := []span{{From: 1 * sec, To: 2 * sec}, {From: 1 * sec, To: 3 * sec}, {From: 3 * sec, To: 4 * sec},
-		{From: 4 * sec, To: 5 * sec}, {From: 5 * sec, To: 6 * sec}, {From: 6 * sec, To: 7 * sec},
-		{From: 7 * sec, To: 8 * sec}, {From: 8 * sec, To: 9 * sec}}
-	want[0].From = 500000000 // the store's first drop, before the last own record
-	if len(a.spans) != len(want) {
-		t.Fatalf("spans %+v", a.spans)
+	if r := rows[0]; r.LossErrors != 3 || r.OwnUnknown != 2 || r.Records["other"] != 1 {
+		t.Errorf("loss records not decoded %d, own unknown %d, records %v", r.LossErrors, r.OwnUnknown, r.Records)
 	}
-	for i := range want {
-		if a.spans[i].From != want[i].From || a.spans[i].To != want[i].To {
-			t.Errorf("span %d %+v, want %+v", i, a.spans[i], want[i])
-		}
+	if l := rows[2].Loss; l["kernel"] != 4 || len(l) != 1 {
+		t.Errorf("the third day's loss %v", l)
 	}
-}
-
-// TestALossBeforeAnyOwnRecordStartsInTheOlderShard: its span starts at the older shard's last own record.
-func TestALossBeforeAnyOwnRecordStartsInTheOlderShard(t *testing.T) {
-	sec := int64(time.Second)
-	older := accOf(t, own(store.HealthProvider, 10*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
-		rawrecord.New(0, store.SensorProvider, 1, 11*sec, otherLine(1, "k")))
-	newer := accOf(t, own(store.HealthProvider, 20*sec, `{"schema_version":1,"kind":"lost","stage":"queue","count":1,`+
-		`"bytes":0,"first_seq":0,"last_seq":0,"first_at":0,"last_at":0,"at":3,"note_seq":2}`),
-		rawrecord.New(0, store.SensorProvider, 2, 21*sec, otherLine(2, "k")))
-	st := newState([]store.Seal{{Name: "older"}, {Name: "newer"}}, 0, 0, 90)
-	st.merge("newer", newer)
-	if len(st.open) != 1 {
-		t.Fatalf("open spans %+v", st.open)
-	}
-	st.merge("older", older)
-	if len(st.open) != 0 || !containsSpan(st.spans, span{From: 10 * sec, To: 20 * sec}) {
-		t.Errorf("open %+v, spans %+v", st.open, st.spans)
-	}
-	d := st.render(0)
-	if d.Clean.State != "KNOWN" || len(d.Clean.Intervals) != 1 || d.Clean.Intervals[0].From != timeText(20*sec) {
-		t.Errorf("clean %+v", d.Clean)
-	}
-}
-
-func containsSpan(spans []span, s span) bool {
-	for _, x := range spans {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 func TestSilenceAndClockSteps(t *testing.T) {
 	sec := int64(time.Second)
-	a := accOf(t, own(store.HealthProvider, 10*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
+	rows := rowsOf(readerOf(t, own(store.HealthProvider, 10*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
 		rawrecord.New(0, store.SensorProvider, 1, 200*sec, otherLine(1, "k")),
-		rawrecord.New(0, store.SensorProvider, 2, 150*sec, otherLine(2, "k")))
-	if a.silences != 1 || a.clockBack != 1 || !containsSpan(a.spans, span{From: 10 * sec, To: 200 * sec}) ||
-		!containsSpan(a.spans, span{From: 150 * sec, To: 200 * sec}) {
-		t.Errorf("silences %d, clock back %d, spans %+v", a.silences, a.clockBack, a.spans)
+		rawrecord.New(0, store.SensorProvider, 2, 150*sec, otherLine(2, "k")),
+		rawrecord.New(0, store.SensorProvider, 3, 160*sec, otherLine(3, "k"))))
+	if r := rows[0]; r.Silences != 1 || r.ClockBack != 1 {
+		t.Errorf("silences %d, clock back %d", r.Silences, r.ClockBack)
 	}
+}
+
+// gapsOf counts the holes add leaves in s, those of the run being read too.
+func gapsOf(s *serials, add func(func(uint64, int64))) (gaps, missing uint64) {
+	count := func(m uint64, _ int64) { gaps, missing = gaps+1, missing+m }
+	add(count)
+	if s.cur != nil {
+		s.cur.holes(count)
+	}
+	return gaps, missing
 }
 
 func TestSerialGaps(t *testing.T) {
 	sec := int64(time.Second)
 	cases := map[string]struct {
-		add                 func(*serials)
-		gaps, missing, held uint64
-		segments            int
-		duplicates          uint64
+		add           func(*serials, func(uint64, int64))
+		gaps, missing uint64
+		segments      int
+		duplicates    uint64
 	}{
-		"late fills": {add: func(s *serials) {
+		"late fills": {add: func(s *serials, g func(uint64, int64)) {
 			for i, n := range []uint64{1, 2, 4, 3, 5} {
-				s.add(n, int64(i)*sec)
+				s.add(n, int64(i)*sec, g)
 			}
 		}, segments: 1},
-		"a gap long before the end, one near it": {add: func(s *serials) {
+		"a gap, however late its end": {add: func(s *serials, g func(uint64, int64)) {
 			for i, n := range []uint64{1, 2, 5, 6} {
-				s.add(n, int64(i)*sec)
+				s.add(n, int64(i)*sec, g)
 			}
-			s.add(8, 200*sec)
-		}, gaps: 1, missing: 2, held: 1, segments: 1},
-		"a duplicate": {add: func(s *serials) {
-			s.add(1, 0)
-			s.add(2, 0)
-			s.add(2, 0)
+			s.add(8, 200*sec, g)
+		}, gaps: 2, missing: 3, segments: 1},
+		"a duplicate": {add: func(s *serials, g func(uint64, int64)) {
+			s.add(1, 0, g)
+			s.add(2, 0, g)
+			s.add(2, 0, g)
 		}, segments: 1, duplicates: 1},
-		"a new boot": {add: func(s *serials) {
+		"a new boot": {add: func(s *serials, g func(uint64, int64)) {
 			s.started("b1")
-			s.add(100, 0)
+			s.add(100, 0, g)
 			s.started("b2")
-			s.add(1, 300*sec)
+			s.add(1, 300*sec, g)
 		}, segments: 2},
-		"a restart on the same boot loses serials": {add: func(s *serials) {
+		"a restart on the same boot loses serials": {add: func(s *serials, g func(uint64, int64)) {
 			s.started("b1")
-			s.add(100, 0)
+			s.add(100, 0, g)
 			s.started("b1")
-			s.add(110, 1*sec)
-			s.add(111, 300*sec)
+			s.add(110, 1*sec, g)
+			s.add(111, 300*sec, g)
 		}, gaps: 1, missing: 9, segments: 1},
-		"a restart below the highest is another run": {add: func(s *serials) {
-			s.add(100, 0)
-			s.started("")
-			s.add(3, 300*sec)
+		"a restart of a boot not known is another run": {add: func(s *serials, g func(uint64, int64)) {
+			s.add(100, 0, g)
+			s.started("b1")
+			s.add(110, 1*sec, g)
 		}, segments: 2},
-		"the counter wraps": {add: func(s *serials) {
-			s.add(1<<32-2, 0)
-			s.add(1, 300*sec)
+		"a restart below the highest is another run": {add: func(s *serials, g func(uint64, int64)) {
+			s.started("b1")
+			s.add(100, 0, g)
+			s.started("b1")
+			s.add(3, 300*sec, g)
 		}, segments: 2},
+		"the counter wraps": {add: func(s *serials, g func(uint64, int64)) {
+			s.add(1<<32-2, 0, g)
+			s.add(1, 300*sec, g)
+		}, segments: 2},
+		// A serial fills a hole only in its own run: 11 after the new boot is the new run's, not the 11 the old missed.
+		"another boot's serial fills no hole": {add: func(s *serials, g func(uint64, int64)) {
+			s.started("b1")
+			s.add(10, 0, g)
+			s.add(12, 0, g)
+			s.started("b2")
+			s.add(11, 1*sec, g)
+			s.add(13, 2*sec, g)
+		}, gaps: 2, missing: 2, segments: 2},
 	}
 	for name, c := range cases {
 		var s serials
-		c.add(&s)
-		var got gapCount
-		last := s.segs[len(s.segs)-1]
-		for _, g := range s.segs {
-			got.add(g, last.ranges[len(last.ranges)-1].hiAt-gapHold)
-		}
-		if got.gaps != c.gaps || got.missing != c.missing || got.held != c.held || len(s.segs) != c.segments ||
-			got.duplicate != c.duplicates {
-			t.Errorf("%s: %+v in %d segments", name, got, len(s.segs))
+		gaps, missing := gapsOf(&s, func(g func(uint64, int64)) { c.add(&s, g) })
+		if gaps != c.gaps || missing != c.missing || s.segments != c.segments || s.duplicate != c.duplicates {
+			t.Errorf("%s: %d gaps, %d missing, %d segments, %d duplicates", name, gaps, missing, s.segments, s.duplicate)
 		}
 	}
 }
@@ -173,13 +164,32 @@ func TestSerialGaps(t *testing.T) {
 // TestSerialsPastTheCap: past maxHeld holes the oldest is counted at once, so memory stays bounded and none is lost.
 func TestSerialsPastTheCap(t *testing.T) {
 	var s serials
-	for i := uint64(0); i <= maxHeld+10; i++ {
-		s.add(2*i, 0)
+	gaps, missing := gapsOf(&s, func(g func(uint64, int64)) {
+		for i := uint64(0); i <= maxHeld+10; i++ {
+			s.add(2*i, 0, g)
+		}
+	})
+	if len(s.cur.ranges) > maxHeld || gaps != maxHeld+10 || s.overCap != 11 || missing != maxHeld+10 {
+		t.Errorf("%d ranges, %d gaps, %d at the cap, %d missing", len(s.cur.ranges), gaps, s.overCap, missing)
 	}
-	g := s.segs[0]
-	var c gapCount
-	c.add(g, 1)
-	if len(g.ranges) > maxHeld || c.gaps != maxHeld+10 || c.overCap != 11 || c.missing != maxHeld+10 {
-		t.Errorf("%d ranges, %d gaps, %d at the cap, %d missing", len(g.ranges), c.gaps, c.overCap, c.missing)
+}
+
+// TestAGapIsCountedOnTheDayOfItsLaterEnd: serial 2 missing between one received on day 0 and one on day 1 is day 1's.
+func TestAGapIsCountedOnTheDayOfItsLaterEnd(t *testing.T) {
+	rows := rowsOf(readerOf(t, sensorAt(1, dayNS-int64(time.Second)), sensorAt(3, dayNS+int64(time.Second))))
+	if len(rows) != 2 || rows[0].Gaps != 0 || rows[1].Gaps != 1 || rows[1].Missing != 1 {
+		t.Errorf("days %+v", rows)
+	}
+}
+
+// TestTooManyDaysIsAnError: records on more than maxDays UTC days stop the read instead of growing it.
+func TestTooManyDaysIsAnError(t *testing.T) {
+	rd := newReader()
+	var err error
+	for d := int64(0); d <= maxDays && err == nil; d++ {
+		err = rd.add(sensorAt(uint64(d+1), d*dayNS))
+	}
+	if err == nil || len(rd.rows) > maxDays {
+		t.Errorf("%d days, %v", len(rd.rows), err)
 	}
 }

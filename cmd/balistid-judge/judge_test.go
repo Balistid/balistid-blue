@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,20 +71,22 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if d.Status != statusComplete || d.Store.Seals != 4 || len(d.Read) != 4 || len(d.NotRead) != 0 {
 		t.Fatalf("status %s, %d seals, read %v, not read %v", d.Status, d.Store.Seals, d.Read, d.NotRead)
 	}
-	if d.Read[0].Name != d.Store.LastSeal.Name || d.Read[0].First < d.Read[1].First || len(d.Store.LastSeal.SHA256) != 64 {
-		t.Errorf("shards not read newest first or the last seal not named: %v, %+v", d.Read, d.Store.LastSeal)
+	if d.Read[3].Name != d.Store.LastSeal.Name || d.Read[0].First > d.Read[1].First || len(d.Store.LastSeal.SHA256) != 64 {
+		t.Errorf("shards not read oldest first or the last seal not named: %v, %+v", d.Read, d.Store.LastSeal)
 	}
-	if d.Records["laurel"] != 41 || d.Records["balistid-health"] != 9 {
-		t.Errorf("records %v, want 41 of Laurel's and 9 own", d.Records)
+	all := totalOf(d.Days)
+	if all.Records["laurel"] != 41 || all.Records["balistid-health"] != 9 {
+		t.Errorf("records %v, want 41 of Laurel's and 9 own", all.Records)
 	}
 	if d.Keys["balistid-open"] == nil || d.Keys["balistid-open"].Records != 36 || d.Keys["balistid-exec"].Records != 4 || d.Keys[""].Records != 1 {
 		t.Errorf("by rule key %v", d.Keys)
 	}
-	if d.Loss["queue"] != 3 || d.LossErrors != 0 || d.Lag == nil || d.Lag.MS != 1500 {
-		t.Errorf("loss %v (%d not decoded), lag %+v", d.Loss, d.LossErrors, d.Lag)
+	if all.Loss["queue"] != 3 || all.LossErrors != 0 || all.StoreLag == nil || *all.StoreLag != 1500 {
+		t.Errorf("loss %v (%d not decoded), lag %v", all.Loss, all.LossErrors, all.StoreLag)
 	}
-	if s := d.Serials; s.Gaps != 2 || s.Missing != 4 || s.HeldAtEnd != 0 || s.Segments != 2 {
-		t.Errorf("serials %+v, want 111-112 and 131-132, 125 late, and the new boot its own segment", s)
+	if all.Gaps != 2 || all.Missing != 4 || d.Serials.Segments != 2 {
+		t.Errorf("%d gaps, %d missing, %+v; want 111-112 and 131-132, 125 late, and the new boot its own run", all.Gaps,
+			all.Missing, d.Serials)
 	}
 	var states []string
 	for _, h := range d.Health {
@@ -92,19 +95,15 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if got := strings.Join(states, ","); got != "UNKNOWN starting,OK,UNKNOWN canary-missed,OK,UNKNOWN stopped,UNKNOWN starting,OK" {
 		t.Errorf("health changes %s", got)
 	}
-	// Each change away from OK spans back to the collector's previous own record: the UNKNOWN to B's stats, the
-	// stop to the OK before it. What is left is the new boot, from its OK to the newest record.
-	if d.Clean.State != "KNOWN" || len(d.Clean.Intervals) != 1 {
-		t.Fatalf("clean %+v", d.Clean)
-	}
-	if d.Clean.Intervals[0].To != d.Period.To || d.Clean.Intervals[0].From != d.Health[6].At {
-		t.Errorf("clean intervals %+v, period %+v", d.Clean.Intervals, d.Period)
+	if all.NotOK <= 0 || all.NotKnown != 0 {
+		t.Errorf("seconds not OK %v, not known %v: the store starts with a started record", all.NotOK, all.NotKnown)
 	}
 	runs := readExec(t, out)
-	if names(runs) != "tool-c tool-a" || d.Exec.Successful != 4 || d.Exec.Exported != 2 || d.Exec.System != 2 {
-		t.Errorf("exec.jsonl %q, counts %+v", names(runs), d.Exec)
+	if names(runs) != "tool-a tool-c" || all.Exec.Successful != 4 || all.Exec.Listed != 2 || all.Exec.System != 2 {
+		t.Errorf("exec.jsonl %q, counts %+v", names(runs), all.Exec)
 	}
-	if r := runs[1]; r.Serial != 100 || r.PID != 4242 || r.UID != 1000 || r.Process.EventID != eventOf(100) ||
+	if r := runs[0]; r.Serial != 100 || r.PID != 4242 || r.UID != 1000 || r.Process.EventID != eventOf(100) ||
+		r.EventTime != "2026-11-22T09:37:02.1Z" || r.Received == "" ||
 		r.SpawnedBy == nil || r.SpawnedBy.StartTime != "1795340216.325" || r.SpawnedBy.PID != 1 || r.Agent || r.SpawnerAgent {
 		t.Errorf("run %+v", r)
 	}
@@ -134,13 +133,16 @@ func TestNoArgumentLeaves(t *testing.T) {
 	}
 }
 
-// TestOnlyUsersRuns: exec.jsonl holds no exec of a uid below 1000, and none older than the 7 days before the last seal.
+// TestOnlyUsersRuns: exec.jsonl holds no exec of a uid below 1000, and only those received on the 7 newest days
+// read: the oldest of 8 days was listed while it was among them and is taken out once it is not.
 func TestOnlyUsersRuns(t *testing.T) {
 	ts := newTestStore(t, 16<<20)
-	week := time.Now().Add(-8 * 24 * time.Hour).UnixNano()
-	ts.laurelAt(1, week, tool(1, 1000, "old"))
+	now := time.Now()
+	for d := range 8 {
+		ts.laurelAt(uint64(d+1), now.Add(time.Duration(d-7)*24*time.Hour).UnixNano(), tool(uint64(d+1), 1000, "d"+strconv.Itoa(d)))
+	}
 	for i, uid := range []uint32{0, 1, 999, 1000, 65534, 4294967294} {
-		ts.laurel(uint64(i+2), tool(uint64(i+2), uid, "u"+string(rune('a'+i))))
+		ts.laurel(uint64(i+10), tool(uint64(i+10), uid, "u"+string(rune('a'+i))))
 	}
 	ts.seal(true)
 	_, out, err := judgeOnce(t, ts.dir, nil)
@@ -148,16 +150,21 @@ func TestOnlyUsersRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	runs := readExec(t, out)
-	if got := names(runs); got != "ud ue uf" {
-		t.Errorf("exported %q, want the uids 1000 and above but the old one", got)
+	if got := names(runs); got != "d1 d2 d3 d4 d5 d6 d7 ud ue uf" {
+		t.Errorf("exported %q, want the uids 1000 and above of the 7 newest days", got)
 	}
 	for _, r := range runs {
 		if r.UID < minUID {
 			t.Errorf("uid %d exported", r.UID)
 		}
 	}
-	if d := readStateDoc(t, out); d.Exec.Older != 1 || d.Exec.System != 3 {
-		t.Errorf("exec counts %+v", d.Exec)
+	d := readStateDoc(t, out)
+	if all := totalOf(d.Days); len(d.Days) != 8 || d.Days[0].Exec.Outside != 1 || d.Days[0].Exec.Listed != 0 ||
+		all.Exec.System != 3 || all.Exec.Listed != 10 {
+		t.Errorf("days %d, the oldest %+v, all %+v", len(d.Days), d.Days[0].Exec, all.Exec)
+	}
+	if v := viewOf(t, out); v.Days[0].Listed != 0 || v.Days[0].ListedOf != 1 || v.Days[0].Runs != 0 {
+		t.Errorf("view of the oldest day %+v", v.Days[0])
 	}
 }
 
@@ -185,8 +192,11 @@ func TestReadLimit(t *testing.T) {
 	if d.ReadLimitMin != 90 {
 		t.Errorf("read limit %d", d.ReadLimitMin)
 	}
-	if got := names(readExec(t, out)); got != "tool-c" {
-		t.Errorf("exec.jsonl %q, want only the newest shard's", got)
+	if got := names(readExec(t, out)); got != "tool-a" {
+		t.Errorf("exec.jsonl %q, want only the oldest shard's", got)
+	}
+	if !strings.Contains(d.NotRead[0].Reason, "read limit") || !strings.Contains(d.NotRead[1].Reason, "not read: ") {
+		t.Errorf("not read %+v", d.NotRead)
 	}
 }
 
@@ -202,7 +212,7 @@ func TestReadLimitInsideAShard(t *testing.T) {
 	base := time.Now()
 	clock := func() time.Time {
 		calls++
-		if calls > 4 { // the start, two file writes, the shard's own check; then inside the shard
+		if calls > 4 { // the start, the first files, the shard's own check, a check inside it; then the next
 			return base.Add(2 * time.Hour)
 		}
 		return base
@@ -223,26 +233,14 @@ func TestReadLimitInsideAShard(t *testing.T) {
 // reason, never COMPLETE.
 func TestUnreadableIsUnknown(t *testing.T) {
 	ts := threeShards(t)
-	seals := readStateDocOf(t, ts)
-	newest := filepath.Join(ts.dir, seals.Store.LastSeal.Name)
-	b, err := os.ReadFile(newest) //nolint:gosec // the test's store
-	if err != nil {
-		t.Fatal(err)
-	}
-	b[len(b)-1] ^= 0xff
-	if err := os.Chmod(newest, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(newest, b, 0o600); err != nil { //nolint:gosec // the test's store
-		t.Fatal(err)
-	}
+	corrupt(t, ts, readStateDocOf(t, ts).Read[0].Name)
 	status, out, err := judgeOnce(t, ts.dir, nil)
 	d := readStateDoc(t, out)
 	if status != statusUnknown || err == nil || d.Status != statusUnknown || !strings.Contains(d.Reason, "SHA-256") {
 		t.Fatalf("status %s %s %q, %v", status, d.Status, d.Reason, err)
 	}
-	if len(d.Read) != 0 || len(d.NotRead) != 4 || d.Clean.State != statusUnknown {
-		t.Errorf("read %v, not read %v, clean %+v", d.Read, d.NotRead, d.Clean)
+	if len(d.Read) != 0 || len(d.NotRead) != 4 || len(d.Days) != 0 {
+		t.Errorf("read %v, not read %v, days %+v", d.Read, d.NotRead, d.Days)
 	}
 	status, out, err = judgeOnce(t, filepath.Join(ts.dir, "missing"), nil)
 	if d := readStateDoc(t, out); status != statusUnknown || err == nil || d.Status != statusUnknown || d.Reason == "" {

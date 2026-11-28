@@ -73,9 +73,10 @@ func TestBigStore(t *testing.T) {
 	d := readStateDoc(t, out)
 	mib := float64(d.Store.Bytes) / (1 << 20)
 	rate := mib / took.Seconds()
-	t.Logf("judged %d shards, %.0f MiB, in %s: %.1f MiB/s, 100 GiB in about %.0f min; %d runs exported",
-		len(d.Read), mib, took.Round(time.Second), rate, 100*1024/rate/60, d.Exec.Exported)
+	t.Logf("judged %d shards, %.0f MiB, in %s: %.1f MiB/s, 100 GiB in about %.0f min; %d runs listed",
+		len(d.Read), mib, took.Round(time.Second), rate, 100*1024/rate/60, totalOf(d.Days).Exec.Listed)
 	if took > readLimit {
 		t.Errorf("took %s, over the read limit", took)
 	}
+	checkSums(t, storeDir, out)
 }

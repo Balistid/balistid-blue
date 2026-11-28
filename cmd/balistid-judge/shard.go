@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"math"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -12,41 +15,31 @@ import (
 )
 
 const (
-	// silence is the longest time between two records that a clean interval spans: the collector writes stats
-	// every 60 s, so a longer silence is a suspend, a stop or records the judge cannot account for.
+	// silence is the longest time between two records that is not counted: the collector writes stats every 60 s,
+	// so a longer one is a suspend, a stop or records the judge cannot account for.
 	silence = int64(90 * time.Second)
-	// gapHold is how long a missing serial may arrive late before it is a gap. ADR 0062 sets gap_hold_s by a
-	// range measurement that has not run; 60 s is far above the lateness a Laurel line has in the range.
-	gapHold = int64(60 * time.Second)
 	// minUID is the first uid exec.jsonl holds (ADR 0082 point 4: 1000 or more). Above it are users, and also
 	// nobody (65534), systemd's dynamic uids and subordinate uids: they are listed too.
 	minUID = 1000
-	// longLag is the lag past which a stats or lag record cuts a clean interval by itself. Stats come every 60 s
-	// and a loss's span starts at the previous own record, so a lag under it keeps a misdated loss inside its span.
-	longLag = int64(60 * time.Second)
-	// Caps on what one shard keeps in memory (R5, T20); past them the judge says so and reports no clean interval.
+	// Caps on what the read keeps in memory (R5, T20): past maxDays the read stops as UNKNOWN, past the others it
+	// says so.
 	maxEvents  = 1 << 16
 	maxHeld    = 4096
 	maxKeys    = 256
+	maxDays    = 1 << 12
 	ownCapture = 4 << 10
+	dayNS      = int64(24 * time.Hour)
 )
 
-// span is a time no clean interval covers. fromOwn marks a span that starts at the collector's previous own
-// record, which is in an older shard: the merge sets From to that record's time, or to first, the loss's own first
-// time, when that is earlier.
-type span struct {
-	From, To int64
-	fromOwn  bool
-	first    int64
-}
+var errTooManyDays = errors.New("records on more than 4096 UTC days")
 
-// transition is a change of the collector's health: a health record, or a start or stop of the collector.
+// transition is a change of the collector's health: a health record, or a start or stop of the collector, at its
+// own time when that is earlier than when the store took it.
 type transition struct {
 	Seq   uint64 `json:"seq"`
 	At    string `json:"time"`
 	Kind  string `json:"kind"`
 	State string `json:"state"`
-	at    int64
 }
 
 // keyCount is what one audit rule key stored.
@@ -55,168 +48,258 @@ type keyCount struct {
 	Bytes   uint64 `json:"bytes"`
 }
 
-// execCounts counts the successful execs of a shard by what became of them.
+// execCounts counts a day's execs by what became of them. Successful is the next five together; the last three
+// are execs the judge counts and never lists: execveat, a 32-bit execve, a line the strict reading refused.
 type execCounts struct {
 	Successful uint64 `json:"successful"`
-	Exported   uint64 `json:"exported"`
-	System     uint64 `json:"system_uid"`
-	Older      uint64 `json:"older_than_7_days"`
+	Listed     uint64 `json:"listed"`
+	OverCap    uint64 `json:"not_listed_over_max_runs"`
+	Outside    uint64 `json:"not_listed_before_the_7_newest_days"`
 	Partial    uint64 `json:"fields_not_decoded"`
+	System     uint64 `json:"system_uid"`
 	Execveat   uint64 `json:"execveat_not_listed"`
 	OtherArch  uint64 `json:"other_arch_not_listed"`
+	Refused    uint64 `json:"refused_by_strict_reading"`
 }
 
-// lag is the largest lag the collector reported and when.
-type lag struct {
-	MS int64  `json:"ms"`
-	At string `json:"time"`
+// evidence is what a day's records say about what the store may lack: no count of it says that nothing was lost.
+type evidence struct {
+	Loss       map[string]uint64 `json:"loss_by_stage"`
+	LossErrors uint64            `json:"loss_records_not_decoded"`
+	OwnUnknown uint64            `json:"own_records_unknown"`
+	HealthLost uint64            `json:"health_records_lost"`
+	Gaps       uint64            `json:"serial_gaps"`
+	Missing    uint64            `json:"serials_missing"`
+	NotOK      float64           `json:"seconds_not_ok"`
+	NotKnown   float64           `json:"seconds_not_known"`
+	StoreLag   *int64            `json:"max_store_lag_ms"`
+	ArrivalLag *int64            `json:"max_arrival_lag_ms"`
+	Silences   uint64            `json:"silences_over_90s"`
+	ClockBack  uint64            `json:"clock_went_back"`
+	Undecoded  map[string]uint64 `json:"undecoded"`
 }
 
-// shardAcc is what the judge learns from one shard, read in seq order. It knows nothing of the shards around
-// it; the merge joins it to the newer one it read before.
-type shardAcc struct {
-	cutoff                 int64 // runs received before it are older than the 7 days
-	out                    *bufio.Writer
-	records                map[string]uint64
-	bytes                  uint64
-	firstSeq, lastSeq      uint64
-	firstAt, lastAt        int64
-	n                      uint64
-	ownSeen                bool
-	lastOwnAt              int64
-	keys                   map[string]*keyCount
-	keysOver               uint64
-	transitions            []transition
-	spans                  []span
-	over                   bool // transitions or spans past maxEvents
-	loss                   map[string]uint64
-	lossErrors, ownUnknown uint64
-	silences, clockBack    uint64
-	lag                    lag
-	lagNS                  int64
-	healthLost             uint64
-	lostHealth             int64 // the run's last lost_health; -1 before its first stats
-	undecoded              map[string]uint64
-	execs                  execCounts
-	ser                    serials
+// dayRow is one UTC day of records by their receive time: sums, and the health state carried into it.
+type dayRow struct {
+	Day     string            `json:"day"`
+	Earlier bool              `json:"earlier_shards_not_read,omitempty"`
+	Later   bool              `json:"later_shards_not_read,omitempty"`
+	Records map[string]uint64 `json:"records"`
+	Bytes   uint64            `json:"bytes"`
+	Exec    execCounts        `json:"exec"`
+	evidence
+	day             int64
+	notOK, notKnown int64
 }
 
-func newShardAcc(cutoff int64, out *bufio.Writer) *shardAcc {
-	return &shardAcc{cutoff: cutoff, out: out, records: map[string]uint64{}, keys: map[string]*keyCount{},
-		loss: map[string]uint64{}, undecoded: map[string]uint64{}, lagNS: -1, lostHealth: -1}
+// Health as the read carries it from record to record; before the first health or started record it is not known.
+const (
+	healthNotKnown = iota
+	healthOK
+	healthNotOK
+)
+
+// reader is the judge's one pass over the shards, oldest first: sums by UTC day and what is carried from one
+// record to the next, across shards.
+type reader struct {
+	rows       map[int64]*dayRow
+	newest     []int64 // the newest execDays days holding records, oldest first
+	keys       map[string]*keyCount
+	keysOver   uint64
+	trans      []transition
+	over       bool
+	tooMany    bool
+	ser        serials
+	n          uint64
+	lastAt     int64
+	health     int
+	cursor     int64  // health is counted up to here
+	okSince    int64  // where the health became OK: a change away from it counts back no further
+	lostHealth uint64 // the collector run's lost_health so far
+	listed     uint64 // lines in exec.jsonl and the shard's part
+	out        *bufio.Writer
 }
 
-// add takes the next record of the shard.
-func (a *shardAcc) add(r rawrecord.Record) error {
-	if a.n == 0 {
-		a.firstSeq, a.firstAt = r.Seq, r.Received
-	} else {
-		a.between(a.lastAt, r.Received)
+func newReader() *reader {
+	return &reader{rows: map[int64]*dayRow{}, keys: map[string]*keyCount{}}
+}
+
+// dayOf is the UTC day of a time, counted from 1970, rounded down.
+func dayOf(ns int64) int64 {
+	if ns < 0 && ns%dayNS != 0 {
+		return ns/dayNS - 1
 	}
-	prev := a.lastAt
-	a.n++
-	a.lastSeq, a.lastAt = r.Seq, r.Received
-	a.bytes += r.OrigLen
-	switch r.Provider {
-	case store.SensorProvider:
-		a.records[r.Provider]++
-		return a.sensor(r, prev)
-	case store.HealthProvider:
-		a.records[r.Provider]++
-		a.health(r)
-	case store.LossProvider:
-		a.records[r.Provider]++
-		a.storeLoss(r)
-	default: // lossOf refuses it: what it held is not known
-		a.records["other"]++
-		a.lossErrors++
-		a.addSpan(span{From: prev, To: r.Received, fromOwn: a.n == 1})
-	}
-	return nil
+	return ns / dayNS
 }
 
-// between keeps a clean interval from spanning a silence or a clock that went back between two records.
-func (a *shardAcc) between(prev, at int64) {
-	switch {
-	case at < prev:
-		a.clockBack++
-		a.addSpan(span{From: at, To: prev})
-	case at-prev > silence:
-		a.silences++
-		a.addSpan(span{From: prev, To: at})
+// row is the day's row, made on first use; past maxDays the read cannot go on.
+func (rd *reader) row(day int64) *dayRow {
+	if r, ok := rd.rows[day]; ok {
+		return r
 	}
+	r := &dayRow{Day: time.Unix(day*86400, 0).UTC().Format(time.DateOnly), day: day, Records: map[string]uint64{},
+		evidence: evidence{Loss: map[string]uint64{}, Undecoded: map[string]uint64{}}}
+	if len(rd.rows) >= maxDays {
+		rd.tooMany = true
+		return r
+	}
+	rd.rows[day] = r
+	return r
 }
 
-func (a *shardAcc) addSpan(s span) {
-	if len(a.spans) >= maxEvents {
-		a.over = true
+// windowFrom is the first day whose runs are listed: the oldest of the execDays newest days holding records.
+func (rd *reader) windowFrom() int64 {
+	if len(rd.newest) < execDays {
+		return math.MinInt64
+	}
+	return rd.newest[0]
+}
+
+// holding takes a day that got its first record.
+func (rd *reader) holding(day int64) {
+	i := sort.Search(len(rd.newest), func(i int) bool { return rd.newest[i] >= day })
+	if len(rd.newest) == execDays && i == 0 { // older than each of them
 		return
 	}
-	a.spans = append(a.spans, s)
-}
-
-// ownSpan is a loss or an unknown record of the collector's: it may have happened any time since its previous
-// own record, so that is where the span starts.
-func (a *shardAcc) ownSpan(at int64, first int64) {
-	s := span{From: a.lastOwnAt, To: at, fromOwn: !a.ownSeen, first: first}
-	if a.ownSeen && first > 0 && first < s.From {
-		s.From = first
+	rd.newest = slices.Insert(rd.newest, i, day)
+	if len(rd.newest) > execDays {
+		rd.newest = rd.newest[1:]
 	}
-	a.addSpan(s)
 }
 
-func (a *shardAcc) sensor(r rawrecord.Record, prev int64) error {
+// add takes the next record.
+func (rd *reader) add(r rawrecord.Record) error {
+	at := r.Received
+	row := rd.row(dayOf(at))
+	if len(row.Records) == 0 {
+		rd.holding(row.day)
+	}
+	if rd.n == 0 {
+		rd.cursor = at
+	} else {
+		switch {
+		case at < rd.lastAt:
+			row.ClockBack++
+		case at-rd.lastAt > silence:
+			row.Silences++
+		}
+	}
+	rd.count(at)
+	rd.n++
+	rd.lastAt = at
+	row.Bytes += r.OrigLen
+	var err error
+	switch r.Provider {
+	case store.SensorProvider:
+		row.Records[r.Provider]++
+		err = rd.sensor(row, r)
+	case store.HealthProvider:
+		row.Records[r.Provider]++
+		rd.own(row, r)
+	case store.LossProvider:
+		row.Records[r.Provider]++
+		storeLoss(row, r)
+	default: // lossOf refuses it: what it held is not known
+		row.Records["other"]++
+		row.LossErrors++
+	}
+	if rd.tooMany {
+		return errTooManyDays
+	}
+	return err
+}
+
+// count carries the health up to at: seconds not OK and not known, split at midnight. The clock going back
+// counts nothing.
+func (rd *reader) count(at int64) {
+	rd.addHealth(rd.cursor, at, rd.health)
+	rd.cursor = max(rd.cursor, at)
+}
+
+func (rd *reader) addHealth(from, to int64, health int) {
+	for from < to && health != healthOK {
+		end := min(to, (dayOf(from)+1)*dayNS)
+		row := rd.row(dayOf(from))
+		if health == healthNotOK {
+			row.notOK += end - from
+		} else {
+			row.notKnown += end - from
+		}
+		from = end
+	}
+}
+
+func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	if r.ProviderSeq == 0 {
-		a.undecoded["no serial"]++
+		row.Undecoded["no serial"]++
 	} else if !auditdOwn(r.Data) {
-		a.ser.add(r.ProviderSeq, r.Received)
+		rd.ser.add(r.ProviderSeq, r.Received, rd.gap)
 	}
 	if r.Truncated() { // lossOf counts it; its line is cut in two and not read
-		a.loss["truncated"]++
-		a.undecoded["truncated"]++
-		a.addSpan(span{From: prev, To: r.Received, fromOwn: a.n == 1})
+		row.Loss["truncated"]++
+		row.Undecoded["truncated"]++
 		return nil
 	}
 	rec, err := decodeLine(r.Data)
 	if err != nil {
-		a.undecoded["not a Laurel line"]++
+		row.Undecoded["not a Laurel line"]++
 		return nil
 	}
-	a.key(rec.Key, r.OrigLen)
+	if rec.Event {
+		maxOf(&row.ArrivalLag, (r.Received-rec.EventNS)/int64(time.Millisecond))
+	}
+	rd.key(rec.Key, r.OrigLen)
 	switch {
 	case rec.Refused != "":
-		a.undecoded[rec.Refused]++
+		row.Exec.Refused++
 	case rec.Unlisted == unlistedExecveat:
-		a.execs.Execveat++
+		row.Exec.Execveat++
 	case rec.Unlisted == unlistedOtherArch:
-		a.execs.OtherArch++
+		row.Exec.OtherArch++
 	}
 	if !rec.Exec {
 		return nil
 	}
-	a.execs.Successful++
+	row.Exec.Successful++
 	switch {
 	case !rec.Whole:
-		a.execs.Partial++
+		row.Exec.Partial++
 		return nil
 	case rec.Run.UID < minUID:
-		a.execs.System++
+		row.Exec.System++
 		return nil
-	case r.Received < a.cutoff:
-		a.execs.Older++
+	case row.day < rd.windowFrom():
+		row.Exec.Outside++
+		return nil
+	case rd.listed >= maxRuns:
+		row.Exec.OverCap++
 		return nil
 	}
 	line := rec.Run
-	line.Time, line.Serial = timeText(r.Received), r.ProviderSeq
+	line.EventTime, line.Received, line.Serial = timeText(rec.EventNS), timeText(r.Received), r.ProviderSeq
 	b, err := json.Marshal(line)
 	if err != nil {
 		return err //nolint:wrapcheck // a run of fixed types always encodes
 	}
-	if _, err := a.out.Write(append(b, '\n')); err != nil {
+	if _, err := rd.out.Write(append(b, '\n')); err != nil {
 		return err //nolint:wrapcheck // the caller names the file
 	}
-	a.execs.Exported++
+	row.Exec.Listed++
+	rd.listed++
 	return nil
+}
+
+// gap counts a hole in the serials on the day its later end was received.
+func (rd *reader) gap(missing uint64, at int64) {
+	row := rd.row(dayOf(at))
+	row.Gaps++
+	row.Missing = satAdd(row.Missing, missing)
+}
+
+func maxOf(p **int64, v int64) {
+	if *p == nil || v > **p {
+		*p = &v
+	}
 }
 
 // auditdOwn reports a line of auditd's own (DAEMON_*): its number is auditd's, not the kernel's (ADR 0062 point 1).
@@ -229,40 +312,56 @@ func auditdOwn(data []byte) bool {
 	return bytes.HasPrefix(data[len(`{"ID":"`)+end+1:], []byte(`,"DAEMON_`))
 }
 
-func (a *shardAcc) key(k string, size uint64) {
-	c, ok := a.keys[k]
+func (rd *reader) key(k string, size uint64) {
+	c, ok := rd.keys[k]
 	if !ok {
-		if len(a.keys) >= maxKeys {
-			a.keysOver++
+		if len(rd.keys) >= maxKeys {
+			rd.keysOver++
 			return
 		}
 		c = &keyCount{}
-		a.keys[k] = c
+		rd.keys[k] = c
 	}
 	c.Records++
 	c.Bytes += size
 }
 
-func (a *shardAcc) transition(seq uint64, at int64, kind, state string) {
-	if len(a.transitions) >= maxEvents {
-		a.over = true
+// change is a health change at the record's own time when that is earlier than when the store took it. A change
+// away from OK counts as not OK back to that time; one to OK counts nothing back.
+func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
+	t := r.Received
+	if at > 0 && at < t {
+		t = at
+	}
+	next := healthNotOK
+	if state == "OK" {
+		next = healthOK
+	}
+	switch {
+	case next == healthNotOK && rd.health == healthOK:
+		rd.addHealth(max(t, rd.okSince), rd.cursor, healthNotOK)
+	case next == healthOK && rd.health != healthOK:
+		rd.okSince = rd.cursor
+	}
+	rd.health = next
+	if len(rd.trans) >= maxEvents {
+		rd.over = true
 		return
 	}
-	a.transitions = append(a.transitions, transition{Seq: seq, At: timeText(at), Kind: kind, State: state, at: at})
+	rd.trans = append(rd.trans, transition{Seq: r.Seq, At: timeText(t), Kind: kind, State: state})
 }
 
-// health reads one of the collector's own records (internal/collector/writer.go). A kind it does not know, or a
-// record that does not decode, is not healthy: a span, counted.
-func (a *shardAcc) health(r rawrecord.Record) {
-	defer func() { a.ownSeen, a.lastOwnAt = true, r.Received }()
+// own reads one of the collector's own records (internal/collector/writer.go). One that does not decode may have
+// been a health change: the health is not known from it on.
+func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	var head struct {
 		SchemaVersion int    `json:"schema_version"`
 		Kind          string `json:"kind"`
 		At            int64  `json:"at"`
 	}
 	if len(r.Data) > ownCapture || json.Unmarshal(r.Data, &head) != nil || head.SchemaVersion != 1 {
-		a.ownUnknown++
-		a.ownSpan(r.Received, 0)
+		row.OwnUnknown++
+		rd.health = healthNotKnown
 		return
 	}
 	switch head.Kind {
@@ -271,73 +370,57 @@ func (a *shardAcc) health(r rawrecord.Record) {
 			State string `json:"state"`
 		}
 		if json.Unmarshal(r.Data, &h) != nil || h.State == "" {
-			a.ownUnknown++
-			a.ownSpan(r.Received, 0)
+			row.OwnUnknown++
+			rd.health = healthNotKnown
 			return
 		}
-		a.transition(r.Seq, r.Received, "health", h.State)
-		if h.State != "OK" {
-			a.notOK(r.Received, head.At)
-		}
+		rd.change(r, head.At, "health", h.State)
 	case "started":
 		var s struct {
 			Info struct {
 				BootID string `json:"boot_id"`
 			} `json:"info"`
 		}
-		_ = json.Unmarshal(r.Data, &s) // a started record without a boot id goes on in the same boot
-		a.ser.started(s.Info.BootID)
-		a.lostHealth = -1
-		a.transition(r.Seq, r.Received, "started", "UNKNOWN starting")
-		a.notOK(r.Received, head.At)
+		_ = json.Unmarshal(r.Data, &s) // a started record without a boot id begins a new run of the serials
+		rd.ser.started(s.Info.BootID)
+		rd.lostHealth = 0
+		rd.change(r, head.At, "started", "UNKNOWN starting")
 	case "stopping":
-		a.transition(r.Seq, r.Received, "stopping", "UNKNOWN stopped")
-		a.notOK(r.Received, head.At)
+		rd.change(r, head.At, "stopping", "UNKNOWN stopped")
 	case "stats", "lag":
-		a.stats(r)
+		rd.stats(row, r)
 	case "lost":
-		a.lost(r)
+		lost(row, r)
 	case "connection", "refused":
 	default:
-		a.ownUnknown++
-		a.ownSpan(r.Received, 0)
+		row.OwnUnknown++
 	}
 }
 
-// notOK spans a change away from OK from the collector's previous own record, or from the change's own time when
-// that is earlier: a crash writes no record, and a change waits for the store as long as it is down.
-func (a *shardAcc) notOK(received, at int64) {
-	a.ownSpan(received, at)
-}
-
-// stats reads the lag and the health records that gave way. A lag past longLag spans the time back to the
-// records it delayed; health records that gave way, more than at the run's last stats, span as a loss does.
-func (a *shardAcc) stats(r rawrecord.Record) {
+// stats reads the store's lag and the health records that gave way: lost_health is the collector run's running
+// total, so its rise is what gave way since the last stats; one that falls began a run whose start was not read.
+func (rd *reader) stats(row *dayRow, r rawrecord.Record) {
 	var l struct {
-		MaxLag     *int64 `json:"max_lag_ms"`
-		Lag        *int64 `json:"lag_ms"`
-		LostHealth *int64 `json:"lost_health"`
+		MaxLag     *int64  `json:"max_lag_ms"`
+		Lag        *int64  `json:"lag_ms"`
+		LostHealth *uint64 `json:"lost_health"`
 	}
 	_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
 	for _, ms := range []*int64{l.MaxLag, l.Lag} {
-		if ms == nil {
-			continue
-		}
-		if *ms > a.lagNS {
-			a.lagNS, a.lag = *ms, lag{MS: *ms, At: timeText(r.Received)}
-		}
-		if ns := *ms * int64(time.Millisecond); ns > longLag {
-			a.ownSpan(r.Received, r.Received-ns)
+		if ms != nil {
+			maxOf(&row.StoreLag, *ms)
 		}
 	}
 	if l.LostHealth == nil {
 		return
 	}
-	if n := *l.LostHealth; n > max(a.lostHealth, 0) {
-		a.healthLost = satAdd(a.healthLost, uint64(n-max(a.lostHealth, 0))) //nolint:gosec // n is above it
-		a.ownSpan(r.Received, 0)
+	n := *l.LostHealth
+	if n >= rd.lostHealth {
+		row.HealthLost = satAdd(row.HealthLost, n-rd.lostHealth)
+	} else {
+		row.HealthLost = satAdd(row.HealthLost, n)
 	}
-	a.lostHealth = *l.LostHealth
+	rd.lostHealth = n
 }
 
 // lossStages are internal/collector's stages, as lossOf knows them.
@@ -346,7 +429,7 @@ var lossStages = map[string]bool{"cap": true, "queue": true, "framing": true, "s
 
 // lost is lossOf on a lost record: decoded strictly, its stage known, its count at least 1, the dispatcher's
 // counted once (flips merged while the store was down, ADR 0038).
-func (a *shardAcc) lost(r rawrecord.Record) {
+func lost(row *dayRow, r rawrecord.Record) {
 	var l struct {
 		SchemaVersion int    `json:"schema_version"`
 		At            int64  `json:"at"`
@@ -361,20 +444,18 @@ func (a *shardAcc) lost(r rawrecord.Record) {
 		LastAt        int64  `json:"last_at"`
 	}
 	if strictDecode(r.Data, &l) != nil || !lossStages[l.Stage] || l.SchemaVersion != 1 || l.Count == 0 {
-		a.lossErrors++
-		a.ownSpan(r.Received, 0)
+		row.LossErrors++
 		return
 	}
 	n := l.Count
 	if l.Stage == "dispatcher" {
 		n = 1
 	}
-	a.loss[l.Stage] = satAdd(a.loss[l.Stage], n)
-	a.ownSpan(r.Received, l.FirstAt)
+	row.Loss[l.Stage] = satAdd(row.Loss[l.Stage], n)
 }
 
-// storeLoss is lossOf on the store's own loss record: records dropped at the cap, with their receive times.
-func (a *shardAcc) storeLoss(r rawrecord.Record) {
+// storeLoss is lossOf on the store's own loss record: records dropped at the cap.
+func storeLoss(row *dayRow, r rawrecord.Record) {
 	var l struct {
 		SchemaVersion int    `json:"schema_version"`
 		Dropped       uint64 `json:"dropped"`
@@ -382,12 +463,10 @@ func (a *shardAcc) storeLoss(r rawrecord.Record) {
 		LastReceived  int64  `json:"last_received"`
 	}
 	if strictDecode(r.Data, &l) != nil || l.SchemaVersion != 1 || l.Dropped == 0 {
-		a.lossErrors++
-		a.ownSpan(r.Received, 0)
+		row.LossErrors++
 		return
 	}
-	a.loss["cap"] = satAdd(a.loss["cap"], l.Dropped)
-	a.ownSpan(r.Received, l.FirstReceived)
+	row.Loss["cap"] = satAdd(row.Loss["cap"], l.Dropped)
 }
 
 func satAdd(a, b uint64) uint64 {

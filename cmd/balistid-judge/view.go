@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"slices"
 	"sort"
@@ -17,55 +18,78 @@ import (
 	"github.com/Balistid/balistid-blue/internal/wholefile"
 )
 
-// Caps on what view reads (T20): state.json holds at most maxEvents changes and spans. A run takes some 400 bytes
-// in memory, so runsMax is about 1.6 GiB, and exec.jsonl may hold 512 bytes a run on average. view is the user's
+// Caps on what view reads (T20): state.json holds at most maxEvents changes and maxDays days. A run takes some
+// 400 bytes in memory, so maxRuns is about 1.6 GiB, and a line of exec.jsonl is under 512 bytes. view is the user's
 // own program, so a host that runs more needs only a new view, not a new install.
 const (
 	stateMax    = 64 << 20
 	lineMax     = 4 << 10
-	runsMax     = 1 << 22
-	execMax     = runsMax * 512
+	execMax     = maxRuns * 512
 	manifestMax = 1 << 20
 	topN        = 20
 	listMax     = 1000
 )
 
-// Where a run's chain of spawners ended. Only agent is a claim: an ancestor is an agent's binary. Every other run
-// may still be an agent's (ADR 0082 point 5): observed is a process Laurel named by its start time only, read from
-// /proc or forked without an exec (a subshell); broken is a link exec.jsonl lacks (lost, filtered or older).
+// Where a run's chain of spawners ended. Only agent is a claim: an ancestor is Claude Code's binary. Every other
+// run may still be an agent's (ADR 0082 point 5): observed is a process Laurel named by its start time only, read
+// from /proc or forked without an exec (a subshell); broken is a link exec.jsonl lacks (lost, filtered or older),
+// one whose event id two runs of other pids carry, or one whose pid is not its spawner's.
 const (
 	underAgent    = "agent"
 	endedObserved = "ended-observed"
 	broken        = "broken"
 )
 
+const agentIs = "a run is under an agent when one of its spawners is Claude Code's binary, known by its path"
+
 type viewDoc struct {
-	Schema   int        `json:"schema_version"`
-	Covers   coversDoc  `json:"covers"`
-	Programs namesShown `json:"programs_under_agents"`
-	Clean    viewClean  `json:"clean"`
-	Probes   *probesDoc `json:"probes,omitempty"`
+	Schema int         `json:"schema_version"`
+	Covers coversDoc   `json:"covers"`
+	Days   []dayView   `json:"days"`
+	Top    []nameCount `json:"top_under_agents"`
+	Once   namesShown  `json:"once_under_agents"`
+	Broken brokenShown `json:"broken_chain_runs"`
+	Probes *probesDoc  `json:"probes,omitempty"`
 }
 
-// coversDoc is what the programs list covers: the judge's status, its period and what it did not read.
+// coversDoc is what the days cover: the judge's status and what it did not read.
 type coversDoc struct {
 	Status   string       `json:"status"`
 	Reason   string       `json:"reason,omitempty"`
-	Period   *periodDoc   `json:"period"`
-	Since    string       `json:"exec_since"`
-	Runs     int          `json:"runs"`
+	Agent    string       `json:"agent"`
+	Partial  string       `json:"partial,omitempty"`
 	NotRead  []notReadDoc `json:"shards_not_read"`
 	Unsealed []string     `json:"unsealed_not_read"`
-	Clean    string       `json:"clean_state"`
-	Partial  string       `json:"partial,omitempty"`
+	Torn     bool         `json:"torn_index_line"`
 	Owner    uint32       `json:"owner_uid"`
-	// Exec is what the judge counted of the execs, those it did not list too, which no count below holds.
-	Exec execCounts `json:"exec"`
+	NoDay    int          `json:"runs_of_no_day_read"`
+}
+
+// dayView is one UTC day; a day not read has no count at all, never a zero.
+type dayView struct {
+	Day  string `json:"day"`
+	Read bool   `json:"read"`
+	*DayCounts
+}
+
+// DayCounts is a day read: the runs exec.jsonl holds of it, each count of what the store holds and so a lower
+// bound, beside that day's evidence of what it may lack.
+type DayCounts struct {
+	Earlier       bool       `json:"earlier_shards_not_read,omitempty"`
+	Later         bool       `json:"later_shards_not_read,omitempty"`
+	Runs          uint64     `json:"runs_at_least"`
+	UnderAgent    uint64     `json:"under_agent_at_least"`
+	EndedObserved uint64     `json:"chain_ended_at_an_observed_process"`
+	Broken        uint64     `json:"chain_broken"`
+	Listed        uint64     `json:"listed"`
+	ListedOf      uint64     `json:"listed_of"`
+	Execs         execCounts `json:"execs_at_least"`
+	Evidence      evidence   `json:"evidence"`
 }
 
 type nameCount struct {
 	Name  string `json:"name"`
-	Count int    `json:"count"`
+	Count uint64 `json:"runs_at_least"`
 }
 
 // namesShown is a list cut at listMax, with how many there are.
@@ -75,25 +99,17 @@ type namesShown struct {
 	Names []nameCount `json:"names"`
 }
 
-// viewClean is printed for runs inside the clean intervals only (ADR 0082 point 5). UnderAgent is a lower bound.
-type viewClean struct {
-	State         string      `json:"state"`
-	Reason        string      `json:"reason,omitempty"`
-	Seconds       float64     `json:"seconds"`
-	Runs          int         `json:"runs"`
-	UnderAgent    int         `json:"under_agent_at_least"`
-	EndedObserved int         `json:"chain_ended_at_an_observed_process"`
-	Broken        int         `json:"chain_broken"`
-	Top           []nameCount `json:"top_under_agents"`
-	Once          namesShown  `json:"once_under_agents"`
-	BrokenRuns    []runRef    `json:"broken_chain_runs"`
-	BrokenShown   int         `json:"broken_chain_shown"`
+type brokenShown struct {
+	Shown int      `json:"shown"`
+	Total int      `json:"total"`
+	Runs  []runRef `json:"runs"`
 }
 
 type runRef struct {
-	Time   string `json:"time"`
-	Serial uint64 `json:"serial"`
-	Name   string `json:"name"`
+	Received  string `json:"received"`
+	EventTime string `json:"event_time"`
+	Serial    uint64 `json:"serial"`
+	Name      string `json:"name"`
 }
 
 // collector is the one uid whose files view reads: the judge runs as the collector's. The caller's is not one: an
@@ -118,9 +134,6 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if sd.Exec.Exported > runsMax {
-		return fmt.Errorf("view: state.json counts %d runs, over the %d this view holds", sd.Exec.Exported, runsMax)
-	}
 	runs, err := readRuns(root, owners)
 	if err != nil {
 		return err
@@ -128,27 +141,22 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	if err := unchanged(root, stateInfo); err != nil {
 		return err
 	}
-	// COMPLETE is written after the last append, so the two agree; anything else may stand beside a part.
-	if sd.Status == statusComplete && uint64(len(runs)) != sd.Exec.Exported {
-		return fmt.Errorf("view: exec.jsonl holds %d runs, state.json %d: the files are not one run's", len(runs), sd.Exec.Exported)
-	}
 	probes, err := readManifests(manifests)
 	if err != nil {
 		return err
 	}
 	where := assign(runs)
-	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Period: sd.Period,
-		Since: sd.Exec.Since, Runs: len(runs), NotRead: sd.NotRead, Unsealed: sd.Unsealed, Clean: sd.Clean.State,
-		Owner: ownerOf(stateInfo), Exec: sd.Exec.execCounts}}
-	doc.Programs = programs(runs, where)
-	doc.Clean = cleanView(sd.Clean, runs, where)
-	if sd.Status != statusComplete {
-		doc.Covers.Partial = "the judge's status is " + sd.Status + ": the run list is partial, and no clean count is given"
-		doc.Clean = viewClean{State: statusUnknown, Reason: doc.Covers.Partial, Top: []nameCount{}, Once: capped(nil),
-			BrokenRuns: []runRef{}}
+	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Agent: agentIs, NotRead: sd.NotRead,
+		Unsealed: sd.Unsealed, Torn: sd.TornIndex, Owner: ownerOf(stateInfo)}}
+	if doc.Days, doc.Covers.NoDay, err = days(sd, runs, where); err != nil {
+		return err
 	}
+	if sd.Status != statusComplete {
+		doc.Covers.Partial = "the judge's status is " + sd.Status + ": what it did not read is not in any day"
+	}
+	doc.Top, doc.Once, doc.Broken = overAll(runs, where)
 	if len(manifests) > 0 {
-		p := checkProbes(probes, runs, where, sd.Period)
+		p := checkProbes(probes, runs, where, sd.Status == statusComplete)
 		doc.Probes = &p
 	}
 	b, err := json.MarshalIndent(doc, "", " ")
@@ -157,6 +165,88 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	}
 	_, err = w.Write(append(b, '\n'))
 	return err //nolint:wrapcheck // stdout
+}
+
+// days is one entry for every day of the state and every day of a shard it did not read, oldest first, and how many
+// runs fell on no day the state holds. COMPLETE is written after the last append, so there each day's runs must be
+// those the state counts as listed.
+func days(sd stateDoc, runs []execRun, where []string) ([]dayView, int, error) {
+	byDay := map[string]*dayView{}
+	for i := range sd.Days {
+		r := &sd.Days[i]
+		byDay[r.Day] = &dayView{Day: r.Day, Read: true, DayCounts: &DayCounts{Earlier: r.Earlier, Later: r.Later,
+			Listed: r.Exec.Listed, ListedOf: r.Exec.Listed + r.Exec.OverCap + r.Exec.Outside, Execs: r.Exec, Evidence: r.evidence}}
+	}
+	noDay := 0
+	for i, r := range runs {
+		v := byDay[r.receivedAt.UTC().Format(time.DateOnly)]
+		if v == nil {
+			noDay++
+			continue
+		}
+		v.Runs++
+		switch where[i] {
+		case underAgent:
+			v.UnderAgent++
+		case endedObserved:
+			v.EndedObserved++
+		default:
+			v.Broken++
+		}
+	}
+	if sd.Status == statusComplete && noDay > 0 {
+		return nil, 0, fmt.Errorf("view: exec.jsonl holds %d runs of days state.json has not: the files are not one run's", noDay)
+	}
+	for _, v := range byDay {
+		if sd.Status == statusComplete && v.Runs != v.Listed {
+			return nil, 0, fmt.Errorf("view: exec.jsonl holds %d runs of %s, state.json %d: the files are not one run's", v.Runs, v.Day, v.Listed)
+		}
+	}
+	for _, s := range sd.NotRead {
+		sealed, _ := time.Parse(time.RFC3339, s.Sealed) // readState parsed it
+		if day := sealed.UTC().Format(time.DateOnly); byDay[day] == nil {
+			byDay[day] = &dayView{Day: day}
+		}
+	}
+	out := make([]dayView, 0, len(byDay))
+	for _, day := range slices.Sorted(maps.Keys(byDay)) {
+		out = append(out, *byDay[day])
+	}
+	return out, noDay, nil
+}
+
+// overAll is, over every day listed, the topN names most often under an agent, the names under one once, and the
+// runs whose chain broke, oldest first.
+func overAll(runs []execRun, where []string) ([]nameCount, namesShown, brokenShown) {
+	counts := map[string]uint64{}
+	var brokenRuns []execRun
+	for i, r := range runs {
+		switch where[i] {
+		case underAgent:
+			counts[r.Name]++
+		case broken:
+			brokenRuns = append(brokenRuns, r)
+		}
+	}
+	all := sorted(counts)
+	var once []nameCount
+	for _, nc := range all {
+		if nc.Count == 1 {
+			once = append(once, nc)
+		}
+	}
+	sort.Slice(once, func(i, j int) bool { return once[i].Name < once[j].Name })
+	// RFC 3339 drops trailing zeros and does not sort as text: by the parsed time.
+	sort.Slice(brokenRuns, func(i, j int) bool {
+		a, b := brokenRuns[i], brokenRuns[j]
+		return a.receivedAt.Before(b.receivedAt) || a.receivedAt.Equal(b.receivedAt) && a.Serial < b.Serial
+	})
+	b := brokenShown{Total: len(brokenRuns), Runs: []runRef{}}
+	for _, r := range brokenRuns[:min(listMax, len(brokenRuns))] {
+		b.Runs = append(b.Runs, runRef{Received: r.Received, EventTime: r.EventTime, Serial: r.Serial, Name: r.Name})
+	}
+	b.Shown = len(b.Runs)
+	return append([]nameCount{}, all[:min(topN, len(all))]...), capped(once), b
 }
 
 // failed is what went wrong, with the decoder's error when there is one.
@@ -215,15 +305,15 @@ func readState(root *os.Root, owners []uint32) (stateDoc, fs.FileInfo, error) {
 	if err := strictDecode(b, &sd); err != nil || sd.Schema != 1 {
 		return sd, nil, failed("view: %s is not the judge's state of schema 1", err, stateFile)
 	}
-	// inside finds a run's interval by halving, so the intervals must be in order and apart.
-	var end time.Time
-	for i, iv := range sd.Clean.Intervals {
-		from, err1 := time.Parse(time.RFC3339Nano, iv.From)
-		to, err2 := time.Parse(time.RFC3339Nano, iv.To)
-		if err := errors.Join(err1, err2); err != nil || to.Before(from) || i > 0 && from.Before(end) {
-			return sd, nil, fmt.Errorf("view: %s: clean interval %d does not read, or is not after the one before", stateFile, i)
+	for i, r := range sd.Days {
+		if _, err := time.Parse(time.DateOnly, r.Day); err != nil || i > 0 && r.Day <= sd.Days[i-1].Day {
+			return sd, nil, fmt.Errorf("view: %s: day %d does not read, or is not after the one before", stateFile, i)
 		}
-		end = to
+	}
+	for _, s := range sd.NotRead {
+		if _, err := time.Parse(time.RFC3339, s.Sealed); err != nil {
+			return sd, nil, fmt.Errorf("view: %s: shard %s has no seal time", stateFile, s.Name)
+		}
 	}
 	return sd, fi, nil
 }
@@ -262,29 +352,41 @@ func decodeRuns(r io.Reader) ([]execRun, error) {
 			return nil, fmt.Errorf("view: %s line %d is torn: no newline", execFile, n)
 		case err != nil:
 			return nil, fmt.Errorf("view: %s line %d: %w", execFile, n, err)
-		case len(runs) >= runsMax:
-			return nil, fmt.Errorf("view: %s has more than %d runs", execFile, runsMax)
+		case len(runs) >= maxRuns:
+			return nil, fmt.Errorf("view: %s has more than %d runs", execFile, maxRuns)
 		}
 		var x execRun
 		if err := strictDecode(line[:len(line)-1], &x); err != nil || x.Schema != 1 {
 			return nil, failed("view: %s line %d is not a run of schema 1", err, execFile, n)
 		}
-		if _, err := time.Parse(time.RFC3339Nano, x.Time); err != nil {
+		event, err1 := time.Parse(time.RFC3339Nano, x.EventTime)
+		received, err2 := time.Parse(time.RFC3339Nano, x.Received)
+		if err := errors.Join(err1, err2); err != nil {
 			return nil, fmt.Errorf("view: %s line %d: %w", execFile, n, err)
 		}
 		if !nameAlphabet.MatchString(x.Name) {
 			return nil, fmt.Errorf("view: %s line %d: a name outside the alphabet", execFile, n)
 		}
+		x.eventAt, x.receivedAt = event, received
 		runs = append(runs, x)
 	}
 }
+
+// ambiguous is an event id two runs of other pids carry: which of them spawned a run is not known.
+const ambiguous = -1
 
 // assign says where every run is, walking SPAWNED_BY through the exec events' own keys: a pid alone is reused.
 func assign(runs []execRun) []string {
 	byEvent := make(map[string]int, len(runs))
 	for i, r := range runs {
-		if r.Process.EventID != "" {
-			byEvent[r.Process.EventID] = i
+		id := r.Process.EventID
+		if id == "" {
+			continue
+		}
+		if j, ok := byEvent[id]; !ok {
+			byEvent[id] = i
+		} else if j == ambiguous || runs[j].PID != r.PID {
+			byEvent[id] = ambiguous
 		}
 	}
 	where := make([]string, len(runs))
@@ -294,8 +396,9 @@ func assign(runs []execRun) []string {
 	return where
 }
 
-// chainOf follows run i's spawners until one is an agent's or the chain ends, and sets where for every run on it.
-// The order of exec.jsonl does not matter: links are looked up by key.
+// chainOf follows run i's spawners until one is Claude Code's binary or the chain ends, and sets where for every
+// run on it. The order of exec.jsonl does not matter: links are looked up by key, and kept only when the run found
+// has the spawner's pid.
 func chainOf(runs []execRun, byEvent map[string]int, where []string, i int) string {
 	if where[i] != "" {
 		return where[i]
@@ -323,7 +426,7 @@ func chainOf(runs []execRun, byEvent map[string]int, where []string, i int) stri
 			break
 		}
 		p, ok := byEvent[sp.EventID]
-		if !ok || seen[p] {
+		if !ok || p == ambiguous || seen[p] || runs[p].PID != sp.PID {
 			break
 		}
 		if runs[p].Agent {
@@ -338,22 +441,12 @@ func chainOf(runs []execRun, byEvent map[string]int, where []string, i int) stri
 	return result
 }
 
-func programs(runs []execRun, where []string) namesShown {
-	counts := map[string]int{}
-	for i, r := range runs {
-		if where[i] == underAgent {
-			counts[r.Name]++
-		}
-	}
-	return capped(sorted(counts))
-}
-
 func capped(all []nameCount) namesShown {
 	shown := append([]nameCount{}, all[:min(listMax, len(all))]...)
 	return namesShown{Shown: len(shown), Total: len(all), Names: shown}
 }
 
-func sorted(counts map[string]int) []nameCount {
+func sorted(counts map[string]uint64) []nameCount {
 	out := make([]nameCount, 0, len(counts))
 	for n, c := range counts {
 		out = append(out, nameCount{Name: n, Count: c})
@@ -365,67 +458,4 @@ func sorted(counts map[string]int) []nameCount {
 		return out[i].Name < out[j].Name
 	})
 	return out
-}
-
-func cleanView(c cleanDoc, runs []execRun, where []string) viewClean {
-	v := viewClean{State: c.State, Reason: c.Reason, Seconds: c.Seconds, Top: []nameCount{}, Once: capped(nil),
-		BrokenRuns: []runRef{}}
-	if c.State != "KNOWN" {
-		return v
-	}
-	ivs := make([][2]time.Time, 0, len(c.Intervals))
-	for _, iv := range c.Intervals {
-		from, _ := time.Parse(time.RFC3339Nano, iv.From) // readState parsed every interval
-		to, _ := time.Parse(time.RFC3339Nano, iv.To)
-		ivs = append(ivs, [2]time.Time{from, to})
-	}
-	counts := map[string]int{}
-	type timedRef struct {
-		at time.Time
-		runRef
-	}
-	var brokenRuns []timedRef
-	for i, r := range runs {
-		at, _ := time.Parse(time.RFC3339Nano, r.Time) // decodeRuns parsed every time
-		if !inside(ivs, at) {
-			continue
-		}
-		v.Runs++
-		switch where[i] {
-		case underAgent:
-			v.UnderAgent++
-			counts[r.Name]++
-		case endedObserved:
-			v.EndedObserved++
-		default:
-			v.Broken++
-			brokenRuns = append(brokenRuns, timedRef{at, runRef{Time: r.Time, Serial: r.Serial, Name: r.Name}})
-		}
-	}
-	// exec.jsonl holds shards newest first, each oldest first: sorted by the parsed time, as RFC 3339 drops trailing
-	// zeros and does not sort as text, the list shown is the oldest runs.
-	sort.Slice(brokenRuns, func(i, j int) bool {
-		a, b := brokenRuns[i], brokenRuns[j]
-		return a.at.Before(b.at) || a.at.Equal(b.at) && a.Serial < b.Serial
-	})
-	for _, r := range brokenRuns[:min(listMax, len(brokenRuns))] {
-		v.BrokenRuns = append(v.BrokenRuns, r.runRef)
-	}
-	v.BrokenShown = len(v.BrokenRuns)
-	all := sorted(counts)
-	v.Top = all[:min(topN, len(all))]
-	var once []nameCount
-	for _, nc := range all {
-		if nc.Count == 1 {
-			once = append(once, nc)
-		}
-	}
-	sort.Slice(once, func(i, j int) bool { return once[i].Name < once[j].Name })
-	v.Once = capped(once)
-	return v
-}
-
-func inside(ivs [][2]time.Time, at time.Time) bool {
-	i := sort.Search(len(ivs), func(i int) bool { return !ivs[i][1].Before(at) })
-	return i < len(ivs) && !at.Before(ivs[i][0])
 }

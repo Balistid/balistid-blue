@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -33,6 +34,7 @@ var (
 // of an unexpected type costs only that field; encoding/json matches keys without case, so each field that has a
 // twin in another case (pid and PID) is declared beside it, and decodeExec refuses any other spelling.
 type laurelLine struct {
+	ID      json.RawMessage `json:"ID"`
 	Syscall json.RawMessage `json:"SYSCALL"`
 }
 
@@ -67,7 +69,7 @@ const (
 )
 
 var levelNames = map[level][]string{
-	levelLine: {"SYSCALL"},
+	levelLine: {"ID", "SYSCALL"},
 	levelSyscall: {"syscall", "SYSCALL", "success", "exit", "pid", "ppid", "uid", "exe", "key", "PID", "PPID", "UID",
 		"SPAWNED_BY", "arch", "ARCH"},
 	levelProc:    {"EVENT_ID", "START_TIME"},
@@ -99,13 +101,15 @@ type spawner struct {
 	PID uint32 `json:"pid"`
 }
 
-// record is what the decoder reads of one line: its rule key, whether it is a successful execve as internal/detect
-// counts one, and for such an exec the fields exec.jsonl may hold.
+// record is what the decoder reads of one line: its rule key, the event's time from its ID, whether it is a
+// successful execve as internal/detect counts one, and for such an exec the fields exec.jsonl may hold.
 type record struct {
-	Key  string
-	Exec bool
-	Run  execRun
-	// Whole is false for an exec whose pid, ppid, uid or keys do not decode: it is counted, not exported.
+	Key     string
+	EventNS int64
+	Event   bool // the ID parsed, so EventNS is the event's time
+	Exec    bool
+	Run     execRun
+	// Whole is false for an exec whose ID, pid, ppid, uid or keys do not decode: it is counted, not exported.
 	Whole bool
 	// Unlisted is a successful exec the judge counts but does not list, Refused one the strict reading refused.
 	Unlisted, Refused string
@@ -121,10 +125,12 @@ const (
 	nativeArch        = "0xc000003e" // AUDIT_ARCH_X86_64, as Laurel writes the arch field
 )
 
-// execRun is one line of exec.jsonl (ADR 0082 point 4): no path, argument, environment or directory.
+// execRun is one line of exec.jsonl (ADR 0082 point 4): no path, argument, environment or directory. EventTime is
+// the kernel's, from Laurel's ID; Received is when the collector framed the line.
 type execRun struct {
 	Schema       int      `json:"schema_version"`
-	Time         string   `json:"time"`
+	EventTime    string   `json:"event_time"`
+	Received     string   `json:"received"`
 	Serial       uint64   `json:"serial"`
 	PID          uint32   `json:"pid"`
 	PPID         uint32   `json:"ppid"`
@@ -134,6 +140,8 @@ type execRun struct {
 	Name         string   `json:"name"`
 	Agent        bool     `json:"agent"`
 	SpawnerAgent bool     `json:"spawner_agent"`
+	// view's parsing of the two times
+	eventAt, receivedAt time.Time
 }
 
 var errNotLaurel = errors.New("not a Laurel line")
@@ -145,11 +153,13 @@ func decodeLine(data []byte) (record, error) {
 	if err := json.Unmarshal(data, &l); err != nil {
 		return record{}, errNotLaurel
 	}
+	var rec record
+	rec.EventNS, rec.Event = eventNS(text(l.ID))
 	var sc laurelSyscall
 	if len(l.Syscall) == 0 || l.Syscall[0] != '{' || json.Unmarshal(l.Syscall, &sc) != nil {
-		return record{}, nil
+		return rec, nil
 	}
-	rec := record{Key: ruleKey(sc.Key)}
+	rec.Key = ruleKey(sc.Key)
 	name, succeeded := text(sc.Name), text(sc.Success) == "yes" && bytes.Equal(sc.Exit, []byte("0"))
 	// internal/detect's execOK: the syscall and exit as integer literals, the name and success as strings.
 	switch {
@@ -179,7 +189,22 @@ func decodeLine(data []byte) (record, error) {
 	}
 	rec.Exec = true
 	rec.Run, rec.Whole = exportOf(sc)
+	rec.Whole = rec.Whole && rec.Event
 	return rec, nil
+}
+
+// eventNS is the time of Laurel's ID, "sec.ms:serial", in nanoseconds since 1970.
+func eventNS(id string) (int64, bool) {
+	if !eventID.MatchString(id) {
+		return 0, false
+	}
+	dot := strings.IndexByte(id, '.')
+	sec, err := strconv.ParseInt(id[:dot], 10, 64)
+	ms, _ := strconv.Atoi(id[dot+1 : dot+4]) // three digits by the grammar
+	if err != nil || sec >= maxSealed {
+		return 0, false
+	}
+	return sec*int64(time.Second) + int64(ms)*int64(time.Millisecond), true
 }
 
 // exportOf is the line exec.jsonl may hold of an exec, but its time and serial, and whether every field decoded.
