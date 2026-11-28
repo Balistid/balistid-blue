@@ -58,6 +58,9 @@ func judge(ctx context.Context, cfg config) (string, error) {
 		return statusUnknown, fmt.Errorf("judge: %w", err)
 	}
 	defer out.Close() //nolint:errcheck // every write is synced by its own file
+	if err := removeLeftovers(out); err != nil {
+		return statusUnknown, err
+	}
 	limitMin := int(cfg.Limit / time.Minute)
 	seals, unsealed, torn, err := sealsOf(ctx, cfg.Store)
 	if err != nil {
@@ -243,6 +246,31 @@ func (p *part) appendTo() error {
 
 func (p *part) abort() error {
 	return errors.Join(p.f.Close(), p.root.Remove(p.name))
+}
+
+// removeLeftovers removes the temp files a crashed run left in the results directory (R5): the regular files named
+// .tmp-*, each through out and checked by Lstat, so a link or a directory of that name stays and is not followed.
+func removeLeftovers(out *os.Root) error {
+	d, err := out.Open(".")
+	if err != nil {
+		return fmt.Errorf("judge: the results directory: %w", err)
+	}
+	entries, err := d.ReadDir(-1)
+	if err = errors.Join(err, d.Close()); err != nil {
+		return fmt.Errorf("judge: the results directory: %w", err)
+	}
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), ".tmp-") || !e.Type().IsRegular() {
+			continue
+		}
+		if fi, err := out.Lstat(e.Name()); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if err := out.Remove(e.Name()); err != nil {
+			return fmt.Errorf("judge: remove a leftover: %w", err)
+		}
+	}
+	return nil
 }
 
 // writeBoth starts a run: state.json from the seals and an empty exec.jsonl.
