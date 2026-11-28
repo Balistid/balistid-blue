@@ -2,7 +2,7 @@
 
 - Status: proposed (accepted when merged with the maintainer's approval)
 - Date: 2026-11-28
-- Decided-by: jvc0n (2026-11-28, in session: the plan of step S1)
+- Decided-by: jvc0n (2026-11-28: the plan of step S1 in session; the narrowed claims by approving this change)
 - Agent: claude/fable-5.2
 - Amends ADR 0074 points 2 to 8 (what the judge reads and writes) and ADR 0076 point 1 (the host gains `judge`).
 
@@ -22,20 +22,20 @@ lag as a record (ADR 0017), so it can answer itself. ADR 0074's judge is a stub;
    day whose shards up to the newest fit a byte budget (half the rate measured under the unit's CPU policy);
    older ones are named as not read. After each shard its runs are appended to `exec.jsonl` and `state.json` is
    rewritten whole. 90 minutes are a hard stop; then the read is PARTIAL.
-3. `state.json` holds the seals, every health change with its time, and a row per UTC day read: records, bytes,
-   execs, loss by stage, serial gaps by boot (ADR 0062 stays proposed), seconds its health was not OK, the largest
-   lag in the store and in arrival, silences, lines not decoded. It certifies no time as free of loss.
+3. `state.json` holds the seals, every health change as stored (seq, receive time, its own time, state), and per
+   UTC day sums and maxima of that day's records: records, bytes, execs, loss by stage, the largest lag and
+   `lost_health`, serials that jump or step back, silences, lines not decoded. A zero there is not "no loss".
 4. `exec.jsonl` holds one line per successful execve of a uid of 1000 or more received on the newest seal's UTC
    day or the 7 before it: the event's time, when it was received, serial, pid, ppid, Laurel's keys of the process
    and of what spawned it, the program's base name, and whether its path or its spawner's is Claude Code's binary.
    No path, argument, environment or directory. A name outside `[A-Za-z0-9._+-]{1,64}` is `x-`, 8 hex of its SHA-256.
 5. `balistid-judge view <dir>`, unprivileged, builds the process tree from `exec.jsonl`: a run is under an agent
-   when an ancestor is that binary; of every other run it says only where its chain ended. Every count is of what
-   the store holds, so "at least", by day, beside that day's loss, gaps and health; a day not read is not read,
-   never zero. Nothing is concluded from a run's absence.
-6. Probes whose truth is known check the assignment (`acceptance/2.toml`, set before the run): of 30 uniquely
-   named copies of `/usr/bin/true` an agent ran, 29 are in a COMPLETE read exactly once, under an agent, within
-   5 s of their manifest's time. 10 run first in a subshell and 10 detached are reported; none starts outside it.
+   when an ancestor is that binary; of every other run it says only where its chain ended. Its counts are of the
+   export, by day, beside that day's sums, and bound nothing. A day not read is not read, never zero; a state
+   still being written is refused. Nothing is concluded from a run's absence.
+6. Probes check the assignment (`acceptance/2.toml`): of 30 uniquely named copies of `/usr/bin/true` an agent ran,
+   29 have one run of their name in a COMPLETE read, under an agent, within 5 s of their manifest's time (not shown:
+   that it was the probe). 20 more are only reported. The method was tightened after they ran, before any result.
 7. The maintainer starts the unit by hand (`systemctl start balistid-judge.service`), as ADR 0074 point 1 has
    it: R8 covers what installs, and the unit runs only what `balistid-install` put there.
 8. Fresh events for the first detection on the host will come from one Laurel writing a rotated file (`read-users`),
@@ -46,8 +46,8 @@ lag as a record (ADR 0017), so it can answer itself. ADR 0074's judge is a stub;
 - Laurel to a file now, without reading the store: changes the frozen recorder before its state is known and
   gives up the only history. Reading `audit.log`: it holds minutes at this rate, and is Laurel again (R9).
 - A second reader beside the collector: changes the frozen collector, or adds a plugin to the queue that overflowed.
-- Pairing shell calls with runs against shifted times: it tests clocks and a shell parser. Intervals certified
-  free of loss: three reviews found a way around each rule that dated a loss.
+- Pairing shell calls with runs against shifted times: it tests clocks and a shell parser. Intervals free of loss,
+  gaps by boot, seconds of health, "at least": reviews got around each; the store's order does not carry them.
 - AgentSight (eBPF): kernel-coupled (ADR 0004), assigns by name and parent with fixed weights, no check of them.
 
 ## Consequences
