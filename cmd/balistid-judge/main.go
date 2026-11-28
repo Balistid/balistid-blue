@@ -38,7 +38,11 @@ const usage = "usage: balistid-judge | balistid-judge view <dir> [manifest.json 
 // it read both files, 2 when not; either 1 on a usage error.
 func run(ctx context.Context, args []string) int {
 	if len(args) >= 2 && args[0] == "view" {
-		if err := view(args[1], args[2:], owners(), os.Stdout); err != nil {
+		owners, err := collector()
+		if err == nil {
+			err = view(args[1], args[2:], owners, os.Stdout)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "balistid-judge: UNKNOWN %v\n", err)
 			return 2
 		}

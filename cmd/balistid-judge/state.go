@@ -34,6 +34,7 @@ type stateDoc struct {
 	Records      map[string]uint64    `json:"records"`
 	Bytes        uint64               `json:"bytes"`
 	Health       []transition         `json:"health_changes"`
+	HealthLost   uint64               `json:"health_records_lost"`
 	HealthHeld   string               `json:"health_changes_withheld,omitempty"`
 	Loss         map[string]uint64    `json:"loss_by_stage"`
 	LossErrors   uint64               `json:"loss_records_not_decoded"`
@@ -187,6 +188,7 @@ func (st *state) merge(name string, a *shardAcc) {
 	}
 	d.KeysOver += a.keysOver
 	d.LossErrors += a.lossErrors
+	d.HealthLost = satAdd(d.HealthLost, a.healthLost)
 	d.OwnUnknown += a.ownUnknown
 	d.Silences += a.silences
 	d.ClockBack += a.clockBack
@@ -322,6 +324,8 @@ func (st *state) clean(extra []span) cleanDoc {
 		return cleanDoc{State: statusUnknown, Reason: "more than " + strconv.Itoa(maxEvents) + " health changes or spans", Intervals: []interval{}}
 	case st.doc.Period == nil:
 		return cleanDoc{State: statusUnknown, Reason: "no record read", Intervals: []interval{}}
+	case len(st.doc.NotRead) > 0: // a gap or a loss at the boundary to an older shard is not known
+		return cleanDoc{State: statusUnknown, Reason: "not every sealed shard was read", Intervals: []interval{}}
 	}
 	end := st.newestAt
 	var ok []interval

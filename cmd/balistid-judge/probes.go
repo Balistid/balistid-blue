@@ -84,8 +84,11 @@ func decodeManifest(b []byte) ([]probe, error) {
 	if err := strictDecode(b, &m); err != nil {
 		return nil, fmt.Errorf("view: manifest: %w", err)
 	}
-	if len(m.Probes) == 0 {
+	switch {
+	case len(m.Probes) == 0:
 		return nil, errors.New("view: the manifest holds no probe")
+	case m.UnitProbes:
+		return nil, errors.New("view: the manifest's probes ran from a unit, a kind the judge has no bar for")
 	}
 	seen := map[string]bool{}
 	for _, p := range m.Probes {
@@ -147,7 +150,8 @@ func checkProbes(probes []probe, runs []execRun, where []string, period *periodD
 		at, _ := time.Parse(time.RFC3339Nano, p.At) // decodeManifest parsed it
 		res := probeResult{Name: p.Name, Kind: p.Kind, Ran: p.Ran, Runs: len(byName[p.Name]),
 			InPeriod: period != nil && !at.Before(from) && !at.After(to)}
-		res.Assigned = p.Ran && res.Runs > 0 && res.InPeriod
+		// A unique copy runs once: a name with more runs is a program's, not the probe's.
+		res.Assigned = p.Ran && res.Runs == 1 && res.InPeriod
 		for _, i := range byName[p.Name] {
 			res.Assigned = res.Assigned && where[i] == underAgent
 		}

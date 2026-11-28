@@ -58,6 +58,9 @@ type coversDoc struct {
 	Unsealed []string     `json:"unsealed_not_read"`
 	Clean    string       `json:"clean_state"`
 	Partial  string       `json:"partial,omitempty"`
+	Owner    uint32       `json:"owner_uid"`
+	// Exec is what the judge counted of the execs, those it did not list too, which no count below holds.
+	Exec execCounts `json:"exec"`
 }
 
 type nameCount struct {
@@ -93,13 +96,14 @@ type runRef struct {
 	Name   string `json:"name"`
 }
 
-// owners are the uids whose files view reads: the collector's, whose uid the judge runs as, and the caller's.
-func owners() []uint32 {
-	list := []uint32{uint32(os.Getuid())} //nolint:gosec // a uid is 32 bits on Linux
-	if uid, err := unixsock.LookupUID("balistid-collector"); err == nil && uid >= 0 {
-		list = append(list, uint32(uid)) //nolint:gosec // as above
+// collector is the one uid whose files view reads: the judge runs as the collector's. The caller's is not one: an
+// agent runs as the caller and could write both files anywhere it can write.
+func collector() ([]uint32, error) {
+	uid, err := unixsock.LookupUID("balistid-collector")
+	if err != nil || uid < 0 {
+		return nil, fmt.Errorf("view: no account balistid-collector, whose files these would be: %w", err)
 	}
-	return list
+	return []uint32{uint32(uid)}, nil //nolint:gosec // a uid is 32 bits on Linux
 }
 
 // view reads dir's state.json and exec.jsonl, owned by one of owners, assigns every run and, with manifests,
@@ -134,7 +138,8 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 	}
 	where := assign(runs)
 	doc := viewDoc{Schema: 1, Covers: coversDoc{Status: sd.Status, Reason: sd.Reason, Period: sd.Period,
-		Since: sd.Exec.Since, Runs: len(runs), NotRead: sd.NotRead, Unsealed: sd.Unsealed, Clean: sd.Clean.State}}
+		Since: sd.Exec.Since, Runs: len(runs), NotRead: sd.NotRead, Unsealed: sd.Unsealed, Clean: sd.Clean.State,
+		Owner: ownerOf(stateInfo), Exec: sd.Exec.execCounts}}
 	doc.Programs = programs(runs, where)
 	doc.Clean = cleanView(sd.Clean, runs, where)
 	if sd.Status != statusComplete {
@@ -178,6 +183,14 @@ func ownedFile(root *os.Root, name string, owners []uint32) (fs.FileInfo, error)
 		return nil, fmt.Errorf("view: %s is owned by uid %d, neither the collector's nor the caller's", name, st.Uid)
 	}
 	return fi, nil
+}
+
+// ownerOf is the uid of a file ownedFile passed, which checked it has one.
+func ownerOf(fi fs.FileInfo) uint32 {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return st.Uid
+	}
+	return 0
 }
 
 // unchanged fails when state.json is no longer the file read before exec.jsonl: a run of the judge began meanwhile.

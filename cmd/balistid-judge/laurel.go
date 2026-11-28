@@ -33,7 +33,6 @@ var (
 // of an unexpected type costs only that field; encoding/json matches keys without case, so each field that has a
 // twin in another case (pid and PID) is declared beside it, and decodeExec refuses any other spelling.
 type laurelLine struct {
-	ID      json.RawMessage `json:"ID"`
 	Syscall json.RawMessage `json:"SYSCALL"`
 }
 
@@ -68,7 +67,7 @@ const (
 )
 
 var levelNames = map[level][]string{
-	levelLine: {"ID", "SYSCALL"},
+	levelLine: {"SYSCALL"},
 	levelSyscall: {"syscall", "SYSCALL", "success", "exit", "pid", "ppid", "uid", "exe", "key", "PID", "PPID", "UID",
 		"SPAWNED_BY", "arch", "ARCH"},
 	levelProc:    {"EVENT_ID", "START_TIME"},
