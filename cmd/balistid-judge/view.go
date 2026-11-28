@@ -146,7 +146,8 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 		return err
 	}
 	if sd.Status == statusReading {
-		return errors.New("view: the judge is still writing; run view when it has ended")
+		return errors.New("view: the judge is still writing, or was killed before it wrote its end: run view when " +
+			"it has ended, or start its unit again")
 	}
 	runs, err := readRuns(root, owners)
 	if err != nil {
@@ -171,13 +172,13 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 		doc.Covers.Partial = "the judge's status is " + sd.Status + ": what it did not read is not in any day"
 	}
 	doc.Top, doc.Once, doc.Broken = overAll(runs, where)
-	of := "runs in exec.jsonl, received from " + sd.ListedFrom + " to "
-	if n := len(sd.Days); n > 0 {
-		of += sd.Days[n-1].Day
+	of := "runs in exec.jsonl: none listed"
+	if n := len(sd.Days); n > 0 && sd.ListedFrom != "" {
+		of = "runs in exec.jsonl, received from " + sd.ListedFrom + " to " + sd.Days[n-1].Day
 	}
 	doc.Top.Of, doc.Once.Of = of, of
 	if len(manifests) > 0 {
-		p := checkProbes(probes, runs, where, sd.Status == statusComplete, len(sd.Unsealed) > 0)
+		p := checkProbes(probes, runs, where, sd.Status == statusComplete, len(sd.Unsealed) > 0, sd.ListedFrom)
 		doc.Probes = &p
 	}
 	b, err := json.MarshalIndent(doc, "", " ")
@@ -327,6 +328,11 @@ func readState(root *os.Root, owners []uint32) (stateDoc, fs.FileInfo, error) {
 	}
 	if err := strictDecode(b, &sd); err != nil || sd.Schema != 1 {
 		return sd, nil, failed("view: %s is not the judge's state of schema 1", err, stateFile)
+	}
+	switch sd.Status {
+	case statusReading, statusComplete, statusPartial, statusUnknown:
+	default:
+		return sd, nil, fmt.Errorf("view: %s has the status %q, none the judge writes", stateFile, sd.Status)
 	}
 	for i, r := range sd.Days {
 		if _, err := time.Parse(time.DateOnly, r.Day); err != nil || i > 0 && r.Day <= sd.Days[i-1].Day {

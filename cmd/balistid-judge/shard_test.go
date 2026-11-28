@@ -7,8 +7,10 @@ import (
 	"io"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
@@ -121,6 +123,21 @@ func TestHealthChangesAsStored(t *testing.T) {
 	b, err := json.Marshal(rows[1])
 	if err != nil || bytes.Contains(b, []byte("lost_health_max")) {
 		t.Errorf("a day with no stats: %s %v", b, err)
+	}
+}
+
+// TestALongHealthStateIsCut: a state of 4 KiB is listed cut at maxState bytes, at a rune boundary and marked, so the
+// list's cap of changes keeps state.json under what view reads.
+func TestALongHealthStateIsCut(t *testing.T) {
+	long := "a" + strings.Repeat("é", 2000)
+	rd := readerOf(t, own(store.HealthProvider, base, `{"schema_version":1,"kind":"health","state":"`+long+`"}`))
+	s := rd.trans[0].State
+	if len(s) > maxState+len(cutMark) || !strings.HasSuffix(s, cutMark) || !utf8.ValidString(s) ||
+		!strings.HasPrefix(long, strings.TrimSuffix(s, cutMark)) {
+		t.Errorf("state of %d bytes: %q", len(s), s)
+	}
+	if maxEvents*(maxState+len(cutMark)+200) > stateMax {
+		t.Errorf("%d changes of a cut state can pass the %d bytes view reads", maxEvents, stateMax)
 	}
 }
 

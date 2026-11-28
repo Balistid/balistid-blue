@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
 	"github.com/Balistid/balistid-blue/internal/store"
@@ -25,6 +26,8 @@ const (
 	maxKeys   = 256
 	maxDays   = 1 << 12
 	dayNS     = int64(24 * time.Hour)
+	maxState  = 256
+	cutMark   = " [cut]"
 )
 
 var errTooManyDays = errors.New("records on more than 4096 UTC days")
@@ -256,8 +259,16 @@ func (rd *reader) key(k string, size uint64) {
 	c.Bytes += size
 }
 
-// change lists a health change as stored, with its own time when it has one.
+// change lists a health change as stored, with its own time when it has one. Its state is cut at maxState bytes and
+// marked: a record may hold 4 KiB, and maxEvents of those would pass the 64 MiB view reads of state.json.
 func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
+	if len(state) > maxState {
+		i := maxState
+		for i > 0 && !utf8.RuneStart(state[i]) {
+			i--
+		}
+		state = state[:i] + cutMark
+	}
 	if len(rd.trans) >= maxEvents {
 		rd.over = true
 		return
