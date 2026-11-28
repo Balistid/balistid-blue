@@ -1,0 +1,50 @@
+# Acceptance numbers for the host judge's first step (ADR 0082): the recorder's state and what ran under agents,
+# read from the sealed store. Written before code (R3); only the maintainer changes a number, through an ADR. A
+# missed metric blocks using the assignment in the next step; the recorder's state is reported either way. Each
+# metric names its threat rows (THREAT_MODEL.md), its ADR and how it is measured; a measurement that cannot run is
+# a miss.
+
+[meta]
+floor = 2
+status = "proposed"          # approved with the pull request that adds this file
+note = "A miss blocks using the assignment of runs to agents in the next step; state.json, the recorder's state, is reported whatever the metrics give."
+
+[[metric]]
+id = "probes_assigned"
+min = 29
+unit = "of 30 uniquely named copies of /usr/bin/true run directly by an agent, those found in exec.jsonl and assigned under an agent"
+rows = ["T4", "T25"]
+adr = "0082"
+method = "An agent runs the 30 probes and writes their manifest (name, kind, time); after their shard is sealed the maintainer starts the unit and runs balistid-judge view on its directory with the manifest. A probe the store lacks is a miss. The 10 detached probes (double fork) are reported, with no bar (ADR 0082 point 6)."
+
+[[metric]]
+id = "names_outside_alphabet"
+max = 0
+unit = "program names in exec.jsonl outside [A-Za-z0-9._+-]{1,64} that are not x- and 8 hex of their SHA-256"
+rows = ["T18", "T20"]
+adr = "0082"
+method = "A test feeds names outside the alphabet, over 64 bytes and in Laurel's %-quoting through the judge and checks every line of exec.jsonl; view refuses a line whose name breaks the rule."
+
+[[metric]]
+id = "arguments_exported"
+max = 0
+unit = "lines of exec.jsonl holding an argument, an environment variable, a directory or a path of the record they came from"
+rows = ["T18"]
+adr = "0082"
+method = "A test runs the judge over a store whose exec records carry marker strings in ARGV, ENV, CWD, PATH and the executable's directory and finds none of them in either output file; exec.jsonl lines decode strictly into the fields ADR 0082 point 4 lists."
+
+[[metric]]
+id = "read_limit_min"
+max = 90
+unit = "minutes the judge reads shards before it stops and leaves both files naming what it did not read"
+rows = ["T20"]
+adr = "0082"
+method = "A test with an injected clock passes the limit during a read and checks that state.json names the shards not read and the limit; a volunteer run over a synthetic store of at least 1 GiB gives the rate in MiB/s."
+
+[[metric]]
+id = "decoder_disagrees"
+max = 0
+unit = "windows of lab/windows where the judge's decoder counts another number of successful execs than internal/detect"
+rows = ["T40"]
+adr = "0082"
+method = "A test decodes every record of every window with the judge's decoder and with internal/detect's own functions, which a second test keeps identical to internal/detect's source, and compares the counts per window."
