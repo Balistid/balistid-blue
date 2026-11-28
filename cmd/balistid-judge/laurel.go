@@ -51,6 +51,8 @@ type laurelSyscall struct {
 	Parent    json.RawMessage `json:"PPID"`
 	UIDName   json.RawMessage `json:"UID"`
 	SpawnedBy json.RawMessage `json:"SPAWNED_BY"`
+	Arch      json.RawMessage `json:"arch"`
+	ArchName  json.RawMessage `json:"ARCH"`
 }
 
 // level is an object of a line the judge decodes, by the names it may hold in exactly that spelling; another
@@ -106,7 +108,19 @@ type record struct {
 	Run  execRun
 	// Whole is false for an exec whose pid, ppid, uid or keys do not decode: it is counted, not exported.
 	Whole bool
+	// Unlisted is a successful exec the judge counts but does not list, Refused one the strict reading refused.
+	Unlisted, Refused string
 }
+
+// What a successful exec that exec.jsonl does not list is (ADR 0082 consequences), and why a line looking like an
+// exec was refused.
+const (
+	unlistedExecveat  = "execveat"
+	unlistedOtherArch = "other_arch"
+	refusedUTF8       = "exec: not valid UTF-8"
+	refusedKeys       = "exec: a key repeated with another value or spelled in another case"
+	nativeArch        = "0xc000003e" // AUDIT_ARCH_X86_64, as Laurel writes the arch field
+)
 
 // execRun is one line of exec.jsonl (ADR 0082 point 4): no path, argument, environment or directory.
 type execRun struct {
@@ -137,14 +151,31 @@ func decodeLine(data []byte) (record, error) {
 		return record{}, nil
 	}
 	rec := record{Key: ruleKey(sc.Key)}
+	name, succeeded := text(sc.Name), text(sc.Success) == "yes" && bytes.Equal(sc.Exit, []byte("0"))
 	// internal/detect's execOK: the syscall and exit as integer literals, the name and success as strings.
-	if !bytes.Equal(sc.Number, []byte("59")) || !bytes.Equal(sc.Exit, []byte("0")) ||
-		text(sc.Name) != "execve" || text(sc.Success) != "yes" {
+	switch {
+	case !succeeded:
+		return rec, nil
+	case name == "execveat":
+		rec.Unlisted = unlistedExecveat
+		if text(sc.Arch) != nativeArch {
+			rec.Unlisted = unlistedOtherArch
+		}
+		return rec, nil
+	case name != "execve":
+		return rec, nil
+	case !bytes.Equal(sc.Number, []byte("59")): // execve under another number: a 32-bit process
+		rec.Unlisted = unlistedOtherArch
 		return rec, nil
 	}
 	// internal/detect reads only valid UTF-8 and refuses a key repeated with another value, which encoding/json
 	// would take silently (the last one).
-	if !utf8.Valid(data) || !strictKeys(data) {
+	switch {
+	case !utf8.Valid(data):
+		rec.Refused = refusedUTF8
+		return rec, nil
+	case !strictKeys(data):
+		rec.Refused = refusedKeys
 		return rec, nil
 	}
 	rec.Exec = true

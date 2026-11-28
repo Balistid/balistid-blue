@@ -218,6 +218,8 @@ func addExecs(t *execCounts, a execCounts) {
 	t.System += a.System
 	t.Older += a.Older
 	t.Partial += a.Partial
+	t.Execveat += a.Execveat
+	t.OtherArch += a.OtherArch
 }
 
 // joinTimes keeps a's spans, ends the spans of newer shards that start before them, and adds the silence or
@@ -233,8 +235,9 @@ func (st *state) joinTimes(a *shardAcc) {
 	}
 	if a.ownSeen {
 		for _, s := range st.open {
-			if s.From == 0 || a.lastOwnAt < s.From {
-				s.From = a.lastOwnAt
+			s.From = a.lastOwnAt
+			if s.first > 0 && s.first < s.From {
+				s.From = s.first
 			}
 			s.fromOwn = false
 			st.addSpan(s)

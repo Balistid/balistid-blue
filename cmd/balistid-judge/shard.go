@@ -28,10 +28,12 @@ const (
 )
 
 // span is a time no clean interval covers. fromOwn marks a span that starts at the collector's previous own
-// record, which may be in an older shard: the merge sets From once it read that one.
+// record, which is in an older shard: the merge sets From to that record's time, or to first, the loss's own first
+// time, when that is earlier.
 type span struct {
 	From, To int64
 	fromOwn  bool
+	first    int64
 }
 
 // transition is a change of the collector's health: a health record, or a start or stop of the collector.
@@ -56,6 +58,8 @@ type execCounts struct {
 	System     uint64 `json:"system_uid"`
 	Older      uint64 `json:"older_than_7_days"`
 	Partial    uint64 `json:"fields_not_decoded"`
+	Execveat   uint64 `json:"execveat_not_listed"`
+	OtherArch  uint64 `json:"other_arch_not_listed"`
 }
 
 // lag is the largest lag the collector reported and when.
@@ -148,8 +152,8 @@ func (a *shardAcc) addSpan(s span) {
 // ownSpan is a loss or an unknown record of the collector's: it may have happened any time since its previous
 // own record, so that is where the span starts.
 func (a *shardAcc) ownSpan(at int64, first int64) {
-	s := span{From: a.lastOwnAt, To: at, fromOwn: !a.ownSeen}
-	if first > 0 && first < s.From {
+	s := span{From: a.lastOwnAt, To: at, fromOwn: !a.ownSeen, first: first}
+	if a.ownSeen && first > 0 && first < s.From {
 		s.From = first
 	}
 	a.addSpan(s)
@@ -173,6 +177,14 @@ func (a *shardAcc) sensor(r rawrecord.Record, prev int64) error {
 		return nil
 	}
 	a.key(rec.Key, r.OrigLen)
+	switch {
+	case rec.Refused != "":
+		a.undecoded[rec.Refused]++
+	case rec.Unlisted == unlistedExecveat:
+		a.execs.Execveat++
+	case rec.Unlisted == unlistedOtherArch:
+		a.execs.OtherArch++
+	}
 	if !rec.Exec {
 		return nil
 	}

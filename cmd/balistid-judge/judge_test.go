@@ -101,10 +101,10 @@ func TestStateAndExecFromAStore(t *testing.T) {
 		t.Errorf("clean intervals %+v, period %+v", d.Clean.Intervals, d.Period)
 	}
 	runs := readExec(t, out)
-	if names(runs) != "tool-a tool-c" || d.Exec.Successful != 4 || d.Exec.Exported != 2 || d.Exec.System != 2 {
+	if names(runs) != "tool-c tool-a" || d.Exec.Successful != 4 || d.Exec.Exported != 2 || d.Exec.System != 2 {
 		t.Errorf("exec.jsonl %q, counts %+v", names(runs), d.Exec)
 	}
-	if r := runs[0]; r.Serial != 100 || r.PID != 4242 || r.UID != 1000 || r.Process.EventID != eventOf(100) ||
+	if r := runs[1]; r.Serial != 100 || r.PID != 4242 || r.UID != 1000 || r.Process.EventID != eventOf(100) ||
 		r.SpawnedBy == nil || r.SpawnedBy.StartTime != "1795340216.325" || r.SpawnedBy.PID != 1 || r.Agent || r.SpawnerAgent {
 		t.Errorf("run %+v", r)
 	}
