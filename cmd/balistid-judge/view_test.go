@@ -89,7 +89,7 @@ func treeManifests(t *testing.T, out string, void bool) []string {
 func viewOf(t *testing.T, out string, manifests ...string) viewDoc {
 	t.Helper()
 	var b bytes.Buffer
-	if err := view(out, manifests, owners(), &b); err != nil {
+	if err := view(out, manifests, mine(), &b); err != nil {
 		t.Fatal(err)
 	}
 	var v viewDoc
@@ -162,7 +162,7 @@ func TestViewRefusesAVoidManifest(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
 	var b bytes.Buffer
-	err := view(out, treeManifests(t, out, true), owners(), &b)
+	err := view(out, treeManifests(t, out, true), mine(), &b)
 	if err == nil || !strings.Contains(err.Error(), "the manifest is void") || b.Len() != 0 {
 		t.Errorf("a void manifest: %v, %q", err, b.String())
 	}
@@ -252,7 +252,7 @@ func TestViewReadsOnlyTheJudgesFiles(t *testing.T) {
 		if err := os.WriteFile(execPath, bad, 0o644); err != nil { //nolint:gosec // as the judge writes it
 			t.Fatal(err)
 		}
-		err := view(out, nil, owners(), &bytes.Buffer{})
+		err := view(out, nil, mine(), &bytes.Buffer{})
 		if err == nil || strings.Contains(err.Error(), "%!") {
 			t.Errorf("%s: %v", name, err)
 		}
@@ -266,7 +266,7 @@ func TestViewReadsOnlyTheJudgesFiles(t *testing.T) {
 	if err := os.Chmod(execPath, 0o666); err != nil { //nolint:gosec // a file others can write, refused
 		t.Fatal(err)
 	}
-	if err := view(out, nil, owners(), &bytes.Buffer{}); err == nil {
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil {
 		t.Error("a file others can write: accepted")
 	}
 	link := t.TempDir()
@@ -275,12 +275,16 @@ func TestViewReadsOnlyTheJudgesFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := view(link, nil, owners(), &bytes.Buffer{}); err == nil {
+	if err := view(link, nil, mine(), &bytes.Buffer{}); err == nil {
 		t.Error("links: accepted")
 	}
 }
 
-// TestViewReadsOnlyItsOwnersFiles: a file of a uid neither the collector's nor the caller's is UNKNOWN.
+// mine is the test's own uid as the files' owner, through view's parameter; run passes the collector's only.
+func mine() []uint32 { return []uint32{uint32(os.Getuid())} } //nolint:gosec // a uid is 32 bits on Linux
+
+// TestViewReadsOnlyItsOwnersFiles: a file of a uid view was not given is UNKNOWN, the owner's uid is printed, and
+// without the account balistid-collector view reads nothing: the caller's uid, an agent's, is never an owner.
 func TestViewReadsOnlyItsOwnersFiles(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
@@ -288,11 +292,18 @@ func TestViewReadsOnlyItsOwnersFiles(t *testing.T) {
 	if err := view(out, nil, []uint32{me + 1}, &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "owned by uid") {
 		t.Errorf("another uid's files: %v", err)
 	}
-	if err := view(out, nil, []uint32{me + 1, me}, &bytes.Buffer{}); err != nil {
-		t.Errorf("the caller's files: %v", err)
+	if v := viewOf(t, out); v.Covers.Owner != me {
+		t.Errorf("owner %d, want %d", v.Covers.Owner, me)
 	}
-	if got := owners(); got[0] != me {
-		t.Errorf("owners %v do not start with the caller", got)
+	uids, err := collector()
+	switch {
+	case err == nil && len(uids) == 1 && uids[0] != me:
+	case err != nil && strings.Contains(err.Error(), "balistid-collector"):
+		if code := run(t.Context(), []string{"view", out}); code != 2 {
+			t.Errorf("view without the collector's account: exit %d", code)
+		}
+	default:
+		t.Errorf("collector %v, %v", uids, err)
 	}
 }
 
@@ -315,14 +326,11 @@ func editState(t *testing.T, out string, f func(*stateDoc)) {
 func TestViewRefusesAStateItCannotSearch(t *testing.T) {
 	ts := threeShards(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
-	if d := readStateDoc(t, out); len(d.Clean.Intervals) < 2 {
-		t.Fatalf("clean %+v", d.Clean)
-	}
 	editState(t, out, func(d *stateDoc) {
-		iv := d.Clean.Intervals
-		iv[0], iv[1] = iv[1], iv[0]
+		d.Clean.Intervals = []interval{{From: "2026-11-28T10:00:02Z", To: "2026-11-28T10:00:03Z"},
+			{From: "2026-11-28T10:00:00Z", To: "2026-11-28T10:00:01Z"}}
 	})
-	if err := view(out, nil, owners(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "clean interval") {
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "clean interval") {
 		t.Errorf("intervals out of order: %v", err)
 	}
 	editState(t, out, func(d *stateDoc) {
@@ -330,7 +338,7 @@ func TestViewRefusesAStateItCannotSearch(t *testing.T) {
 		iv[0], iv[1] = iv[1], iv[0]
 		d.Schema = 2
 	})
-	err := view(out, nil, owners(), &bytes.Buffer{})
+	err := view(out, nil, mine(), &bytes.Buffer{})
 	if err == nil || strings.Contains(err.Error(), "%!") || !strings.Contains(err.Error(), "schema 1") {
 		t.Errorf("schema 2: %v", err)
 	}

@@ -74,7 +74,7 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(out, execFile), orig[:bytes.IndexByte(orig, '\n')+1], 0o644); err != nil { //nolint:gosec // as the judge writes it
 		t.Fatal(err)
 	}
-	if err := view(out, nil, owners(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not one run's") {
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not one run's") {
 		t.Errorf("a COMPLETE state beside one run: %v", err)
 	}
 	editState(t, out, func(d *stateDoc) { d.Status = statusReading })
@@ -87,7 +87,7 @@ func TestViewNeedsOneRunsFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close() //nolint:errcheck // read-only
-	_, before, err := readState(root, owners())
+	_, before, err := readState(root, mine())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +112,14 @@ func TestViewCapsWhatItHolds(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
 	editState(t, out, func(d *stateDoc) { d.Exec.Exported = runsMax + 1 })
-	if err := view(out, nil, owners(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "4194305 runs") {
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "4194305 runs") {
 		t.Errorf("too many runs: %v", err)
 	}
 	_, out, _ = judgeOnce(t, ts.dir, nil)
 	if err := os.Truncate(filepath.Join(out, execFile), execMax+1); err != nil { // sparse: no disk is used
 		t.Fatal(err)
 	}
-	if err := view(out, nil, owners(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "bytes, over") {
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "bytes, over") {
 		t.Errorf("too many bytes: %v", err)
 	}
 }

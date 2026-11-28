@@ -18,8 +18,12 @@ const (
 	// gapHold is how long a missing serial may arrive late before it is a gap. ADR 0062 sets gap_hold_s by a
 	// range measurement that has not run; 60 s is far above the lateness a Laurel line has in the range.
 	gapHold = int64(60 * time.Second)
-	// minUID is the first uid exec.jsonl holds: the users', not the system's (ADR 0082 point 4).
+	// minUID is the first uid exec.jsonl holds (ADR 0082 point 4: 1000 or more). Above it are users, and also
+	// nobody (65534), systemd's dynamic uids and subordinate uids: they are listed too.
 	minUID = 1000
+	// longLag is the lag past which a stats or lag record cuts a clean interval by itself. Stats come every 60 s
+	// and a loss's span starts at the previous own record, so a lag under it keeps a misdated loss inside its span.
+	longLag = int64(60 * time.Second)
 	// Caps on what one shard keeps in memory (R5, T20); past them the judge says so and reports no clean interval.
 	maxEvents  = 1 << 16
 	maxHeld    = 4096
@@ -90,6 +94,8 @@ type shardAcc struct {
 	silences, clockBack    uint64
 	lag                    lag
 	lagNS                  int64
+	healthLost             uint64
+	lostHealth             int64 // the run's last lost_health; -1 before its first stats
 	undecoded              map[string]uint64
 	execs                  execCounts
 	ser                    serials
@@ -97,7 +103,7 @@ type shardAcc struct {
 
 func newShardAcc(cutoff int64, out *bufio.Writer) *shardAcc {
 	return &shardAcc{cutoff: cutoff, out: out, records: map[string]uint64{}, keys: map[string]*keyCount{},
-		loss: map[string]uint64{}, undecoded: map[string]uint64{}, lagNS: -1}
+		loss: map[string]uint64{}, undecoded: map[string]uint64{}, lagNS: -1, lostHealth: -1}
 }
 
 // add takes the next record of the shard.
@@ -252,6 +258,7 @@ func (a *shardAcc) health(r rawrecord.Record) {
 	var head struct {
 		SchemaVersion int    `json:"schema_version"`
 		Kind          string `json:"kind"`
+		At            int64  `json:"at"`
 	}
 	if len(r.Data) > ownCapture || json.Unmarshal(r.Data, &head) != nil || head.SchemaVersion != 1 {
 		a.ownUnknown++
@@ -269,6 +276,9 @@ func (a *shardAcc) health(r rawrecord.Record) {
 			return
 		}
 		a.transition(r.Seq, r.Received, "health", h.State)
+		if h.State != "OK" {
+			a.notOK(r.Received, head.At)
+		}
 	case "started":
 		var s struct {
 			Info struct {
@@ -277,20 +287,14 @@ func (a *shardAcc) health(r rawrecord.Record) {
 		}
 		_ = json.Unmarshal(r.Data, &s) // a started record without a boot id goes on in the same boot
 		a.ser.started(s.Info.BootID)
+		a.lostHealth = -1
 		a.transition(r.Seq, r.Received, "started", "UNKNOWN starting")
+		a.notOK(r.Received, head.At)
 	case "stopping":
 		a.transition(r.Seq, r.Received, "stopping", "UNKNOWN stopped")
+		a.notOK(r.Received, head.At)
 	case "stats", "lag":
-		var l struct {
-			MaxLag *int64 `json:"max_lag_ms"`
-			Lag    *int64 `json:"lag_ms"`
-		}
-		_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
-		for _, ms := range []*int64{l.MaxLag, l.Lag} {
-			if ms != nil && *ms > a.lagNS {
-				a.lagNS, a.lag = *ms, lag{MS: *ms, At: timeText(r.Received)}
-			}
-		}
+		a.stats(r)
 	case "lost":
 		a.lost(r)
 	case "connection", "refused":
@@ -298,6 +302,42 @@ func (a *shardAcc) health(r rawrecord.Record) {
 		a.ownUnknown++
 		a.ownSpan(r.Received, 0)
 	}
+}
+
+// notOK spans a change away from OK from the collector's previous own record, or from the change's own time when
+// that is earlier: a crash writes no record, and a change waits for the store as long as it is down.
+func (a *shardAcc) notOK(received, at int64) {
+	a.ownSpan(received, at)
+}
+
+// stats reads the lag and the health records that gave way. A lag past longLag spans the time back to the
+// records it delayed; health records that gave way, more than at the run's last stats, span as a loss does.
+func (a *shardAcc) stats(r rawrecord.Record) {
+	var l struct {
+		MaxLag     *int64 `json:"max_lag_ms"`
+		Lag        *int64 `json:"lag_ms"`
+		LostHealth *int64 `json:"lost_health"`
+	}
+	_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
+	for _, ms := range []*int64{l.MaxLag, l.Lag} {
+		if ms == nil {
+			continue
+		}
+		if *ms > a.lagNS {
+			a.lagNS, a.lag = *ms, lag{MS: *ms, At: timeText(r.Received)}
+		}
+		if ns := *ms * int64(time.Millisecond); ns > longLag {
+			a.ownSpan(r.Received, r.Received-ns)
+		}
+	}
+	if l.LostHealth == nil {
+		return
+	}
+	if n := *l.LostHealth; n > max(a.lostHealth, 0) {
+		a.healthLost = satAdd(a.healthLost, uint64(n-max(a.lostHealth, 0))) //nolint:gosec // n is above it
+		a.ownSpan(r.Received, 0)
+	}
+	a.lostHealth = *l.LostHealth
 }
 
 // lossStages are internal/collector's stages, as lossOf knows them.

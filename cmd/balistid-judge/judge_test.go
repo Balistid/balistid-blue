@@ -92,12 +92,12 @@ func TestStateAndExecFromAStore(t *testing.T) {
 	if got := strings.Join(states, ","); got != "UNKNOWN starting,OK,UNKNOWN canary-missed,OK,UNKNOWN stopped,UNKNOWN starting,OK" {
 		t.Errorf("health changes %s", got)
 	}
-	// OK from A's health record, cut by the loss (from that record) and the gap of 131-132 (from 130 in B to 133
-	// in C) up to the UNKNOWN; OK again up to the stop; OK on the new boot up to the newest record.
-	if d.Clean.State != "KNOWN" || len(d.Clean.Intervals) != 3 {
+	// Each change away from OK spans back to the collector's previous own record: the UNKNOWN to B's stats, the
+	// stop to the OK before it. What is left is the new boot, from its OK to the newest record.
+	if d.Clean.State != "KNOWN" || len(d.Clean.Intervals) != 1 {
 		t.Fatalf("clean %+v", d.Clean)
 	}
-	if d.Clean.Intervals[2].To != d.Period.To || d.Clean.Intervals[0].From <= d.Health[1].At {
+	if d.Clean.Intervals[0].To != d.Period.To || d.Clean.Intervals[0].From != d.Health[6].At {
 		t.Errorf("clean intervals %+v, period %+v", d.Clean.Intervals, d.Period)
 	}
 	runs := readExec(t, out)
