@@ -70,7 +70,7 @@ const (
 var levelNames = map[level][]string{
 	levelLine: {"ID", "SYSCALL"},
 	levelSyscall: {"syscall", "SYSCALL", "success", "exit", "pid", "ppid", "uid", "exe", "key", "PID", "PPID", "UID",
-		"SPAWNED_BY"},
+		"SPAWNED_BY", "arch", "ARCH"},
 	levelProc:    {"EVENT_ID", "START_TIME"},
 	levelSpawner: {"EVENT_ID", "START_TIME", "pid", "exe"},
 }

@@ -58,10 +58,10 @@ func writeManifest(t *testing.T, body string) string {
 
 // manifestOf is a manifest as the probes' runner writes one: its tag, a session id, whether the unit ran probes,
 // and every probe with its time in RFC 3339 with an offset.
-func manifestOf(tag string, void bool, probes ...[2]string) string {
+func manifestOf(tag string, void bool, base time.Time, probes ...[2]string) string {
 	var list []string
 	for i, p := range probes {
-		at := time.Date(2026, 11, 28, 10, 59, i, 189e6, time.UTC).Format("2006-01-02T15:04:05.000-07:00")
+		at := base.Add(time.Duration(i)).UTC().Format("2006-01-02T15:04:05.000000000-07:00")
 		list = append(list, fmt.Sprintf(`{"name":%q,"kind":%q,"at":%q,"ran":true}`, p[0], p[1], at))
 	}
 	extra := ""
@@ -72,12 +72,17 @@ func manifestOf(tag string, void bool, probes ...[2]string) string {
 		` "probes": [%s]}`, extra, tag, strings.Join(list, ","))
 }
 
-func treeManifests(t *testing.T, void bool) []string {
+// treeManifests are agentTree's probes, timed at the start of the period the judge read in out.
+func treeManifests(t *testing.T, out string, void bool) []string {
 	t.Helper()
+	from, err := time.Parse(time.RFC3339Nano, readStateDoc(t, out).Period.From)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return []string{
-		writeManifest(t, manifestOf("t", false, [2]string{"s1p-t-d00", kindDirect}, [2]string{"s1p-t-d01", kindDirect},
+		writeManifest(t, manifestOf("t", false, from, [2]string{"s1p-t-d00", kindDirect}, [2]string{"s1p-t-d01", kindDirect},
 			[2]string{"s1p-t-x00", kindDetached})),
-		writeManifest(t, manifestOf("u", void, [2]string{"s1p-t-s00", kindSubshell})),
+		writeManifest(t, manifestOf("u", void, from, [2]string{"s1p-t-s00", kindSubshell})),
 	}
 }
 
@@ -100,7 +105,7 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 	if status != statusComplete || err != nil {
 		t.Fatal(status, err)
 	}
-	v := viewOf(t, out, treeManifests(t, false)...)
+	v := viewOf(t, out, treeManifests(t, out, false)...)
 	if v.Covers.Status != statusComplete || v.Covers.Runs != 10 || v.Covers.Clean != "KNOWN" {
 		t.Errorf("covers %+v", v.Covers)
 	}
@@ -157,11 +162,11 @@ func TestViewRefusesAVoidManifest(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
 	var b bytes.Buffer
-	err := view(out, treeManifests(t, true), owners(), &b)
+	err := view(out, treeManifests(t, out, true), owners(), &b)
 	if err == nil || !strings.Contains(err.Error(), "the manifest is void") || b.Len() != 0 {
 		t.Errorf("a void manifest: %v, %q", err, b.String())
 	}
-	if code := run(t.Context(), append([]string{"view", out}, treeManifests(t, true)...)); code != 2 {
+	if code := run(t.Context(), append([]string{"view", out}, treeManifests(t, out, true)...)); code != 2 {
 		t.Errorf("exit %d", code)
 	}
 }
@@ -177,8 +182,8 @@ func TestManifestsAsTheProbesWriteThem(t *testing.T) {
 		first = append(first, [2]string{fmt.Sprintf("s1p-9c9aec54-x%02d", i), kindDetached})
 		second = append(second, [2]string{fmt.Sprintf("s1p-98357f1c-s%02d", i), kindSubshell})
 	}
-	a := writeManifest(t, manifestOf("9c9aec54", false, first...))
-	b := writeManifest(t, manifestOf("98357f1c", false, second...))
+	a := writeManifest(t, manifestOf("9c9aec54", false, time.Date(2026, 11, 28, 10, 59, 0, 0, time.UTC), first...))
+	b := writeManifest(t, manifestOf("98357f1c", false, time.Date(2026, 11, 28, 10, 59, 0, 0, time.UTC), second...))
 	probes, err := readManifests([]string{a, b})
 	if err != nil || len(probes) != 50 {
 		t.Fatalf("%d probes, %v", len(probes), err)
@@ -361,8 +366,8 @@ func TestListsAreCapped(t *testing.T) {
 }
 
 func FuzzDecodeManifest(f *testing.F) {
-	f.Add([]byte(manifestOf("t", false, [2]string{"a", kindDirect})))
-	f.Add([]byte(manifestOf("t", true, [2]string{"a", kindSubshell})))
+	f.Add([]byte(manifestOf("t", false, time.Date(2026, 11, 28, 10, 59, 0, 0, time.UTC), [2]string{"a", kindDirect})))
+	f.Add([]byte(manifestOf("t", true, time.Date(2026, 11, 28, 10, 59, 0, 0, time.UTC), [2]string{"a", kindSubshell})))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		probes, err := decodeManifest(data)
 		if err != nil {

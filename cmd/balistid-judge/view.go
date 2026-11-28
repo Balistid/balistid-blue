@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"slices"
 	"sort"
@@ -17,11 +18,13 @@ import (
 )
 
 // Caps on what view reads (T20): state.json holds at most maxEvents changes and spans. A run takes some 400 bytes
-// in memory, so runsMax is about 13 GiB: far over a week of runs, it only stops a file that is not the judge's.
+// in memory, so runsMax is about 1.6 GiB, and exec.jsonl may hold 512 bytes a run on average. view is the user's
+// own program, so a host that runs more needs only a new view, not a new install.
 const (
 	stateMax    = 64 << 20
 	lineMax     = 4 << 10
-	runsMax     = 1 << 25
+	runsMax     = 1 << 22
+	execMax     = runsMax * 512
 	manifestMax = 1 << 20
 	topN        = 20
 	listMax     = 1000
@@ -54,6 +57,7 @@ type coversDoc struct {
 	NotRead  []notReadDoc `json:"shards_not_read"`
 	Unsealed []string     `json:"unsealed_not_read"`
 	Clean    string       `json:"clean_state"`
+	Partial  string       `json:"partial,omitempty"`
 }
 
 type nameCount struct {
@@ -106,13 +110,23 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 		return fmt.Errorf("view: %w", err)
 	}
 	defer root.Close() //nolint:errcheck // read-only
-	sd, err := readState(root, owners)
+	sd, stateInfo, err := readState(root, owners)
 	if err != nil {
 		return err
+	}
+	if sd.Exec.Exported > runsMax {
+		return fmt.Errorf("view: state.json counts %d runs, over the %d this view holds", sd.Exec.Exported, runsMax)
 	}
 	runs, err := readRuns(root, owners)
 	if err != nil {
 		return err
+	}
+	if err := unchanged(root, stateInfo); err != nil {
+		return err
+	}
+	// COMPLETE is written after the last append, so the two agree; anything else may stand beside a part.
+	if sd.Status == statusComplete && uint64(len(runs)) != sd.Exec.Exported {
+		return fmt.Errorf("view: exec.jsonl holds %d runs, state.json %d: the files are not one run's", len(runs), sd.Exec.Exported)
 	}
 	probes, err := readManifests(manifests)
 	if err != nil {
@@ -123,6 +137,11 @@ func view(dir string, manifests []string, owners []uint32, w io.Writer) error {
 		Since: sd.Exec.Since, Runs: len(runs), NotRead: sd.NotRead, Unsealed: sd.Unsealed, Clean: sd.Clean.State}}
 	doc.Programs = programs(runs, where)
 	doc.Clean = cleanView(sd.Clean, runs, where)
+	if sd.Status != statusComplete {
+		doc.Covers.Partial = "the judge's status is " + sd.Status + ": the run list is partial, and no clean count is given"
+		doc.Clean = viewClean{State: statusUnknown, Reason: doc.Covers.Partial, Top: []nameCount{}, Once: capped(nil),
+			BrokenRuns: []runRef{}}
+	}
 	if len(manifests) > 0 {
 		p := checkProbes(probes, runs, where, sd.Period)
 		doc.Probes = &p
@@ -146,32 +165,42 @@ func failed(format string, err error, args ...any) error {
 
 // ownedFile checks a file of the judge's: a regular file, one link, owned by one of owners, that no one but its
 // owner can write.
-func ownedFile(root *os.Root, name string, owners []uint32) error {
+func ownedFile(root *os.Root, name string, owners []uint32) (fs.FileInfo, error) {
 	fi, err := root.Lstat(name)
 	if err != nil {
-		return fmt.Errorf("view: %w", err)
+		return nil, fmt.Errorf("view: %w", err)
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !fi.Mode().IsRegular() || !ok || st.Nlink != 1 || fi.Mode().Perm()&0o022 != 0 {
-		return fmt.Errorf("view: %s is not a regular file only its owner can write", name)
+		return nil, fmt.Errorf("view: %s is not a regular file only its owner can write", name)
 	}
 	if !slices.Contains(owners, st.Uid) {
-		return fmt.Errorf("view: %s is owned by uid %d, neither the collector's nor the caller's", name, st.Uid)
+		return nil, fmt.Errorf("view: %s is owned by uid %d, neither the collector's nor the caller's", name, st.Uid)
+	}
+	return fi, nil
+}
+
+// unchanged fails when state.json is no longer the file read before exec.jsonl: a run of the judge began meanwhile.
+func unchanged(root *os.Root, before fs.FileInfo) error {
+	after, err := root.Lstat(stateFile)
+	if err != nil || !os.SameFile(before, after) || after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
+		return fmt.Errorf("view: %s changed while exec.jsonl was read", stateFile)
 	}
 	return nil
 }
 
-func readState(root *os.Root, owners []uint32) (stateDoc, error) {
+func readState(root *os.Root, owners []uint32) (stateDoc, fs.FileInfo, error) {
 	var sd stateDoc
-	if err := ownedFile(root, stateFile, owners); err != nil {
-		return sd, err
+	fi, err := ownedFile(root, stateFile, owners)
+	if err != nil {
+		return sd, nil, err
 	}
 	b, err := wholefile.ReadIn(root, stateFile, stateMax)
 	if err != nil {
-		return sd, fmt.Errorf("view: %s: %w", stateFile, err)
+		return sd, nil, fmt.Errorf("view: %s: %w", stateFile, err)
 	}
 	if err := strictDecode(b, &sd); err != nil || sd.Schema != 1 {
-		return sd, failed("view: %s is not the judge's state of schema 1", err, stateFile)
+		return sd, nil, failed("view: %s is not the judge's state of schema 1", err, stateFile)
 	}
 	// inside finds a run's interval by halving, so the intervals must be in order and apart.
 	var end time.Time
@@ -179,16 +208,17 @@ func readState(root *os.Root, owners []uint32) (stateDoc, error) {
 		from, err1 := time.Parse(time.RFC3339Nano, iv.From)
 		to, err2 := time.Parse(time.RFC3339Nano, iv.To)
 		if err := errors.Join(err1, err2); err != nil || to.Before(from) || i > 0 && from.Before(end) {
-			return sd, fmt.Errorf("view: %s: clean interval %d does not read, or is not after the one before", stateFile, i)
+			return sd, nil, fmt.Errorf("view: %s: clean interval %d does not read, or is not after the one before", stateFile, i)
 		}
 		end = to
 	}
-	return sd, nil
+	return sd, fi, nil
 }
 
 // readRuns reads exec.jsonl line by line, each strictly: a line it cannot read fails the whole view.
 func readRuns(root *os.Root, owners []uint32) ([]execRun, error) {
-	if err := ownedFile(root, execFile, owners); err != nil {
+	before, err := ownedFile(root, execFile, owners)
+	if err != nil {
 		return nil, err
 	}
 	f, err := root.OpenFile(execFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -196,7 +226,14 @@ func readRuns(root *os.Root, owners []uint32) ([]execRun, error) {
 		return nil, fmt.Errorf("view: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	return decodeRuns(f)
+	opened, err := f.Stat()
+	switch {
+	case err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened):
+		return nil, fmt.Errorf("view: %s changed while it was opened", execFile)
+	case opened.Size() > execMax:
+		return nil, fmt.Errorf("view: %s holds %d bytes, over the %d this view reads", execFile, opened.Size(), execMax)
+	}
+	return decodeRuns(io.LimitReader(f, execMax))
 }
 
 // decodeRuns reads exec.jsonl, every line ended by its newline: the judge appends whole lines, so one without is torn.
