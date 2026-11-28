@@ -330,7 +330,11 @@ func cleanView(c cleanDoc, runs []execRun, where []string) viewClean {
 		ivs = append(ivs, [2]time.Time{from, to})
 	}
 	counts := map[string]int{}
-	var brokenRuns []runRef
+	type timedRef struct {
+		at time.Time
+		runRef
+	}
+	var brokenRuns []timedRef
 	for i, r := range runs {
 		at, _ := time.Parse(time.RFC3339Nano, r.Time) // decodeRuns parsed every time
 		if !inside(ivs, at) {
@@ -345,15 +349,18 @@ func cleanView(c cleanDoc, runs []execRun, where []string) viewClean {
 			v.EndedObserved++
 		default:
 			v.Broken++
-			brokenRuns = append(brokenRuns, runRef{Time: r.Time, Serial: r.Serial, Name: r.Name})
+			brokenRuns = append(brokenRuns, timedRef{at, runRef{Time: r.Time, Serial: r.Serial, Name: r.Name}})
 		}
 	}
-	// exec.jsonl holds shards newest first, each oldest first: sorted, the list shown is the oldest runs.
+	// exec.jsonl holds shards newest first, each oldest first: sorted by the parsed time, as RFC 3339 drops trailing
+	// zeros and does not sort as text, the list shown is the oldest runs.
 	sort.Slice(brokenRuns, func(i, j int) bool {
 		a, b := brokenRuns[i], brokenRuns[j]
-		return a.Time < b.Time || a.Time == b.Time && a.Serial < b.Serial
+		return a.at.Before(b.at) || a.at.Equal(b.at) && a.Serial < b.Serial
 	})
-	v.BrokenRuns = append(v.BrokenRuns, brokenRuns[:min(listMax, len(brokenRuns))]...)
+	for _, r := range brokenRuns[:min(listMax, len(brokenRuns))] {
+		v.BrokenRuns = append(v.BrokenRuns, r.runRef)
+	}
 	v.BrokenShown = len(v.BrokenRuns)
 	all := sorted(counts)
 	v.Top = all[:min(topN, len(all))]
