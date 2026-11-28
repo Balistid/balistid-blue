@@ -55,6 +55,6 @@ a stub and its unit and installer component exist. A program's name is chosen by
 - Every local user, so every agent, reads `exec.jsonl`. The assignment is against error, not against an agent
   that hides, and a lower bound: a lost record, a restarted Laurel or a forked shell that never exec'd (Laurel
   names it by its start time only) ends a chain. execveat and 32-bit execs are counted, not listed.
-- The last unsealed hours are not read. The decoder of Laurel's lines is the judge's own, tested on `lab/windows`
-  to agree with `internal/detect`, which stays locked and unchanged.
+- The last unsealed hours are not read. The judge decodes Laurel's lines itself, tested on `lab/windows` to agree
+  with `internal/detect`, which stays locked. `THREAT_MODEL.md` may hold 124 lines: row T41, the export (R10).
 - Revert: a pull request restoring the stub, removing this file and `acceptance/2.toml`.
