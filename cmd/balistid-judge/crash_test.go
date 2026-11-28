@@ -20,143 +20,148 @@ func sensorAt(serial uint64, at int64) rawrecord.Record {
 	return rawrecord.New(0, store.SensorProvider, serial, at, otherLine(serial, "k"))
 }
 
-// oneShard is the state of one shard read whole.
-func oneShard(t *testing.T, recs []rawrecord.Record) stateDoc {
-	t.Helper()
-	st := newState([]store.Seal{{Name: "one"}}, 0, 0, 90)
-	st.merge("one", accOf(t, recs...))
-	return st.render(0)
+func healthAt(at int64, state string) rawrecord.Record {
+	return own(store.HealthProvider, at, `{"schema_version":1,"kind":"health","state":"`+state+`"}`)
 }
 
-func cleanAt(d stateDoc, at int64) bool {
-	for _, iv := range d.Clean.Intervals {
-		from, _ := time.Parse(time.RFC3339Nano, iv.From)
-		to, _ := time.Parse(time.RFC3339Nano, iv.To)
-		if from.UnixNano() <= at && at <= to.UnixNano() {
-			return true
-		}
-	}
-	return false
-}
-
-// healthOK and the records every 5 s from 1 s to last, at base.
-func everyFive(last int64, between func(i int64) []rawrecord.Record) []rawrecord.Record {
-	recs := []rawrecord.Record{own(store.HealthProvider, base, `{"schema_version":1,"kind":"health","state":"OK"}`)}
-	serial := uint64(1)
-	for i := int64(1); i <= last; i += 5 {
-		recs = append(recs, sensorAt(serial, base+i*int64(time.Second)))
-		serial++
-		recs = append(recs, between(i)...)
-	}
-	return recs
-}
-
-// TestACrashIsNotClean: the collector died after 30 s with no stopping record and its unit started it again at
-// 40 s, well inside the 90 s silence: the time it did not run is not clean.
-func TestACrashIsNotClean(t *testing.T) {
+// TestHealthIsCarried: before the first health record the state is not known, a change away from OK counts from
+// itself, and across midnight the seconds are split between the two days.
+func TestHealthIsCarried(t *testing.T) {
 	sec := int64(time.Second)
-	recs := []rawrecord.Record{own(store.HealthProvider, base, `{"schema_version":1,"kind":"health","state":"OK"}`)}
+	day := (base/dayNS + 1) * dayNS // a midnight after base
+	rows := rowsOf(readerOf(t, sensorAt(1, day-100*sec), healthAt(day-90*sec, "OK"), sensorAt(2, day-60*sec),
+		healthAt(day-50*sec, "UNKNOWN canary-missed"), sensorAt(3, day+30*sec), healthAt(day+40*sec, "OK"),
+		sensorAt(4, day+100*sec)))
+	if len(rows) != 2 {
+		t.Fatalf("days %+v", rows)
+	}
+	if r := rows[0]; r.NotKnown != 10 || r.NotOK != 50 {
+		t.Errorf("before midnight: not known %v s, not OK %v s", r.NotKnown, r.NotOK)
+	}
+	if r := rows[1]; r.NotKnown != 0 || r.NotOK != 40 {
+		t.Errorf("after midnight: not known %v s, not OK %v s", r.NotKnown, r.NotOK)
+	}
+}
+
+// TestAChangeIsDatedByItsOwnTime: an UNKNOWN the collector noted at 20 s and the store took at 50 s is not OK from
+// 20 s, in the seconds and in the list of changes; an OK noted early counts nothing back.
+func TestAChangeIsDatedByItsOwnTime(t *testing.T) {
+	sec := int64(time.Second)
+	recs := []rawrecord.Record{healthAt(base, "OK")}
+	for i := int64(1); i <= 49; i++ {
+		recs = append(recs, sensorAt(uint64(i), base+i*sec))
+	}
+	recs = append(recs, own(store.HealthProvider, base+50*sec, `{"schema_version":1,"kind":"health","state":"UNKNOWN store: x","at":`+
+		strconv.FormatInt(base+20*sec, 10)+`,"note_seq":2}`),
+		own(store.HealthProvider, base+60*sec, `{"schema_version":1,"kind":"health","state":"OK","at":`+
+			strconv.FormatInt(base+55*sec, 10)+`,"note_seq":3}`), sensorAt(50, base+70*sec))
+	rd := readerOf(t, recs...)
+	if r := rowsOf(rd)[0]; r.NotOK != 40 {
+		t.Errorf("not OK %v s, want 20 to 60", r.NotOK)
+	}
+	if got := rd.trans[1].At; got != timeText(base+20*sec) {
+		t.Errorf("the change is dated %s", got)
+	}
+}
+
+// TestACrashIsAStart: a collector that died with no stopping record and started again is a start in the changes,
+// and the time until its next OK is not OK.
+func TestACrashIsAStart(t *testing.T) {
+	sec := int64(time.Second)
+	recs := []rawrecord.Record{healthAt(base, "OK")}
 	for i := int64(1); i <= 30; i++ {
 		recs = append(recs, sensorAt(uint64(i), base+i*sec))
 	}
 	recs = append(recs, own(store.HealthProvider, base+40*sec, `{"schema_version":1,"kind":"started","info":{"boot_id":"x"}}`),
-		own(store.HealthProvider, base+41*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
-		sensorAt(31, base+50*sec))
-	if d := oneShard(t, recs); cleanAt(d, base+35*sec) || !cleanAt(d, base+45*sec) {
-		t.Errorf("clean %+v", d.Clean.Intervals)
+		healthAt(base+45*sec, "OK"), sensorAt(31, base+50*sec))
+	rd := readerOf(t, recs...)
+	if r := rowsOf(rd)[0]; r.NotOK != 5 || rd.trans[1].Kind != "started" {
+		t.Errorf("not OK %v s, changes %+v", r.NotOK, rd.trans)
 	}
 }
 
-// TestAChangeIsDatedByItsOwnTime: an UNKNOWN the collector noted at 20 s and the store took at 50 s is not clean
-// from 20 s.
-func TestAChangeIsDatedByItsOwnTime(t *testing.T) {
+// TestLagsByDay: the store's largest lag is the day's, and the arrival lag is the receive time less Laurel's ID.
+func TestLagsByDay(t *testing.T) {
 	sec := int64(time.Second)
-	recs := []rawrecord.Record{own(store.HealthProvider, base, `{"schema_version":1,"kind":"health","state":"OK"}`)}
-	for i := int64(1); i <= 49; i++ {
-		recs = append(recs, sensorAt(uint64(i), base+i*sec))
-		if i == 10 {
-			recs = append(recs, own(store.HealthProvider, base+10*sec, `{"schema_version":1,"kind":"stats","max_lag_ms":0}`))
-		}
-	}
-	recs = append(recs, own(store.HealthProvider, base+50*sec, `{"schema_version":1,"kind":"health","state":"UNKNOWN store: x","at":`+
-		strconv.FormatInt(base+20*sec, 10)+`,"note_seq":2}`),
-		own(store.HealthProvider, base+55*sec, `{"schema_version":1,"kind":"health","state":"OK"}`), sensorAt(50, base+60*sec))
-	if d := oneShard(t, recs); cleanAt(d, base+15*sec) || cleanAt(d, base+30*sec) || !cleanAt(d, base+58*sec) {
-		t.Errorf("clean %+v", d.Clean.Intervals)
+	line := []byte(`{"ID":"` + strconv.FormatInt(base/sec-5, 10) + `.250:7","SYSCALL":{"syscall":257,"key":"k"}}`)
+	rows := rowsOf(readerOf(t, own(store.HealthProvider, base, `{"schema_version":1,"kind":"stats","max_lag_ms":1500}`),
+		own(store.HealthProvider, base+sec, `{"schema_version":1,"kind":"lag","lag_ms":120000}`),
+		rawrecord.New(0, store.SensorProvider, 7, base, line)))
+	r := rows[0]
+	if r.StoreLag == nil || *r.StoreLag != 120000 || r.ArrivalLag == nil || *r.ArrivalLag != 4750 {
+		t.Errorf("store lag %v, arrival lag %v", r.StoreLag, r.ArrivalLag)
 	}
 }
 
-// TestALongLagIsNotClean: a lag of 120 s reported at 150 s spans the records it delayed; one of 30 s, under the
-// stats period, does not cut by itself.
-func TestALongLagIsNotClean(t *testing.T) {
-	sec := int64(time.Second)
-	for lagMS, clean := range map[int]bool{120000: false, 30000: true} {
-		d := oneShard(t, everyFive(200, func(i int64) []rawrecord.Record {
-			if i != 146 {
-				return nil
-			}
-			return []rawrecord.Record{own(store.HealthProvider, base+150*sec,
-				`{"schema_version":1,"kind":"stats","max_lag_ms":`+strconv.Itoa(lagMS)+`}`)}
-		}))
-		if cleanAt(d, base+100*sec) != clean {
-			t.Errorf("lag %d ms: clean %+v", lagMS, d.Clean.Intervals)
-		}
-	}
-}
-
-// TestHealthRecordsThatGaveWay: lost_health rising from 0 to 7 between two stats is counted, and not clean.
+// TestHealthRecordsThatGaveWay: lost_health is the collector run's running total: 0 to 7 is 7 given way, a start
+// sets it back, and a fall without a start read begins a run too.
 func TestHealthRecordsThatGaveWay(t *testing.T) {
 	sec := int64(time.Second)
-	d := oneShard(t, everyFive(150, func(i int64) []rawrecord.Record {
-		switch i {
-		case 61:
-			return []rawrecord.Record{own(store.HealthProvider, base+62*sec, `{"schema_version":1,"kind":"stats","lost_health":0}`)}
-		case 121:
-			return []rawrecord.Record{own(store.HealthProvider, base+122*sec, `{"schema_version":1,"kind":"stats","lost_health":7}`)}
-		}
-		return nil
-	}))
-	if d.HealthLost != 7 || cleanAt(d, base+100*sec) || !cleanAt(d, base+30*sec) {
-		t.Errorf("lost %d, clean %+v", d.HealthLost, d.Clean.Intervals)
+	stats := func(at int64, n int) rawrecord.Record {
+		return own(store.HealthProvider, at, `{"schema_version":1,"kind":"stats","lost_health":`+strconv.Itoa(n)+`}`)
 	}
-}
-
-// TestNotEveryShardReadIsNotClean: under a read limit, and with an older shard not read whose boundary may hold a
-// gap, the clean intervals are UNKNOWN with the reason.
-func TestNotEveryShardReadIsNotClean(t *testing.T) {
-	ts := threeShards(t)
-	status, out, _ := judgeOnce(t, ts.dir, stepClock(20*time.Minute))
-	if d := readStateDoc(t, out); status != statusPartial || d.Clean.State != statusUnknown || d.Clean.Reason == "" {
-		t.Errorf("status %s, clean %+v", status, d.Clean)
-	}
-	sec := int64(time.Second)
-	newer := []rawrecord.Record{own(store.HealthProvider, base+20*sec, `{"schema_version":1,"kind":"health","state":"OK"}`)}
-	for s := uint64(20); s <= 30; s++ {
-		newer = append(newer, sensorAt(s, base+int64(s+20)*sec))
-	}
-	st := newState([]store.Seal{{Name: "older"}, {Name: "newer"}}, 0, 0, 90)
-	st.merge("newer", accOf(t, newer...))
-	if d := st.render(0); d.Clean.State != statusUnknown || len(d.Clean.Intervals) != 0 {
-		t.Errorf("the older shard not read: clean %+v", d.Clean)
+	rows := rowsOf(readerOf(t, stats(base, 0), stats(base+60*sec, 7), stats(base+120*sec, 7),
+		own(store.HealthProvider, base+130*sec, `{"schema_version":1,"kind":"started","info":{"boot_id":"x"}}`),
+		stats(base+190*sec, 2), stats(base+250*sec, 1)))
+	if got := rows[0].HealthLost; got != 10 {
+		t.Errorf("health records lost %d, want 7, 2 and 1", got)
 	}
 }
 
 // TestAProbeIsOneRun: a name with many runs is a program's, never a probe's, however all of them are under agents.
 func TestAProbeIsOneRun(t *testing.T) {
 	agent := "1795340222.001:1"
-	runs := []execRun{{Schema: 1, Time: "2026-11-28T10:00:00Z", Name: "claude", Agent: true, Process: procKey{EventID: agent}}}
+	at := time.Date(2026, 11, 28, 10, 0, 1, 0, time.UTC)
+	runs := []execRun{{Schema: 1, Name: "claude", Agent: true, Process: procKey{EventID: agent}, eventAt: at}}
 	for i := range 50 {
-		runs = append(runs, execRun{Schema: 1, Time: "2026-11-28T10:00:01Z", Name: "make",
+		runs = append(runs, execRun{Schema: 1, Name: "make", PID: 7, eventAt: at,
 			Process: procKey{EventID: "1795340222.002:" + strconv.Itoa(i+2)}, SpawnedBy: &spawner{procKey: procKey{EventID: agent}}})
 	}
-	period := &periodDoc{From: "2026-11-28T00:00:00Z", To: "2026-11-28T23:00:00Z"}
-	p := checkProbes([]probe{{Name: "make", Kind: kindDirect, At: "2026-11-28T10:00:01Z", Ran: true}}, runs, assign(runs), period)
-	if p.Direct.Assigned != 0 || p.Each[0].Runs != 50 {
+	probes := []probe{{Name: "make", Kind: kindDirect, At: at.Format(time.RFC3339Nano), Ran: true}}
+	p := checkProbes(probes, runs, assign(runs), true)
+	if p.Direct.Assigned != 0 || p.Each[0].Runs != 50 || p.Each[0].Why != moreThanOne {
 		t.Errorf("probes %+v", p)
 	}
-	p = checkProbes([]probe{{Name: "make", Kind: kindDirect, At: "2026-11-28T10:00:01Z", Ran: true}}, runs[:2], assign(runs[:2]), period)
+	p = checkProbes(probes, runs[:2], assign(runs[:2]), true)
 	if p.Direct.Assigned != 1 {
 		t.Errorf("one run: %+v", p)
+	}
+}
+
+// TestProbeRules: a probe is assigned only in a COMPLETE read, as one run under an agent within 5 s of its
+// manifest's time; every other probe says why not.
+func TestProbeRules(t *testing.T) {
+	agent := "1795340222.001:1"
+	at := time.Date(2026, 11, 28, 10, 0, 0, 0, time.UTC)
+	run := func(name string, off time.Duration, underAgent bool) execRun {
+		r := execRun{Schema: 1, Name: name, PID: 7, eventAt: at.Add(off), Process: procKey{EventID: "1795340222.002:" + name},
+			SpawnedBy: &spawner{procKey: procKey{EventID: agent}}}
+		if !underAgent {
+			r.SpawnedBy = &spawner{procKey: procKey{StartTime: "1.000"}}
+		}
+		return r
+	}
+	runs := []execRun{{Schema: 1, Name: "claude", Agent: true, Process: procKey{EventID: agent}},
+		run("in", 4*time.Second, true), run("early", -6*time.Second, true), run("outside", 0, false)}
+	named := func(name string) probe {
+		return probe{Name: name, Kind: kindDirect, At: at.Format(time.RFC3339Nano), Ran: true}
+	}
+	probes := []probe{named("in"), named("early"), named("outside"), named("gone"), {Name: "in2", Kind: kindDirect,
+		At: at.Format(time.RFC3339Nano)}}
+	want := map[string]string{"in": "", "early": timeOff, "outside": notUnderAgent, "gone": absent, "in2": notRun}
+	p := checkProbes(probes, runs, assign(runs), true)
+	for _, e := range p.Each {
+		if e.Why != want[e.Name] || e.Assigned != (want[e.Name] == "") {
+			t.Errorf("%s: %+v", e.Name, e)
+		}
+	}
+	if p.Direct != (kindCount{Count: 5, Found: 3, Assigned: 1}) {
+		t.Errorf("direct %+v", p.Direct)
+	}
+	for _, e := range checkProbes(probes, runs, assign(runs), false).Each {
+		if e.Assigned || e.Why != notComplete {
+			t.Errorf("a read not complete: %+v", e)
+		}
 	}
 }
 
@@ -172,8 +177,26 @@ func TestACycleIsBroken(t *testing.T) {
 	}
 }
 
-// TestViewDoesNotNeedTheOrder: exec.jsonl in reversed line order gives the same view, and view passes on what the
-// judge counted and did not list.
+// TestAnAmbiguousSpawnerBreaksTheChain: an event id two runs of other pids carry, as a Laurel restart can write,
+// is no link; nor is a spawner whose pid is not the matched run's.
+func TestAnAmbiguousSpawnerBreaksTheChain(t *testing.T) {
+	agent := execRun{Schema: 1, Name: "claude", PID: 10, Agent: true, Process: procKey{EventID: "1.000:1"}}
+	other := execRun{Schema: 1, Name: "vim", PID: 11, Process: procKey{EventID: "1.000:1"}}
+	child := execRun{Schema: 1, Name: "make", PID: 12, Process: procKey{EventID: "1.000:2"},
+		SpawnedBy: &spawner{procKey: procKey{EventID: "1.000:1"}, PID: 10}}
+	if got := assign([]execRun{agent, child}); got[1] != underAgent {
+		t.Fatalf("one run of the id: %v", got)
+	}
+	if got := assign([]execRun{agent, other, child}); got[2] != broken {
+		t.Errorf("two runs of the id with other pids: %v", got)
+	}
+	child.SpawnedBy.PID = 99
+	if got := assign([]execRun{agent, child}); got[1] != broken {
+		t.Errorf("a spawner pid that is not the run's: %v", got)
+	}
+}
+
+// TestViewDoesNotNeedTheOrder: exec.jsonl in reversed line order gives the same view.
 func TestViewDoesNotNeedTheOrder(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
@@ -192,9 +215,6 @@ func TestViewDoesNotNeedTheOrder(t *testing.T) {
 	}
 	if backward := viewOf(t, out); !reflect.DeepEqual(forward, backward) {
 		t.Errorf("forward %+v\nbackward %+v", forward, backward)
-	}
-	if d := readStateDoc(t, out); forward.Covers.Exec != d.Exec.execCounts || forward.Covers.Exec.System != 1 {
-		t.Errorf("covers %+v, state %+v", forward.Covers.Exec, d.Exec)
 	}
 }
 

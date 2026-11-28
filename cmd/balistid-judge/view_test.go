@@ -72,13 +72,10 @@ func manifestOf(tag string, void bool, base time.Time, probes ...[2]string) stri
 		` "probes": [%s]}`, extra, tag, strings.Join(list, ","))
 }
 
-// treeManifests are agentTree's probes, timed at the start of the period the judge read in out.
-func treeManifests(t *testing.T, out string, void bool) []string {
+// treeManifests are agentTree's probes, timed as Laurel's IDs of eventOf date their runs.
+func treeManifests(t *testing.T, void bool) []string {
 	t.Helper()
-	from, err := time.Parse(time.RFC3339Nano, readStateDoc(t, out).Period.From)
-	if err != nil {
-		t.Fatal(err)
-	}
+	from := time.Unix(1795340222, 0)
 	return []string{
 		writeManifest(t, manifestOf("t", false, from, [2]string{"s1p-t-d00", kindDirect}, [2]string{"s1p-t-d01", kindDirect},
 			[2]string{"s1p-t-x00", kindDetached})),
@@ -105,30 +102,31 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 	if status != statusComplete || err != nil {
 		t.Fatal(status, err)
 	}
-	v := viewOf(t, out, treeManifests(t, out, false)...)
-	if v.Covers.Status != statusComplete || v.Covers.Runs != 10 || v.Covers.Clean != "KNOWN" {
+	v := viewOf(t, out, treeManifests(t, false)...)
+	if v.Covers.Status != statusComplete || v.Covers.Partial != "" || !strings.Contains(v.Covers.Agent, "Claude Code's binary") {
 		t.Errorf("covers %+v", v.Covers)
 	}
-	var programs []string
-	for _, p := range v.Programs.Names {
-		programs = append(programs, fmt.Sprintf("%s:%d", p.Name, p.Count))
+	var top []string
+	for _, p := range v.Top {
+		top = append(top, fmt.Sprintf("%s:%d", p.Name, p.Count))
 	}
-	if got := strings.Join(programs, " "); got != "bash:1 make:1 s1p-t-d00:1" || v.Programs.Total != 3 {
-		t.Errorf("programs under agents %s of %d", got, v.Programs.Total)
+	if got := strings.Join(top, " "); got != "bash:1 make:1 s1p-t-d00:1" || v.Once.Total != 3 {
+		t.Errorf("top under agents %s, once %+v", got, v.Once)
 	}
-	c := v.Clean
-	if c.Runs != 10 || c.UnderAgent != 3 || c.EndedObserved != 5 || c.Broken != 2 || c.BrokenShown != 2 {
-		t.Errorf("clean %+v", c)
+	if len(v.Days) != 1 || !v.Days[0].Read {
+		t.Fatalf("days %+v", v.Days)
+	}
+	c := v.Days[0]
+	if c.Runs != 10 || c.UnderAgent != 3 || c.EndedObserved != 5 || c.Broken != 2 || c.Listed != 10 || c.ListedOf != 10 ||
+		c.Execs.System != 1 {
+		t.Errorf("the day %+v", c.DayCounts)
 	}
 	var brokenNames []string
-	for _, r := range c.BrokenRuns {
+	for _, r := range v.Broken.Runs {
 		brokenNames = append(brokenNames, r.Name)
 	}
-	if got := strings.Join(brokenNames, " "); got != "orphan id" {
+	if got := strings.Join(brokenNames, " "); got != "orphan id" || v.Broken.Total != 2 {
 		t.Errorf("broken chains %s, want the run whose spawner is missing and the one whose spawner is root's", got)
-	}
-	if len(c.Top) != 3 || c.Once.Total != 3 {
-		t.Errorf("top %v, once %v", c.Top, c.Once)
 	}
 	p := v.Probes
 	if p == nil || p.Direct != (kindCount{Count: 2, Found: 1, Assigned: 1}) ||
@@ -136,7 +134,7 @@ func TestViewAssignsThroughSpawnedBy(t *testing.T) {
 		t.Fatalf("probes %+v", p)
 	}
 	for _, e := range p.Each {
-		if e.Name == "s1p-t-d01" && (e.Runs != 0 || e.Assigned) {
+		if e.Name == "s1p-t-d01" && (e.Runs != 0 || e.Assigned || e.Why != absent) {
 			t.Errorf("a probe the store lacks: %+v", e)
 		}
 	}
@@ -162,11 +160,11 @@ func TestViewRefusesAVoidManifest(t *testing.T) {
 	ts := agentTree(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
 	var b bytes.Buffer
-	err := view(out, treeManifests(t, out, true), mine(), &b)
+	err := view(out, treeManifests(t, true), mine(), &b)
 	if err == nil || !strings.Contains(err.Error(), "the manifest is void") || b.Len() != 0 {
 		t.Errorf("a void manifest: %v, %q", err, b.String())
 	}
-	if code := run(t.Context(), append([]string{"view", out}, treeManifests(t, out, true)...)); code != 2 {
+	if code := run(t.Context(), append([]string{"view", out}, treeManifests(t, true)...)); code != 2 {
 		t.Errorf("exit %d", code)
 	}
 }
@@ -321,21 +319,16 @@ func editState(t *testing.T, out string, f func(*stateDoc)) {
 	}
 }
 
-// TestViewRefusesAStateItCannotSearch: clean intervals out of order, or another schema, are refused with a reason
-// that reads.
+// TestViewRefusesAStateItCannotSearch: days out of order, or another schema, are refused with a reason that reads.
 func TestViewRefusesAStateItCannotSearch(t *testing.T) {
 	ts := threeShards(t)
 	_, out, _ := judgeOnce(t, ts.dir, nil)
-	editState(t, out, func(d *stateDoc) {
-		d.Clean.Intervals = []interval{{From: "2026-11-28T10:00:02Z", To: "2026-11-28T10:00:03Z"},
-			{From: "2026-11-28T10:00:00Z", To: "2026-11-28T10:00:01Z"}}
-	})
-	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "clean interval") {
-		t.Errorf("intervals out of order: %v", err)
+	editState(t, out, func(d *stateDoc) { d.Days = append(d.Days, d.Days[0]) })
+	if err := view(out, nil, mine(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not after the one before") {
+		t.Errorf("a day twice: %v", err)
 	}
 	editState(t, out, func(d *stateDoc) {
-		iv := d.Clean.Intervals
-		iv[0], iv[1] = iv[1], iv[0]
+		d.Days = d.Days[:1]
 		d.Schema = 2
 	})
 	err := view(out, nil, mine(), &bytes.Buffer{})
@@ -344,16 +337,35 @@ func TestViewRefusesAStateItCannotSearch(t *testing.T) {
 	}
 }
 
-// TestViewOfAnUnknownState prints what it covers, the reason and no clean count when the judge could not read.
+// TestViewOfAnUnknownState prints what it covers and the reason, and no day, when the judge could not read.
 func TestViewOfAnUnknownState(t *testing.T) {
 	_, out, err := judgeOnce(t, filepath.Join(t.TempDir(), "missing"), nil)
 	if err == nil {
 		t.Fatal("a missing store read")
 	}
 	v := viewOf(t, out)
-	if v.Covers.Status != statusUnknown || v.Covers.Reason == "" || v.Clean.State != statusUnknown ||
-		v.Clean.Reason == "" || v.Clean.Runs != 0 {
+	if v.Covers.Status != statusUnknown || v.Covers.Reason == "" || v.Covers.Partial == "" || len(v.Days) != 0 {
 		t.Errorf("%+v", v)
+	}
+}
+
+// TestADayNotReadIsNotZero: the day of a shard not read is printed as not read, with no count, never a zero.
+func TestADayNotReadIsNotZero(t *testing.T) {
+	ts := threeShards(t)
+	_, out, _ := judgeOnce(t, ts.dir, nil)
+	editState(t, out, func(d *stateDoc) {
+		d.Status = statusPartial
+		d.NotRead = append(d.NotRead, notReadDoc{Name: "x.db", Sealed: "2026-01-01T00:00:00Z", Reason: "not read yet"})
+	})
+	var b bytes.Buffer
+	if err := view(out, nil, mine(), &b); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(b.Bytes(), []byte("{\n   \"day\": \"2026-01-01\",\n   \"read\": false\n  }")) {
+		t.Errorf("view %s", b.Bytes())
+	}
+	if v := viewOf(t, out); len(v.Days) != 2 || v.Days[0].DayCounts != nil || !v.Days[1].Read {
+		t.Errorf("days %+v", v.Days)
 	}
 }
 
@@ -362,14 +374,17 @@ func TestListsAreCapped(t *testing.T) {
 	var runs []execRun
 	var where []string
 	for i := range listMax + 5 {
-		runs = append(runs, execRun{Schema: 1, Time: timeText(int64(i)), Name: fmt.Sprintf("p%d", i)})
+		runs = append(runs, execRun{Schema: 1, Received: timeText(int64(i)), Name: fmt.Sprintf("p%d", i)})
 		where = append(where, underAgent)
 	}
-	p := programs(runs, where)
-	c := cleanView(cleanDoc{State: "KNOWN", Intervals: []interval{{From: timeText(0), To: timeText(int64(listMax + 5))}}}, runs, where)
-	if p.Shown != listMax || p.Total != listMax+5 || len(p.Names) != listMax || c.Once.Shown != listMax ||
-		c.Once.Total != listMax+5 || len(c.Top) != topN {
-		t.Errorf("programs %d of %d, once %d of %d, top %d", p.Shown, p.Total, c.Once.Shown, c.Once.Total, len(c.Top))
+	for i := range listMax + 5 {
+		runs = append(runs, execRun{Schema: 1, Received: timeText(int64(i)), Name: "b"})
+		where = append(where, broken)
+	}
+	top, once, b := overAll(runs, where)
+	if once.Shown != listMax || once.Total != listMax+5 || len(once.Names) != listMax || len(top) != topN ||
+		b.Shown != listMax || b.Total != listMax+5 || len(b.Runs) != listMax {
+		t.Errorf("once %d of %d, top %d, broken %d of %d", once.Shown, once.Total, len(top), b.Shown, b.Total)
 	}
 }
 
@@ -396,7 +411,7 @@ func FuzzDecodeManifest(f *testing.F) {
 }
 
 func FuzzDecodeRuns(f *testing.F) {
-	f.Add([]byte(`{"schema_version":1,"time":"2026-11-28T10:59:26.189Z","serial":1,"pid":2,"ppid":1,"uid":1000,` +
+	f.Add([]byte(`{"schema_version":1,"event_time":"2026-11-28T10:59:26.189Z","received":"2026-11-28T10:59:26.2Z","serial":1,"pid":2,"ppid":1,"uid":1000,` +
 		`"process":{"event_id":"1.000:1"},"spawned_by":{"start_time":"1.000","pid":1},"name":"true","agent":false,` +
 		`"spawner_agent":true}` + "\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {

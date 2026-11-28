@@ -6,38 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/Balistid/balistid-blue/internal/rawrecord"
-	"github.com/Balistid/balistid-blue/internal/store"
 )
 
-// TestAFailedShardAppendsNothing: the newer shards' runs stay in exec.jsonl, the failed shard adds none.
+// TestAFailedShardAppendsNothing: the older shards' runs stay in exec.jsonl, the failed shard adds none.
 func TestAFailedShardAppendsNothing(t *testing.T) {
 	ts := threeShards(t)
-	oldest := filepath.Join(ts.dir, readStateDocOf(t, ts).Read[3].Name)
-	b, err := os.ReadFile(oldest) //nolint:gosec // the test's store
-	if err != nil {
-		t.Fatal(err)
-	}
-	b[len(b)-1] ^= 0xff
-	if err := os.Chmod(oldest, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(oldest, b, 0o600); err != nil { //nolint:gosec // the test's store
-		t.Fatal(err)
-	}
+	corrupt(t, ts, readStateDocOf(t, ts).Read[2].Name)
 	status, out, err := judgeOnce(t, ts.dir, nil)
-	if d := readStateDoc(t, out); status != statusUnknown || err == nil || len(d.Read) != 3 || len(d.NotRead) != 1 {
+	if d := readStateDoc(t, out); status != statusUnknown || err == nil || len(d.Read) != 2 || len(d.NotRead) != 2 {
 		t.Fatalf("status %s, read %v, not read %v, %v", status, d.Read, d.NotRead, err)
 	}
-	if got := names(readExec(t, out)); got != "tool-c" {
+	if got := names(readExec(t, out)); got != "tool-a" {
 		t.Errorf("exec.jsonl %q, want only the shards read whole", got)
 	}
 }
 
-// TestASealTimeOutOfRangeIsUnknown: a last seal whose time has no nanoseconds in an int64 is UNKNOWN, never a
-// wrapped date to count the 7 days from.
+// TestASealTimeOutOfRangeIsUnknown: a seal whose time has no nanoseconds in an int64 is UNKNOWN, never a wrapped
+// date to count the days from.
 func TestASealTimeOutOfRangeIsUnknown(t *testing.T) {
 	ts := threeShards(t)
 	index := filepath.Join(ts.dir, "seals")
@@ -54,7 +39,7 @@ func TestASealTimeOutOfRangeIsUnknown(t *testing.T) {
 	}
 	status, out, err := judgeOnce(t, ts.dir, nil)
 	d := readStateDoc(t, out)
-	if status != statusUnknown || err == nil || d.Status != statusUnknown || !strings.Contains(d.Reason, "last seal's time") {
+	if status != statusUnknown || err == nil || d.Status != statusUnknown || !strings.Contains(d.Reason, "the time of seal") {
 		t.Errorf("status %s %q, %v", status, d.Reason, err)
 	}
 }
@@ -69,40 +54,38 @@ func TestUnlistedExecsAreCounted(t *testing.T) {
 	ts.laurel(3, bytes.Replace(bytes.Replace(tool(3, 1000, "i386"), []byte(`"syscall":59`), []byte(`"syscall":11`), 1),
 		[]byte(`"arch":"0xc000003e"`), []byte(`"arch":"0x40000003"`), 1))
 	ts.laurel(4, bytes.Replace(tool(4, 1000, "twice"), []byte(`"uid":1000,`), []byte(`"uid":1000,"uid":0,`), 1))
+	ts.laurel(5, bytes.Replace(tool(5, 1000, "noid"), []byte(`{"ID":"`+eventOf(5)+`",`), []byte(`{`), 1))
 	ts.seal(true)
 	_, out, err := judgeOnce(t, ts.dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := readStateDoc(t, out)
-	if d.Exec.Successful != 1 || d.Exec.Execveat != 1 || d.Exec.OtherArch != 1 || d.Undecoded[refusedKeys] != 1 {
-		t.Errorf("exec %+v, undecoded %v", d.Exec, d.Undecoded)
+	e := totalOf(readStateDoc(t, out).Days).Exec
+	if e.Successful != 2 || e.Partial != 1 || e.Execveat != 1 || e.OtherArch != 1 || e.Refused != 1 {
+		t.Errorf("exec %+v", e)
 	}
 	if got := names(readExec(t, out)); got != "listed" {
 		t.Errorf("exec.jsonl %q", got)
 	}
 }
 
-// TestALossReachesIntoTheOlderShard: a lost record at the start of a shard whose first_at is before the older
-// shard's last own record starts its span at first_at, so the time it lost records is not clean.
-func TestALossReachesIntoTheOlderShard(t *testing.T) {
-	sec := int64(time.Second)
-	older := accOf(t, own(store.HealthProvider, 10*sec, `{"schema_version":1,"kind":"health","state":"OK"}`),
-		rawrecord.New(0, store.SensorProvider, 1, 50*sec, otherLine(1, "k")),
-		own(store.HealthProvider, 100*sec, `{"schema_version":1,"kind":"stats","max_lag_ms":1}`))
-	newer := accOf(t, own(store.HealthProvider, 110*sec, `{"schema_version":1,"kind":"lost","stage":"queue","count":1,`+
-		`"bytes":0,"first_seq":0,"last_seq":0,"first_at":70000000000,"last_at":70000000000,"at":3,"note_seq":2}`),
-		rawrecord.New(0, store.SensorProvider, 2, 111*sec, otherLine(2, "k")))
-	st := newState([]store.Seal{{Name: "older"}, {Name: "newer"}}, 0, 0, 90)
-	st.merge("newer", newer)
-	st.merge("older", older)
-	d := st.render(0)
-	for _, iv := range d.Clean.Intervals {
-		if iv.From < timeText(100*sec) && iv.To > timeText(70*sec) {
-			t.Errorf("clean %s to %s covers the loss from 70 s", iv.From, iv.To)
-		}
+// TestATornSealIndexIsPartial: an index that ends in a line without its newline may lack a seal, so the read of
+// every shard it lists is PARTIAL, never COMPLETE.
+func TestATornSealIndexIsPartial(t *testing.T) {
+	ts := threeShards(t)
+	f, err := os.OpenFile(filepath.Join(ts.dir, "seals"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(d.Clean.Intervals) != 2 || d.Clean.Intervals[0].To != timeText(70*sec) {
-		t.Errorf("clean %+v", d.Clean.Intervals)
+	if _, err := f.WriteString("0000000000000000099.db 99"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	status, out, err := judgeOnce(t, ts.dir, nil)
+	if d := readStateDoc(t, out); status != statusPartial || err == nil || d.Status != statusPartial || !d.TornIndex ||
+		len(d.Read) != 4 {
+		t.Errorf("status %s, on disk %s %q, torn %v, read %d, %v", status, d.Status, d.Reason, d.TornIndex, len(d.Read), err)
 	}
 }

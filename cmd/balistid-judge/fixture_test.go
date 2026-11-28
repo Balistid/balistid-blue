@@ -207,3 +207,54 @@ func names(runs []execRun) string {
 	}
 	return strings.Join(n, " ")
 }
+
+// totalOf is the days added up, as one row.
+func totalOf(days []dayRow) dayRow {
+	t := dayRow{Records: map[string]uint64{}, evidence: evidence{Loss: map[string]uint64{}, Undecoded: map[string]uint64{}}}
+	for _, d := range days {
+		for k, v := range d.Records {
+			t.Records[k] += v
+		}
+		for k, v := range d.Loss {
+			t.Loss[k] += v
+		}
+		for k, v := range d.Undecoded {
+			t.Undecoded[k] += v
+		}
+		t.Bytes += d.Bytes
+		addExecs(&t.Exec, d.Exec)
+		t.LossErrors, t.OwnUnknown, t.HealthLost = t.LossErrors+d.LossErrors, t.OwnUnknown+d.OwnUnknown, t.HealthLost+d.HealthLost
+		t.Gaps, t.Missing, t.NotOK, t.NotKnown = t.Gaps+d.Gaps, t.Missing+d.Missing, t.NotOK+d.NotOK, t.NotKnown+d.NotKnown
+		t.Silences, t.ClockBack = t.Silences+d.Silences, t.ClockBack+d.ClockBack
+		if d.StoreLag != nil {
+			maxOf(&t.StoreLag, *d.StoreLag)
+		}
+		if d.ArrivalLag != nil {
+			maxOf(&t.ArrivalLag, *d.ArrivalLag)
+		}
+	}
+	return t
+}
+
+func addExecs(t *execCounts, x execCounts) {
+	t.Successful, t.Listed, t.OverCap, t.Outside = t.Successful+x.Successful, t.Listed+x.Listed, t.OverCap+x.OverCap, t.Outside+x.Outside
+	t.Partial, t.System, t.Execveat = t.Partial+x.Partial, t.System+x.System, t.Execveat+x.Execveat
+	t.OtherArch, t.Refused = t.OtherArch+x.OtherArch, t.Refused+x.Refused
+}
+
+// corrupt flips the last byte of a shard of ts, so its hash is no longer its seal's.
+func corrupt(t *testing.T, ts *testStore, name string) {
+	t.Helper()
+	path := ts.dir + "/" + name
+	b, err := os.ReadFile(path) //nolint:gosec // the test's store
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[len(b)-1] ^= 0xff
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil { //nolint:gosec // the test's store
+		t.Fatal(err)
+	}
+}
