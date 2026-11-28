@@ -127,7 +127,7 @@ func TestViewCapsWhatItHolds(t *testing.T) {
 // TestTheJudgeListsNoMoreThanViewReads: past maxRuns a run is counted as not listed, on its day; and the longest
 // line the judge can write fits the bytes view allows a run.
 func TestTheJudgeListsNoMoreThanViewReads(t *testing.T) {
-	rd := newReader()
+	rd := newReader(math.MinInt64)
 	var b bytes.Buffer
 	rd.out = bufio.NewWriter(&b)
 	rd.listed = maxRuns - 1
@@ -151,7 +151,7 @@ func TestTheJudgeListsNoMoreThanViewReads(t *testing.T) {
 // TestHealthChangesAreAList: none read is an empty list, and a list past the cap is empty with the reason.
 func TestHealthChangesAreAList(t *testing.T) {
 	st := newState(nil, 0, 0, 90)
-	rd := newReader()
+	rd := newReader(math.MinInt64)
 	b, err := json.Marshal(st.render(rd, 0))
 	if err != nil || !bytes.Contains(b, []byte(`"health_changes":[]`)) || bytes.Contains(b, []byte("withheld")) ||
 		!bytes.Contains(b, []byte(`"days":[]`)) {

@@ -79,9 +79,9 @@ func judge(ctx context.Context, cfg config) (string, error) {
 	if err != nil {
 		st := newState(nil, 0, 0, limitMin)
 		st.doc.Status, st.doc.Reason = statusUnknown, err.Error()
-		return statusUnknown, errors.Join(err, writeBoth(out, st.render(newReader(), start.UnixNano())))
+		return statusUnknown, errors.Join(err, writeBoth(out, st.render(newReader(math.MinInt64), start.UnixNano())))
 	}
-	rd := newReader()
+	rd := newReader(listFrom(seals))
 	st := newState(seals, sum(sizes), startOf(seals, sizes), limitMin)
 	st.doc.Unsealed, st.doc.TornIndex = unsealed, torn
 	// State first, from the seals alone, and no exec line of an earlier run left beside it.
@@ -93,9 +93,6 @@ func judge(ctx context.Context, cfg config) (string, error) {
 	for st.next < len(seals) {
 		l := seals[st.next]
 		doc, err := readShard(ctx, cfg, out, rd, l, deadline)
-		if err == nil {
-			err = trim(out, rd)
-		}
 		switch {
 		case errors.Is(err, errReadLimit):
 			return st.fail(out, cfg, statusPartial, "the read limit of "+strconv.Itoa(limitMin)+" min passed", err)
@@ -192,6 +189,15 @@ func sum(sizes []int64) int64 {
 	return n
 }
 
+// listFrom is the first UTC day whose runs exec.jsonl lists: the newest seal's day less execDays (ADR 0082 point 4),
+// known before the read, so exec.jsonl is only appended to.
+func listFrom(seals []store.Seal) int64 {
+	if len(seals) == 0 {
+		return math.MinInt64
+	}
+	return seals[len(seals)-1].Sealed/86400 - execDays
+}
+
 // startOf is the first shard of the first UTC day, by the seals' times, whose shards to the newest fit budgetBytes;
 // when the newest day alone does not, its first shard, as the read limit still stops the read.
 func startOf(seals []store.Seal, sizes []int64) int {
@@ -242,70 +248,7 @@ func readShard(ctx context.Context, cfg config, out *os.Root, rd *reader, l stor
 	return doc, part.commit()
 }
 
-// trim takes out of exec.jsonl the runs of days no longer among the execDays newest the read has seen, and counts
-// them as before those days.
-func trim(out *os.Root, rd *reader) error {
-	from := rd.windowFrom()
-	drop := map[string]*dayRow{}
-	for _, row := range rd.rows {
-		if row.day < from && row.Exec.Listed > 0 {
-			drop[row.Day] = row
-		}
-	}
-	if len(drop) == 0 {
-		return nil
-	}
-	p, err := newPart(out)
-	if err != nil {
-		return err
-	}
-	if err := keepRuns(out, p.w, drop); err != nil {
-		return errors.Join(fmt.Errorf("trim %s: %w", execFile, err), p.abort())
-	}
-	if err := p.replace(); err != nil {
-		return err
-	}
-	for _, row := range drop {
-		row.Exec.Outside += row.Exec.Listed
-		rd.listed -= row.Exec.Listed
-		row.Exec.Listed = 0
-	}
-	return nil
-}
-
-// keepRuns copies the lines of exec.jsonl to w but those received on a day in drop. The judge wrote every line in
-// UTC, so its first ten bytes are the day.
-func keepRuns(out *os.Root, w io.Writer, drop map[string]*dayRow) error {
-	f, err := out.OpenFile(execFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return err //nolint:wrapcheck // trim names the file
-	}
-	defer f.Close() //nolint:errcheck // read-only
-	br := bufio.NewReaderSize(f, lineMax)
-	for {
-		line, err := br.ReadSlice('\n')
-		switch {
-		case errors.Is(err, io.EOF) && len(line) == 0:
-			return nil
-		case err != nil:
-			return err //nolint:wrapcheck // trim names the file
-		}
-		var r struct {
-			Received string `json:"received"`
-		}
-		if err := json.Unmarshal(line, &r); err != nil || len(r.Received) < len(time.DateOnly) {
-			return errors.New("a line without its time")
-		}
-		if drop[r.Received[:len(time.DateOnly)]] != nil {
-			continue
-		}
-		if _, err := w.Write(line); err != nil {
-			return err //nolint:wrapcheck // trim names the file
-		}
-	}
-}
-
-// part is one shard's exec lines, held until the shard was read whole, or exec.jsonl trimmed.
+// part is one shard's exec lines, held until the shard was read whole.
 type part struct {
 	root *os.Root
 	name string
@@ -352,25 +295,6 @@ func (p *part) appendTo() error {
 	}
 	_, err = io.Copy(cur, p.f)
 	return errors.Join(err, cur.Sync(), cur.Close())
-}
-
-// replace puts the part in exec.jsonl's place, whole: a crash leaves the old file or the new one.
-func (p *part) replace() error {
-	err := errors.Join(p.w.Flush(), p.f.Chmod(resultMode), p.f.Sync())
-	if err == nil {
-		err = p.root.Rename(p.name, execFile)
-	}
-	if err != nil {
-		return errors.Join(fmt.Errorf("trim %s: %w", execFile, err), p.abort())
-	}
-	d, err := p.root.Open(".")
-	if err == nil {
-		err = errors.Join(d.Sync(), d.Close())
-	}
-	if err = errors.Join(err, p.f.Close()); err != nil {
-		return fmt.Errorf("trim %s: %w", execFile, err)
-	}
-	return nil
 }
 
 func (p *part) abort() error {

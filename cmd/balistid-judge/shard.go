@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"slices"
-	"sort"
 	"time"
 
 	"github.com/Balistid/balistid-blue/internal/rawrecord"
@@ -54,7 +52,7 @@ type execCounts struct {
 	Successful uint64 `json:"successful"`
 	Listed     uint64 `json:"listed"`
 	OverCap    uint64 `json:"not_listed_over_max_runs"`
-	Outside    uint64 `json:"not_listed_before_the_7_newest_days"`
+	Outside    uint64 `json:"not_listed_before_the_window"`
 	Partial    uint64 `json:"fields_not_decoded"`
 	System     uint64 `json:"system_uid"`
 	Execveat   uint64 `json:"execveat_not_listed"`
@@ -103,7 +101,7 @@ const (
 // record to the next, across shards.
 type reader struct {
 	rows       map[int64]*dayRow
-	newest     []int64 // the newest execDays days holding records, oldest first
+	listFrom   int64 // the first day whose runs are listed, known from the seals before the read
 	keys       map[string]*keyCount
 	keysOver   uint64
 	trans      []transition
@@ -120,9 +118,11 @@ type reader struct {
 	out        *bufio.Writer
 }
 
-func newReader() *reader {
-	return &reader{rows: map[int64]*dayRow{}, keys: map[string]*keyCount{}}
+func newReader(listFrom int64) *reader {
+	return &reader{rows: map[int64]*dayRow{}, keys: map[string]*keyCount{}, listFrom: listFrom}
 }
+
+func dayText(day int64) string { return time.Unix(day*86400, 0).UTC().Format(time.DateOnly) }
 
 // dayOf is the UTC day of a time, counted from 1970, rounded down.
 func dayOf(ns int64) int64 {
@@ -137,7 +137,7 @@ func (rd *reader) row(day int64) *dayRow {
 	if r, ok := rd.rows[day]; ok {
 		return r
 	}
-	r := &dayRow{Day: time.Unix(day*86400, 0).UTC().Format(time.DateOnly), day: day, Records: map[string]uint64{},
+	r := &dayRow{Day: dayText(day), day: day, Records: map[string]uint64{},
 		evidence: evidence{Loss: map[string]uint64{}, Undecoded: map[string]uint64{}}}
 	if len(rd.rows) >= maxDays {
 		rd.tooMany = true
@@ -147,33 +147,10 @@ func (rd *reader) row(day int64) *dayRow {
 	return r
 }
 
-// windowFrom is the first day whose runs are listed: the oldest of the execDays newest days holding records.
-func (rd *reader) windowFrom() int64 {
-	if len(rd.newest) < execDays {
-		return math.MinInt64
-	}
-	return rd.newest[0]
-}
-
-// holding takes a day that got its first record.
-func (rd *reader) holding(day int64) {
-	i := sort.Search(len(rd.newest), func(i int) bool { return rd.newest[i] >= day })
-	if len(rd.newest) == execDays && i == 0 { // older than each of them
-		return
-	}
-	rd.newest = slices.Insert(rd.newest, i, day)
-	if len(rd.newest) > execDays {
-		rd.newest = rd.newest[1:]
-	}
-}
-
 // add takes the next record.
 func (rd *reader) add(r rawrecord.Record) error {
 	at := r.Received
 	row := rd.row(dayOf(at))
-	if len(row.Records) == 0 {
-		rd.holding(row.day)
-	}
 	if rd.n == 0 {
 		rd.cursor = at
 	} else {
@@ -268,7 +245,7 @@ func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	case rec.Run.UID < minUID:
 		row.Exec.System++
 		return nil
-	case row.day < rd.windowFrom():
+	case row.day < rd.listFrom:
 		row.Exec.Outside++
 		return nil
 	case rd.listed >= maxRuns:

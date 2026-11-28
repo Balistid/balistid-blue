@@ -36,6 +36,7 @@ type stateDoc struct {
 	ReadLimitMin int                  `json:"read_limit_min"`
 	BudgetMiB    int64                `json:"byte_budget_mib"`
 	MaxRuns      int                  `json:"max_runs"`
+	ListedFrom   string               `json:"listed_from,omitempty"`
 	Health       []transition         `json:"health_changes"`
 	HealthHeld   string               `json:"health_changes_withheld,omitempty"`
 	Keys         map[string]*keyCount `json:"by_rule_key"`
@@ -96,6 +97,7 @@ func newState(seals []store.Seal, sizes int64, from int, limitMin int) *state {
 	d.Store = storeDoc{Seals: len(seals), Bytes: sizes}
 	if n := len(seals); n > 0 {
 		l := seals[n-1]
+		d.ListedFrom = dayText(listFrom(seals))
 		d.Store.LastSeal = &sealOf{Name: l.Name, First: l.First, Last: l.Last, SHA256: hex.EncodeToString(l.SHA256[:]),
 			Sealed: sealText(l)}
 	}

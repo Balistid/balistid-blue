@@ -18,13 +18,13 @@ import (
 // tally is a store counted record by record straight from shard.Read, without the judge's reader: what its days
 // must add up to, and the runs exec.jsonl must hold.
 type tally struct {
-	records   map[string]uint64
-	bytes     uint64
-	loss      map[string]uint64
-	keys      map[string]keyCount
-	exec      execCounts // Listed holds every run of a user, listed or not
-	runs      map[string][]string
-	recordDay map[string]bool
+	records map[string]uint64
+	bytes   uint64
+	loss    map[string]uint64
+	keys    map[string]keyCount
+	exec    execCounts // Listed holds every run of a user, listed or not
+	runs    map[string][]string
+	from    string // the newest seal's UTC day less 7
 }
 
 func tallyOf(t *testing.T, dir string) tally {
@@ -34,7 +34,10 @@ func tallyOf(t *testing.T, dir string) tally {
 		t.Fatal(err)
 	}
 	c := tally{records: map[string]uint64{}, loss: map[string]uint64{}, keys: map[string]keyCount{},
-		runs: map[string][]string{}, recordDay: map[string]bool{}}
+		runs: map[string][]string{}}
+	if n := len(seals); n > 0 {
+		c.from = time.Unix(seals[n-1].Sealed, 0).UTC().AddDate(0, 0, -7).Format(time.DateOnly)
+	}
 	for _, l := range seals {
 		err := shard.Read(t.Context(), dir+"/"+l.Name, l.SHA256, shard.Scratch{Dir: t.TempDir(), Max: 600 << 20},
 			func(r rawrecord.Record) error { c.add(t, r); return nil })
@@ -47,7 +50,6 @@ func tallyOf(t *testing.T, dir string) tally {
 
 func (c *tally) add(t *testing.T, r rawrecord.Record) {
 	day := time.Unix(0, r.Received).UTC().Format(time.DateOnly)
-	c.recordDay[day] = true
 	c.bytes += r.OrigLen
 	var own struct {
 		Kind    string `json:"kind"`
@@ -112,18 +114,13 @@ func (c *tally) sensor(t *testing.T, r rawrecord.Record, day string) {
 	c.exec.Successful++
 }
 
-// listed is the runs of the 7 newest days holding records, sorted.
+// listed is the runs received on the window's days, sorted.
 func (c *tally) listed() []string {
-	days := slices.Sorted(func(yield func(string) bool) {
-		for d := range c.recordDay {
-			if !yield(d) {
-				return
-			}
-		}
-	})
 	var out []string
-	for _, d := range days[max(0, len(days)-execDays):] {
-		out = append(out, c.runs[d]...)
+	for d, runs := range c.runs {
+		if d >= c.from {
+			out = append(out, runs...)
+		}
 	}
 	slices.Sort(out)
 	return out
@@ -163,17 +160,17 @@ func checkSums(t *testing.T, dir, out string) {
 	}
 	slices.Sort(lines)
 	if want := c.listed(); !slices.Equal(lines, want) {
-		t.Errorf("exec.jsonl holds %d runs, the store's 7 newest days %d", len(lines), len(want))
+		t.Errorf("exec.jsonl holds %d runs, the store's window %d", len(lines), len(want))
 	}
 }
 
-// eightDays is a store of runs received on 8 days, the oldest first.
-func eightDays(t *testing.T) *testStore {
+// nineDays is a store of runs received on 9 days, the oldest first: one day more than the window.
+func nineDays(t *testing.T) *testStore {
 	t.Helper()
 	ts := newTestStore(t, 16<<20)
 	now := time.Now()
-	for d := range 8 {
-		ts.laurelAt(uint64(d+1), now.Add(time.Duration(d-7)*24*time.Hour).UnixNano(), tool(uint64(d+1), 1000, "d"+strconv.Itoa(d)))
+	for d := range 9 {
+		ts.laurelAt(uint64(d+1), now.Add(time.Duration(d-8)*24*time.Hour).UnixNano(), tool(uint64(d+1), 1000, "d"+strconv.Itoa(d)))
 	}
 	ts.seal(true)
 	return ts
@@ -182,7 +179,7 @@ func eightDays(t *testing.T) *testStore {
 // TestDaysAddUpToTheStore: on every fixture store the days add up to what the store holds, counted apart.
 func TestDaysAddUpToTheStore(t *testing.T) {
 	for name, build := range map[string]func(*testing.T) *testStore{"three shards": threeShards, "agent tree": agentTree,
-		"eight days": eightDays, "planned": func(t *testing.T) *testStore { return plannedStore(t, func(int) bool { return true }) }} {
+		"nine days": nineDays, "planned": func(t *testing.T) *testStore { return plannedStore(t, func(int) bool { return true }) }} {
 		t.Run(name, func(t *testing.T) {
 			ts := build(t)
 			status, out, err := judgeOnce(t, ts.dir, nil)
@@ -325,14 +322,18 @@ func startDays() []rawrecord.Record {
 }
 
 // TestTheStartChangesNoLaterDay: a read that starts at day k gives the days after it as a read from the first,
-// but for the health carried into them, which the later start does not know.
+// listed runs too, but for the health carried into them, which the later start does not know.
 func TestTheStartChangesNoLaterDay(t *testing.T) {
 	recs := startDays()
-	whole := rowsOf(readerOf(t, recs...))
+	listFrom := dayOf(base) + 2
+	whole := rowsOf(readerFrom(t, listFrom, recs...))
+	if whole[1].Exec.Outside == 0 || whole[1].Exec.Listed != 0 || whole[2].Exec.Listed == 0 {
+		t.Fatalf("the window is not between days 1 and 2: %+v, %+v", whole[1].Exec, whole[2].Exec)
+	}
 	for k := 1; k <= 3; k++ {
 		day := dayOf(base) + int64(k)
 		i := slices.IndexFunc(recs, func(r rawrecord.Record) bool { return dayOf(r.Received) >= day })
-		late := rowsOf(readerOf(t, recs[i:]...))
+		late := rowsOf(readerFrom(t, listFrom, recs[i:]...))
 		for j := range late[1:] {
 			a, b := whole[k+1+j], late[1+j]
 			a.NotOK, a.NotKnown, b.NotOK, b.NotKnown = 0, 0, 0, 0
