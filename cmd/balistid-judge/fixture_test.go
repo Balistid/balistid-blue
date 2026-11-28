@@ -223,8 +223,7 @@ func totalOf(days []dayRow) dayRow {
 		}
 		t.Bytes += d.Bytes
 		addExecs(&t.Exec, d.Exec)
-		t.LossErrors, t.OwnUnknown, t.HealthLost = t.LossErrors+d.LossErrors, t.OwnUnknown+d.OwnUnknown, t.HealthLost+d.HealthLost
-		t.Gaps, t.Missing, t.NotOK, t.NotKnown = t.Gaps+d.Gaps, t.Missing+d.Missing, t.NotOK+d.NotOK, t.NotKnown+d.NotKnown
+		t.LossErrors, t.OwnUnknown = t.LossErrors+d.LossErrors, t.OwnUnknown+d.OwnUnknown
 		t.Silences, t.ClockBack = t.Silences+d.Silences, t.ClockBack+d.ClockBack
 		if d.StoreLag != nil {
 			maxOf(&t.StoreLag, *d.StoreLag)

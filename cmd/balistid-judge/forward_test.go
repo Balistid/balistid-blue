@@ -242,55 +242,6 @@ func plannedStore(t *testing.T, keep func(int) bool) *testStore {
 	return ts
 }
 
-// atLeast is every number of a judge's output named or meant as a lower bound, by day and name.
-func atLeast(t *testing.T, out string) map[string]uint64 {
-	t.Helper()
-	n := map[string]uint64{}
-	d := readStateDoc(t, out)
-	for _, r := range d.Days {
-		for k, v := range r.Records {
-			n[r.Day+" records "+k] = v
-		}
-		for k, v := range r.Loss {
-			n[r.Day+" loss "+k] = v
-		}
-		n[r.Day+" bytes"], n[r.Day+" successful"], n[r.Day+" listed"] = r.Bytes, r.Exec.Successful, r.Exec.Listed
-	}
-	n["health records lost"] = totalOf(d.Days).HealthLost
-	v := viewOf(t, out)
-	for _, day := range v.Days {
-		if day.Read {
-			n[day.Day+" runs"], n[day.Day+" under agent"] = day.Runs, day.UnderAgent
-		}
-	}
-	for _, nc := range v.Top {
-		n["top "+nc.Name] = nc.Count
-	}
-	return n
-}
-
-// TestDroppedRecordsRaiseNoLowerBound: a store that lost records, for several choices of which, gives no lower
-// bound above the whole store's, in state.json or in view.
-func TestDroppedRecordsRaiseNoLowerBound(t *testing.T) {
-	_, out, err := judgeOnce(t, plannedStore(t, func(int) bool { return true }).dir, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	whole := atLeast(t, out)
-	for seed := range 6 {
-		ts := plannedStore(t, func(i int) bool { return (i*7919+seed*104729)%5 != 0 })
-		_, out, err := judgeOnce(t, ts.dir, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for k, v := range atLeast(t, out) {
-			if v > whole[k] {
-				t.Errorf("seed %d: %s is %d, %d in the whole store", seed, k, v, whole[k])
-			}
-		}
-	}
-}
-
 // startDays is records over 5 UTC days: serials with holes, runs, health changes, losses, stats and a new boot.
 func startDays() []rawrecord.Record {
 	sec := int64(time.Second)
@@ -323,7 +274,7 @@ func startDays() []rawrecord.Record {
 }
 
 // TestTheStartChangesNoLaterDay: a read that starts at day k gives the days after it as a read from the first,
-// listed runs too, but for the health carried into them, which the later start does not know.
+// listed runs too.
 func TestTheStartChangesNoLaterDay(t *testing.T) {
 	recs := startDays()
 	listFrom := dayOf(base) + 2
@@ -337,43 +288,9 @@ func TestTheStartChangesNoLaterDay(t *testing.T) {
 		late := rowsOf(readerFrom(t, listFrom, recs[i:]...))
 		for j := range late[1:] {
 			a, b := whole[k+1+j], late[1+j]
-			a.NotOK, a.NotKnown, b.NotOK, b.NotKnown = 0, 0, 0, 0
 			if !reflect.DeepEqual(a, b) {
 				t.Errorf("start at day %d, day %s:\nwhole %+v\nlate  %+v", k, a.Day, a, b)
 			}
-		}
-	}
-}
-
-// TestAnotherBootsSerialsAcrossShards: boot b1 holds 9, 10 and 12, a late 9 in a shard of its own; boot b2 holds 11
-// and 13, its started record last in a shard or first in the next. A serial fills a hole only in its own run: two
-// runs of the counter and two serials missing, one in each.
-func TestAnotherBootsSerialsAcrossShards(t *testing.T) {
-	for name, lateShard := range map[string]bool{"started last in a shard": false, "a late serial between": true} {
-		ts := newTestStore(t, 16<<20)
-		ts.own("started", map[string]any{"info": map[string]string{"boot_id": "b1"}})
-		ts.laurel(10, otherLine(10, "k"))
-		ts.laurel(12, otherLine(12, "k"))
-		if lateShard {
-			ts.seal(false)
-			ts.laurel(9, otherLine(9, "k"))
-			ts.seal(false)
-			ts.own("started", map[string]any{"info": map[string]string{"boot_id": "b2"}})
-		} else {
-			ts.laurel(9, otherLine(9, "k"))
-			ts.own("started", map[string]any{"info": map[string]string{"boot_id": "b2"}})
-			ts.seal(false)
-		}
-		ts.laurel(11, otherLine(11, "k"))
-		ts.laurel(13, otherLine(13, "k"))
-		ts.seal(true)
-		_, out, err := judgeOnce(t, ts.dir, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		d := readStateDoc(t, out)
-		if all := totalOf(d.Days); d.Serials.Segments != 2 || all.Gaps != 2 || all.Missing != 2 {
-			t.Errorf("%s: %d segments, %d gaps, %d missing", name, d.Serials.Segments, all.Gaps, all.Missing)
 		}
 	}
 }
@@ -459,8 +376,7 @@ func TestTheBudgetPicksTheStart(t *testing.T) {
 	}
 }
 
-// TestShardsBeforeTheStartAreNamed: those before the start are not read, with the reason, and the oldest day read
-// says shards before it were not.
+// TestShardsBeforeTheStartAreNamed: those before the start are not read, with the reason.
 func TestShardsBeforeTheStartAreNamed(t *testing.T) {
 	ts := threeShards(t)
 	seals, err := store.ReadSeals(t.Context(), ts.dir)
@@ -471,7 +387,7 @@ func TestShardsBeforeTheStartAreNamed(t *testing.T) {
 	rd := readerOf(t, sensorAt(1, base))
 	d := st.render(rd, 0)
 	if len(d.NotRead) != 4 || !strings.Contains(d.NotRead[0].Reason, "byte budget") || !strings.Contains(d.NotRead[1].Reason, "byte budget") ||
-		d.NotRead[2].Reason != "not read yet" || !d.Days[0].Earlier || !d.Days[0].Later {
+		d.NotRead[2].Reason != "not read yet" {
 		t.Errorf("not read %+v, days %+v", d.NotRead, d.Days)
 	}
 }

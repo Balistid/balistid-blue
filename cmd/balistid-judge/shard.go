@@ -22,7 +22,6 @@ const (
 	// Caps on what the read keeps in memory (R5, T20): past maxDays the read stops as UNKNOWN, past the others it
 	// says so.
 	maxEvents  = 1 << 16
-	maxHeld    = 4096
 	maxKeys    = 256
 	maxDays    = 1 << 12
 	ownCapture = 4 << 10
@@ -65,11 +64,6 @@ type evidence struct {
 	Loss       map[string]uint64 `json:"loss_by_stage"`
 	LossErrors uint64            `json:"loss_records_not_decoded"`
 	OwnUnknown uint64            `json:"own_records_unknown"`
-	HealthLost uint64            `json:"health_records_lost"`
-	Gaps       uint64            `json:"serial_gaps"`
-	Missing    uint64            `json:"serials_missing"`
-	NotOK      float64           `json:"seconds_not_ok"`
-	NotKnown   float64           `json:"seconds_not_known"`
 	StoreLag   *int64            `json:"max_store_lag_ms"`
 	ArrivalLag *int64            `json:"max_arrival_lag_ms"`
 	Silences   uint64            `json:"silences_over_90s"`
@@ -77,45 +71,30 @@ type evidence struct {
 	Undecoded  map[string]uint64 `json:"undecoded"`
 }
 
-// dayRow is one UTC day of records by their receive time: sums, and the health state carried into it.
+// dayRow is one UTC day of records by their receive time: sums and maxima of that day's records.
 type dayRow struct {
 	Day     string            `json:"day"`
-	Earlier bool              `json:"earlier_shards_not_read,omitempty"`
-	Later   bool              `json:"later_shards_not_read,omitempty"`
 	Records map[string]uint64 `json:"records"`
 	Bytes   uint64            `json:"bytes"`
 	Exec    execCounts        `json:"exec"`
 	evidence
-	day             int64
-	notOK, notKnown int64
+	day int64
 }
-
-// Health as the read carries it from record to record; before the first health or started record it is not known.
-const (
-	healthNotKnown = iota
-	healthOK
-	healthNotOK
-)
 
 // reader is the judge's one pass over the shards, oldest first: sums by UTC day and what is carried from one
 // record to the next, across shards.
 type reader struct {
-	rows       map[int64]*dayRow
-	listFrom   int64 // the first day whose runs are listed, known from the seals before the read
-	keys       map[string]*keyCount
-	keysOver   uint64
-	trans      []transition
-	over       bool
-	tooMany    bool
-	ser        serials
-	n          uint64
-	lastAt     int64
-	health     int
-	cursor     int64  // health is counted up to here
-	okSince    int64  // where the health became OK: a change away from it counts back no further
-	lostHealth uint64 // the collector run's lost_health so far
-	listed     uint64 // lines in exec.jsonl and the shard's part
-	out        *bufio.Writer
+	rows     map[int64]*dayRow
+	listFrom int64 // the first day whose runs are listed, known from the seals before the read
+	keys     map[string]*keyCount
+	keysOver uint64
+	trans    []transition
+	over     bool
+	tooMany  bool
+	n        uint64
+	lastAt   int64
+	listed   uint64 // lines in exec.jsonl and the shard's part
+	out      *bufio.Writer
 }
 
 func newReader(listFrom int64) *reader {
@@ -151,17 +130,13 @@ func (rd *reader) row(day int64) *dayRow {
 func (rd *reader) add(r rawrecord.Record) error {
 	at := r.Received
 	row := rd.row(dayOf(at))
-	if rd.n == 0 {
-		rd.cursor = at
-	} else {
-		switch {
-		case at < rd.lastAt:
-			row.ClockBack++
-		case at-rd.lastAt > silence:
-			row.Silences++
-		}
+	switch {
+	case rd.n == 0:
+	case at < rd.lastAt:
+		row.ClockBack++
+	case at-rd.lastAt > silence:
+		row.Silences++
 	}
-	rd.count(at)
 	rd.n++
 	rd.lastAt = at
 	row.Bytes += r.OrigLen
@@ -186,31 +161,9 @@ func (rd *reader) add(r rawrecord.Record) error {
 	return err
 }
 
-// count carries the health up to at: seconds not OK and not known, split at midnight. The clock going back
-// counts nothing.
-func (rd *reader) count(at int64) {
-	rd.addHealth(rd.cursor, at, rd.health)
-	rd.cursor = max(rd.cursor, at)
-}
-
-func (rd *reader) addHealth(from, to int64, health int) {
-	for from < to && health != healthOK {
-		end := min(to, (dayOf(from)+1)*dayNS)
-		row := rd.row(dayOf(from))
-		if health == healthNotOK {
-			row.notOK += end - from
-		} else {
-			row.notKnown += end - from
-		}
-		from = end
-	}
-}
-
 func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	if r.ProviderSeq == 0 {
 		row.Undecoded["no serial"]++
-	} else if !auditdOwn(r.Data) {
-		rd.ser.add(r.ProviderSeq, r.Received, rd.gap)
 	}
 	if r.Truncated() { // lossOf counts it; its line is cut in two and not read
 		row.Loss["truncated"]++
@@ -266,13 +219,6 @@ func (rd *reader) sensor(row *dayRow, r rawrecord.Record) error {
 	return nil
 }
 
-// gap counts a hole in the serials on the day its later end was received.
-func (rd *reader) gap(missing uint64, at int64) {
-	row := rd.row(dayOf(at))
-	row.Gaps++
-	row.Missing = satAdd(row.Missing, missing)
-}
-
 func maxOf(p **int64, v int64) {
 	if *p == nil || v > **p {
 		*p = &v
@@ -303,24 +249,12 @@ func (rd *reader) key(k string, size uint64) {
 	c.Bytes += size
 }
 
-// change is a health change at the record's own time when that is earlier than when the store took it. A change
-// away from OK counts as not OK back to that time; one to OK counts nothing back.
+// change is a health change at the record's own time when that is earlier than when the store took it.
 func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
 	t := r.Received
 	if at > 0 && at < t {
 		t = at
 	}
-	next := healthNotOK
-	if state == "OK" {
-		next = healthOK
-	}
-	switch {
-	case next == healthNotOK && rd.health == healthOK:
-		rd.addHealth(max(t, rd.okSince), rd.cursor, healthNotOK)
-	case next == healthOK && rd.health != healthOK:
-		rd.okSince = rd.cursor
-	}
-	rd.health = next
 	if len(rd.trans) >= maxEvents {
 		rd.over = true
 		return
@@ -328,8 +262,7 @@ func (rd *reader) change(r rawrecord.Record, at int64, kind, state string) {
 	rd.trans = append(rd.trans, transition{Seq: r.Seq, At: timeText(t), Kind: kind, State: state})
 }
 
-// own reads one of the collector's own records (internal/collector/writer.go). One that does not decode may have
-// been a health change: the health is not known from it on.
+// own reads one of the collector's own records (internal/collector/writer.go).
 func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	var head struct {
 		SchemaVersion int    `json:"schema_version"`
@@ -338,7 +271,6 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	}
 	if len(r.Data) > ownCapture || json.Unmarshal(r.Data, &head) != nil || head.SchemaVersion != 1 {
 		row.OwnUnknown++
-		rd.health = healthNotKnown
 		return
 	}
 	switch head.Kind {
@@ -348,19 +280,10 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 		}
 		if json.Unmarshal(r.Data, &h) != nil || h.State == "" {
 			row.OwnUnknown++
-			rd.health = healthNotKnown
 			return
 		}
 		rd.change(r, head.At, "health", h.State)
 	case "started":
-		var s struct {
-			Info struct {
-				BootID string `json:"boot_id"`
-			} `json:"info"`
-		}
-		_ = json.Unmarshal(r.Data, &s) // a started record without a boot id begins a new run of the serials
-		rd.ser.started(s.Info.BootID)
-		rd.lostHealth = 0
 		rd.change(r, head.At, "started", "UNKNOWN starting")
 	case "stopping":
 		rd.change(r, head.At, "stopping", "UNKNOWN stopped")
@@ -369,19 +292,16 @@ func (rd *reader) own(row *dayRow, r rawrecord.Record) {
 	case "lost":
 		lost(row, r)
 	case "connection", "refused":
-	default: // a kind the judge does not know may have been a health change
+	default:
 		row.OwnUnknown++
-		rd.health = healthNotKnown
 	}
 }
 
-// stats reads the store's lag and the health records that gave way: lost_health is the collector run's running
-// total, so its rise is what gave way since the last stats; one that falls began a run whose start was not read.
+// stats reads the store's lag.
 func (rd *reader) stats(row *dayRow, r rawrecord.Record) {
 	var l struct {
-		MaxLag     *int64  `json:"max_lag_ms"`
-		Lag        *int64  `json:"lag_ms"`
-		LostHealth *uint64 `json:"lost_health"`
+		MaxLag *int64 `json:"max_lag_ms"`
+		Lag    *int64 `json:"lag_ms"`
 	}
 	_ = json.Unmarshal(r.Data, &l) // a lag that does not decode is no lag
 	for _, ms := range []*int64{l.MaxLag, l.Lag} {
@@ -389,16 +309,6 @@ func (rd *reader) stats(row *dayRow, r rawrecord.Record) {
 			maxOf(&row.StoreLag, *ms)
 		}
 	}
-	if l.LostHealth == nil {
-		return
-	}
-	n := *l.LostHealth
-	if n >= rd.lostHealth {
-		row.HealthLost = satAdd(row.HealthLost, n-rd.lostHealth)
-	} else {
-		row.HealthLost = satAdd(row.HealthLost, n)
-	}
-	rd.lostHealth = n
 }
 
 // lossStages are internal/collector's stages, as lossOf knows them.
