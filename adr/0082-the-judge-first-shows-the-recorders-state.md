@@ -25,10 +25,10 @@ lag as a record (ADR 0017), so it can answer itself. ADR 0074's judge is a stub;
 3. `state.json` holds the seals, every health change with its time, and a row per UTC day read: records, bytes,
    execs, loss by stage, serial gaps by boot (ADR 0062 stays proposed), seconds its health was not OK, the largest
    lag in the store and in arrival, silences, lines not decoded. It certifies no time as free of loss.
-4. `exec.jsonl` holds one line per successful execve of a uid of 1000 or more in the 7 newest days read: the
-   event's time, when it was received, serial, pid, ppid, Laurel's keys of the process and of what spawned it,
-   the program's base name, and whether its path or its spawner's is Claude Code's binary. No path, argument,
-   environment or directory. A name outside `[A-Za-z0-9._+-]{1,64}` is `x-` and 8 hex of its SHA-256.
+4. `exec.jsonl` holds one line per successful execve of a uid of 1000 or more received on the newest seal's UTC
+   day or the 7 before it: the event's time, when it was received, serial, pid, ppid, Laurel's keys of the process
+   and of what spawned it, the program's base name, and whether its path or its spawner's is Claude Code's binary.
+   No path, argument, environment or directory. A name outside `[A-Za-z0-9._+-]{1,64}` is `x-`, 8 hex of its SHA-256.
 5. `balistid-judge view <dir>`, unprivileged, builds the process tree from `exec.jsonl`: a run is under an agent
    when an ancestor is that binary; of every other run it says only where its chain ended. Every count is of what
    the store holds, so "at least", by day, beside that day's loss, gaps and health; a day not read is not read,
