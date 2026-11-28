@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math"
 	"os"
 	"slices"
 	"sort"
@@ -124,10 +125,22 @@ type runRef struct {
 // agent runs as the caller and could write both files anywhere it can write.
 func collector() ([]uint32, error) {
 	uid, err := unixsock.LookupUID("balistid-collector")
-	if err != nil || uid < 0 {
-		return nil, fmt.Errorf("view: no account balistid-collector, whose files these would be: %w", err)
+	if err == nil {
+		var owner uint32
+		if owner, err = uid32(uid); err == nil {
+			return []uint32{owner}, nil
+		}
 	}
-	return []uint32{uint32(uid)}, nil //nolint:gosec // a uid is 32 bits on Linux
+	return nil, fmt.Errorf("view: no account balistid-collector, whose files these would be: %w", err)
+}
+
+// uid32 is a uid as the kernel holds it. One outside 32 bits is no account's: it is refused, never cut to fit, as a
+// cut one could be another account's.
+func uid32(uid int) (uint32, error) {
+	if uid < 0 || uid > math.MaxUint32 {
+		return 0, fmt.Errorf("uid %d is outside 32 bits", uid)
+	}
+	return uint32(uid), nil
 }
 
 // view reads dir's state.json and exec.jsonl, owned by one of owners, assigns every run and, with manifests,

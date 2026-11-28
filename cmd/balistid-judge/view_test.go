@@ -285,6 +285,19 @@ func TestViewReadsOnlyTheJudgesFiles(t *testing.T) {
 	}
 }
 
+// TestAUIDOutside32BitsIsNoOwner: a uid the account lookup gives outside 32 bits is refused, not cut to the uid of
+// another account (977 here).
+func TestAUIDOutside32BitsIsNoOwner(t *testing.T) {
+	for _, uid := range []int{-1, int(int64(math.MaxUint32) + 978)} {
+		if got, err := uid32(uid); err == nil {
+			t.Errorf("uid %d became %d", uid, got)
+		}
+	}
+	if got, err := uid32(977); err != nil || got != 977 {
+		t.Errorf("uid 977: %d, %v", got, err)
+	}
+}
+
 // mine is the test's own uid as the files' owner, through view's parameter; run passes the collector's only.
 func mine() []uint32 { return []uint32{uint32(os.Getuid())} } //nolint:gosec // a uid is 32 bits on Linux
 
