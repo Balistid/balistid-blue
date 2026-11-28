@@ -21,7 +21,7 @@ method = "An agent runs the 30 probes and writes their manifest (name, kind, tim
 id = "names_outside_alphabet"
 max = 0
 unit = "program names in exec.jsonl outside [A-Za-z0-9._+-]{1,64} that are not x- and 8 hex of their SHA-256"
-rows = ["T18", "T20"]
+rows = ["T41"]
 adr = "0082"
 method = "A test feeds names outside the alphabet, over 64 bytes and in Laurel's %-quoting through the judge and checks every line of exec.jsonl; view refuses a line whose name breaks the rule."
 
@@ -29,7 +29,7 @@ method = "A test feeds names outside the alphabet, over 64 bytes and in Laurel's
 id = "arguments_exported"
 max = 0
 unit = "lines of exec.jsonl holding an argument, an environment variable, a directory or a path of the record they came from"
-rows = ["T18"]
+rows = ["T41"]
 adr = "0082"
 method = "A test runs the judge over a store whose exec records carry marker strings in ARGV, ENV, CWD, PATH and the executable's directory and finds none of them in either output file; exec.jsonl lines decode strictly into the fields ADR 0082 point 4 lists."
 
